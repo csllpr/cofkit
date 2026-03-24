@@ -44,4 +44,4 @@ Ask only for the missing field that blocks execution:
 
 - For exact intent-to-command routing and output interpretation, read `references/intent-routing.md`.
 - For broader project scope and examples, use `../../README.md` and `../../USER_MANUAL.md`.
-- For code-editing or chemistry-extension tasks rather than end-user operation, use `../../docs/AGENT_CODEBASE_MAP.md` and `../../docs/ADDING_LINKAGES_AND_MONOMERS.md`.
+- For code-editing or chemistry-extension tasks rather than end-user operation, use `../../agent-docs/AGENT_CODEBASE_MAP.md` and `../../agent-docs/ADDING_LINKAGES_AND_MONOMERS.md`.

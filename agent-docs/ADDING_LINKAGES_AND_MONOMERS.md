@@ -7,7 +7,7 @@ Use it when adding:
 - a new motif kind such as `hydrazide`, `catechol`, or a future `anhydride`
 - a new linkage such as `hydrazone_bridge` or a future non-imine binary bridge
 
-For general navigation, read [docs/AGENT_CODEBASE_MAP.md](../docs/AGENT_CODEBASE_MAP.md) first.
+For general navigation, read [AGENT_CODEBASE_MAP.md](AGENT_CODEBASE_MAP.md) first.
 
 ## 1. Decide what kind of chemistry it is
 

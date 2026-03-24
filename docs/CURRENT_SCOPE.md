@@ -1,0 +1,45 @@
+# Current Scope
+
+The current package still keeps mandatory runtime dependencies at zero so the scientific core can be exercised in a clean Python runtime. Optional extras add RDKit-backed monomer construction and gemmi-backed CIF/topology utilities for the practical workflows.
+
+## Implemented so far
+
+- geometry primitives and local frames
+- core domain dataclasses
+- builtin COF reaction library plus linkage-profile metadata for pair-role ordering, bridge targets, and realization hooks
+- periodic product graph with motif usage validation
+- topology repository/index support for RCSR CGD-style bundles, with bundled topology data preferred by default and builtin fallback hints
+- a discrete assignment layer for motif-to-reaction event matching
+- registry-backed motif metadata plus lightweight geometric motif detection for the currently supported fallback kinds
+- optional RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazide, boronic acid, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention when RDKit is installed
+- initial linkage geometry helpers for bridge-forming reactions
+- initial periodic embedding for monomer instances from topology hints and motif/reaction heuristics, including oblique `hcb` cells for asymmetric `3+3` and `3+2` cases when a symmetric hexagonal metric is too restrictive
+- a dependency-free continuous optimization pass for seed cell/pose refinement after embedding
+- first-pass candidate scoring with event coverage, bridge geometry, topology bonuses, and unreacted penalties
+- candidate metadata carrying embedding provenance, optimizer metrics, and score breakdowns
+- legal P1 CIF export, with atomistic output when monomer coordinates are available and a coarse fallback otherwise
+- registry-backed atomistic reaction realization for the currently implemented binary-bridge products: imine, hydrazone, beta-ketoenamine, boronate ester, and vinylene
+- reaction-aware batch binary-bridge generation over monomer libraries, with imine workflows as the primary documented path, including `3+3`, `3+2`, `4+4`, `4+2`, and `6+2` enumeration, manifest/summary writing, and CIF export enabled by default
+- automatic monomer-role detection for batch library loading, so generic `.txt` SMILES libraries can be regrouped by detected role/connectivity instead of relying only on `*_count_N.txt` filenames
+- an auto-generated example library under [`../examples/default_monomers_library`](../examples/default_monomers_library) with detector-scanned role/count registration metadata
+- symmetry-expanded single-node generation across supported `2D` and `3D` one-node families, available through both batch runs and single-pair input, with `3+2` / `3+3` handling on `hcb` / `hca` / `fes` / `fxt`, plus `dia` and `pcu` builders for `4+2`, `4+4`, and `6+2` cases
+- default topology-family routing that now sends higher-connectivity nonplanar inputs to `3D` one-node nets (`dia` for `4`-connected cases, `pcu` for `6+2`) while keeping older `2D` high-connectivity families opt-in
+- shared topology-builder dispatch for the supported one-node families, reused by batch runs and direct single-pair generation
+- indexed-topology layout generation for chemistry-compatible bundled topologies beyond the handcrafted one-node families, available in both batch and explicit single-pair generation
+- compatibility-aware default topology selection that now includes curated indexed topologies such as `sql`, `kgm`, `hxl`, `pts`, `ctn`, `bor`, `kgd`, `tbo`, `dia`, `pcu`, `acs`, `lon`, and `qtz` when the current chemistry metadata and builder support permit them
+- coarse post-generation validation with `valid` / `warning` / `hard_invalid` / `hard_hard_invalid` triage, categorized CIF output trees, and export blocking for obviously broken structures
+- process-level batch pair generation with an `8`-worker default budget for the practical CLI workflows
+- an installable `cofkit` CLI, including direct `single-pair` generation plus unified batch/classification/library-building entry points
+- extracted batch-facing support layers (`cofkit.monomer_library`, `cofkit.batch_models`) so CLI, wrappers, and future linkage extensions share the same monomer-role resolution and summary schema
+- tests covering core invariants
+
+## Not implemented yet
+
+- broader SMARTS/rule-based motif detection beyond the current binary-bridge set, especially for ring-forming and cyclization chemistries
+- symmetry reduction beyond raw indexed topology filtering
+- full general topology coverage beyond the current supported one-node families plus the present indexed-layout subset
+- torsion-aware or force-field-backed optimization beyond the current lightweight pass
+- ring-closure geometry models
+- chemically faithful atomistic CIF generation for arbitrary monomers without fallback/pseudo-sites
+- semiempirical / force-field cleanup
+- any stacking exploration, registry search, or stacking score terms
