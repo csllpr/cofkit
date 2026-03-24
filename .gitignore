@@ -1,0 +1,18 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual environment
+.venv/
+
+# macOS noise
+.DS_Store
+
+# Generated outputs
+out/
+
+# Local scratch / temp
+*.tmp
+*.bak

@@ -1,0 +1,35 @@
+{
+  "archives_found": {
+    "2D": "topo_2d.zip",
+    "3D": "topo_3d_1773394118915.zip"
+  },
+  "format_version": 1,
+  "import_summary": {
+    "2D": {
+      "archive": "topo_2d.zip",
+      "imported_files": 194,
+      "indexed_topologies": 194,
+      "skipped_files": 0
+    },
+    "3D": {
+      "archive": "topo_3d_1773394118915.zip",
+      "imported_files": 2404,
+      "indexed_topologies": 2403,
+      "skipped_files": 1
+    }
+  },
+  "notes": [
+    "Workspace-backed topology data is preferred by default when index.json is present.",
+    "2D and 3D archives have been imported into the workspace-backed topology repository.",
+    "Some CGD files may be extracted but not indexed if the parser cannot yet normalize their record format."
+  ],
+  "skipped_files": {
+    "2D": [],
+    "3D": [
+      {
+        "error": "ValueError: node record does not contain 3 coordinates: ('V1', '2', '0.00000')",
+        "member": "topo_3d/lcw_component_3.cgd"
+      }
+    ]
+  }
+}

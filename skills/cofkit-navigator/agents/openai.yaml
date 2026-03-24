@@ -1,0 +1,7 @@
+interface:
+  display_name: "COFkit Navigator"
+  short_description: "Translate natural language into cofkit workflows"
+  default_prompt: "Use $cofkit-navigator to turn my COF-generation request into the right cofkit command or Python workflow."
+
+policy:
+  allow_implicit_invocation: true

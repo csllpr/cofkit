@@ -1,0 +1,8 @@
+smiles
+O=Cc1ccc(C(c2ccc(C=O)cc2)(c2ccc(C=O)cc2)c2ccc(C=O)cc2)cc1
+O=Cc1ccc(C23CC4(c5ccc(C=O)cc5)CC(c5ccc(C=O)cc5)(C2)CC(c2ccc(C=O)cc2)(C3)C4)cc1
+O=Cc1ccc(-c2cc3c(s2)-c2sc(-c4ccc(C=O)cc4)cc2-c2cc(-c4ccc(C=O)cc4)sc2-c2sc(-c4ccc(C=O)cc4)cc2-3)cc1
+O=CC12CC3(C=O)CC(C=O)(C1)CC(C=O)(C2)C3
+O=Cc1ccc(-c2ccc(C(c3ccc(-c4ccc(C=O)cc4)cc3)(c3ccc(-c4ccc(C=O)cc4)cc3)c3ccc(-c4ccc(C=O)cc4)cc3)cc2)cc1
+C1=C(C=CC(=C1)C(C2=CC=C(C=C2)C=O)(C3=CC=C(C=C3)C=O)C4=CC=C(C=C4)C=O)C=O
+C1=C(C=CC(=C1)C23CC4(CC(C2)(CC(C3)(C4)C5=CC=C(C=C5)C=O)C6=CC=C(C=C6)C=O)C7=CC=C(C=C7)C=O)C=O

@@ -1,0 +1,7 @@
+smiles
+Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N
+Nc1cc2c(cc1N)C1c3cc(N)c(N)cc3C2c2cc(N)c(N)cc21
+Nc1ccc(-c2cc3c(cc2-c2ccc(N)cc2)C2c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4C3c3cc(-c4ccc(N)cc4)c(-c4ccc(N)cc4)cc32)cc1
+Nc1ccc(-c2cc3c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4c3cc2-c2ccc(N)cc2)cc1
+CC(C)c1cc(-c2cc3c(cc2-c2cc(C(C)C)c(N)c(C(C)C)c2)C2c4cc(-c5cc(C(C)C)c(N)c(C(C)C)c5)c(-c5cc(C(C)C)c(N)c(C(C)C)c5)cc4C3c3cc(-c4cc(C(C)C)c(N)c(C(C)C)c4)c(-c4cc(C(C)C)c(N)c(C(C)C)c4)cc32)cc(C(C)C)c1N
+C1=C(C(=CC2=C3C=C(C(=CC3=C4C=C(C(=CC4=C12)N)N)N)N)N)N

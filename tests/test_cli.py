@@ -1,0 +1,103 @@
+import contextlib
+import io
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from cofkit.batch_models import BatchPairSummary
+from cofkit.cli import main as cli_main
+
+try:
+    from rdkit import Chem  # noqa: F401
+except ImportError:  # pragma: no cover - environment-dependent
+    Chem = None
+
+
+class BatchSummaryCompatibilityTests(unittest.TestCase):
+    def test_legacy_aliases_resolve_from_role_metadata(self):
+        summary = BatchPairSummary(
+            structure_id="pair__hcb",
+            pair_id="pair",
+            pair_mode="3+2-node-linker",
+            status="ok",
+            reactant_a_record_id="tri_amine",
+            reactant_b_record_id="di_aldehyde",
+            reactant_a_connectivity=3,
+            reactant_b_connectivity=2,
+            metadata={
+                "reactant_roles": ("amine", "aldehyde"),
+                "reactant_record_ids": {"amine": "tri_amine", "aldehyde": "di_aldehyde"},
+                "reactant_connectivities": {"amine": 3, "aldehyde": 2},
+            },
+        )
+
+        self.assertEqual(summary.amine_record_id, "tri_amine")
+        self.assertEqual(summary.aldehyde_record_id, "di_aldehyde")
+        self.assertEqual(summary.amine_connectivity, 3)
+        self.assertEqual(summary.aldehyde_connectivity, 2)
+
+
+class CliTests(unittest.TestCase):
+    def test_list_templates_json_reports_execution_capabilities(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            cli_main(["list-templates", "--json"])
+        rows = json.loads(buffer.getvalue())
+
+        imine = next(row for row in rows if row["template_id"] == "imine_bridge")
+        boroxine = next(row for row in rows if row["template_id"] == "boroxine_trimerization")
+
+        self.assertTrue(imine["supports_pair_generation"])
+        self.assertTrue(imine["supports_atomistic_realization"])
+        self.assertEqual(imine["workflow_family"], "binary_bridge")
+        self.assertFalse(boroxine["supports_pair_generation"])
+        self.assertEqual(boroxine["workflow_family"], "ring_forming")
+
+    @unittest.skipIf(Chem is None, "RDKit is not available")
+    def test_single_pair_cli_writes_cif(self):
+        tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
+        tfb = "C1=C(C=C(C=C1C=O)C=O)C=O"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "single_pair"
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli_main(
+                    [
+                        "single-pair",
+                        "--template-id",
+                        "imine_bridge",
+                        "--first-smiles",
+                        tapb,
+                        "--second-smiles",
+                        tfb,
+                        "--first-id",
+                        "tapb",
+                        "--second-id",
+                        "tfb",
+                        "--first-motif-kind",
+                        "amine",
+                        "--second-motif-kind",
+                        "aldehyde",
+                        "--topology",
+                        "hcb",
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            summary_path = output_dir / "summary.json"
+            self.assertTrue(summary_path.exists())
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["template_id"], "imine_bridge")
+            self.assertEqual(summary["successful_structures"], 1)
+            cif_path = Path(summary["results"][0]["cif_path"])
+            self.assertTrue(cif_path.exists())
+            self.assertEqual(cif_path.suffix, ".cif")
+
+
+if __name__ == "__main__":
+    unittest.main()

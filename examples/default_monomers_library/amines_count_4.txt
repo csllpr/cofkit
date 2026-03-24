@@ -1,0 +1,8 @@
+smiles
+Nc1ccc(C(c2ccc(N)cc2)(c2ccc(N)cc2)c2ccc(N)cc2)cc1
+Nc1ccc(C23CC4(c5ccc(N)cc5)CC(c5ccc(N)cc5)(C2)CC(c2ccc(N)cc2)(C3)C4)cc1
+N=C(N)c1ccc(C(c2ccc(C(=N)N)cc2)(c2ccc(C(=N)N)cc2)c2ccc(C(=N)N)cc2)cc1
+N=C(N)c1ccc(C23CC4(c5ccc(C(=N)N)cc5)CC(c5ccc(C(=N)N)cc5)(C2)CC(c2ccc(C(=N)N)cc2)(C3)C4)cc1
+Nc1ccc(-c2ccc(C(c3ccc(-c4ccc(N)cc4)cc3)(c3ccc(-c4ccc(N)cc4)cc3)c3ccc(-c4ccc(N)cc4)cc3)cc2)cc1
+Nc1ccc(-c2ccc(C(c3ccc(-c4ccc(N)cc4F)cc3)(c3ccc(-c4ccc(N)cc4F)cc3)c3ccc(-c4ccc(N)cc4F)cc3)cc2)c(F)c1
+C1=C(C=CC(=C1)C(C2=CC=C(C=C2)C(=N)N)(C3=CC=C(C=C3)C(=N)N)C4=CC=C(C=C4)C(=N)N)C(=N)N

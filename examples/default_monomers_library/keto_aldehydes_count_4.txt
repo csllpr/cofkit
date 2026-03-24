@@ -1,0 +1,3 @@
+smiles
+O=Cc1cc(-c2ccc(C(c3ccc(-c4ccc(O)c(C=O)c4)cc3)(c3ccc(-c4ccc(O)c(C=O)c4)cc3)c3ccc(-c4ccc(O)c(C=O)c4)cc3)cc2)ccc1O
+O=Cc1cc(C(c2ccc(O)c(C=O)c2)(c2ccc(O)c(C=O)c2)c2ccc(O)c(C=O)c2)ccc1O

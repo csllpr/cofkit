@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cofkit"
+version = "0.1.0"
+description = "Reaction-aware periodic assembly toolkit for COFs"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Atlas" }
+]
+license = { text = "MIT" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = []
+
+[project.optional-dependencies]
+crystal = [
+  "gemmi>=0.7",
+]
+rdkit = [
+  "rdkit",
+]
+dev = [
+  "pytest>=8",
+]
+all = [
+  "gemmi>=0.7",
+  "rdkit",
+  "pytest>=8",
+]
+
+[project.scripts]
+cofkit = "cofkit.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cofkit"]
+
+[tool.hatch.build]
+include = [
+  "src/cofkit/data/topologies/**/*.cgd",
+  "src/cofkit/data/topologies/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

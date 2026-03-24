@@ -1,0 +1,9 @@
+smiles
+O=Cc1ccc(-c2cc3c(cc2-c2ccc(C=O)cc2)C2c4cc(-c5ccc(C=O)cc5)c(-c5ccc(C=O)cc5)cc4C3c3cc(-c4ccc(C=O)cc4)c(-c4ccc(C=O)cc4)cc32)cc1
+O=Cc1ccc(-c2cc3c4cc(-c5ccc(C=O)cc5)c(-c5ccc(C=O)cc5)cc4c4cc(-c5ccc(C=O)cc5)c(-c5ccc(C=O)cc5)cc4c3cc2-c2ccc(C=O)cc2)cc1
+O=Cc1ccc(-c2c(-c3ccc(C=O)cc3)c(-c3ccc(C=O)cc3)c(-c3ccc(C=O)cc3)c(-c3ccc(C=O)cc3)c2-c2ccc(C=O)cc2)cc1
+O=Cc1ccc(-c2cc3c(cc2-c2ccc(C=O)c(F)c2)C2c4cc(-c5ccc(C=O)c(F)c5)c(-c5ccc(C=O)c(F)c5)cc4C3c3cc(-c4ccc(C=O)c(F)c4)c(-c4ccc(C=O)c(F)c4)cc32)cc1F
+O=Cc1ccc(-c2ccc(-c3c(-c4ccc(-c5ccc(C=O)cc5)cc4)c(-c4ccc(-c5ccc(C=O)cc5)cc4)c(-c4ccc(-c5ccc(C=O)cc5)cc4)c(-c4ccc(-c5ccc(C=O)cc5)cc4)c3-c3ccc(-c4ccc(C=O)cc4)cc3)cc2)cc1
+O=Cc1ccc(OP2(Oc3ccc(C=O)cc3)=NP(Oc3ccc(C=O)cc3)(Oc3ccc(C=O)cc3)=NP(Oc3ccc(C=O)cc3)(Oc3ccc(C=O)cc3)=N2)cc1
+O=Cc1cccc(C=O)c1C#Cc1cc(C#Cc2c(C=O)cccc2C=O)cc(C#Cc2c(C=O)cccc2C=O)c1
+O=Cc1cc(C=O)cc(-c2ccc(-c3cc(-c4ccc(-c5cc(C=O)cc(C=O)c5)cc4)cc(-c4ccc(-c5cc(C=O)cc(C=O)c5)cc4)c3)cc2)c1
