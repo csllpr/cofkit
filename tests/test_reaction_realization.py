@@ -37,7 +37,7 @@ def _single_event_candidate(
 
 
 class ReactionRealizationTests(unittest.TestCase):
-    def test_imine_realization_removes_oxygen_and_one_amine_hydrogen(self):
+    def test_imine_realization_removes_oxygen_and_both_amine_hydrogens(self):
         amine = MonomerSpec(
             id="amine",
             name="minimal amine",
@@ -99,8 +99,8 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.metadata["applied_event_count"], 1)
-        self.assertEqual(result.metadata["removed_atom_symbols"], {"H": 1, "O": 1})
-        self.assertEqual([atom.symbol for atom in result.atoms_by_instance["m1"]], ["N", "C", "H"])
+        self.assertEqual(result.metadata["removed_atom_symbols"], {"H": 2, "O": 1})
+        self.assertEqual([atom.symbol for atom in result.atoms_by_instance["m1"]], ["N", "C"])
         self.assertEqual([atom.symbol for atom in result.atoms_by_instance["m2"]], ["C", "C", "H"])
         self.assertEqual(len(result.bonds), 1)
         self.assertEqual(result.bonds[0].label_1, "m2_C1")
@@ -472,6 +472,85 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertEqual(result.metadata["applied_event_count"], 1)
         self.assertEqual(result.metadata["notes"], ("custom handler used",))
         self.assertEqual(result.metadata["removed_atom_count"], 0)
+
+    def test_imine_realization_reorients_retained_aldehydic_hydrogen_and_removes_n_hydrogens(self):
+        amine = MonomerSpec(
+            id="amine",
+            name="bonded amine",
+            motifs=(
+                ReactiveMotif(
+                    id="ami1",
+                    kind="amine",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("imine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 1},
+                ),
+            ),
+            atom_symbols=("N", "C", "H", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.1, 1.0, 0.0), (0.1, -1.0, 0.0)),
+            bonds=((0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0)),
+        )
+        aldehyde = MonomerSpec(
+            id="aldehyde",
+            name="bonded aldehyde",
+            motifs=(
+                ReactiveMotif(
+                    id="ald1",
+                    kind="aldehyde",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("imine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 2},
+                ),
+            ),
+            atom_symbols=("C", "O", "C", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+            bonds=((0, 1, 2.0), (0, 2, 1.0), (0, 3, 1.0)),
+        )
+        candidate = Candidate(
+            id="imine-demo",
+            score=0.0,
+            state=AssemblyState(
+                cell=((20.0, 0.0, 0.0), (0.0, 20.0, 0.0), (0.0, 0.0, 10.0)),
+                monomer_poses={
+                    "m1": Pose(translation=(0.0, 0.0, 0.0)),
+                    "m2": Pose(translation=(1.3, 0.0, 0.0)),
+                },
+                stacking_state="disabled",
+            ),
+            events=(
+                ReactionEvent(
+                    id="rxn1",
+                    template_id="imine_bridge",
+                    participants=(
+                        MotifRef(monomer_instance_id="m1", monomer_id="amine", motif_id="ami1"),
+                        MotifRef(monomer_instance_id="m2", monomer_id="aldehyde", motif_id="ald1"),
+                    ),
+                ),
+            ),
+            metadata={"instance_to_monomer": {"m1": "amine", "m2": "aldehyde"}},
+        )
+
+        result = ReactionRealizer().realize(
+            candidate,
+            {"amine": amine, "aldehyde": aldehyde},
+            {"m1": "amine", "m2": "aldehyde"},
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.metadata["hydrogen_cleanup"]["n_overrides"], 1)
+
+        amine_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance["m1"]}
+        aldehyde_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance["m2"]}
+
+        self.assertNotIn(2, amine_atoms)
+        self.assertNotIn(3, amine_atoms)
+
+        self.assertIn(3, aldehyde_atoms)
+        self.assertAlmostEqual(aldehyde_atoms[3].local_position[0], 0.0, places=6)
+        self.assertGreater(aldehyde_atoms[3].local_position[1], 0.7)
 
 
 if __name__ == "__main__":

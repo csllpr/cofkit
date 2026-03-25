@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from math import cos, pi, sin
 from typing import Callable, Mapping
 
-from .geometry import Vec3, add, matmul_vec, scale
+from .geometry import Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub, transpose
 from .model import Candidate, MonomerSpec, MotifRef, Pose, ReactionEvent
 from .reactions import linkage_event_realizer
 
@@ -110,6 +111,14 @@ class ReactionRealizer:
             bonds.extend(realization.bonds)
             notes.extend(realization.notes)
 
+        hydrogen_cleanup_metadata = self._cleanup_reaction_hydrogens(
+            candidate,
+            monomer_specs,
+            instance_to_monomer,
+            removed_atom_ids,
+            atom_position_overrides,
+        )
+
         atoms_by_instance: dict[str, tuple[RealizedAtom, ...]] = {}
         removed_symbol_counts: Counter[str] = Counter()
         for instance_id, monomer_id in instance_to_monomer.items():
@@ -143,6 +152,8 @@ class ReactionRealizer:
             "removed_atom_symbols": dict(removed_symbol_counts),
             "notes": tuple(dict.fromkeys(notes)),
         }
+        if hydrogen_cleanup_metadata:
+            metadata["hydrogen_cleanup"] = hydrogen_cleanup_metadata
         return ReactionRealizationResult(
             atoms_by_instance=atoms_by_instance,
             removed_atom_ids_by_instance={
@@ -184,12 +195,19 @@ class ReactionRealizer:
             "O",
             context=f"{event.id} aldehyde oxygen",
         )
-        hydrogen_atom_id = self._select_amine_hydrogen(
+        hydrogen_atom_ids = self._select_hydrogens(
             candidate,
             amine_ref,
-            aldehyde_ref,
-            monomer_specs,
-            nitrogen_atom_id,
+            monomer_specs[amine_ref.monomer_id],
+            self._hydrogen_atom_ids_for_atom(monomer_specs[amine_ref.monomer_id], amine_motif, nitrogen_atom_id),
+            target=self._world_atom_position(
+                candidate,
+                aldehyde_ref,
+                monomer_specs[aldehyde_ref.monomer_id],
+                carbon_atom_id,
+            ),
+            count=2,
+            context="imine formation",
         )
 
         amine_spec = monomer_specs[amine_ref.monomer_id]
@@ -199,7 +217,7 @@ class ReactionRealizer:
 
         return EventRealization(
             removed_atom_ids={
-                amine_ref.monomer_instance_id: (hydrogen_atom_id,),
+                amine_ref.monomer_instance_id: tuple(sorted(hydrogen_atom_ids)),
                 aldehyde_ref.monomer_instance_id: (oxygen_atom_id,),
             },
             bonds=(
@@ -212,7 +230,7 @@ class ReactionRealizer:
                 ),
             ),
             notes=(
-                "Imine realization removes the aldehyde oxygen and one amine hydrogen per reacting pair.",
+                "Imine realization removes the aldehyde oxygen and both amine hydrogens per reacting pair.",
                 "The exported product keeps monomer-internal coordinates rigid; only atom deletion and inter-monomer C=N connectivity are realized.",
             ),
         )
@@ -574,28 +592,6 @@ class ReactionRealizer:
             for left, right, _order in monomer.bonds
         )
 
-    def _select_amine_hydrogen(
-        self,
-        candidate: Candidate,
-        amine_ref: MotifRef,
-        aldehyde_ref: MotifRef,
-        monomer_specs: Mapping[str, MonomerSpec],
-        nitrogen_atom_id: int,
-    ) -> int:
-        amine_spec = monomer_specs[amine_ref.monomer_id]
-        motif = amine_spec.motif_by_id(amine_ref.motif_id)
-        aldehyde_carbon_id = self._reactive_atom_id(monomer_specs[aldehyde_ref.monomer_id].motif_by_id(aldehyde_ref.motif_id))
-        target = self._world_atom_position(candidate, aldehyde_ref, monomer_specs[aldehyde_ref.monomer_id], aldehyde_carbon_id)
-        return self._select_hydrogens(
-            candidate,
-            amine_ref,
-            amine_spec,
-            self._hydrogen_atom_ids_for_atom(amine_spec, motif, nitrogen_atom_id),
-            target=target,
-            count=1,
-            context="imine formation",
-        )[0]
-
     def _select_hydrogens(
         self,
         candidate: Candidate,
@@ -713,6 +709,570 @@ class ReactionRealizer:
         if image == (0, 0, 0):
             return "."
         return f"1_{image[0] + 5}{image[1] + 5}{image[2] + 5}"
+
+    def _cleanup_reaction_hydrogens(
+        self,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+        instance_to_monomer: Mapping[str, str],
+        removed_atom_ids: Mapping[str, set[int]],
+        atom_position_overrides: dict[str, dict[int, Vec3]],
+    ) -> Mapping[str, object]:
+        product_connections = self._product_connection_map(candidate, monomer_specs)
+        heavy_atoms = self._heavy_atom_world_positions(
+            candidate,
+            monomer_specs,
+            instance_to_monomer,
+            removed_atom_ids,
+            atom_position_overrides,
+        )
+        moved_atom_labels: list[str] = []
+        visited_parents: set[tuple[str, int]] = set()
+        visited_hydrogen_atoms: set[tuple[str, int]] = set()
+
+        for event in candidate.events:
+            for ref in event.participants:
+                monomer = monomer_specs[ref.monomer_id]
+                if not (monomer.atom_symbols and monomer.atom_positions):
+                    continue
+                motif = monomer.motif_by_id(ref.motif_id)
+                removed = removed_atom_ids.get(ref.monomer_instance_id, set())
+                for parent_atom_id in self._hydrogen_cleanup_scope_atom_ids(monomer, motif, removed):
+                    parent_key = (ref.monomer_instance_id, parent_atom_id)
+                    if parent_key in visited_parents:
+                        continue
+                    visited_parents.add(parent_key)
+                    hydrogen_atom_ids = self._attached_hydrogen_ids_for_parent(
+                        monomer,
+                        motif,
+                        parent_atom_id,
+                        removed,
+                    )
+                    if len(hydrogen_atom_ids) != 1:
+                        continue
+                    hydrogen_atom_id = hydrogen_atom_ids[0]
+                    hydrogen_key = (ref.monomer_instance_id, hydrogen_atom_id)
+                    if hydrogen_key in visited_hydrogen_atoms:
+                        continue
+                    new_local_position = self._cleaned_single_hydrogen_local_position(
+                        candidate,
+                        ref.monomer_instance_id,
+                        monomer,
+                        motif,
+                        parent_atom_id,
+                        hydrogen_atom_id,
+                        removed,
+                        atom_position_overrides.get(ref.monomer_instance_id, {}),
+                        product_connections,
+                        heavy_atoms,
+                    )
+                    if new_local_position is None:
+                        continue
+                    current_local_position = atom_position_overrides.get(ref.monomer_instance_id, {}).get(
+                        hydrogen_atom_id,
+                        monomer.atom_positions[hydrogen_atom_id],
+                    )
+                    if self._distance(new_local_position, current_local_position) <= 1e-4:
+                        continue
+                    atom_position_overrides[ref.monomer_instance_id][hydrogen_atom_id] = new_local_position
+                    visited_hydrogen_atoms.add(hydrogen_key)
+                    moved_atom_labels.append(
+                        self.atom_label(
+                            ref.monomer_instance_id,
+                            monomer.atom_symbols[hydrogen_atom_id],
+                            hydrogen_atom_id,
+                        )
+                    )
+
+        if not moved_atom_labels:
+            return {}
+        return {
+            "n_overrides": len(moved_atom_labels),
+            "atom_labels": tuple(moved_atom_labels),
+        }
+
+    def _product_connection_map(
+        self,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+    ) -> Mapping[tuple[str, int], tuple[tuple[str, int, Vec3], ...]]:
+        connections: dict[tuple[str, int], list[tuple[str, int, Vec3]]] = defaultdict(list)
+        for event in candidate.events:
+            for first_ref, first_atom_id, second_ref, second_atom_id in self._event_connection_pairs(event, monomer_specs):
+                first_monomer = monomer_specs[first_ref.monomer_id]
+                second_monomer = monomer_specs[second_ref.monomer_id]
+                first_world = self._world_atom_position(candidate, first_ref, first_monomer, first_atom_id)
+                second_world = self._world_atom_position(candidate, second_ref, second_monomer, second_atom_id)
+                first_pose = candidate.state.monomer_poses[first_ref.monomer_instance_id]
+                second_pose = candidate.state.monomer_poses[second_ref.monomer_instance_id]
+                first_local_vector = matmul_vec(
+                    transpose(first_pose.rotation_matrix),
+                    sub(second_world, first_world),
+                )
+                second_local_vector = matmul_vec(
+                    transpose(second_pose.rotation_matrix),
+                    sub(first_world, second_world),
+                )
+                connections[(first_ref.monomer_instance_id, first_atom_id)].append(
+                    (second_ref.monomer_instance_id, second_atom_id, first_local_vector)
+                )
+                connections[(second_ref.monomer_instance_id, second_atom_id)].append(
+                    (first_ref.monomer_instance_id, first_atom_id, second_local_vector)
+                )
+        return {key: tuple(values) for key, values in connections.items()}
+
+    def _event_connection_pairs(
+        self,
+        event: ReactionEvent,
+        monomer_specs: Mapping[str, MonomerSpec],
+    ) -> tuple[tuple[MotifRef, int, MotifRef, int], ...]:
+        realizer_id = linkage_event_realizer(event.template_id)
+        if realizer_id in {"imine_bridge", "hydrazone_bridge", "keto_enamine_bridge", "vinylene_bridge"}:
+            if realizer_id == "imine_bridge":
+                first_kind, second_kind = "amine", "aldehyde"
+            elif realizer_id == "hydrazone_bridge":
+                first_kind, second_kind = "hydrazide", "aldehyde"
+            elif realizer_id == "keto_enamine_bridge":
+                first_kind, second_kind = "amine", "keto_aldehyde"
+            else:
+                first_kind, second_kind = "activated_methylene", "aldehyde"
+            first_ref, second_ref = self._split_bridge_participants(event, monomer_specs, first_kind, second_kind)
+            first_motif = monomer_specs[first_ref.monomer_id].motif_by_id(first_ref.motif_id)
+            second_motif = monomer_specs[second_ref.monomer_id].motif_by_id(second_ref.motif_id)
+            return (
+                (
+                    first_ref,
+                    self._reactive_atom_id(first_motif),
+                    second_ref,
+                    self._reactive_atom_id(second_motif),
+                ),
+            )
+        if realizer_id == "boronate_ester_bridge":
+            boronic_ref, catechol_ref = self._split_bridge_participants(
+                event,
+                monomer_specs,
+                "boronic_acid",
+                "catechol",
+            )
+            boronic_spec = monomer_specs[boronic_ref.monomer_id]
+            catechol_spec = monomer_specs[catechol_ref.monomer_id]
+            boronic_motif = boronic_spec.motif_by_id(boronic_ref.motif_id)
+            catechol_motif = catechol_spec.motif_by_id(catechol_ref.motif_id)
+            boron_atom_id = self._reactive_atom_id(boronic_motif)
+            catechol_oxygen_atom_ids = self._motif_atom_ids_from_metadata(
+                catechol_motif,
+                "reactive_atom_ids",
+                fallback_symbol="O",
+                monomer=catechol_spec,
+            )
+            return tuple(
+                (boronic_ref, boron_atom_id, catechol_ref, oxygen_atom_id)
+                for oxygen_atom_id in catechol_oxygen_atom_ids
+            )
+        return ()
+
+    def _heavy_atom_world_positions(
+        self,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+        instance_to_monomer: Mapping[str, str],
+        removed_atom_ids: Mapping[str, set[int]],
+        atom_position_overrides: Mapping[str, Mapping[int, Vec3]],
+    ) -> tuple[tuple[str, int, Vec3], ...]:
+        heavy_atoms: list[tuple[str, int, Vec3]] = []
+        for instance_id, monomer_id in instance_to_monomer.items():
+            monomer = monomer_specs[monomer_id]
+            if not (monomer.atom_symbols and monomer.atom_positions):
+                continue
+            pose = candidate.state.monomer_poses[instance_id]
+            removed = removed_atom_ids.get(instance_id, set())
+            overrides = atom_position_overrides.get(instance_id, {})
+            for atom_id, symbol in enumerate(monomer.atom_symbols):
+                if symbol == "H" or atom_id in removed:
+                    continue
+                local_position = overrides.get(atom_id, monomer.atom_positions[atom_id])
+                heavy_atoms.append((instance_id, atom_id, self._world_position(pose, local_position)))
+        return tuple(heavy_atoms)
+
+    def _hydrogen_cleanup_scope_atom_ids(
+        self,
+        monomer: MonomerSpec,
+        motif,
+        removed_atom_ids: set[int],
+    ) -> tuple[int, ...]:
+        seed_atom_ids = {
+            atom_id
+            for atom_id in motif.atom_ids
+            if atom_id not in removed_atom_ids and monomer.atom_symbols[atom_id] != "H"
+        }
+        scope = set(seed_atom_ids)
+        if monomer.bonds:
+            for atom_id in tuple(seed_atom_ids):
+                scope.update(self._bonded_heavy_neighbor_atom_ids(monomer, atom_id, removed_atom_ids))
+        else:
+            fallback_ids = []
+            reactive_atom_id = motif.metadata.get("reactive_atom_id")
+            if isinstance(reactive_atom_id, int):
+                fallback_ids.append(reactive_atom_id)
+            anchor_atom_id = motif.metadata.get("anchor_atom_id")
+            if isinstance(anchor_atom_id, int):
+                fallback_ids.append(anchor_atom_id)
+            anchor_atom_ids = motif.metadata.get("anchor_atom_ids")
+            if isinstance(anchor_atom_ids, tuple):
+                fallback_ids.extend(
+                    atom_id for atom_id in anchor_atom_ids if isinstance(atom_id, int)
+                )
+            scope.update(
+                atom_id
+                for atom_id in fallback_ids
+                if atom_id not in removed_atom_ids and monomer.atom_symbols[atom_id] != "H"
+            )
+        return tuple(sorted(scope))
+
+    def _attached_hydrogen_ids_for_parent(
+        self,
+        monomer: MonomerSpec,
+        motif,
+        parent_atom_id: int,
+        removed_atom_ids: set[int],
+    ) -> tuple[int, ...]:
+        attached = tuple(
+            atom_id
+            for atom_id in self._directly_bonded_hydrogen_atom_ids(monomer, parent_atom_id)
+            if atom_id not in removed_atom_ids
+        )
+        if attached:
+            return attached
+        fallback_parent_atom_ids = self._fallback_hydrogen_parent_atom_ids(motif)
+        if parent_atom_id not in fallback_parent_atom_ids:
+            return ()
+        return tuple(
+            atom_id
+            for atom_id in self._hydrogen_atom_ids_for_atom(monomer, motif, parent_atom_id)
+            if atom_id not in removed_atom_ids
+        )
+
+    def _cleaned_single_hydrogen_local_position(
+        self,
+        candidate: Candidate,
+        instance_id: str,
+        monomer: MonomerSpec,
+        motif,
+        parent_atom_id: int,
+        hydrogen_atom_id: int,
+        removed_atom_ids: set[int],
+        atom_position_overrides: Mapping[int, Vec3],
+        product_connections: Mapping[tuple[str, int], tuple[tuple[str, int, Vec3], ...]],
+        heavy_atoms: tuple[tuple[str, int, Vec3], ...],
+    ) -> Vec3 | None:
+        pose = candidate.state.monomer_poses[instance_id]
+        parent_local = atom_position_overrides.get(parent_atom_id, monomer.atom_positions[parent_atom_id])
+        hydrogen_local = atom_position_overrides.get(hydrogen_atom_id, monomer.atom_positions[hydrogen_atom_id])
+        bond_length = self._distance(parent_local, hydrogen_local)
+        if bond_length < 1e-6:
+            bond_length = self._default_hydrogen_bond_length(monomer.atom_symbols[parent_atom_id])
+        current_direction = self._normalize_or_none(sub(hydrogen_local, parent_local))
+        if current_direction is None:
+            return None
+
+        internal_neighbor_atom_ids = self._internal_heavy_neighbor_atom_ids(
+            monomer,
+            motif,
+            parent_atom_id,
+            removed_atom_ids,
+        )
+        internal_neighbor_vectors = [
+            sub(atom_position_overrides.get(atom_id, monomer.atom_positions[atom_id]), parent_local)
+            for atom_id in internal_neighbor_atom_ids
+        ]
+        external_connections = product_connections.get((instance_id, parent_atom_id), ())
+        external_neighbor_vectors = [vector for _other_instance, _other_atom_id, vector in external_connections]
+        heavy_neighbor_directions = tuple(
+            direction
+            for direction in (
+                self._normalize_or_none(vector)
+                for vector in (*internal_neighbor_vectors, *external_neighbor_vectors)
+            )
+            if direction is not None
+        )
+
+        parent_world = self._world_position(pose, parent_local)
+        bonded_atom_keys = {(instance_id, atom_id) for atom_id in internal_neighbor_atom_ids}
+        bonded_atom_keys.update(
+            (other_instance_id, other_atom_id) for other_instance_id, other_atom_id, _vector in external_connections
+        )
+        blockers = tuple(
+            world_position
+            for other_instance_id, other_atom_id, world_position in heavy_atoms
+            if (other_instance_id, other_atom_id) != (instance_id, parent_atom_id)
+            and (other_instance_id, other_atom_id) not in bonded_atom_keys
+            and self._distance(parent_world, world_position) <= 4.0
+        )
+        current_world = add(parent_world, matmul_vec(pose.rotation_matrix, scale(current_direction, bond_length)))
+        current_clearance = self._minimum_distance(current_world, blockers)
+        if not external_connections and (current_clearance is None or current_clearance >= 1.9):
+            return None
+
+        repulsion_vector = self._repulsion_direction(parent_world, blockers)
+        repulsion_local = None
+        if repulsion_vector is not None:
+            repulsion_local = self._normalize_or_none(matmul_vec(transpose(pose.rotation_matrix), repulsion_vector))
+
+        candidate_directions, preferred_direction = self._single_hydrogen_candidate_directions(
+            current_direction=current_direction,
+            heavy_neighbor_directions=heavy_neighbor_directions,
+            motif=motif,
+            repulsion_local=repulsion_local,
+        )
+        if not candidate_directions:
+            return None
+
+        preferred = preferred_direction or current_direction
+        best_direction = current_direction
+        best_score = self._score_hydrogen_direction(
+            candidate_direction=current_direction,
+            preferred_direction=preferred,
+            parent_world=parent_world,
+            pose=pose,
+            bond_length=bond_length,
+            blockers=blockers,
+        )
+        for candidate_direction in candidate_directions:
+            candidate_score = self._score_hydrogen_direction(
+                candidate_direction=candidate_direction,
+                preferred_direction=preferred,
+                parent_world=parent_world,
+                pose=pose,
+                bond_length=bond_length,
+                blockers=blockers,
+            )
+            if candidate_score > best_score:
+                best_direction = candidate_direction
+                best_score = candidate_score
+
+        if best_direction == current_direction:
+            return None
+        return add(parent_local, scale(best_direction, bond_length))
+
+    def _internal_heavy_neighbor_atom_ids(
+        self,
+        monomer: MonomerSpec,
+        motif,
+        parent_atom_id: int,
+        removed_atom_ids: set[int],
+    ) -> tuple[int, ...]:
+        bonded_neighbors = self._bonded_heavy_neighbor_atom_ids(monomer, parent_atom_id, removed_atom_ids)
+        if bonded_neighbors:
+            return bonded_neighbors
+        fallback_ids: list[int] = []
+        reactive_atom_id = motif.metadata.get("reactive_atom_id")
+        if isinstance(reactive_atom_id, int) and reactive_atom_id == parent_atom_id:
+            anchor_atom_id = motif.metadata.get("anchor_atom_id")
+            if isinstance(anchor_atom_id, int):
+                fallback_ids.append(anchor_atom_id)
+            anchor_atom_ids = motif.metadata.get("anchor_atom_ids")
+            if isinstance(anchor_atom_ids, tuple):
+                fallback_ids.extend(atom_id for atom_id in anchor_atom_ids if isinstance(atom_id, int))
+        return tuple(
+            sorted(
+                atom_id
+                for atom_id in set(fallback_ids)
+                if atom_id != parent_atom_id
+                and atom_id not in removed_atom_ids
+                and monomer.atom_symbols[atom_id] != "H"
+            )
+        )
+
+    def _bonded_heavy_neighbor_atom_ids(
+        self,
+        monomer: MonomerSpec,
+        atom_id: int,
+        removed_atom_ids: set[int],
+    ) -> tuple[int, ...]:
+        neighbors: set[int] = set()
+        for first_atom_id, second_atom_id, _order in monomer.bonds:
+            if first_atom_id == atom_id and second_atom_id not in removed_atom_ids and monomer.atom_symbols[second_atom_id] != "H":
+                neighbors.add(second_atom_id)
+            elif second_atom_id == atom_id and first_atom_id not in removed_atom_ids and monomer.atom_symbols[first_atom_id] != "H":
+                neighbors.add(first_atom_id)
+        return tuple(sorted(neighbors))
+
+    def _directly_bonded_hydrogen_atom_ids(self, monomer: MonomerSpec, atom_id: int) -> tuple[int, ...]:
+        neighbors: set[int] = set()
+        for first_atom_id, second_atom_id, _order in monomer.bonds:
+            if first_atom_id == atom_id and monomer.atom_symbols[second_atom_id] == "H":
+                neighbors.add(second_atom_id)
+            elif second_atom_id == atom_id and monomer.atom_symbols[first_atom_id] == "H":
+                neighbors.add(first_atom_id)
+        return tuple(sorted(neighbors))
+
+    def _single_hydrogen_candidate_directions(
+        self,
+        *,
+        current_direction: Vec3,
+        heavy_neighbor_directions: tuple[Vec3, ...],
+        motif,
+        repulsion_local: Vec3 | None,
+    ) -> tuple[tuple[Vec3, ...], Vec3 | None]:
+        candidates: list[Vec3] = []
+        preferred_direction: Vec3 | None = None
+
+        def _add(direction: Vec3 | None) -> None:
+            if direction is None:
+                return
+            normalized = self._normalize_or_none(direction)
+            if normalized is None:
+                return
+            if any(self._distance(normalized, existing) <= 1e-4 for existing in candidates):
+                return
+            candidates.append(normalized)
+
+        _add(current_direction)
+
+        if len(heavy_neighbor_directions) == 1:
+            axis = heavy_neighbor_directions[0]
+            preferred_direction = scale(axis, -1.0)
+            _add(preferred_direction)
+            torsion_seed = None
+            if repulsion_local is not None:
+                torsion_seed = self._orthogonal_component(repulsion_local, axis)
+            if torsion_seed is None or norm(torsion_seed) < 1e-8:
+                torsion_seed = self._orthogonal_component(current_direction, axis)
+            if torsion_seed is None or norm(torsion_seed) < 1e-8:
+                torsion_seed = self._orthogonal_component(motif.frame.normal, axis)
+            if torsion_seed is None or norm(torsion_seed) < 1e-8:
+                torsion_seed = self._any_orthogonal_unit(axis)
+            if torsion_seed is not None and norm(torsion_seed) >= 1e-8:
+                axis_unit = normalize(axis)
+                basis_u = normalize(torsion_seed)
+                basis_v = normalize(cross(axis_unit, basis_u))
+                parallel_component = dot(current_direction, axis_unit)
+                radial_component = max(0.0, 1.0 - parallel_component * parallel_component) ** 0.5
+                if radial_component > 1e-6:
+                    for step in range(12):
+                        angle = 2.0 * pi * step / 12.0
+                        _add(
+                            add(
+                                scale(axis_unit, parallel_component),
+                                add(
+                                    scale(basis_u, radial_component * cos(angle)),
+                                    scale(basis_v, radial_component * sin(angle)),
+                                ),
+                            )
+                        )
+        elif heavy_neighbor_directions:
+            composite = (
+                sum(direction[0] for direction in heavy_neighbor_directions),
+                sum(direction[1] for direction in heavy_neighbor_directions),
+                sum(direction[2] for direction in heavy_neighbor_directions),
+            )
+            if norm(composite) >= 1e-8:
+                preferred_direction = scale(normalize(composite), -1.0)
+                _add(preferred_direction)
+                if repulsion_local is not None:
+                    for weight in (0.35, 0.7, 1.05):
+                        blended = add(preferred_direction, scale(repulsion_local, weight))
+                        blended_direction = self._normalize_or_none(blended)
+                        if blended_direction is None:
+                            continue
+                        if dot(blended_direction, preferred_direction) >= 0.55:
+                            _add(blended_direction)
+            else:
+                axis = heavy_neighbor_directions[0]
+                preferred_direction = None
+                in_plane_seed = None
+                if repulsion_local is not None:
+                    in_plane_seed = self._orthogonal_component(repulsion_local, axis)
+                if in_plane_seed is None or norm(in_plane_seed) < 1e-8:
+                    in_plane_seed = self._orthogonal_component(current_direction, axis)
+                if in_plane_seed is None or norm(in_plane_seed) < 1e-8:
+                    in_plane_seed = cross(motif.frame.normal, axis)
+                if in_plane_seed is None or norm(in_plane_seed) < 1e-8:
+                    in_plane_seed = self._any_orthogonal_unit(axis)
+                if in_plane_seed is not None:
+                    perpendicular = self._normalize_or_none(in_plane_seed)
+                    _add(perpendicular)
+                    if perpendicular is not None:
+                        _add(scale(perpendicular, -1.0))
+        elif repulsion_local is not None:
+            preferred_direction = repulsion_local
+            _add(repulsion_local)
+
+        return tuple(candidates), preferred_direction
+
+    def _score_hydrogen_direction(
+        self,
+        *,
+        candidate_direction: Vec3,
+        preferred_direction: Vec3,
+        parent_world: Vec3,
+        pose: Pose,
+        bond_length: float,
+        blockers: tuple[Vec3, ...],
+    ) -> tuple[float, float]:
+        candidate_world = add(parent_world, matmul_vec(pose.rotation_matrix, scale(candidate_direction, bond_length)))
+        clearance = self._minimum_distance(candidate_world, blockers)
+        return (
+            clearance if clearance is not None else float("inf"),
+            dot(candidate_direction, preferred_direction),
+        )
+
+    def _minimum_distance(self, point: Vec3, others: tuple[Vec3, ...]) -> float | None:
+        if not others:
+            return None
+        return min(self._distance(point, other) for other in others)
+
+    def _repulsion_direction(self, origin: Vec3, blockers: tuple[Vec3, ...]) -> Vec3 | None:
+        if not blockers:
+            return None
+        repulsion = (0.0, 0.0, 0.0)
+        for blocker in blockers:
+            vector = sub(origin, blocker)
+            distance = norm(vector)
+            if distance < 1e-8:
+                continue
+            repulsion = add(repulsion, scale(vector, 1.0 / max(distance * distance, 1e-6)))
+        return self._normalize_or_none(repulsion)
+
+    def _orthogonal_component(self, vector: Vec3, axis: Vec3) -> Vec3:
+        axis_unit = self._normalize_or_none(axis)
+        if axis_unit is None:
+            return vector
+        return sub(vector, scale(axis_unit, dot(vector, axis_unit)))
+
+    def _any_orthogonal_unit(self, axis: Vec3) -> Vec3 | None:
+        axis_unit = self._normalize_or_none(axis)
+        if axis_unit is None:
+            return None
+        seed = (0.0, 0.0, 1.0) if abs(axis_unit[2]) < 0.9 else (1.0, 0.0, 0.0)
+        orthogonal = self._orthogonal_component(seed, axis_unit)
+        return self._normalize_or_none(orthogonal)
+
+    def _normalize_or_none(self, vector: Vec3) -> Vec3 | None:
+        if norm(vector) < 1e-8:
+            return None
+        return normalize(vector)
+
+    def _default_hydrogen_bond_length(self, parent_symbol: str) -> float:
+        return {
+            "B": 1.19,
+            "C": 1.09,
+            "N": 1.01,
+            "O": 0.98,
+            "S": 1.34,
+        }.get(parent_symbol, 1.0)
+
+    def _fallback_hydrogen_parent_atom_ids(self, motif) -> set[int]:
+        parent_atom_ids: set[int] = set()
+        for key in ("reactive_atom_id", "ortho_hydroxyl_oxygen_atom_id"):
+            atom_id = motif.metadata.get(key)
+            if isinstance(atom_id, int):
+                parent_atom_ids.add(atom_id)
+        for key in ("reactive_atom_ids", "oxygen_atom_ids"):
+            atom_ids = motif.metadata.get(key)
+            if isinstance(atom_ids, tuple):
+                parent_atom_ids.update(atom_id for atom_id in atom_ids if isinstance(atom_id, int))
+        return parent_atom_ids
 
     @staticmethod
     def atom_label(instance_id: str, symbol: str, atom_id: int) -> str:

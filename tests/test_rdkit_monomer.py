@@ -193,8 +193,8 @@ class RDKitMonomerTests(unittest.TestCase):
         realization = result.metadata["reaction_realization"]
         self.assertEqual(realization["applied_event_count"], 3)
         self.assertEqual(realization["applied_templates"], {"imine_bridge": 3})
-        self.assertEqual(realization["removed_atom_symbols"], {"H": 3, "O": 3})
-        self.assertEqual(result.n_sites, len(tapb.atom_symbols) + len(tfb.atom_symbols) - 6)
+        self.assertEqual(realization["removed_atom_symbols"], {"H": 6, "O": 3})
+        self.assertEqual(result.n_sites, len(tapb.atom_symbols) + len(tfb.atom_symbols) - 9)
         self.assertGreater(len(tapb.bonds), 0)
         self.assertGreater(len(tfb.bonds), 0)
 
@@ -225,6 +225,7 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertAlmostEqual(float(matching_bonds[0].split()[-1]), 1.3, places=2)
         self.assertGreater(len(bond_lines), len(candidate.events))
         self.assertTrue(any(line.startswith("m1_C1 m1_C2 ") for line in bond_lines))
+        self.assertFalse(any(line.startswith("m1_N19 m1_H") or line.startswith("m1_N26 m1_H") or line.startswith("m1_N27 m1_H") for line in bond_lines))
 
 
 if __name__ == "__main__":
