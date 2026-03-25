@@ -987,11 +987,16 @@ class ReactionRealizer:
         ]
         external_connections = product_connections.get((instance_id, parent_atom_id), ())
         external_neighbor_vectors = [vector for _other_instance, _other_atom_id, vector in external_connections]
+        bonded_neighbor_vectors = tuple(
+            vector
+            for vector in (*internal_neighbor_vectors, *external_neighbor_vectors)
+            if norm(vector) >= 1e-8
+        )
         heavy_neighbor_directions = tuple(
             direction
             for direction in (
                 self._normalize_or_none(vector)
-                for vector in (*internal_neighbor_vectors, *external_neighbor_vectors)
+                for vector in bonded_neighbor_vectors
             )
             if direction is not None
         )
@@ -1035,6 +1040,7 @@ class ReactionRealizer:
             parent_world=parent_world,
             pose=pose,
             bond_length=bond_length,
+            bonded_neighbor_vectors=bonded_neighbor_vectors,
             blockers=blockers,
         )
         for candidate_direction in candidate_directions:
@@ -1044,6 +1050,7 @@ class ReactionRealizer:
                 parent_world=parent_world,
                 pose=pose,
                 bond_length=bond_length,
+                bonded_neighbor_vectors=bonded_neighbor_vectors,
                 blockers=blockers,
             )
             if candidate_score > best_score:
@@ -1208,11 +1215,15 @@ class ReactionRealizer:
         parent_world: Vec3,
         pose: Pose,
         bond_length: float,
+        bonded_neighbor_vectors: tuple[Vec3, ...],
         blockers: tuple[Vec3, ...],
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, float]:
+        candidate_local = scale(candidate_direction, bond_length)
+        bonded_clearance = self._minimum_distance(candidate_local, bonded_neighbor_vectors)
         candidate_world = add(parent_world, matmul_vec(pose.rotation_matrix, scale(candidate_direction, bond_length)))
         clearance = self._minimum_distance(candidate_world, blockers)
         return (
+            bonded_clearance if bonded_clearance is not None else float("inf"),
             clearance if clearance is not None else float("inf"),
             dot(candidate_direction, preferred_direction),
         )

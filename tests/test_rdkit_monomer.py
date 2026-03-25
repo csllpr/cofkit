@@ -227,6 +227,46 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("m1_C1 m1_C2 ") for line in bond_lines))
         self.assertFalse(any(line.startswith("m1_N19 m1_H") or line.startswith("m1_N26 m1_H") or line.startswith("m1_N27 m1_H") for line in bond_lines))
 
+        realizer = ReactionRealizer()
+        detailed_realization = realizer.realize(
+            candidate,
+            {"tapb": tapb, "tfb": tfb},
+            candidate.metadata["instance_to_monomer"],
+        )
+        self.assertIsNotNone(detailed_realization)
+        assert detailed_realization is not None
+        self.assertEqual(detailed_realization.metadata["hydrogen_cleanup"]["n_overrides"], 3)
+
+        removed_m2_atoms = set(detailed_realization.removed_atom_ids_by_instance["m2"])
+        realized_local_positions = {
+            (instance_id, atom.atom_id): atom.local_position
+            for instance_id, atoms in detailed_realization.atoms_by_instance.items()
+            for atom in atoms
+        }
+        product_connections = realizer._product_connection_map(candidate, {"tapb": tapb, "tfb": tfb})
+        for motif in tfb.motifs:
+            reactive_atom_id = motif.metadata["reactive_atom_id"]
+            retained_hydrogen_atom_ids = realizer._attached_hydrogen_ids_for_parent(
+                tfb,
+                motif,
+                reactive_atom_id,
+                removed_m2_atoms,
+            )
+            self.assertEqual(len(retained_hydrogen_atom_ids), 1)
+            retained_hydrogen_atom_id = retained_hydrogen_atom_ids[0]
+
+            parent_local = realized_local_positions[("m2", reactive_atom_id)]
+            hydrogen_local = realized_local_positions[("m2", retained_hydrogen_atom_id)]
+            hydrogen_vector = (
+                hydrogen_local[0] - parent_local[0],
+                hydrogen_local[1] - parent_local[1],
+                hydrogen_local[2] - parent_local[2],
+            )
+            external_connections = product_connections[("m2", reactive_atom_id)]
+            self.assertEqual(len(external_connections), 1)
+            imine_nitrogen_vector = external_connections[0][2]
+            self.assertGreater(realizer._distance(hydrogen_vector, imine_nitrogen_vector), 1.6)
+
 
 if __name__ == "__main__":
     unittest.main()

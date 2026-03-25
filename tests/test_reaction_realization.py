@@ -37,6 +37,28 @@ def _single_event_candidate(
 
 
 class ReactionRealizationTests(unittest.TestCase):
+    def _assert_retained_hydrogen_reoriented(
+        self,
+        *,
+        result,
+        monomer: MonomerSpec,
+        instance_id: str,
+        parent_atom_id: int,
+        hydrogen_atom_id: int,
+    ) -> None:
+        realizer = ReactionRealizer()
+        realized_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance[instance_id]}
+        parent_local = realized_atoms[parent_atom_id].local_position
+        hydrogen_local = realized_atoms[hydrogen_atom_id].local_position
+        hydrogen_vector = (
+            hydrogen_local[0] - parent_local[0],
+            hydrogen_local[1] - parent_local[1],
+            hydrogen_local[2] - parent_local[2],
+        )
+        self.assertGreater(realizer._distance(hydrogen_local, monomer.atom_positions[hydrogen_atom_id]), 0.25)
+        self.assertAlmostEqual(hydrogen_vector[0], 0.0, places=6)
+        self.assertGreater(abs(hydrogen_vector[1]), 0.7)
+
     def test_imine_realization_removes_oxygen_and_both_amine_hydrogens(self):
         amine = MonomerSpec(
             id="amine",
@@ -138,6 +160,7 @@ class ReactionRealizationTests(unittest.TestCase):
                 (0.2, 1.0, 0.0),
                 (0.2, -1.0, 0.0),
             ),
+            bonds=((0, 1, 1.0), (0, 5, 1.0), (0, 6, 1.0), (1, 2, 1.0), (2, 3, 2.0), (2, 4, 1.0)),
         )
         aldehyde = MonomerSpec(
             id="aldehyde",
@@ -154,6 +177,7 @@ class ReactionRealizationTests(unittest.TestCase):
             ),
             atom_symbols=("C", "O", "C", "H"),
             atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+            bonds=((0, 1, 2.0), (0, 2, 1.0), (0, 3, 1.0)),
         )
         candidate = _single_event_candidate(
             "hydrazone_bridge",
@@ -172,6 +196,14 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertEqual(result.bonds[0].label_1, "m2_C1")
         self.assertEqual(result.bonds[0].label_2, "m1_N1")
         self.assertAlmostEqual(result.bonds[0].distance, 1.3, places=6)
+        self.assertEqual(result.metadata["hydrogen_cleanup"]["atom_labels"], ("m2_H4",))
+        self._assert_retained_hydrogen_reoriented(
+            result=result,
+            monomer=aldehyde,
+            instance_id="m2",
+            parent_atom_id=0,
+            hydrogen_atom_id=3,
+        )
 
     def test_keto_enamine_realization_removes_oxygen_and_one_amine_hydrogen(self):
         amine = MonomerSpec(
@@ -248,6 +280,14 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertIn(3, keto_atoms)
         self.assertAlmostEqual(keto_atoms[3].local_position[0], 1.2, places=6)
         self.assertAlmostEqual(keto_atoms[3].local_position[1], 1.24, places=6)
+        self.assertEqual(result.metadata["hydrogen_cleanup"]["atom_labels"], ("m2_H6",))
+        self._assert_retained_hydrogen_reoriented(
+            result=result,
+            monomer=keto_aldehyde,
+            instance_id="m2",
+            parent_atom_id=0,
+            hydrogen_atom_id=5,
+        )
 
     def test_boronate_ester_realization_removes_boronic_oxygens_and_four_hydrogens(self):
         boronic_acid = MonomerSpec(
@@ -277,6 +317,7 @@ class ReactionRealizationTests(unittest.TestCase):
                 (1.6, 1.2, 0.0),
                 (1.6, -1.2, 0.0),
             ),
+            bonds=((0, 1, 1.0), (1, 2, 1.0), (1, 3, 1.0), (2, 4, 1.0), (3, 5, 1.0)),
         )
         catechol = MonomerSpec(
             id="catechol",
@@ -306,6 +347,7 @@ class ReactionRealizationTests(unittest.TestCase):
                 (-1.0, 0.7, 0.0),
                 (-1.0, -0.7, 0.0),
             ),
+            bonds=((0, 2, 1.0), (1, 3, 1.0), (0, 4, 1.0), (1, 5, 1.0)),
         )
         candidate = _single_event_candidate(
             "boronate_ester_bridge",
@@ -327,6 +369,7 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertEqual(len(result.bonds), 2)
         self.assertTrue(all(bond.label_1 == "m1_B2" for bond in result.bonds))
         self.assertEqual({bond.label_2 for bond in result.bonds}, {"m2_O1", "m2_O2"})
+        self.assertNotIn("hydrogen_cleanup", result.metadata)
 
     def test_vinylene_realization_removes_aldehyde_oxygen_and_two_activated_hydrogens(self):
         activated_methylene = MonomerSpec(
@@ -357,6 +400,7 @@ class ReactionRealizationTests(unittest.TestCase):
                 (-0.7, 0.9, 0.0),
                 (-0.7, -0.9, 0.0),
             ),
+            bonds=((0, 1, 1.0), (1, 2, 3.0), (0, 3, 1.0), (3, 4, 3.0), (0, 5, 1.0), (0, 6, 1.0)),
         )
         aldehyde = MonomerSpec(
             id="aldehyde",
@@ -373,6 +417,7 @@ class ReactionRealizationTests(unittest.TestCase):
             ),
             atom_symbols=("C", "O", "C", "H"),
             atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+            bonds=((0, 1, 2.0), (0, 2, 1.0), (0, 3, 1.0)),
         )
         candidate = _single_event_candidate(
             "vinylene_bridge",
@@ -395,6 +440,14 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertEqual(result.bonds[0].label_1, "m2_C1")
         self.assertEqual(result.bonds[0].label_2, "m1_C1")
         self.assertAlmostEqual(result.bonds[0].distance, 1.34, places=6)
+        self.assertEqual(result.metadata["hydrogen_cleanup"]["atom_labels"], ("m2_H4",))
+        self._assert_retained_hydrogen_reoriented(
+            result=result,
+            monomer=aldehyde,
+            instance_id="m2",
+            parent_atom_id=0,
+            hydrogen_atom_id=3,
+        )
 
     def test_custom_realization_registry_can_override_builtin_handler(self):
         amine = MonomerSpec(
