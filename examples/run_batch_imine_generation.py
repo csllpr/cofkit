@@ -9,7 +9,7 @@ from cofkit.cli import main as cofkit_cli_main
 
 
 def main() -> None:
-    cofkit_cli_main(["batch-imine", *sys.argv[1:]])
+    cofkit_cli_main(["build", "batch-binary-bridge", *sys.argv[1:], "--template-id", "imine_bridge"])
 
 
 if __name__ == "__main__":

@@ -54,7 +54,13 @@
 - `cofkit.validation`
   - coarse post-generation validation / triage into `valid`, `warning`, `hard_invalid`, and `hard_hard_invalid` buckets using bridge metrics plus CIF-backed network and clash checks
 - `cofkit.cli`
-  - installable unified command-line interface for direct single-pair generation, batch workflows, output classification, and detector-scanned library building
+  - installable top-level command-line router for `build`, `analyze`, and future `calculate` namespaces
+- `cofkit.cli_build`
+  - build-facing command registration and handlers for single-pair generation, batch workflows, template discovery, and default-library generation
+- `cofkit.cli_analyze`
+  - analyze-facing command registration and handlers for output classification
+- `cofkit.cli_calculate`
+  - reserved namespace for future external calculation-tool orchestration
 
 ## Current pipeline
 
@@ -81,10 +87,11 @@
 
 ## CLI flow
 
-1. `cofkit.cli` parses a stable user-facing command surface instead of relying on ad hoc example-specific argument handling.
-2. Single-pair commands route through the same `BatchStructureGenerator.generate_monomer_pair_candidate(s)` path used by the batch engine, so topology dispatch and validation/export behavior stay aligned.
-3. Batch commands delegate monomer-role resolution and generic-library autodetection to `cofkit.monomer_library` rather than keeping that logic inside the CLI or the example wrappers.
-4. The legacy scripts in `examples/` are now thin wrappers over the shared CLI entry points, which reduces drift between documented workflows and the installed interface.
+1. `cofkit.cli` parses a grouped user-facing command surface instead of relying on one flat namespace or ad hoc example-specific argument handling.
+2. `cofkit.cli_build` owns the grouped build surface under `cofkit build ...`, while `cofkit.cli_analyze` owns the grouped analysis surface under `cofkit analyze ...`.
+3. Single-pair build commands route through the same `BatchStructureGenerator.generate_monomer_pair_candidate(s)` path used by the batch engine, so topology dispatch and validation/export behavior stay aligned.
+4. Batch build commands delegate monomer-role resolution and generic-library autodetection to `cofkit.monomer_library` rather than keeping that logic inside the CLI or the example wrappers.
+5. The legacy scripts in `examples/` are now thin wrappers over the shared CLI entry points, which reduces drift between documented workflows and the installed interface.
 
 ## Immediate next steps
 

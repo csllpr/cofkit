@@ -29,7 +29,7 @@ The current package still keeps mandatory runtime dependencies at zero so the sc
 - compatibility-aware default topology selection that now includes curated indexed topologies such as `sql`, `kgm`, `hxl`, `pts`, `ctn`, `bor`, `kgd`, `tbo`, `dia`, `pcu`, `acs`, `lon`, and `qtz` when the current chemistry metadata and builder support permit them
 - coarse post-generation validation with `valid` / `warning` / `hard_invalid` / `hard_hard_invalid` triage, categorized CIF output trees, and export blocking for obviously broken structures
 - process-level batch pair generation with an `8`-worker default budget for the practical CLI workflows
-- an installable `cofkit` CLI, including direct `single-pair` generation plus unified batch/classification/library-building entry points
+- an installable `cofkit` CLI, organized under grouped `build` / `analyze` namespaces for direct `single-pair` generation plus unified batch, classification, and library-building entry points
 - extracted batch-facing support layers (`cofkit.monomer_library`, `cofkit.batch_models`) so CLI, wrappers, and future linkage extensions share the same monomer-role resolution and summary schema
 - tests covering core invariants
 

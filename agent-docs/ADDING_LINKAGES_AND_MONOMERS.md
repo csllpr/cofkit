@@ -147,7 +147,7 @@ If you add a literature-style smoke example:
 ## 8. Fast sanity questions before you finish
 
 - Can the new motif kind be detected from SMILES?
-- Does the linkage appear in `cofkit list-templates`?
-- Can `cofkit single-pair` build and write a CIF for one literature-style pair?
+- Does the linkage appear in `cofkit build list-templates`?
+- Can `cofkit build single-pair` build and write a CIF for one literature-style pair?
 - Does batch loading work from both explicit and autodetected libraries, if both are supposed to be supported?
 - Does the CIF atom/bond stoichiometry match the intended chemistry?

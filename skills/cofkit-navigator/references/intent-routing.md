@@ -16,7 +16,7 @@ Use one of these equivalent launch styles:
 Use:
 
 ```bash
-cofkit list-templates --json
+cofkit build list-templates --json
 ```
 
 Interpretation rules:
@@ -26,10 +26,10 @@ Interpretation rules:
 
 ### Build one COF from two monomers
 
-Use `single-pair`.
+Use `build single-pair`.
 
 ```bash
-cofkit single-pair \
+cofkit build single-pair \
   --template-id imine_bridge \
   --first-smiles '<FIRST_SMILES>' \
   --second-smiles '<SECOND_SMILES>' \
@@ -51,10 +51,10 @@ Primary artifact:
 
 ### Screen one linkage over a library directory
 
-Use `batch-binary-bridge`.
+Use `build batch-binary-bridge`.
 
 ```bash
-cofkit batch-binary-bridge \
+cofkit build batch-binary-bridge \
   --template-id hydrazone_bridge \
   --input-dir <LIBRARY_DIR> \
   --output-dir out/hydrazone_batch \
@@ -71,10 +71,10 @@ Primary artifacts:
 
 ### Run every supported binary-bridge workflow over a library directory
 
-Use `batch-all-binary-bridges`.
+Use `build batch-all-binary-bridges`.
 
 ```bash
-cofkit batch-all-binary-bridges \
+cofkit build batch-all-binary-bridges \
   --input-dir <LIBRARY_DIR> \
   --output-dir out/all_binary_bridge_batches \
   --max-workers 8 \
@@ -106,10 +106,10 @@ Switch `auto_detect_libraries=True` only for raw generic libraries.
 
 ### Rebuild the grouped example library
 
-Use `build-default-library`.
+Use `build default-library`.
 
 ```bash
-cofkit build-default-library
+cofkit build default-library
 ```
 
 Primary artifacts:
@@ -120,10 +120,10 @@ Primary artifacts:
 
 ### Classify an existing batch output tree
 
-Use `classify-output`.
+Use `analyze classify-output`.
 
 ```bash
-cofkit classify-output \
+cofkit analyze classify-output \
   <BATCH_OUTPUT_DIR> \
   --output-dir out/classified_batch
 ```
@@ -155,8 +155,8 @@ Choose the API by how much the user already knows:
 
 ## Common Traps
 
-- Do not treat every template returned by `list-templates` as immediately runnable for structure generation.
+- Do not treat every template returned by `cofkit build list-templates` as immediately runnable for structure generation.
 - Do not use `--auto-detect-libraries` on `examples/default_monomers_library`.
 - Do not claim stacking workflows are supported; `stacking_mode` remains `"disabled"`.
 - Do not answer from docs alone when the command can be run and the artifacts can be inspected directly.
-- Do not default to `batch-imine` when the generic binary-bridge interface expresses the same task more clearly.
+- Do not default to deprecated flat aliases such as `cofkit batch-imine` when the grouped binary-bridge interface expresses the same task more clearly.

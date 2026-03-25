@@ -360,8 +360,10 @@ python3 examples/build_default_monomers_library.py
 
 ### CLI usage
 
+The installable CLI is grouped under `cofkit build` and `cofkit analyze`. Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` still work for now, but they emit deprecation warnings.
+
 ```bash
-cofkit batch-binary-bridge \
+cofkit build batch-binary-bridge \
   --template-id imine_bridge \
   --input-dir examples/batch_test_monomers \
   --output-dir out/batch_imine_generation \
@@ -379,7 +381,7 @@ Useful flags:
 For one batch per currently available binary-bridge linkage:
 
 ```bash
-cofkit batch-all-binary-bridges \
+cofkit build batch-all-binary-bridges \
   --input-dir examples/default_monomers_library \
   --output-dir out/available_binary_bridge_batches
 ```
@@ -389,7 +391,7 @@ With the shipped default library snapshot, that command currently discovers `hyd
 For one direct pair:
 
 ```bash
-cofkit single-pair \
+cofkit build single-pair \
   --template-id imine_bridge \
   --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
   --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
@@ -403,7 +405,7 @@ The single-pair CLI autodetects motif kinds by default. If you want to force the
 - `summary.json`
 - one CIF per written topology under `cifs/valid`, `cifs/warning`, or `cifs/invalid`
 
-The example scripts in `examples/` are still available, but they now act as thin wrappers over the shared `cofkit` CLI.
+The example scripts in `examples/` are still available, but they now act as thin wrappers over the shared grouped `cofkit` CLI.
 
 ### Python usage
 
@@ -481,7 +483,7 @@ Once you have a large CIF set, the classifier can split it into clearly acceptab
 ### CLI usage
 
 ```bash
-cofkit classify-output \
+cofkit analyze classify-output \
   out/full_cif_generation_default_selector_20260320 \
   --output-dir out/full_cif_generation_default_selector_20260320_coarse_validation_triage
 ```
@@ -501,7 +503,7 @@ The classifier writes:
 To regenerate the detector-scanned default library from the raw fixture inputs:
 
 ```bash
-cofkit build-default-library
+cofkit build default-library
 ```
 
 ### Quantitative rules

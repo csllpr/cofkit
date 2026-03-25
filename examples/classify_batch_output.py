@@ -9,7 +9,7 @@ from cofkit.cli import main as cofkit_cli_main
 
 
 def main() -> None:
-    cofkit_cli_main(["classify-output", *sys.argv[1:]])
+    cofkit_cli_main(["analyze", "classify-output", *sys.argv[1:]])
 
 
 if __name__ == "__main__":

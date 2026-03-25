@@ -42,10 +42,20 @@ class BatchSummaryCompatibilityTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_root_help_lists_grouped_namespaces(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            cli_main([])
+
+        help_text = buffer.getvalue()
+        self.assertIn("build", help_text)
+        self.assertIn("analyze", help_text)
+        self.assertIn("calculate", help_text)
+
     def test_list_templates_json_reports_execution_capabilities(self):
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            cli_main(["list-templates", "--json"])
+            cli_main(["build", "list-templates", "--json"])
         rows = json.loads(buffer.getvalue())
 
         imine = next(row for row in rows if row["template_id"] == "imine_bridge")
@@ -57,6 +67,17 @@ class CliTests(unittest.TestCase):
         self.assertFalse(boroxine["supports_pair_generation"])
         self.assertEqual(boroxine["workflow_family"], "ring_forming")
 
+    def test_legacy_list_templates_alias_still_works(self):
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            cli_main(["list-templates", "--json"])
+
+        rows = json.loads(stdout_buffer.getvalue())
+        self.assertTrue(any(row["template_id"] == "imine_bridge" for row in rows))
+        self.assertIn("deprecated", stderr_buffer.getvalue())
+        self.assertIn("cofkit build list-templates", stderr_buffer.getvalue())
+
     @unittest.skipIf(Chem is None, "RDKit is not available")
     def test_single_pair_cli_writes_cif(self):
         tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
@@ -67,6 +88,7 @@ class CliTests(unittest.TestCase):
             with contextlib.redirect_stdout(buffer):
                 cli_main(
                     [
+                        "build",
                         "single-pair",
                         "--template-id",
                         "imine_bridge",

@@ -2,6 +2,14 @@
 
 All notable changes to `cofkit` are recorded here.
 
+## 2026-03-25
+
+### Changed
+- The installed CLI is now grouped under top-level `build`, `analyze`, and reserved `calculate` namespaces, with the root parser in `cofkit.cli` delegating to `cofkit.cli_build`, `cofkit.cli_analyze`, and `cofkit.cli_calculate`.
+- Canonical user-facing commands now use grouped paths such as `cofkit build single-pair`, `cofkit build batch-binary-bridge`, `cofkit analyze classify-output`, and `cofkit build default-library`.
+- The previous flat commands remain available as deprecated compatibility aliases so existing automation does not break immediately.
+- Wrapper scripts under `examples/`, CLI regression tests, user docs, and the `cofkit-navigator` skill now point to the grouped command surface.
+
 ## 2026-03-24
 
 ### Added

@@ -47,23 +47,27 @@ Inspect the available commands with:
 
 ```bash
 cofkit --help
-cofkit list-templates
+cofkit build --help
+cofkit analyze --help
+cofkit build list-templates
 ```
 
-The most useful subcommands are:
+The most useful grouped commands are:
 
-- `cofkit single-pair`
-- `cofkit batch-binary-bridge`
-- `cofkit batch-all-binary-bridges`
-- `cofkit classify-output`
-- `cofkit build-default-library`
+- `cofkit build single-pair`
+- `cofkit build batch-binary-bridge`
+- `cofkit build batch-all-binary-bridges`
+- `cofkit analyze classify-output`
+- `cofkit build default-library`
+
+Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
 
 ### Single pair
 
 Direct single-pair generation with motif autodetection and default topology enumeration:
 
 ```bash
-cofkit single-pair \
+cofkit build single-pair \
   --template-id imine_bridge \
   --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
   --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
@@ -77,7 +81,7 @@ That command autodetects the monomer roles (`amine` / `aldehyde` for this exampl
 If you want to force one topology instead of using the default topology pool:
 
 ```bash
-cofkit single-pair \
+cofkit build single-pair \
   --template-id imine_bridge \
   --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
   --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
@@ -92,7 +96,7 @@ cofkit single-pair \
 Run one binary-bridge linkage over a monomer-library directory:
 
 ```bash
-cofkit batch-binary-bridge \
+cofkit build batch-binary-bridge \
   --template-id imine_bridge \
   --input-dir examples/default_monomers_library \
   --output-dir out/batch_imine_from_cli \
@@ -104,7 +108,7 @@ cofkit batch-binary-bridge \
 Run all currently available binary-bridge templates over one library directory:
 
 ```bash
-cofkit batch-all-binary-bridges \
+cofkit build batch-all-binary-bridges \
   --input-dir examples/default_monomers_library \
   --output-dir out/available_binary_bridge_batches \
   --max-workers 8
@@ -115,7 +119,7 @@ That CLI path reproduces the current per-template summary results for the suppor
 ### Classify a finished output tree
 
 ```bash
-cofkit classify-output \
+cofkit analyze classify-output \
   out/full_cif_generation_default_selector_20260320 \
   --output-dir out/full_cif_generation_default_selector_20260320_coarse_validation_triage
 ```
@@ -123,7 +127,7 @@ cofkit classify-output \
 ### Rebuild the detector-scanned example library
 
 ```bash
-cofkit build-default-library
+cofkit build default-library
 ```
 
 ## Skill integration

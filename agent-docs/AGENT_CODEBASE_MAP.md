@@ -17,7 +17,11 @@ Then go straight to the module that matches the task.
 
 - [src/cofkit/cli.py](../src/cofkit/cli.py)
   - Installed `cofkit` CLI.
-  - Owns `single-pair`, batch, classifier, and library-building commands.
+  - Routes the top-level `build`, `analyze`, and future `calculate` namespaces.
+- [src/cofkit/cli_build.py](../src/cofkit/cli_build.py)
+  - Owns build-facing commands such as `cofkit build single-pair` and the batch workflows.
+- [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py)
+  - Owns analysis-facing commands such as `cofkit analyze classify-output`.
 - [src/cofkit/engine.py](../src/cofkit/engine.py)
   - Direct project-style API via `COFEngine`.
 - [src/cofkit/batch.py](../src/cofkit/batch.py)
@@ -82,7 +86,7 @@ Then go straight to the module that matches the task.
 
 ### Single pair from CLI
 
-1. `cofkit single-pair` in [src/cofkit/cli.py](../src/cofkit/cli.py)
+1. `cofkit build single-pair` in [src/cofkit/cli_build.py](../src/cofkit/cli_build.py)
 2. motif-kind autodetection via [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py) if explicit kinds are omitted
 3. monomer construction via [src/cofkit/chem/rdkit.py](../src/cofkit/chem/rdkit.py)
 4. candidate generation via [src/cofkit/batch.py](../src/cofkit/batch.py)
@@ -90,7 +94,7 @@ Then go straight to the module that matches the task.
 
 ### Full batch from CLI
 
-1. `cofkit batch-binary-bridge` or `cofkit batch-all-binary-bridges`
+1. `cofkit build batch-binary-bridge` or `cofkit build batch-all-binary-bridges`
 2. library resolution via [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
 3. pair enumeration and topology selection in [src/cofkit/batch.py](../src/cofkit/batch.py)
 4. topology-family dispatch via [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
