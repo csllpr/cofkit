@@ -14,6 +14,7 @@ from .geometry import (
     scale,
     sub,
 )
+from .linkage_geometry import effective_motif_origin
 from .model import AssemblyState, MonomerSpec, Pose, ReactionTemplate
 from .scoring import BridgeGeometryReport, CandidateScorer
 from .search import AssignmentOutcome
@@ -122,8 +123,18 @@ class ContinuousOptimizer:
             pose2 = state.monomer_poses[second.monomer_instance_id]
             motif1 = monomer_specs[first.monomer_id].motif_by_id(first.motif_id)
             motif2 = monomer_specs[second.monomer_id].motif_by_id(second.motif_id)
-            origin1 = self._world_motif_origin(state.cell, pose1, motif1.frame.origin, first.periodic_image)
-            origin2 = self._world_motif_origin(state.cell, pose2, motif2.frame.origin, second.periodic_image)
+            origin1 = self._world_motif_origin(
+                state.cell,
+                pose1,
+                effective_motif_origin(event.template_id, monomer_specs[first.monomer_id], motif1),
+                first.periodic_image,
+            )
+            origin2 = self._world_motif_origin(
+                state.cell,
+                pose2,
+                effective_motif_origin(event.template_id, monomer_specs[second.monomer_id], motif2),
+                second.periodic_image,
+            )
             separation = norm(sub(origin2, origin1))
             if separation < 1e-8:
                 continue
@@ -182,8 +193,18 @@ class ContinuousOptimizer:
             pose2 = state.monomer_poses[second.monomer_instance_id]
             motif1 = monomer_specs[first.monomer_id].motif_by_id(first.motif_id)
             motif2 = monomer_specs[second.monomer_id].motif_by_id(second.motif_id)
-            origin1 = self._world_motif_origin(state.cell, pose1, motif1.frame.origin, first.periodic_image)
-            origin2 = self._world_motif_origin(state.cell, pose2, motif2.frame.origin, second.periodic_image)
+            origin1 = self._world_motif_origin(
+                state.cell,
+                pose1,
+                effective_motif_origin(event.template_id, monomer_specs[first.monomer_id], motif1),
+                first.periodic_image,
+            )
+            origin2 = self._world_motif_origin(
+                state.cell,
+                pose2,
+                effective_motif_origin(event.template_id, monomer_specs[second.monomer_id], motif2),
+                second.periodic_image,
+            )
 
             delta = sub(origin2, origin1)
             direction = self._safe_normalize(delta)
@@ -257,8 +278,18 @@ class ContinuousOptimizer:
             other_pose = monomer_poses[other.monomer_instance_id]
             motif = monomer_specs[participant.monomer_id].motif_by_id(participant.motif_id)
             other_motif = monomer_specs[other.monomer_id].motif_by_id(other.motif_id)
-            origin = self._world_motif_origin(state.cell, pose, motif.frame.origin, participant.periodic_image)
-            other_origin = self._world_motif_origin(state.cell, other_pose, other_motif.frame.origin, other.periodic_image)
+            origin = self._world_motif_origin(
+                state.cell,
+                pose,
+                effective_motif_origin(event.template_id, monomer_specs[participant.monomer_id], motif),
+                participant.periodic_image,
+            )
+            other_origin = self._world_motif_origin(
+                state.cell,
+                other_pose,
+                effective_motif_origin(event.template_id, monomer_specs[other.monomer_id], other_motif),
+                other.periodic_image,
+            )
             target_primary = self._safe_normalize(sub(other_origin, origin))
 
             other_normal = self._safe_normalize(matmul_vec(other_pose.rotation_matrix, other_motif.frame.normal))

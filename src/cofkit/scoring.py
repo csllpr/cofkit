@@ -5,6 +5,7 @@ from math import fabs
 from typing import Mapping
 
 from .geometry import Vec3, add, distance, dot, matmul_vec, norm, normalize, scale, sub
+from .linkage_geometry import effective_motif_origin
 from .model import AssemblyState, MonomerSpec, ReactionTemplate
 from .planner import TopologyHint
 from .reactions import bridge_target_distance
@@ -106,14 +107,14 @@ class CandidateScorer:
                     state.cell,
                     pose1.translation,
                     pose1.rotation_matrix,
-                    motif1.frame.origin,
+                    effective_motif_origin(event.template_id, monomer_specs[first.monomer_id], motif1),
                     first.periodic_image,
                 )
                 origin2 = self._world_motif_origin(
                     state.cell,
                     pose2.translation,
                     pose2.rotation_matrix,
-                    motif2.frame.origin,
+                    effective_motif_origin(event.template_id, monomer_specs[second.monomer_id], motif2),
                     second.periodic_image,
                 )
                 separation = distance(origin1, origin2)

@@ -111,6 +111,12 @@ class ReactionLibrary:
     def event_realizer(self, template: ReactionTemplate | str) -> str | None:
         return linkage_event_realizer(template, profiles=self.linkage_profiles)
 
+    def workflow_family(self, template: ReactionTemplate | str) -> str:
+        return workflow_family(template, profiles=self.linkage_profiles)
+
+    def topology_assignment_mode(self, template: ReactionTemplate | str) -> str:
+        return topology_assignment_mode(template, profiles=self.linkage_profiles)
+
     def selected(self, ids: Iterable[str], dimensionality: str) -> tuple[ReactionTemplate, ...]:
         selected: list[ReactionTemplate] = []
         for template_id in ids:
@@ -200,6 +206,32 @@ def linkage_event_realizer(
 ) -> str | None:
     profile = linkage_profile(template, profiles=profiles)
     return None if profile is None else profile.event_realizer
+
+
+def workflow_family(
+    template: ReactionTemplate | str,
+    *,
+    profiles: dict[str, ReactionLinkageProfile] | None = None,
+) -> str:
+    profile = linkage_profile(template, profiles=profiles)
+    if profile is not None:
+        return profile.workflow_family
+    if isinstance(template, ReactionTemplate) and template.topology_role == "ring":
+        return "ring_forming"
+    return "template_driven"
+
+
+def topology_assignment_mode(
+    template: ReactionTemplate | str,
+    *,
+    profiles: dict[str, ReactionLinkageProfile] | None = None,
+) -> str:
+    profile = linkage_profile(template, profiles=profiles)
+    if profile is not None:
+        return profile.topology_assignment_mode
+    if isinstance(template, ReactionTemplate) and template.topology_role == "ring":
+        return "topology_bypass"
+    return "topology_guided"
 
 
 def _builtin_templates() -> tuple[ReactionTemplate, ...]:

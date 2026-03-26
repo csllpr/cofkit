@@ -7,6 +7,7 @@ from .model import Candidate, CandidateEnsemble, MonomerSpec, ReactionTemplate
 from .optimizer import ContinuousOptimizer, OptimizerConfig
 from .planner import NetPlanner
 from .product_graph import PeriodicProductGraph
+from .post_build_conversions import annotate_post_build_conversions
 from .reactions import ReactionLibrary
 from .scoring import CandidateScorer
 from .search import AssignmentOutcome, AssignmentSolver
@@ -23,6 +24,7 @@ class COFProject:
     target_dimensionality: str = "2D"
     target_topologies: tuple[str, ...] = ()
     stacking_mode: str = "disabled"
+    post_build_conversions: tuple[str, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -130,6 +132,7 @@ class COFEngine:
                 target_dimensionality=project.target_dimensionality,
                 topology_ids=topology_ids,
                 enumerate_all_topologies=True,
+                post_build_conversions=project.post_build_conversions,
                 write_cif=False,
                 embedding_config=self.embedder.config,
                 engine_config=self.config,
@@ -249,11 +252,16 @@ class COFEngine:
             "score_breakdown": dict(scoring.breakdown),
             "score_metadata": dict(scoring.metadata),
         }
-        return Candidate(
+        candidate = Candidate(
             id=candidate_id,
             score=scoring.total,
             state=optimization.state,
             events=outcome.events,
             flags=tuple(flags),
             metadata=metadata,
+        )
+        return annotate_post_build_conversions(
+            candidate,
+            monomer_specs,
+            project.post_build_conversions,
         )

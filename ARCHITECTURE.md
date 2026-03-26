@@ -27,6 +27,8 @@
   - registry-backed atomistic bond/deletion realization for the currently implemented binary-bridge products
 - `cofkit.batch_models`
   - neutral batch-facing dataclasses and compatibility aliases for pair and run summaries
+- `cofkit.build_workflows`
+  - workflow-family registry that isolates the production binary-bridge builder from planned ring-forming and composite-topology build paths
 - `cofkit.monomer_library`
   - extracted monomer-role resolution, detector-backed library loading, and explicit-library regrouping
 - `cofkit.single_node_topologies`
@@ -92,6 +94,7 @@
 3. Single-pair build commands route through the same `BatchStructureGenerator.generate_monomer_pair_candidate(s)` path used by the batch engine, so topology dispatch and validation/export behavior stay aligned.
 4. Batch build commands delegate monomer-role resolution and generic-library autodetection to `cofkit.monomer_library` rather than keeping that logic inside the CLI or the example wrappers.
 5. The legacy scripts in `examples/` are now thin wrappers over the shared CLI entry points, which reduces drift between documented workflows and the installed interface.
+6. Internal build-family routing is now modeled explicitly: the current `cofkit.batch` implementation remains the `binary_bridge` workflow, while future ring-forming and composite-topology-unit builders are kept as separate workflow families so new assembly logic does not leak into the existing pair-generation path.
 
 ## Immediate next steps
 
@@ -99,8 +102,9 @@
    - broaden SMARTS/rule-based motif discovery beyond the current binary-bridge set and add better handling for mixed-role monomers
 2. **Topology integration**
    - extend the current indexed-topology path from the present curated subset toward broader multi-node and higher-symmetry topology categories
+   - add a dedicated composite-topology-unit builder path for monomers that encode more than one topological role
 3. **Reaction geometry models**
-   - richer product-specific coordinate priors and multi-event consistency handling, especially for ring-forming and cyclization chemistries
+   - richer product-specific coordinate priors and multi-event consistency handling, especially for ring-forming and cyclization chemistries inside their own workflow family
 4. **Continuous optimization**
    - extend the current dependency-free bridge optimizer toward richer torsion and ring-closure variables
 5. **Validation / ranking**

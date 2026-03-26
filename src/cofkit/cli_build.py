@@ -11,6 +11,7 @@ from typing import Iterable
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .chem.rdkit import build_rdkit_monomer
 from .monomer_library import MonomerRoleResolver
+from .post_build_conversions import builtin_post_build_conversion_registry
 from .reactions import ReactionLibrary
 
 
@@ -95,6 +96,20 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         default=8,
         help="Worker budget for pair generation. Defaults to 8.",
     )
+    _add_post_build_conversion_arguments(parser)
+
+
+def _add_post_build_conversion_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--annotate-post-build-conversion",
+        action="append",
+        default=[],
+        choices=builtin_post_build_conversion_registry().supported_profile_ids(),
+        help=(
+            "Request a post-build conversion profile. Eligible candidates keep the canonical "
+            "build graph, but atomistic export applies the converted realization."
+        ),
+    )
 
 
 def _configure_generator(args: argparse.Namespace, *, template_id: str | None = None) -> BatchStructureGenerator:
@@ -107,6 +122,7 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             use_indexed_topology_defaults=args.use_indexed_topology_defaults,
             rdkit_num_conformers=args.num_conformers,
             enumerate_all_topologies=args.all_topologies,
+            post_build_conversions=tuple(args.annotate_post_build_conversion),
             write_cif=args.write_cif,
             max_cif_exports=args.max_cif_exports,
             max_workers=args.max_workers,
@@ -183,6 +199,7 @@ def _add_single_pair_parser(subparsers) -> None:
         help="Optional maximum number of CIF files to export. Defaults to no limit.",
     )
     parser.add_argument("--max-workers", type=int, default=1, help="Worker budget. Defaults to 1 for single-pair mode.")
+    _add_post_build_conversion_arguments(parser)
     parser.set_defaults(func=_run_single_pair)
 
 

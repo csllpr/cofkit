@@ -18,6 +18,7 @@ from .geometry import (
     scale,
     sub,
 )
+from .linkage_geometry import effective_motif_origin
 from .model import AssemblyState, MonomerSpec, Pose, ReactionTemplate
 from .model import ReactionEvent
 from .planner import TopologyHint
@@ -63,6 +64,11 @@ class PeriodicEmbedder:
         self._validate_single_node_builder_support(topology, outcome, monomer_specs)
         if self._is_single_node_bipartite_case(topology, outcome, monomer_specs):
             return self._embed_single_node_bipartite(outcome, monomer_specs, templates)
+        shared_template_id = (
+            self._shared_template_id(outcome)
+            if topology is None or getattr(topology, "dimensionality", "2D") == "2D"
+            else None
+        )
         template_distances = [
             self._template_target_distance(templates[event.template_id]) for event in outcome.events
         ]
@@ -75,7 +81,14 @@ class PeriodicEmbedder:
         for index, instance in enumerate(outcome.monomer_instances):
             spec = monomer_specs[instance.monomer_id]
             center = centers.get(instance.id, self._fallback_center(index, target_distance))
-            rotation = self._orientation_for_instance(instance.id, center, centers, outcome, monomer_specs)
+            rotation = self._orientation_for_instance(
+                instance.id,
+                center,
+                centers,
+                outcome,
+                monomer_specs,
+                template_id=shared_template_id,
+            )
             monomer_poses[instance.id] = Pose(translation=center, rotation_matrix=rotation)
             pose_details[instance.id] = {
                 "slot_id": instance.metadata.get("slot_id"),
@@ -114,6 +127,11 @@ class PeriodicEmbedder:
             self._template_target_distance(templates[event.template_id]) for event in outcome.events
         ]
         bridge_target = sum(template_distances) / len(template_distances) if template_distances else self.config.bridge_target_distance
+        template_id = (
+            self._shared_template_id(outcome)
+            if topology is None or getattr(topology, "dimensionality", "2D") == "2D"
+            else None
+        )
         instances = outcome.monomer_instances
         topology_layout = self._single_node_topology_layout(topology, outcome, monomer_specs)
         canonical_a = topology_layout.directions if topology_layout is not None else self._trigonal_directions(pi / 6.0)
@@ -125,7 +143,11 @@ class PeriodicEmbedder:
 
         for instance, target_directions in zip(instances, (canonical_a, canonical_b)):
             spec = monomer_specs[instance.monomer_id]
-            rotation, offsets = self._rotation_for_planar_motifs(spec, target_directions)
+            rotation, offsets = self._rotation_for_planar_motifs(
+                spec,
+                target_directions,
+                template_id=template_id,
+            )
             rotations[instance.id] = rotation
             projected_offsets[instance.id] = offsets
 
@@ -136,6 +158,7 @@ class PeriodicEmbedder:
                 monomer_specs,
                 rotations,
                 bridge_target,
+                template_id=template_id,
             )
             if single_node_layout is not None:
                 cell, centers, edge_reactive_site_distances = single_node_layout
@@ -259,8 +282,14 @@ class PeriodicEmbedder:
             pose2 = refined[second.monomer_instance_id]
             motif1 = monomer_specs[first.monomer_id].motif_by_id(first.motif_id)
             motif2 = monomer_specs[second.monomer_id].motif_by_id(second.motif_id)
-            origin1 = self._world_position(pose1, motif1.frame.origin)
-            origin2 = self._world_position(pose2, motif2.frame.origin)
+            origin1 = self._world_position(
+                pose1,
+                effective_motif_origin(event.template_id, monomer_specs[first.monomer_id], motif1),
+            )
+            origin2 = self._world_position(
+                pose2,
+                effective_motif_origin(event.template_id, monomer_specs[second.monomer_id], motif2),
+            )
             midpoint = centroid((origin1, origin2))
             direction = self._direction_between(origin1, origin2)
             if origin1 == origin2:
@@ -284,6 +313,8 @@ class PeriodicEmbedder:
         centers: Mapping[str, Vec3],
         outcome: AssignmentOutcome,
         monomer_specs: Mapping[str, MonomerSpec],
+        *,
+        template_id: str | None = None,
     ) -> Mat3:
         motif_frames = []
         target_primary = (1.0, 0.0, 0.0)
@@ -395,6 +426,8 @@ class PeriodicEmbedder:
         monomer_specs: Mapping[str, MonomerSpec],
         rotations: Mapping[str, Mat3],
         bridge_target: float,
+        *,
+        template_id: str | None,
     ) -> tuple[tuple[Vec3, Vec3, Vec3], dict[str, Vec3], tuple[float, ...]] | None:
         instances = outcome.monomer_instances
         if len(instances) != 2:
@@ -425,11 +458,14 @@ class PeriodicEmbedder:
             )
             edge_vector = self._single_node_bridge_edge_vector(
                 first_motif=first_motif,
+                first_spec=first_spec,
                 first_rotation=rotations[first_instance_id],
                 second_motif=second_motif,
+                second_spec=second_spec,
                 second_rotation=rotations[second_instance_id],
                 direction=direction,
                 bridge_target=bridge_target,
+                template_id=template_id,
             )
             image_delta = (
                 second.periodic_image[0] - first.periodic_image[0],
@@ -495,20 +531,29 @@ class PeriodicEmbedder:
         self,
         *,
         first_motif,
+        first_spec: MonomerSpec,
         first_rotation: Mat3,
         second_motif,
+        second_spec: MonomerSpec,
         second_rotation: Mat3,
         direction: Vec3,
         bridge_target: float,
+        template_id: str | None,
     ) -> Vec3:
-        first_origin = matmul_vec(first_rotation, first_motif.frame.origin)
-        second_origin = matmul_vec(second_rotation, second_motif.frame.origin)
+        first_origin = matmul_vec(first_rotation, effective_motif_origin(template_id, first_spec, first_motif))
+        second_origin = matmul_vec(second_rotation, effective_motif_origin(template_id, second_spec, second_motif))
         return add(scale(direction, bridge_target), sub(first_origin, second_origin))
 
     def _motif_direction_seed(self, motif) -> Vec3:
         if norm(motif.frame.origin) > 1e-6:
             return motif.frame.origin
         return motif.frame.primary
+
+    def _shared_template_id(self, outcome: AssignmentOutcome) -> str | None:
+        template_ids = {event.template_id for event in outcome.events}
+        if len(template_ids) == 1:
+            return next(iter(template_ids))
+        return None
 
     def _single_node_bipartite_cell_kind(
         self,
@@ -558,9 +603,15 @@ class PeriodicEmbedder:
         self,
         spec: MonomerSpec,
         target_directions: tuple[Vec3, ...],
+        *,
+        template_id: str | None = None,
     ) -> tuple[Mat3, tuple[float, ...]]:
         motif_vectors = [
-            motif.frame.origin if norm(motif.frame.origin) > 1e-6 else motif.frame.primary
+            (
+                effective_motif_origin(template_id, spec, motif)
+                if norm(effective_motif_origin(template_id, spec, motif)) > 1e-6
+                else motif.frame.primary
+            )
             for motif in spec.motifs
         ]
         if len(motif_vectors) != len(target_directions):

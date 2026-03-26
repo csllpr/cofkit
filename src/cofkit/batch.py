@@ -33,12 +33,14 @@ from .monomer_library import BinaryBridgeLibraryLoader, MonomerRoleResolver
 from .optimizer import ContinuousOptimizer, OptimizerConfig
 from .planner import AssignmentPlan, NetPlan, NetPlanner
 from .product_graph import PeriodicProductGraph
+from .post_build_conversions import annotate_post_build_conversions
 from .reactions import (
     BinaryBridgeRole,
     ReactionLibrary,
     bridge_target_distance,
 )
 from .indexed_topology_layouts import ExpandedIndexedNodeSite, ExpandedIndexedTopology, expand_indexed_topology
+from .linkage_geometry import effective_motif_origin
 from .scoring import CandidateScorer
 from .search import AssignmentOutcome, AssignmentSolver
 from .single_node_topologies import (
@@ -99,6 +101,7 @@ class BatchGenerationConfig:
     rdkit_random_seed: int = 0xC0F
     retain_top_results: int = 25
     enumerate_all_topologies: bool = True
+    post_build_conversions: tuple[str, ...] = ()
     write_cif: bool = True
     max_cif_exports: int | None = None
     max_workers: int = 8
@@ -1429,11 +1432,12 @@ class BatchStructureGenerator:
         topology,
     ) -> AssignmentOutcome:
         layout = resolve_single_node_topology_layout(topology.id)
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
         node_motif_ids = self._ordered_planar_motif_ids(node_spec)
         edge_directions = layout.directions
         image_sequence = ((0, 0, 0), (-1, 0, 0), (0, -1, 0))
         linker_orders = [
-            self._linker_layout_for_direction(linker_spec, direction).motif_ids
+            self._linker_layout_for_direction(linker_spec, direction, template_id=effective_template_id).motif_ids
             for direction in edge_directions
         ]
 
@@ -1524,11 +1528,20 @@ class BatchStructureGenerator:
         topology,
     ) -> EmbeddingResult:
         layout = resolve_single_node_topology_layout(topology.id)
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
         bridge_target = self._template_target_distance(template)
         canonical_a = layout.directions
         canonical_b = tuple(scale(direction, -1.0) for direction in canonical_a)
-        node_rotation_a, node_motif_ids, node_offsets_a = self._rotation_for_planar_motifs(node_spec, canonical_a)
-        node_rotation_b, _node_motif_ids_b, node_offsets_b = self._rotation_for_planar_motifs(node_spec, canonical_b)
+        node_rotation_a, node_motif_ids, node_offsets_a = self._rotation_for_planar_motifs(
+            node_spec,
+            canonical_a,
+            template_id=effective_template_id,
+        )
+        node_rotation_b, _node_motif_ids_b, node_offsets_b = self._rotation_for_planar_motifs(
+            node_spec,
+            canonical_b,
+            template_id=effective_template_id,
+        )
         node_motifs = {motif.id: motif for motif in node_spec.motifs}
         edge_directions: list[Vec3] = []
         linker_layouts: list[_LinkerLayout] = []
@@ -1539,17 +1552,21 @@ class BatchStructureGenerator:
             node_motif = node_motifs[node_motif_id]
             direction = self._node_linker_edge_direction(
                 motif=node_motif,
+                monomer=node_spec,
                 node_rotation_a=node_rotation_a,
                 node_rotation_b=node_rotation_b,
+                template_id=effective_template_id,
             )
-            linker_layout = self._linker_layout_for_direction(linker_spec, direction)
+            linker_layout = self._linker_layout_for_direction(linker_spec, direction, template_id=effective_template_id)
             reactive_site_span = bridge_target + linker_layout.span + bridge_target
             edge_vector = self._generalized_single_node_edge_vector(
                 node_motif,
+                monomer=node_spec,
                 node_rotation_a=node_rotation_a,
                 node_rotation_b=node_rotation_b,
                 direction=direction,
                 reactive_site_span=reactive_site_span,
+                template_id=effective_template_id,
             )
             edge_directions.append(direction)
             linker_layouts.append(linker_layout)
@@ -1587,8 +1604,22 @@ class BatchStructureGenerator:
         node_images = ((0, 0, 0), (-1, 0, 0), (0, -1, 0))
         for edge_index, (direction, image, linker_layout) in enumerate(zip(edge_directions, node_images, linker_layouts), start=1):
             node_motif_id = node_motif_ids[edge_index - 1]
-            node_a_origin = self._world_motif_origin(cell, monomer_poses["m1"], node_motifs[node_motif_id], (0, 0, 0))
-            node_b_origin = self._world_motif_origin(cell, monomer_poses["m2"], node_motifs[node_motif_id], image)
+            node_a_origin = self._world_motif_origin(
+                cell,
+                monomer_poses["m1"],
+                node_spec,
+                node_motifs[node_motif_id],
+                (0, 0, 0),
+                template_id=effective_template_id,
+            )
+            node_b_origin = self._world_motif_origin(
+                cell,
+                monomer_poses["m2"],
+                node_spec,
+                node_motifs[node_motif_id],
+                image,
+                template_id=effective_template_id,
+            )
             bridge_direction = self._safe_normalize(sub(node_b_origin, node_a_origin))
             desired_a = add(node_a_origin, scale(bridge_direction, bridge_target))
             desired_b = add(node_b_origin, scale(bridge_direction, -bridge_target))
@@ -1644,11 +1675,13 @@ class BatchStructureGenerator:
     ) -> AssignmentOutcome:
         if len(linker_spec.motifs) != 2:
             raise ValueError("single-node node-linker placement requires a ditopic linker")
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
 
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
             {node_site.id: node_spec for node_site in expanded.node_sites},
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
         linker_instance_ids = {
             edge.id: f"l{index + 1}" for index, edge in enumerate(expanded.edge_sites)
@@ -1722,7 +1755,7 @@ class BatchStructureGenerator:
         events: list[ReactionEvent] = []
         for edge in expanded.edge_sites:
             direction = self._safe_normalize(edge.base_vector)
-            linker_layout = self._linker_layout_for_direction(linker_spec, direction)
+            linker_layout = self._linker_layout_for_direction(linker_spec, direction, template_id=effective_template_id)
             linker_instance_id = linker_instance_ids[edge.id]
             start_motif_id = str(
                 node_placements[edge.start_node_id].motif_id_by_edge[self._edge_endpoint_key(edge.id, "start")]
@@ -1788,11 +1821,13 @@ class BatchStructureGenerator:
         topology,
         expanded: ExpandedSingleNodeTopology,
     ) -> EmbeddingResult:
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
         bridge_target = self._template_target_distance(template)
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
             {node_site.id: node_spec for node_site in expanded.node_sites},
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
         node_motifs = {motif.id: motif for motif in node_spec.motifs}
         linker_layouts: dict[str, _LinkerLayout] = {}
@@ -1801,6 +1836,8 @@ class BatchStructureGenerator:
         reactive_site_distances: list[float] = []
         for edge in expanded.edge_sites:
             direction = self._safe_normalize(edge.base_vector)
+            start_spec = node_spec
+            end_spec = node_spec
             start_placement = node_placements[edge.start_node_id]
             end_placement = node_placements[edge.end_node_id]
             start_motif = node_motifs[
@@ -1813,16 +1850,27 @@ class BatchStructureGenerator:
                 start_normal = matmul_vec(start_placement.rotation, start_motif.frame.normal)
                 end_normal = matmul_vec(end_placement.rotation, end_motif.frame.normal)
                 target_normal = self._bridge_plane_normal(direction, start_normal, end_normal)
-                linker_layout = self._linker_layout_for_axes(linker_spec, direction, target_normal)
+                linker_layout = self._linker_layout_for_axes(
+                    linker_spec,
+                    direction,
+                    target_normal,
+                    template_id=effective_template_id,
+                )
             else:
-                linker_layout = self._linker_layout_for_direction(linker_spec, direction)
+                linker_layout = self._linker_layout_for_direction(linker_spec, direction, template_id=effective_template_id)
             linker_layouts[edge.id] = linker_layout
             reactive_site_span = bridge_target + linker_layout.span + bridge_target
             edge_vector = add(
                 scale(direction, reactive_site_span),
                 sub(
-                    matmul_vec(start_placement.rotation, start_motif.frame.origin),
-                    matmul_vec(end_placement.rotation, end_motif.frame.origin),
+                    matmul_vec(
+                        start_placement.rotation,
+                        effective_motif_origin(effective_template_id, node_spec, start_motif),
+                    ),
+                    matmul_vec(
+                        end_placement.rotation,
+                        effective_motif_origin(effective_template_id, node_spec, end_motif),
+                    ),
                 ),
             )
             target_edge_vectors[edge.id] = edge_vector
@@ -1858,6 +1906,8 @@ class BatchStructureGenerator:
                 for instance in outcome.monomer_instances
                 if instance.metadata.get("topology_edge_id") == edge.id
             )
+            start_spec = node_spec
+            end_spec = node_spec
             start_placement = node_placements[edge.start_node_id]
             end_placement = node_placements[edge.end_node_id]
             start_motif = node_motifs[
@@ -1866,8 +1916,22 @@ class BatchStructureGenerator:
             end_motif = node_motifs[
                 str(end_placement.motif_id_by_edge[self._edge_endpoint_key(edge.id, "end")])
             ]
-            start_origin = self._world_motif_origin(cell, monomer_poses[edge.start_node_id], start_motif, (0, 0, 0))
-            end_origin = self._world_motif_origin(cell, monomer_poses[edge.end_node_id], end_motif, edge.end_image)
+            start_origin = self._world_motif_origin(
+                cell,
+                monomer_poses[edge.start_node_id],
+                node_spec,
+                start_motif,
+                (0, 0, 0),
+                template_id=effective_template_id,
+            )
+            end_origin = self._world_motif_origin(
+                cell,
+                monomer_poses[edge.end_node_id],
+                node_spec,
+                end_motif,
+                edge.end_image,
+                template_id=effective_template_id,
+            )
             bridge_direction = self._safe_normalize(sub(end_origin, start_origin))
             desired_start = add(start_origin, scale(bridge_direction, bridge_target))
             desired_end = add(end_origin, scale(bridge_direction, -bridge_target))
@@ -1927,6 +1991,7 @@ class BatchStructureGenerator:
             raise ValueError(
                 f"topology {topology.id!r} is not bipartite and cannot host a single-node node-node alternation"
             )
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
 
         spec_by_node_id = {
             node_site.id: amine_spec if node_site.sublattice == 0 else aldehyde_spec
@@ -1936,6 +2001,7 @@ class BatchStructureGenerator:
             expanded.node_sites,
             spec_by_node_id,
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
 
         slot_to_monomer: dict[str, str] = {}
@@ -2030,6 +2096,7 @@ class BatchStructureGenerator:
         topology,
         expanded: ExpandedSingleNodeTopology,
     ) -> EmbeddingResult:
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
         bridge_target = self._template_target_distance(template)
         spec_by_node_id = {
             node_site.id: amine_spec if node_site.sublattice == 0 else aldehyde_spec
@@ -2039,6 +2106,7 @@ class BatchStructureGenerator:
             expanded.node_sites,
             spec_by_node_id,
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
         motifs_by_spec = {
             amine_spec.id: {motif.id: motif for motif in amine_spec.motifs},
@@ -2062,8 +2130,14 @@ class BatchStructureGenerator:
             edge_vector = add(
                 scale(direction, bridge_target),
                 sub(
-                    matmul_vec(start_placement.rotation, start_motif.frame.origin),
-                    matmul_vec(end_placement.rotation, end_motif.frame.origin),
+                    matmul_vec(
+                        start_placement.rotation,
+                        effective_motif_origin(effective_template_id, start_spec, start_motif),
+                    ),
+                    matmul_vec(
+                        end_placement.rotation,
+                        effective_motif_origin(effective_template_id, end_spec, end_motif),
+                    ),
                 ),
             )
             target_edge_vectors[edge.id] = edge_vector
@@ -2194,11 +2268,13 @@ class BatchStructureGenerator:
     ) -> AssignmentOutcome:
         if len(linker_spec.motifs) != 2:
             raise ValueError("indexed node-linker placement requires a ditopic linker")
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
 
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
             {node_site.id: node_spec for node_site in expanded.node_sites},
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
         linker_instance_ids = {
             edge.id: f"l{index + 1}" for index, edge in enumerate(expanded.edge_sites)
@@ -2274,7 +2350,7 @@ class BatchStructureGenerator:
         events: list[ReactionEvent] = []
         for edge in expanded.edge_sites:
             direction = self._safe_normalize(edge.base_vector)
-            linker_layout = self._linker_layout_for_direction(linker_spec, direction)
+            linker_layout = self._linker_layout_for_direction(linker_spec, direction, template_id=effective_template_id)
             linker_instance_id = linker_instance_ids[edge.id]
             start_motif_id = str(
                 node_placements[edge.start_node_id].motif_id_by_edge[self._edge_endpoint_key(edge.id, "start")]
@@ -2340,11 +2416,13 @@ class BatchStructureGenerator:
         topology,
         expanded: ExpandedIndexedTopology,
     ) -> EmbeddingResult:
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
         bridge_target = self._template_target_distance(template)
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
             {node_site.id: node_spec for node_site in expanded.node_sites},
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
         node_motifs = {motif.id: motif for motif in node_spec.motifs}
         linker_layouts: dict[str, _LinkerLayout] = {}
@@ -2353,6 +2431,8 @@ class BatchStructureGenerator:
         reactive_site_distances: list[float] = []
         for edge in expanded.edge_sites:
             direction = self._safe_normalize(edge.base_vector)
+            start_spec = node_spec
+            end_spec = node_spec
             start_placement = node_placements[edge.start_node_id]
             end_placement = node_placements[edge.end_node_id]
             start_motif = node_motifs[
@@ -2365,16 +2445,27 @@ class BatchStructureGenerator:
                 start_normal = matmul_vec(start_placement.rotation, start_motif.frame.normal)
                 end_normal = matmul_vec(end_placement.rotation, end_motif.frame.normal)
                 target_normal = self._bridge_plane_normal(direction, start_normal, end_normal)
-                linker_layout = self._linker_layout_for_axes(linker_spec, direction, target_normal)
+                linker_layout = self._linker_layout_for_axes(
+                    linker_spec,
+                    direction,
+                    target_normal,
+                    template_id=effective_template_id,
+                )
             else:
-                linker_layout = self._linker_layout_for_direction(linker_spec, direction)
+                linker_layout = self._linker_layout_for_direction(linker_spec, direction, template_id=effective_template_id)
             linker_layouts[edge.id] = linker_layout
             reactive_site_span = bridge_target + linker_layout.span + bridge_target
             edge_vector = add(
                 scale(direction, reactive_site_span),
                 sub(
-                    matmul_vec(start_placement.rotation, start_motif.frame.origin),
-                    matmul_vec(end_placement.rotation, end_motif.frame.origin),
+                    matmul_vec(
+                        start_placement.rotation,
+                        effective_motif_origin(effective_template_id, start_spec, start_motif),
+                    ),
+                    matmul_vec(
+                        end_placement.rotation,
+                        effective_motif_origin(effective_template_id, end_spec, end_motif),
+                    ),
                 ),
             )
             target_edge_vectors[edge.id] = edge_vector
@@ -2412,6 +2503,8 @@ class BatchStructureGenerator:
                 for instance in outcome.monomer_instances
                 if instance.metadata.get("topology_edge_id") == edge.id
             )
+            start_spec = node_spec
+            end_spec = node_spec
             start_placement = node_placements[edge.start_node_id]
             end_placement = node_placements[edge.end_node_id]
             start_motif = node_motifs[
@@ -2420,8 +2513,22 @@ class BatchStructureGenerator:
             end_motif = node_motifs[
                 str(end_placement.motif_id_by_edge[self._edge_endpoint_key(edge.id, "end")])
             ]
-            start_origin = self._world_motif_origin(cell, monomer_poses[edge.start_node_id], start_motif, (0, 0, 0))
-            end_origin = self._world_motif_origin(cell, monomer_poses[edge.end_node_id], end_motif, edge.end_image)
+            start_origin = self._world_motif_origin(
+                cell,
+                monomer_poses[edge.start_node_id],
+                start_spec,
+                start_motif,
+                (0, 0, 0),
+                template_id=effective_template_id,
+            )
+            end_origin = self._world_motif_origin(
+                cell,
+                monomer_poses[edge.end_node_id],
+                end_spec,
+                end_motif,
+                edge.end_image,
+                template_id=effective_template_id,
+            )
             bridge_direction = self._safe_normalize(sub(end_origin, start_origin))
             desired_start = add(start_origin, scale(bridge_direction, bridge_target))
             desired_end = add(end_origin, scale(bridge_direction, -bridge_target))
@@ -2480,10 +2587,12 @@ class BatchStructureGenerator:
         expanded: ExpandedIndexedTopology,
         spec_by_node_id: Mapping[str, MonomerSpec],
     ) -> AssignmentOutcome:
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
         placements = self._expanded_node_site_placements(
             expanded.node_sites,
             spec_by_node_id,
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
 
         slot_to_monomer: dict[str, str] = {}
@@ -2581,11 +2690,13 @@ class BatchStructureGenerator:
         expanded: ExpandedIndexedTopology,
         spec_by_node_id: Mapping[str, MonomerSpec],
     ) -> EmbeddingResult:
+        effective_template_id = template.id if topology.dimensionality == "2D" else None
         bridge_target = self._template_target_distance(template)
         placements = self._expanded_node_site_placements(
             expanded.node_sites,
             spec_by_node_id,
             dimensionality=topology.dimensionality,
+            template_id=effective_template_id,
         )
         motifs_by_spec = {
             first_spec.id: {motif.id: motif for motif in first_spec.motifs},
@@ -2609,8 +2720,14 @@ class BatchStructureGenerator:
             edge_vector = add(
                 scale(direction, bridge_target),
                 sub(
-                    matmul_vec(start_placement.rotation, start_motif.frame.origin),
-                    matmul_vec(end_placement.rotation, end_motif.frame.origin),
+                    matmul_vec(
+                        start_placement.rotation,
+                        effective_motif_origin(effective_template_id, start_spec, start_motif),
+                    ),
+                    matmul_vec(
+                        end_placement.rotation,
+                        effective_motif_origin(effective_template_id, end_spec, end_motif),
+                    ),
                 ),
             )
             target_edge_vectors[edge.id] = edge_vector
@@ -2671,14 +2788,23 @@ class BatchStructureGenerator:
         spec_by_node_id: Mapping[str, MonomerSpec],
         *,
         dimensionality: str,
+        template_id: str | None = None,
     ) -> dict[str, _NodeSitePlacement]:
         placements: dict[str, _NodeSitePlacement] = {}
         for node_site in node_sites:
             spec = spec_by_node_id[node_site.id]
             if dimensionality == "3D":
-                rotation, motif_ids, offsets = self._rotation_for_spatial_motifs(spec, node_site.directions)
+                rotation, motif_ids, offsets = self._rotation_for_spatial_motifs(
+                    spec,
+                    node_site.directions,
+                    template_id=template_id,
+                )
             else:
-                rotation, motif_ids, offsets = self._rotation_for_planar_motifs(spec, node_site.directions)
+                rotation, motif_ids, offsets = self._rotation_for_planar_motifs(
+                    spec,
+                    node_site.directions,
+                    template_id=template_id,
+                )
             motif_id_by_edge = {
                 edge_id: motif_id for edge_id, motif_id in zip(node_site.edge_ids, motif_ids)
             }
@@ -3080,7 +3206,7 @@ class BatchStructureGenerator:
         if project.stacking_mode == "disabled":
             flags.append("stacking_disabled")
 
-        return Candidate(
+        candidate = Candidate(
             id=candidate_id,
             score=scoring.total,
             state=optimization.state,
@@ -3109,6 +3235,11 @@ class BatchStructureGenerator:
                 "score_breakdown": dict(scoring.breakdown),
                 "score_metadata": dict(scoring.metadata),
             },
+        )
+        return annotate_post_build_conversions(
+            candidate,
+            monomer_specs,
+            self.config.post_build_conversions,
         )
 
     def _resolve_supported_single_node_layout(self, topology_id: str):
@@ -3488,6 +3619,15 @@ class BatchStructureGenerator:
                 "reactant_connectivities": dict(reactant_connectivities),
                 "reactant_roles": reactant_roles,
                 "template_id": template_id,
+                **(
+                    {
+                        "post_build_conversions": dict(
+                            candidate.metadata["post_build_conversions"]
+                        )
+                    }
+                    if "post_build_conversions" in candidate.metadata
+                    else {}
+                ),
             },
         )
 
@@ -3846,13 +3986,19 @@ class BatchStructureGenerator:
         self,
         spec: MonomerSpec,
         target_directions: tuple[Vec3, ...],
+        *,
+        template_id: str | None = None,
     ) -> tuple[Mat3, tuple[str, ...], tuple[float, ...]]:
         motifs = sorted(
             spec.motifs,
             key=lambda motif: (atan2(motif.frame.origin[1], motif.frame.origin[0]), motif.id),
         )
         motif_vectors = [
-            motif.frame.origin if norm(motif.frame.origin) > 1e-6 else motif.frame.primary
+            (
+                effective_motif_origin(template_id, spec, motif)
+                if norm(effective_motif_origin(template_id, spec, motif)) > 1e-6
+                else motif.frame.primary
+            )
             for motif in motifs
         ]
         if len(motif_vectors) != len(target_directions):
@@ -3885,9 +4031,12 @@ class BatchStructureGenerator:
         self,
         spec: MonomerSpec,
         target_directions: tuple[Vec3, ...],
+        *,
+        template_id: str | None = None,
     ) -> tuple[Mat3, tuple[str, ...], tuple[float, ...]]:
         cache_key = (
             spec.id,
+            template_id,
             tuple(tuple(round(value, 6) for value in direction) for direction in target_directions),
         )
         with self._spatial_rotation_cache_lock:
@@ -3926,7 +4075,15 @@ class BatchStructureGenerator:
             for target_index, motif_index in enumerate(motif_indices):
                 rotated_direction = self._safe_normalize(matmul_vec(rotation, local_directions[motif_index]))
                 alignment_score += dot(rotated_direction, normalized_targets[target_index])
-                offsets.append(dot(matmul_vec(rotation, motifs[motif_index].frame.origin), normalized_targets[target_index]))
+                offsets.append(
+                    dot(
+                        matmul_vec(
+                            rotation,
+                            effective_motif_origin(template_id, spec, motifs[motif_index]),
+                        ),
+                        normalized_targets[target_index],
+                    )
+                )
             if best_score is None or alignment_score > best_score:
                 best_score = alignment_score
                 best_result = (
@@ -3988,11 +4145,15 @@ class BatchStructureGenerator:
         spec: MonomerSpec,
         target_direction: Vec3,
         target_normal: Vec3,
+        *,
+        template_id: str | None = None,
     ) -> _LinkerLayout:
         if len(spec.motifs) != 2:
             raise ValueError("single-node node-linker placement requires a ditopic linker")
         first, second = spec.motifs
-        local_primary = sub(second.frame.origin, first.frame.origin)
+        first_origin = effective_motif_origin(template_id, spec, first)
+        second_origin = effective_motif_origin(template_id, spec, second)
+        local_primary = sub(second_origin, first_origin)
         if norm(local_primary) < 1e-8:
             local_primary = first.frame.primary
         normal_seed = add(first.frame.normal, second.frame.normal)
@@ -4000,28 +4161,36 @@ class BatchStructureGenerator:
             normal_seed = target_normal
         synthetic_frame = Frame(origin=(0.0, 0.0, 0.0), primary=local_primary, normal=normal_seed)
         rotation = rotation_from_frame_to_axes(synthetic_frame, target_direction, target_normal)
-        transformed_a = matmul_vec(rotation, first.frame.origin)
-        transformed_b = matmul_vec(rotation, second.frame.origin)
+        transformed_a = matmul_vec(rotation, first_origin)
+        transformed_b = matmul_vec(rotation, second_origin)
         projected_a = dot(transformed_a, target_direction)
         projected_b = dot(transformed_b, target_direction)
         if projected_a <= projected_b:
             first_motif, second_motif = first, second
+            first_local_origin, second_local_origin = first_origin, second_origin
             first_projected, second_projected = projected_a, projected_b
         else:
             first_motif, second_motif = second, first
+            first_local_origin, second_local_origin = second_origin, first_origin
             first_projected, second_projected = projected_b, projected_a
         midpoint = 0.5 * (first_projected + second_projected)
         return _LinkerLayout(
             rotation=rotation,
             motif_ids=(first_motif.id, second_motif.id),
-            local_origins=(first_motif.frame.origin, second_motif.frame.origin),
+            local_origins=(first_local_origin, second_local_origin),
             offset_a=midpoint - first_projected,
             offset_b=second_projected - midpoint,
-            span=norm(sub(second.frame.origin, first.frame.origin)),
+            span=norm(sub(second_origin, first_origin)),
         )
 
-    def _linker_layout_for_direction(self, spec: MonomerSpec, target_direction: Vec3) -> _LinkerLayout:
-        return self._linker_layout_for_axes(spec, target_direction, (0.0, 0.0, 1.0))
+    def _linker_layout_for_direction(
+        self,
+        spec: MonomerSpec,
+        target_direction: Vec3,
+        *,
+        template_id: str | None = None,
+    ) -> _LinkerLayout:
+        return self._linker_layout_for_axes(spec, target_direction, (0.0, 0.0, 1.0), template_id=template_id)
 
     def _bridge_plane_normal(self, bridge_direction: Vec3, start_normal: Vec3, end_normal: Vec3) -> Vec3:
         combined = add(start_normal, end_normal)
@@ -4035,10 +4204,13 @@ class BatchStructureGenerator:
         self,
         *,
         motif,
+        monomer: MonomerSpec,
         node_rotation_a: Mat3,
         node_rotation_b: Mat3,
+        template_id: str | None = None,
     ) -> Vec3:
-        local_direction = motif.frame.origin if norm(motif.frame.origin) > 1e-6 else motif.frame.primary
+        local_origin = effective_motif_origin(template_id, monomer, motif)
+        local_direction = local_origin if norm(local_origin) > 1e-6 else motif.frame.primary
         direction_a = self._safe_normalize(matmul_vec(node_rotation_a, local_direction))
         direction_b = scale(self._safe_normalize(matmul_vec(node_rotation_b, local_direction)), -1.0)
         combined = add(direction_a, direction_b)
@@ -4049,14 +4221,17 @@ class BatchStructureGenerator:
     def _generalized_single_node_edge_vector(
         self,
         motif,
+        monomer: MonomerSpec,
         *,
         node_rotation_a: Mat3,
         node_rotation_b: Mat3,
         direction: Vec3,
         reactive_site_span: float,
+        template_id: str | None = None,
     ) -> Vec3:
-        rotated_a = matmul_vec(node_rotation_a, motif.frame.origin)
-        rotated_b = matmul_vec(node_rotation_b, motif.frame.origin)
+        local_origin = effective_motif_origin(template_id, monomer, motif)
+        rotated_a = matmul_vec(node_rotation_a, local_origin)
+        rotated_b = matmul_vec(node_rotation_b, local_origin)
         return add(scale(direction, reactive_site_span), sub(rotated_a, rotated_b))
 
     def _generalized_single_node_cell(self, edge_vectors: tuple[Vec3, Vec3, Vec3]) -> tuple[Vec3, Vec3, Vec3]:
@@ -4071,10 +4246,19 @@ class BatchStructureGenerator:
         self,
         cell: tuple[Vec3, Vec3, Vec3],
         pose: Pose,
+        monomer: MonomerSpec,
         motif,
         image: tuple[int, int, int],
+        *,
+        template_id: str | None = None,
     ) -> Vec3:
-        base = add(pose.translation, matmul_vec(pose.rotation_matrix, motif.frame.origin))
+        base = add(
+            pose.translation,
+            matmul_vec(
+                pose.rotation_matrix,
+                effective_motif_origin(template_id, monomer, motif),
+            ),
+        )
         return add(base, self._periodic_offset(cell, image))
 
     def _periodic_offset(self, cell: tuple[Vec3, Vec3, Vec3], image: tuple[int, int, int]) -> Vec3:

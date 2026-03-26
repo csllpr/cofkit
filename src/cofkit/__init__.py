@@ -3,6 +3,7 @@ from .batch import (
     BatchStructureGenerator,
 )
 from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
+from .build_workflows import BuildWorkflowDefinition, BuildWorkflowRegistry, builtin_build_workflow_registry
 from .cif import CIFExportResult, CIFWriter, candidate_to_cif, write_candidate_cif
 from .chem import (
     MotifDetector,
@@ -31,6 +32,17 @@ from .model import (
 from .monomer_library import BinaryBridgeLibraryLoader, MonomerRoleResolver
 from .optimizer import ContinuousOptimizer, OptimizationResult, OptimizerConfig
 from .planner import AssignmentPlan, NetPlan, NetPlanner, TopologyHint
+from .post_build_conversions import (
+    MonomerEligibilityAssessment,
+    PostBuildConversionAssessment,
+    PostBuildConversionProfile,
+    PostBuildConversionRegistry,
+    assess_imine_cof_aldehyde_monomer,
+    assess_imine_cof_amine_monomer,
+    builtin_post_build_conversion_registry,
+    is_imine_cof_aldehyde_monomer,
+    is_imine_cof_amine_monomer,
+)
 from .product_graph import PeriodicProductGraph
 from .reaction_realization import ReactionEventRealizationRegistry, ReactionRealizer
 from .reactions import ReactionLibrary
@@ -74,6 +86,8 @@ __all__ = [
     "BatchPairSummary",
     "BatchRunSummary",
     "BatchStructureGenerator",
+    "BuildWorkflowDefinition",
+    "BuildWorkflowRegistry",
     "BinaryBridgeLibraryLoader",
     "BuiltBatchMonomer",
     "CIFExportResult",
@@ -87,6 +101,8 @@ __all__ = [
     "BridgeEventMetrics",
     "BatchOutputClassificationSummary",
     "build_rdkit_monomer",
+    "builtin_build_workflow_registry",
+    "builtin_post_build_conversion_registry",
     "BridgeGeometryReport",
     "EmbeddingConfig",
     "EmbeddingResult",
@@ -94,6 +110,7 @@ __all__ = [
     "MotifDetector",
     "MotifKindDefinition",
     "MotifKindRegistry",
+    "MonomerEligibilityAssessment",
     "MonomerInstance",
     "MonomerRoleResolver",
     "MonomerSpec",
@@ -105,6 +122,9 @@ __all__ = [
     "PeriodicEmbedder",
     "PeriodicProductGraph",
     "Pose",
+    "PostBuildConversionAssessment",
+    "PostBuildConversionProfile",
+    "PostBuildConversionRegistry",
     "RDKitMotifBuilder",
     "ReactiveMotif",
     "ReactionEvent",
@@ -122,6 +142,8 @@ __all__ = [
     "BuiltinTopologyFallback",
     "RCSRArchiveImporter",
     "all_topology_hints",
+    "assess_imine_cof_aldehyde_monomer",
+    "assess_imine_cof_amine_monomer",
     "candidate_to_cif",
     "configured_rcsr_archives",
     "classify_batch_output",
@@ -138,5 +160,7 @@ __all__ = [
     "list_topology_index",
     "load_topology",
     "motif_pseudo_atom_symbol",
+    "is_imine_cof_aldehyde_monomer",
+    "is_imine_cof_amine_monomer",
     "write_candidate_cif",
 ]

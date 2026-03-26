@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import CIFWriter, COFEngine, COFProject, build_rdkit_monomer
+from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 from cofkit.reaction_realization import ReactionRealizer
 
 try:
@@ -15,6 +16,25 @@ except ImportError:  # pragma: no cover - environment-dependent
 
 @unittest.skipIf(Chem is None, "RDKit is not available")
 class RDKitMonomerTests(unittest.TestCase):
+    def _world_position(self, candidate, instance_id, local_position, *, image=(0, 0, 0)):
+        pose = candidate.state.monomer_poses[instance_id]
+        cell = candidate.state.cell
+        return add(
+            add(pose.translation, matmul_vec(pose.rotation_matrix, local_position)),
+            add(
+                add(scale(cell[0], image[0]), scale(cell[1], image[1])),
+                scale(cell[2], image[2]),
+            ),
+        )
+
+    def _angle(self, point_a, point_b, point_c) -> float:
+        left = normalize(sub(point_a, point_b))
+        right = normalize(sub(point_c, point_b))
+        cosine = max(-1.0, min(1.0, dot(left, right)))
+        import math
+
+        return math.degrees(math.acos(cosine))
+
     def test_build_rdkit_monomer_detects_tapb_contextual_amines(self):
         monomer = build_rdkit_monomer(
             "tapb",
@@ -243,7 +263,14 @@ class RDKitMonomerTests(unittest.TestCase):
             for instance_id, atoms in detailed_realization.atoms_by_instance.items()
             for atom in atoms
         }
-        product_connections = realizer._product_connection_map(candidate, {"tapb": tapb, "tfb": tfb})
+        product_connections = realizer._product_connection_map(
+            candidate,
+            {"tapb": tapb, "tfb": tfb},
+            atom_position_overrides={
+                instance_id: {atom.atom_id: atom.local_position for atom in atoms}
+                for instance_id, atoms in detailed_realization.atoms_by_instance.items()
+            },
+        )
         for motif in tfb.motifs:
             reactive_atom_id = motif.metadata["reactive_atom_id"]
             retained_hydrogen_atom_ids = realizer._attached_hydrogen_ids_for_parent(
@@ -262,10 +289,55 @@ class RDKitMonomerTests(unittest.TestCase):
                 hydrogen_local[1] - parent_local[1],
                 hydrogen_local[2] - parent_local[2],
             )
+            self.assertGreater(realizer._distance(parent_local, hydrogen_local), 1.0)
+            self.assertLess(realizer._distance(parent_local, hydrogen_local), 1.15)
             external_connections = product_connections[("m2", reactive_atom_id)]
             self.assertEqual(len(external_connections), 1)
             imine_nitrogen_vector = external_connections[0][2]
             self.assertGreater(realizer._distance(hydrogen_vector, imine_nitrogen_vector), 1.6)
+
+        realized_by_instance = {
+            instance_id: {atom.atom_id: atom.local_position for atom in atoms}
+            for instance_id, atoms in detailed_realization.atoms_by_instance.items()
+        }
+        carbon_anchor_atom_id = aldehyde_motif.metadata["anchor_atom_id"]
+        nitrogen_anchor_atom_id = amine_motif.metadata["anchor_atom_id"]
+        carbon_atom_id = aldehyde_motif.metadata["reactive_atom_id"]
+        nitrogen_atom_id = amine_motif.metadata["reactive_atom_id"]
+        carbon_anchor_world = self._world_position(
+            candidate,
+            aldehyde_ref.monomer_instance_id,
+            realized_by_instance[aldehyde_ref.monomer_instance_id][carbon_anchor_atom_id],
+            image=aldehyde_ref.periodic_image,
+        )
+        carbon_world = self._world_position(
+            candidate,
+            aldehyde_ref.monomer_instance_id,
+            realized_by_instance[aldehyde_ref.monomer_instance_id][carbon_atom_id],
+            image=aldehyde_ref.periodic_image,
+        )
+        nitrogen_world = self._world_position(
+            candidate,
+            amine_ref.monomer_instance_id,
+            realized_by_instance[amine_ref.monomer_instance_id][nitrogen_atom_id],
+            image=amine_ref.periodic_image,
+        )
+        nitrogen_anchor_world = self._world_position(
+            candidate,
+            amine_ref.monomer_instance_id,
+            realized_by_instance[amine_ref.monomer_instance_id][nitrogen_anchor_atom_id],
+            image=amine_ref.periodic_image,
+        )
+        carbon_angle = self._angle(carbon_anchor_world, carbon_world, nitrogen_world)
+        nitrogen_angle = self._angle(carbon_world, nitrogen_world, nitrogen_anchor_world)
+        anchor_distance = realizer._distance(carbon_anchor_world, nitrogen_anchor_world)
+
+        self.assertGreater(anchor_distance, 3.7)
+        self.assertLess(anchor_distance, 3.9)
+        self.assertGreater(carbon_angle, 120.0)
+        self.assertLess(carbon_angle, 135.0)
+        self.assertGreater(nitrogen_angle, 120.0)
+        self.assertLess(nitrogen_angle, 135.0)
 
 
 if __name__ == "__main__":
