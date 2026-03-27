@@ -39,7 +39,8 @@ The current package still keeps mandatory runtime dependencies at zero so the sc
 - symmetry reduction beyond raw indexed topology filtering
 - full general topology coverage beyond the current supported one-node families plus the present indexed-layout subset
 - torsion-aware or force-field-backed optimization beyond the current lightweight pass
-- ring-closure geometry models
+- stable ring-closure geometry models suitable for public CLI exposure
+- a supported public benzothiazole conversion workflow; the current sulfur-enabled imine conversion prototype remains internal-only until its local geometry is more reliable
 - chemically faithful atomistic CIF generation for arbitrary monomers without fallback/pseudo-sites
 - semiempirical / force-field cleanup
 - any stacking exploration, registry search, or stacking score terms

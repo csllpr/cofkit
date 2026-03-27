@@ -64,11 +64,7 @@ class PeriodicEmbedder:
         self._validate_single_node_builder_support(topology, outcome, monomer_specs)
         if self._is_single_node_bipartite_case(topology, outcome, monomer_specs):
             return self._embed_single_node_bipartite(outcome, monomer_specs, templates)
-        shared_template_id = (
-            self._shared_template_id(outcome)
-            if topology is None or getattr(topology, "dimensionality", "2D") == "2D"
-            else None
-        )
+        shared_template_id = self._shared_template_id(outcome)
         template_distances = [
             self._template_target_distance(templates[event.template_id]) for event in outcome.events
         ]
@@ -127,11 +123,7 @@ class PeriodicEmbedder:
             self._template_target_distance(templates[event.template_id]) for event in outcome.events
         ]
         bridge_target = sum(template_distances) / len(template_distances) if template_distances else self.config.bridge_target_distance
-        template_id = (
-            self._shared_template_id(outcome)
-            if topology is None or getattr(topology, "dimensionality", "2D") == "2D"
-            else None
-        )
+        template_id = self._shared_template_id(outcome)
         instances = outcome.monomer_instances
         topology_layout = self._single_node_topology_layout(topology, outcome, monomer_specs)
         canonical_a = topology_layout.directions if topology_layout is not None else self._trigonal_directions(pi / 6.0)

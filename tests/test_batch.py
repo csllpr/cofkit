@@ -5,7 +5,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, Frame, MonomerSpec, ReactiveMotif
+from cofkit import (
+    BatchGenerationConfig,
+    BatchMonomerRecord,
+    BatchStructureGenerator,
+    Frame,
+    MonomerSpec,
+    ReactiveMotif,
+    ReactionRealizer,
+)
+from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 
 try:
     from rdkit import Chem  # noqa: F401
@@ -32,6 +41,25 @@ COF42_HYDRAZIDE = "CCOc1cc(C(=O)NN)cc(C(=O)NN)c1OCC"
 
 @unittest.skipIf(Chem is None, "RDKit is not available")
 class BatchStructureGeneratorTests(unittest.TestCase):
+    def _world_position(self, candidate, instance_id, local_position, *, image=(0, 0, 0)):
+        pose = candidate.state.monomer_poses[instance_id]
+        cell = candidate.state.cell
+        return add(
+            add(pose.translation, matmul_vec(pose.rotation_matrix, local_position)),
+            add(
+                add(scale(cell[0], image[0]), scale(cell[1], image[1])),
+                scale(cell[2], image[2]),
+            ),
+        )
+
+    def _angle(self, point_a, point_b, point_c) -> float:
+        left = normalize(sub(point_a, point_b))
+        right = normalize(sub(point_c, point_b))
+        cosine = max(-1.0, min(1.0, dot(left, right)))
+        import math
+
+        return math.degrees(math.acos(cosine))
+
     def setUp(self):
         self.generator = BatchStructureGenerator(
             BatchGenerationConfig(
@@ -763,6 +791,128 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             for candidate in candidates
         }
         self.assertEqual(instance_counts, {"sql": 3, "kgm": 9, "htb": 18})
+
+    def test_four_plus_two_dia_imine_batch_build_keeps_bent_bridge_geometry(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=1,
+                target_dimensionality="3D",
+                topology_ids=("dia",),
+                write_cif=False,
+            )
+        )
+        amine_record = BatchMonomerRecord(
+            id="amines_count_2_0188",
+            name="amines_count_2_0188",
+            smiles="C1=CC2=C(C=C1N)C(=O)C3=C(C=C(C=C3)N)C2=O",
+            motif_kind="amine",
+            expected_connectivity=2,
+        )
+        aldehyde_record = BatchMonomerRecord(
+            id="aldehydes_count_4_0008",
+            name="aldehydes_count_4_0008",
+            smiles="C1=C(C=CC(=C1)C(C2=CC=C(C=C2)C=O)(C3=CC=C(C=C3)C=O)C4=CC=C(C=C4)C=O)C=O",
+            motif_kind="aldehyde",
+            expected_connectivity=4,
+        )
+
+        built_amine = generator.build_monomer(amine_record)
+        built_aldehyde = generator.build_monomer(aldehyde_record)
+        assert built_amine.monomer is not None
+        assert built_aldehyde.monomer is not None
+
+        summary, candidate = generator.generate_monomer_pair_candidate(
+            built_amine.monomer,
+            built_aldehyde.monomer,
+        )
+
+        self.assertEqual(summary.status, "ok")
+        self.assertEqual(summary.topology_id, "dia")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "node-linker-single-node-3d")
+
+        realizer = ReactionRealizer()
+        realization = realizer.realize(
+            candidate,
+            {
+                built_amine.monomer.id: built_amine.monomer,
+                built_aldehyde.monomer.id: built_aldehyde.monomer,
+            },
+            candidate.metadata["instance_to_monomer"],
+        )
+
+        self.assertIsNotNone(realization)
+        assert realization is not None
+        realized_by_instance = {
+            instance_id: {atom.atom_id: atom.local_position for atom in atoms}
+            for instance_id, atoms in realization.atoms_by_instance.items()
+        }
+
+        min_anchor_c_n = float("inf")
+        min_h_c_n = float("inf")
+        min_c_n_anchor = float("inf")
+        for event in candidate.events:
+            first_ref, second_ref = event.participants
+            if first_ref.monomer_id == built_amine.monomer.id:
+                amine_ref, aldehyde_ref = first_ref, second_ref
+            else:
+                amine_ref, aldehyde_ref = second_ref, first_ref
+            amine_motif = built_amine.monomer.motif_by_id(amine_ref.motif_id)
+            aldehyde_motif = built_aldehyde.monomer.motif_by_id(aldehyde_ref.motif_id)
+            carbon_atom_id = aldehyde_motif.metadata["reactive_atom_id"]
+            carbon_anchor_atom_id = aldehyde_motif.metadata["anchor_atom_id"]
+            nitrogen_atom_id = amine_motif.metadata["reactive_atom_id"]
+            nitrogen_anchor_atom_id = amine_motif.metadata["anchor_atom_id"]
+            retained_hydrogen_atom_id = realizer._attached_hydrogen_ids_for_parent(
+                built_aldehyde.monomer,
+                aldehyde_motif,
+                carbon_atom_id,
+                set(realization.removed_atom_ids_by_instance[aldehyde_ref.monomer_instance_id]),
+            )[0]
+
+            carbon_world = self._world_position(
+                candidate,
+                aldehyde_ref.monomer_instance_id,
+                realized_by_instance[aldehyde_ref.monomer_instance_id][carbon_atom_id],
+                image=aldehyde_ref.periodic_image,
+            )
+            carbon_anchor_world = self._world_position(
+                candidate,
+                aldehyde_ref.monomer_instance_id,
+                realized_by_instance[aldehyde_ref.monomer_instance_id][carbon_anchor_atom_id],
+                image=aldehyde_ref.periodic_image,
+            )
+            hydrogen_world = self._world_position(
+                candidate,
+                aldehyde_ref.monomer_instance_id,
+                realized_by_instance[aldehyde_ref.monomer_instance_id][retained_hydrogen_atom_id],
+                image=aldehyde_ref.periodic_image,
+            )
+            nitrogen_world = self._world_position(
+                candidate,
+                amine_ref.monomer_instance_id,
+                realized_by_instance[amine_ref.monomer_instance_id][nitrogen_atom_id],
+                image=amine_ref.periodic_image,
+            )
+            nitrogen_anchor_world = self._world_position(
+                candidate,
+                amine_ref.monomer_instance_id,
+                realized_by_instance[amine_ref.monomer_instance_id][nitrogen_anchor_atom_id],
+                image=amine_ref.periodic_image,
+            )
+
+            min_anchor_c_n = min(min_anchor_c_n, self._angle(carbon_anchor_world, carbon_world, nitrogen_world))
+            min_h_c_n = min(min_h_c_n, self._angle(hydrogen_world, carbon_world, nitrogen_world))
+            min_c_n_anchor = min(min_c_n_anchor, self._angle(carbon_world, nitrogen_world, nitrogen_anchor_world))
+
+        self.assertGreater(min_anchor_c_n, 120.0)
+        self.assertLess(min_anchor_c_n, 145.0)
+        self.assertGreater(min_h_c_n, 108.0)
+        self.assertLess(min_h_c_n, 125.0)
+        self.assertGreater(min_c_n_anchor, 120.0)
+        self.assertLess(min_c_n_anchor, 145.0)
 
     def test_reverse_polarity_two_plus_four_pair_returns_explicit_2d_topologies_when_requested(self):
         generator = BatchStructureGenerator(

@@ -9,8 +9,9 @@ Current implementation status:
 - Stage 1 imine build remains the canonical graph representation.
 - strict imine-monomer eligibility checks are implemented
 - sulfur-enabled conversion eligibility annotation is implemented
-- atomistic CIF realization now supports a requested benzothiazole-like external-sulfur annulation heuristic for eligible imine events
+- an internal atomistic CIF realization prototype exists for a benzothiazole-like external-sulfur annulation heuristic on eligible imine events
 - the build graph and reaction-event graph still remain `imine_bridge`
+- the public CLI exposure for this conversion path has been withdrawn until the local annulation geometry is more reliable
 
 The new rule is:
 
@@ -375,10 +376,10 @@ Current implementation behavior:
 
 - candidate graph construction stays on the imine path
 - post-build conversion metadata records whether sulfur-enabled benzothiazole-like annulation is eligible
-- when that profile is explicitly requested, atomistic CIF realization injects one external sulfur atom per eligible imine event and removes the aldehydic and ortho-aryl hydrogens needed for ring closure
+- the internal prototype can inject one external sulfur atom per eligible imine event and remove the aldehydic and ortho-aryl hydrogens needed for ring closure during atomistic realization
 - the graph summary and stored reaction-event template counts remain imine-based
 
-The first milestone stops at eligibility assessment.
+At the moment, only the eligibility-assessment portion should be treated as stable.
 
 ## Conversion Notes
 
@@ -400,14 +401,12 @@ A future `calculate`-namespace workflow is still the right place for:
 
 No new build-time template CLI is needed.
 
-The existing build surface remains:
+The public build surface remains limited to ordinary imine generation:
 
 - `cofkit build single-pair --template-id imine_bridge ...`
 - `cofkit build batch-binary-bridge --template-id imine_bridge ...`
 
-Add only an opt-in annotation switch later, for example:
-
-- `--annotate-post-build-conversions sulfur_enabled_imine_conversion`
+The sulfur-enabled conversion path is currently internal-only and is not exposed through the public CLI.
 
 ### Future workflow split
 
@@ -479,9 +478,9 @@ Files:
 
 Deliverables:
 
-- optional CLI flag for conversion-candidate annotation
-- manifest entries that record conversion eligibility
-- no change to default CLI behavior when the flag is absent
+- keep conversion-candidate metadata available to internal API users
+- do not expose the sulfur-enabled conversion toggle through the public CLI until geometry is validated
+- no change to default CLI behavior
 
 ### Phase 5: explicit conversion transform refinement
 

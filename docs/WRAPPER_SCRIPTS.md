@@ -40,6 +40,8 @@ python3 examples/run_binary_bridge_generation.py \
 
 Use `--auto-detect-libraries` only on raw generic inputs whose non-empty rows all resolve to one of the selected template's supported motif kinds. Do not combine it with [`../examples/default_monomers_library`](../examples/default_monomers_library), which is already detector-grouped explicit library output.
 
+No public benzothiazole-conversion wrapper is currently shipped. The sulfur-enabled imine conversion prototype remains internal-only until its local annulation geometry is reliable enough for supported CLI use.
+
 ## Rebuild the bundled example library
 
 ```bash

@@ -1432,7 +1432,7 @@ class BatchStructureGenerator:
         topology,
     ) -> AssignmentOutcome:
         layout = resolve_single_node_topology_layout(topology.id)
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
         node_motif_ids = self._ordered_planar_motif_ids(node_spec)
         edge_directions = layout.directions
         image_sequence = ((0, 0, 0), (-1, 0, 0), (0, -1, 0))
@@ -1528,7 +1528,7 @@ class BatchStructureGenerator:
         topology,
     ) -> EmbeddingResult:
         layout = resolve_single_node_topology_layout(topology.id)
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
         bridge_target = self._template_target_distance(template)
         canonical_a = layout.directions
         canonical_b = tuple(scale(direction, -1.0) for direction in canonical_a)
@@ -1675,7 +1675,7 @@ class BatchStructureGenerator:
     ) -> AssignmentOutcome:
         if len(linker_spec.motifs) != 2:
             raise ValueError("single-node node-linker placement requires a ditopic linker")
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
 
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
@@ -1821,7 +1821,7 @@ class BatchStructureGenerator:
         topology,
         expanded: ExpandedSingleNodeTopology,
     ) -> EmbeddingResult:
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
         bridge_target = self._template_target_distance(template)
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
@@ -1991,7 +1991,7 @@ class BatchStructureGenerator:
             raise ValueError(
                 f"topology {topology.id!r} is not bipartite and cannot host a single-node node-node alternation"
             )
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
 
         spec_by_node_id = {
             node_site.id: amine_spec if node_site.sublattice == 0 else aldehyde_spec
@@ -2096,7 +2096,7 @@ class BatchStructureGenerator:
         topology,
         expanded: ExpandedSingleNodeTopology,
     ) -> EmbeddingResult:
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
         bridge_target = self._template_target_distance(template)
         spec_by_node_id = {
             node_site.id: amine_spec if node_site.sublattice == 0 else aldehyde_spec
@@ -2268,7 +2268,7 @@ class BatchStructureGenerator:
     ) -> AssignmentOutcome:
         if len(linker_spec.motifs) != 2:
             raise ValueError("indexed node-linker placement requires a ditopic linker")
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
 
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
@@ -2416,7 +2416,7 @@ class BatchStructureGenerator:
         topology,
         expanded: ExpandedIndexedTopology,
     ) -> EmbeddingResult:
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
         bridge_target = self._template_target_distance(template)
         node_placements = self._expanded_node_site_placements(
             expanded.node_sites,
@@ -2587,7 +2587,7 @@ class BatchStructureGenerator:
         expanded: ExpandedIndexedTopology,
         spec_by_node_id: Mapping[str, MonomerSpec],
     ) -> AssignmentOutcome:
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
         placements = self._expanded_node_site_placements(
             expanded.node_sites,
             spec_by_node_id,
@@ -2690,7 +2690,7 @@ class BatchStructureGenerator:
         expanded: ExpandedIndexedTopology,
         spec_by_node_id: Mapping[str, MonomerSpec],
     ) -> EmbeddingResult:
-        effective_template_id = template.id if topology.dimensionality == "2D" else None
+        effective_template_id = template.id
         bridge_target = self._template_target_distance(template)
         placements = self._expanded_node_site_placements(
             expanded.node_sites,

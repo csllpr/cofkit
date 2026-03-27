@@ -594,6 +594,7 @@ class ReactionRealizer:
             sulfur_local = self._local_position_from_world(
                 candidate.state.monomer_poses[amine_instance_id],
                 sulfur_world,
+                image_shift=self._periodic_offset(candidate.state.cell, amine_ref.periodic_image),
             )
             added_atoms[amine_instance_id].append(
                 RealizedAtom(
@@ -1319,8 +1320,14 @@ class ReactionRealizer:
     def _distance_2d(self, first: tuple[float, float], second: tuple[float, float]) -> float:
         return self._squared_distance_2d(first, second) ** 0.5
 
-    def _local_position_from_world(self, pose: Pose, world_position: Vec3) -> Vec3:
-        return matmul_vec(transpose(pose.rotation_matrix), sub(world_position, pose.translation))
+    def _local_position_from_world(
+        self,
+        pose: Pose,
+        world_position: Vec3,
+        *,
+        image_shift: Vec3 = (0.0, 0.0, 0.0),
+    ) -> Vec3:
+        return matmul_vec(transpose(pose.rotation_matrix), sub(sub(world_position, image_shift), pose.translation))
 
     def _fit_imine_bridge_positions(
         self,
@@ -1571,12 +1578,14 @@ class ReactionRealizer:
                     carbon_atom_id: self._local_position_from_world(
                         candidate.state.monomer_poses[aldehyde_ref.monomer_instance_id],
                         carbon_world,
+                        image_shift=self._periodic_offset(candidate.state.cell, aldehyde_ref.periodic_image),
                     ),
                 },
                 amine_ref.monomer_instance_id: {
                     nitrogen_atom_id: self._local_position_from_world(
                         candidate.state.monomer_poses[amine_ref.monomer_instance_id],
                         nitrogen_world,
+                        image_shift=self._periodic_offset(candidate.state.cell, amine_ref.periodic_image),
                     ),
                 },
             }
@@ -2003,13 +2012,11 @@ class ReactionRealizer:
         atom_position_overrides: Mapping[str, Mapping[int, Vec3]] | None = None,
     ) -> Vec3:
         pose = candidate.state.monomer_poses[ref.monomer_instance_id]
+        image_shift = self._periodic_offset(candidate.state.cell, ref.periodic_image)
         if atom_position_overrides is not None:
             instance_overrides = atom_position_overrides.get(ref.monomer_instance_id, {})
             if atom_id in instance_overrides:
-                # Event-local overrides are generated from fully realized world coordinates,
-                # so periodic-image shifts are already baked into the stored local position.
-                return self._world_position(pose, instance_overrides[atom_id])
-        image_shift = self._periodic_offset(candidate.state.cell, ref.periodic_image)
+                return add(self._world_position(pose, instance_overrides[atom_id]), image_shift)
         return add(self._world_position(pose, monomer.atom_positions[atom_id]), image_shift)
 
     def _periodic_offset(

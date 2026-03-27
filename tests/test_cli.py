@@ -120,48 +120,27 @@ class CliTests(unittest.TestCase):
             self.assertTrue(cif_path.exists())
             self.assertEqual(cif_path.suffix, ".cif")
 
-    @unittest.skipIf(Chem is None, "RDKit is not available")
-    def test_single_pair_cli_can_annotate_post_build_conversion_eligibility(self):
-        tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
-        tfb = "C1=C(C=C(C=C1C=O)C=O)C=O"
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_dir = Path(temp_dir) / "single_pair"
-            with contextlib.redirect_stdout(io.StringIO()):
-                cli_main(
-                    [
-                        "build",
-                        "single-pair",
-                        "--template-id",
-                        "imine_bridge",
-                        "--first-smiles",
-                        tapb,
-                        "--second-smiles",
-                        tfb,
-                        "--first-id",
-                        "tapb",
-                        "--second-id",
-                        "tfb",
-                        "--first-motif-kind",
-                        "amine",
-                        "--second-motif-kind",
-                        "aldehyde",
-                        "--topology",
-                        "hcb",
-                        "--no-write-cif",
-                        "--annotate-post-build-conversion",
-                        "sulfur_enabled_imine_conversion",
-                        "--output-dir",
-                        str(output_dir),
-                    ]
-                )
+    def test_single_pair_cli_rejects_internal_post_build_conversion_flag(self):
+        stderr_buffer = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(stderr_buffer):
+            cli_main(
+                [
+                    "build",
+                    "single-pair",
+                    "--template-id",
+                    "imine_bridge",
+                    "--first-smiles",
+                    "NC1=CC=C(C=C1)N",
+                    "--second-smiles",
+                    "O=CC1=CC=C(C=C1)C=O",
+                    "--annotate-post-build-conversion",
+                    "sulfur_enabled_imine_conversion",
+                ]
+            )
 
-            summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
-            annotation = summary["results"][0]["metadata"]["post_build_conversions"][
-                "sulfur_enabled_imine_conversion"
-            ]
-            self.assertTrue(annotation["eligible"])
-            self.assertEqual(annotation["canonical_built_linkage"], "imine_bridge")
-            self.assertTrue(annotation["changes_applied"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("unrecognized arguments", stderr_buffer.getvalue())
+        self.assertIn("--annotate-post-build-conversion", stderr_buffer.getvalue())
 
 
 if __name__ == "__main__":
