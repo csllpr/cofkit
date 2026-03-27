@@ -35,6 +35,7 @@ Optional tools you may want in your environment:
 
 - `gemmi` for rebuilding topology metadata with generic space-group expansion, CIF-backed coarse validation, and broader `2D` / `3D` two-monomer compatibility scans
 - `RDKit` for SMILES-based monomer construction and the practical batch-generation workflows
+- `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
 - `pytest` to run the test suite
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
@@ -58,6 +59,7 @@ The most useful grouped commands are:
 - `cofkit build batch-binary-bridge`
 - `cofkit build batch-all-binary-bridges`
 - `cofkit analyze classify-output`
+- `cofkit analyze zeopp`
 - `cofkit build default-library`
 
 Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
@@ -123,6 +125,37 @@ cofkit analyze classify-output \
   out/full_cif_generation_default_selector_20260320 \
   --output-dir out/full_cif_generation_default_selector_20260320_coarse_validation_triage
 ```
+
+### Run initial Zeo++ pore analysis on one CIF
+
+```bash
+export COFKIT_ZEOPP_PATH=/path/to/zeo++/network
+
+cofkit analyze zeopp \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_zeopp \
+  --json
+```
+
+By default, the Zeo++ wrapper writes a point-probe baseline:
+
+- basic pore metrics from `-res` and `-resex`
+- point-probe channel summary from `-chan 0`
+- point-probe surface area from `-sa 0 0 ...`
+- point-probe pore volume from `-vol 0 0 ...`
+
+If you also want accessibility-aware probe scans, repeat `--probe-radius`:
+
+```bash
+cofkit analyze zeopp \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_zeopp \
+  --probe-radius 1.20 \
+  --probe-radius 1.86 \
+  --json
+```
+
+Each requested probe radius adds one scan with channel, surface-area, volume, and accessibility outputs for that probe. The wrapper keeps the raw Zeo++ outputs plus stdout/stderr logs in the output directory and records a `zeopp_report.json` summary there.
 
 ### Rebuild the detector-scanned example library
 

@@ -4,12 +4,24 @@ All notable changes to `cofkit` are recorded here.
 
 ## 2026-03-27
 
+### Added
+
+- initial `cofkit analyze zeopp` wrapper for Zeo++ basic pore analysis from CIF input
+- Zeo++ binary discovery through `COFKIT_ZEOPP_PATH`, plus persisted raw `.res` / `.chan` outputs, subprocess logs, and `zeopp_report.json`
+- point-probe Zeo++ pore baselines in the public CLI, now including `-resex`, `-sa 0 0`, and `-vol 0 0`
+- optional repeated accessibility-aware Zeo++ probe scans, with parsed channel, surface-area, pore-volume, and Voronoi-node accessibility summaries
+- an internal Zeo++ capability map in [agent-docs/ZEOPP_CAPABILITY_MAP.md](agent-docs/ZEOPP_CAPABILITY_MAP.md)
+
+### Scope
+
+- the public Zeo++ integration is still selective; richer PSD, grid, ray, ZeoVis, and hidden diagnostic commands remain outside the public `cofkit` CLI for now
+
 ### Fixed
 - Imine atomistic realization now converts event-local heavy-atom overrides back into monomer-local coordinates with the correct periodic-image shift removed before CIF export. This fixes periodic-image bridge events that could previously place retained aldehydic hydrogens in obviously wrong directions.
 - Imine-specific effective motif-origin correction is now applied consistently in the supported `3D` builder paths as well as the older `2D` paths. In practice this restores bent `C-C=N-C` geometry for high-connectivity `dia`-style imine builds instead of leaving some `4+2` bridge events nearly linear.
 
 ### Verification
-- Local test suite passes (`133/133` tests at verification time).
+- Local test suite passes (`137/137` tests at verification time).
 - The previously reported `amines_count_2_0188` / `aldehydes_count_4_0008` `dia` example now exports with bridge-hydrogen angles in the expected bent-imine range instead of the earlier near-`0°` / near-`180°` failures.
 
 ## 2026-03-25

@@ -506,6 +506,63 @@ To regenerate the detector-scanned default library from the raw fixture inputs:
 cofkit build default-library
 ```
 
+## Workflow 6: Initial Zeo++ Pore Analysis
+
+The first `analyze`-namespace external-tool wrapper is Zeo++. It now writes a point-probe pore baseline for one CIF at a time and can optionally add repeated accessibility-aware probe scans.
+
+### Environment setup
+
+Point `cofkit` at the Zeo++ `network` binary through an environment variable:
+
+```bash
+export COFKIT_ZEOPP_PATH=/path/to/zeo++/network
+```
+
+### CLI usage
+
+```bash
+cofkit analyze zeopp \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_zeopp \
+  --json
+```
+
+Default output includes:
+
+- largest included sphere
+- largest free sphere
+- largest included sphere along the maximum free-sphere path
+- axis-resolved free-sphere and included-sphere-along-path values from `-resex`
+- point-probe channel summary from `-chan 0`
+- point-probe surface area from `-sa 0 0 ...`
+- point-probe pore volume from `-vol 0 0 ...`
+
+To add accessibility-aware probe scans, repeat `--probe-radius`:
+
+```bash
+cofkit analyze zeopp \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_zeopp \
+  --probe-radius 1.20 \
+  --probe-radius 1.86 \
+  --json
+```
+
+Each requested probe radius adds:
+
+- probe-specific channel summary
+- probe-specific accessible/non-accessible surface area
+- probe-specific accessible/non-accessible pore volume
+- Voronoi-node accessibility counts from `-axs`
+
+The output directory stores:
+
+- raw Zeo++ output files for the baseline and each probe scan
+- stdout/stderr logs for every Zeo++ subprocess call
+- `zeopp_report.json`
+
+Current scope note: the public wrapper currently focuses on basic pore metrics plus surface-area / pore-volume summaries. Richer Zeo++ modes such as PSD histograms, grids, ray analyses, ZeoVis exports, and other hidden commands remain out of the public `cofkit` CLI for now.
+
 ### Quantitative rules
 
 Current `warning` criteria:

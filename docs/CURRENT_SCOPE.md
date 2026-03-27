@@ -29,6 +29,7 @@ The current package still keeps mandatory runtime dependencies at zero so the sc
 - indexed-topology layout generation for chemistry-compatible bundled topologies beyond the handcrafted one-node families, available in both batch and explicit single-pair generation
 - compatibility-aware default topology selection that now includes curated indexed topologies such as `sql`, `kgm`, `hxl`, `pts`, `ctn`, `bor`, `kgd`, `tbo`, `dia`, `pcu`, `acs`, `lon`, and `qtz` when the current chemistry metadata and builder support permit them
 - coarse post-generation validation with `valid` / `warning` / `hard_invalid` / `hard_hard_invalid` triage, categorized CIF output trees, and export blocking for obviously broken structures
+- an initial `cofkit analyze zeopp` wrapper for Zeo++ pore analysis from CIF input, including a point-probe baseline from `-res` / `-resex` / `-chan 0` / `-sa 0 0` / `-vol 0 0` plus optional repeated probe-radius scans with accessibility summaries, with binary discovery through `COFKIT_ZEOPP_PATH`
 - process-level batch pair generation with an `8`-worker default budget for the practical CLI workflows
 - an installable `cofkit` CLI, organized under grouped `build` / `analyze` namespaces for direct `single-pair` generation plus unified batch, classification, and library-building entry points
 - extracted batch-facing support layers (`cofkit.monomer_library`, `cofkit.batch_models`) so CLI, wrappers, and future linkage extensions share the same monomer-role resolution and summary schema
@@ -42,6 +43,7 @@ The current package still keeps mandatory runtime dependencies at zero so the sc
 - torsion-aware or force-field-backed optimization beyond the current lightweight pass
 - stable ring-closure geometry models suitable for public CLI exposure
 - a supported public benzothiazole conversion workflow; the current sulfur-enabled imine conversion prototype remains internal-only until its local geometry is more reliable
+- Zeo++ PSD histograms, grid outputs, ray analyses, ZeoVis exports, and broader hidden or specialized workflows beyond the current pore-summary wrapper
 - chemically faithful atomistic CIF generation for arbitrary monomers without fallback/pseudo-sites
 - semiempirical / force-field cleanup
 - any stacking exploration, registry search, or stacking score terms
