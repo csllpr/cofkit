@@ -19,6 +19,7 @@ The current package still keeps mandatory runtime dependencies at zero so the sc
 - candidate metadata carrying embedding provenance, optimizer metrics, and score breakdowns
 - legal P1 CIF export, with atomistic output when monomer coordinates are available and a coarse fallback otherwise
 - registry-backed atomistic reaction realization for the currently implemented binary-bridge products: imine, hydrazone, beta-ketoenamine, boronate ester, and vinylene
+- periodic-image-safe imine atomistic realization, with the same bent-linkage motif-origin correction now applied across the supported `2D` and `3D` builder paths
 - reaction-aware batch binary-bridge generation over monomer libraries, with imine workflows as the primary documented path, including `3+3`, `3+2`, `4+4`, `4+2`, and `6+2` enumeration, manifest/summary writing, and CIF export enabled by default
 - automatic monomer-role detection for batch library loading, so generic `.txt` SMILES libraries can be regrouped by detected role/connectivity instead of relying only on `*_count_N.txt` filenames
 - an auto-generated example library under [`../examples/default_monomers_library`](../examples/default_monomers_library) with detector-scanned role/count registration metadata

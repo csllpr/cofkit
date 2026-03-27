@@ -75,4 +75,9 @@ For the current single-node topology families, `cofkit` expands supported CGD ne
 
 The optimizer is intentionally modest. It only refines bridge-forming candidates through lateral cell scaling, monomer translation updates, and lightweight orientation cleanup when those steps reduce bridge-geometry residuals. Ring-forming reactions stay coarse, and stacking remains completely out of scope.
 
+For the current imine realization path, two geometry details are now important enough to treat as part of the documented behavior:
+
+- template-specific imine motif-origin correction is applied in the supported `3D` builder paths as well as the earlier `2D` paths, so high-connectivity `dia`-style builds do not silently bypass the bent-linkage span correction
+- periodic-image bridge events store realized atom overrides back in the base monomer-local frame before CIF export, which avoids pathological retained-hydrogen directions on image-crossing imine events
+
 The CIF exporter is deliberately honest as well: if a `MonomerSpec` carries atom coordinates, it writes atomistic sites; if not, it falls back to a legal coarse CIF built from monomer centers and motif origins so the current assembly can still be inspected.

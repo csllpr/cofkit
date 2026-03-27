@@ -2,6 +2,16 @@
 
 All notable changes to `cofkit` are recorded here.
 
+## 2026-03-27
+
+### Fixed
+- Imine atomistic realization now converts event-local heavy-atom overrides back into monomer-local coordinates with the correct periodic-image shift removed before CIF export. This fixes periodic-image bridge events that could previously place retained aldehydic hydrogens in obviously wrong directions.
+- Imine-specific effective motif-origin correction is now applied consistently in the supported `3D` builder paths as well as the older `2D` paths. In practice this restores bent `C-C=N-C` geometry for high-connectivity `dia`-style imine builds instead of leaving some `4+2` bridge events nearly linear.
+
+### Verification
+- Local test suite passes (`133/133` tests at verification time).
+- The previously reported `amines_count_2_0188` / `aldehydes_count_4_0008` `dia` example now exports with bridge-hydrogen angles in the expected bent-imine range instead of the earlier near-`0°` / near-`180°` failures.
+
 ## 2026-03-25
 
 ### Changed
