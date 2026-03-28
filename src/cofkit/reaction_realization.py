@@ -25,6 +25,7 @@ class RealizedBond:
     distance: float
     symmetry_1: str = "."
     symmetry_2: str = "."
+    bond_order: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -1603,6 +1604,7 @@ class ReactionRealizer:
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
                     symmetry_2=self._symmetry_code(amine_ref.periodic_image),
+                    bond_order=2.0,
                 ),
             ),
             notes=(
@@ -1663,6 +1665,7 @@ class ReactionRealizer:
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
                     symmetry_2=self._symmetry_code(hydrazide_ref.periodic_image),
+                    bond_order=2.0,
                 ),
             ),
             notes=(
@@ -1747,6 +1750,24 @@ class ReactionRealizer:
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
                     symmetry_2=self._symmetry_code(amine_ref.periodic_image),
+                    bond_order=2.0,
+                ),
+                RealizedBond(
+                    label_1=self.atom_label(
+                        keto_aldehyde_ref.monomer_instance_id,
+                        keto_aldehyde_spec.atom_symbols[carbonyl_anchor_atom_id],
+                        carbonyl_anchor_atom_id,
+                    ),
+                    label_2=self.atom_label(
+                        keto_aldehyde_ref.monomer_instance_id,
+                        keto_aldehyde_spec.atom_symbols[tautomer_oxygen_atom_id],
+                        tautomer_oxygen_atom_id,
+                    ),
+                    distance=self._distance(
+                        keto_aldehyde_spec.atom_positions[carbonyl_anchor_atom_id],
+                        carbonyl_oxygen_local_position,
+                    ),
+                    bond_order=2.0,
                 ),
             ),
             notes=(
@@ -1868,6 +1889,7 @@ class ReactionRealizer:
                     distance=self._distance(aldehyde_carbon_world, activated_carbon_world),
                     symmetry_1=".",
                     symmetry_2=self._symmetry_code(activated_ref.periodic_image),
+                    bond_order=2.0,
                 ),
             ),
             notes=(

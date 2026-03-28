@@ -8,8 +8,21 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
+
+try:
+    import pandas as pd
+except ImportError:  # pragma: no cover - exercised in environments without pandas
+    pd = None
+
+from .bond_types import (
+    bond_order_to_cif_type,
+    cif_type_to_bond_order,
+    is_aromatic_bond_order,
+    normalize_bond_order,
+)
 
 try:
     import gemmi
@@ -76,6 +89,11 @@ class LammpsOptimizationSettings:
     forcefield: str = "uff"
     pair_cutoff: float = 12.0
     position_restraint_force_constant: float = 0.20
+    pre_minimization_steps: int = 0
+    pre_minimization_temperature: float = 300.0
+    pre_minimization_damping: float = 100.0
+    pre_minimization_seed: int = 246813
+    pre_minimization_displacement_limit: float = 0.10
     two_stage_protocol: bool = False
     stage2_position_restraint_force_constant: float | None = None
     energy_tolerance: float = 1.0e-6
@@ -111,6 +129,11 @@ class LammpsOptimizationSettings:
             "forcefield": self.forcefield,
             "pair_cutoff": self.pair_cutoff,
             "position_restraint_force_constant": self.position_restraint_force_constant,
+            "pre_minimization_steps": self.pre_minimization_steps,
+            "pre_minimization_temperature": self.pre_minimization_temperature,
+            "pre_minimization_damping": self.pre_minimization_damping,
+            "pre_minimization_seed": self.pre_minimization_seed,
+            "pre_minimization_displacement_limit": self.pre_minimization_displacement_limit,
             "two_stage_protocol": self.two_stage_protocol,
             "stage2_position_restraint_force_constant": self.stage2_position_restraint_force_constant,
             "energy_tolerance": self.energy_tolerance,
@@ -159,9 +182,13 @@ class LammpsOptimizationResult:
     n_atoms: int
     n_bonds: int
     n_angles: int
+    n_dihedrals: int
+    n_impropers: int
     n_atom_types: int
     n_bond_types: int
     n_angle_types: int
+    n_dihedral_types: int
+    n_improper_types: int
     atom_type_symbols: dict[int, str]
     settings: LammpsOptimizationSettings
     forcefield_backend: str
@@ -184,9 +211,13 @@ class LammpsOptimizationResult:
             "n_atoms": self.n_atoms,
             "n_bonds": self.n_bonds,
             "n_angles": self.n_angles,
+            "n_dihedrals": self.n_dihedrals,
+            "n_impropers": self.n_impropers,
             "n_atom_types": self.n_atom_types,
             "n_bond_types": self.n_bond_types,
             "n_angle_types": self.n_angle_types,
+            "n_dihedral_types": self.n_dihedral_types,
+            "n_improper_types": self.n_improper_types,
             "atom_type_symbols": dict(self.atom_type_symbols),
             "settings": self.settings.to_dict(),
             "forcefield_backend": self.forcefield_backend,
@@ -216,6 +247,7 @@ class _CifBondRecord:
     shift_1: tuple[int, int, int]
     shift_2: tuple[int, int, int]
     equilibrium_distance: float
+    bond_order: float | None
 
 
 @dataclass(frozen=True)
@@ -228,6 +260,24 @@ class _CifAngleRecord:
 
 
 @dataclass(frozen=True)
+class _CifDihedralRecord:
+    dihedral_id: int
+    atom_id_1: int
+    atom_id_2: int
+    atom_id_3: int
+    atom_id_4: int
+
+
+@dataclass(frozen=True)
+class _CifImproperRecord:
+    improper_id: int
+    atom_id_1: int
+    atom_id_2: int
+    atom_id_3: int
+    atom_id_4: int
+
+
+@dataclass(frozen=True)
 class _ParsedExplicitBondCif:
     source_path: Path
     data_name: str
@@ -236,6 +286,8 @@ class _ParsedExplicitBondCif:
     atoms: tuple[_CifAtomRecord, ...]
     bonds: tuple[_CifBondRecord, ...]
     angles: tuple[_CifAngleRecord, ...]
+    dihedrals: tuple[_CifDihedralRecord, ...]
+    impropers: tuple[_CifImproperRecord, ...]
 
 
 @dataclass(frozen=True)
@@ -244,9 +296,31 @@ class _PreparedLammpsSystem:
     atom_type_symbols: dict[int, str]
     n_bond_types: int
     n_angle_types: int
+    n_dihedral_types: int
+    n_improper_types: int
+    n_dihedrals: int
+    n_impropers: int
+    angle_styles: tuple[str, ...]
+    dihedral_styles: tuple[str, ...]
+    improper_styles: tuple[str, ...]
     forcefield_backend: str
     parameter_sources: dict[str, str]
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _UffAtomParameters:
+    r1: float
+    theta0: float
+    x1: float
+    d1: float
+    zeta: float
+    z1: float
+    vi: float
+    uj: float
+    xi: float
+    hard: float
+    radius: float
 
 
 @dataclass(frozen=True)
@@ -322,6 +396,7 @@ def optimize_cif_with_lammps(
             dump_path=dump_path,
             settings=settings,
             parsed=parsed,
+            prepared=prepared,
         ),
         encoding="utf-8",
     )
@@ -357,9 +432,13 @@ def optimize_cif_with_lammps(
         n_atoms=len(parsed.atoms),
         n_bonds=len(parsed.bonds),
         n_angles=len(parsed.angles),
+        n_dihedrals=prepared.n_dihedrals,
+        n_impropers=prepared.n_impropers,
         n_atom_types=len(prepared.atom_type_symbols),
         n_bond_types=prepared.n_bond_types,
         n_angle_types=prepared.n_angle_types,
+        n_dihedral_types=prepared.n_dihedral_types,
+        n_improper_types=prepared.n_improper_types,
         atom_type_symbols=prepared.atom_type_symbols,
         settings=settings,
         forcefield_backend=prepared.forcefield_backend,
@@ -380,6 +459,18 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError("pair_cutoff must be positive.")
     if settings.position_restraint_force_constant < 0.0:
         raise ValueError("position_restraint_force_constant must be non-negative.")
+    if settings.pre_minimization_steps < 0:
+        raise ValueError("pre_minimization_steps must be non-negative.")
+    if settings.pre_minimization_steps > 0 and settings.pre_minimization_temperature <= 0.0:
+        raise ValueError("pre_minimization_temperature must be positive when pre_minimization_steps is enabled.")
+    if settings.pre_minimization_steps > 0 and settings.pre_minimization_damping <= 0.0:
+        raise ValueError("pre_minimization_damping must be positive when pre_minimization_steps is enabled.")
+    if settings.pre_minimization_steps > 0 and settings.pre_minimization_seed <= 0:
+        raise ValueError("pre_minimization_seed must be a positive integer when pre_minimization_steps is enabled.")
+    if settings.pre_minimization_steps > 0 and settings.pre_minimization_displacement_limit <= 0.0:
+        raise ValueError(
+            "pre_minimization_displacement_limit must be positive when pre_minimization_steps is enabled."
+        )
     if settings.stage2_position_restraint_force_constant is not None and settings.stage2_position_restraint_force_constant < 0.0:
         raise ValueError("stage2_position_restraint_force_constant must be non-negative when provided.")
     if settings.energy_tolerance <= 0.0:
@@ -474,6 +565,11 @@ def _prepare_lammps_system(
 
 def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammpsSystem:
     _require_uff_support()
+    if any(bond.bond_order is None for bond in parsed.bonds):
+        raise LammpsInputError(
+            "UFF-backed LAMMPS optimization now requires explicit bond orders for every bond. "
+            "Populate `_ccdc_geom_bond_type` in the CIF bond loop before running `cofkit calculate lammps-optimize`."
+        )
 
     atom_images, image_conflicts = _compute_unwrapped_atom_images(parsed)
     typing_cartesian_positions = _unwrapped_cartesian_positions(parsed, atom_images)
@@ -482,37 +578,38 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
     }
     ob_molecule = _build_openbabel_molecule(parsed, typing_cartesian_positions)
     atom_type_by_atom_id = _assign_openbabel_uff_atom_types(ob_molecule)
-    rdkit_molecule = _build_rdkit_molecule_from_openbabel(ob_molecule)
-    if not rdForceFieldHelpers.UFFHasAllMoleculeParams(rdkit_molecule):
-        raise LammpsInputError(
-            f"RDKit UFF parameterization is incomplete for {parsed.source_path}. "
-            "The CIF-derived explicit-bond graph could not be fully typed by UFF."
-        )
-
-    ordered_type_labels, representative_atom_ids, representative_symbols = _ordered_representative_atom_types(
-        parsed.atoms,
-        atom_type_by_atom_id,
+    uff_parameters = _load_uff_parameters()
+    (
+        ordered_type_labels,
+        atom_type_ids,
+        representative_symbols,
+    ) = _ordered_unique_uff_atom_types(parsed.atoms, atom_type_by_atom_id)
+    pairij_coeff_rows = _build_uff_pairij_rows(
+        ordered_type_labels=ordered_type_labels,
+        atom_type_ids=atom_type_ids,
+        parameters=uff_parameters,
     )
-    pairij_coeffs = _build_uff_pairij_coeffs(rdkit_molecule, ordered_type_labels, representative_atom_ids)
-    bond_coeffs, angle_coeffs = _build_uff_topology_coeffs(parsed, rdkit_molecule, atom_type_by_atom_id)
-
-    lattice = Lattice.from_parameters(*parsed.cell_parameters)
-    structure = Structure(
-        lattice,
-        [atom.symbol for atom in parsed.atoms],
-        [wrapped_cartesian_positions[atom.atom_id] for atom in parsed.atoms],
-        coords_are_cartesian=True,
-        to_unit_cell=False,
-        site_properties={"ff_map": [atom_type_by_atom_id[atom.atom_id] for atom in parsed.atoms]},
-        labels=[atom.label for atom in parsed.atoms],
+    bond_topology_rows, bond_coeff_rows, bond_reference = _build_uff_bond_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+        parameters=uff_parameters,
     )
-    topology_sections: dict[str, list[list[int]]] = {
-        "Bonds": [[bond.atom_id_1 - 1, bond.atom_id_2 - 1] for bond in parsed.bonds],
-    }
-    if parsed.angles:
-        topology_sections["Angles"] = [
-            [angle.atom_id_1 - 1, angle.atom_id_2 - 1, angle.atom_id_3 - 1] for angle in parsed.angles
-        ]
+    angle_topology_rows, angle_coeff_rows = _build_uff_angle_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+        parameters=uff_parameters,
+        bond_reference=bond_reference,
+    )
+    dihedral_topology_rows, dihedral_coeff_rows = _build_uff_dihedral_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+        parameters=uff_parameters,
+    )
+    improper_topology_rows, improper_coeff_rows = _build_uff_improper_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+        parameters=uff_parameters,
+    )
 
     a_vec, b_vec, c_vec = parsed.lammps_basis
     box = LammpsBox(
@@ -523,56 +620,98 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         ],
         tilt=[b_vec[0], c_vec[0], c_vec[1]],
     )
-    topo_coeffs: dict[str, list[dict[str, object]]] = {}
-    if bond_coeffs:
-        topo_coeffs["Bond Coeffs"] = [
-            {"coeffs": [coeffs[0], coeffs[1]], "types": [bond_type]} for bond_type, coeffs in bond_coeffs
-        ]
-    if angle_coeffs:
-        topo_coeffs["Angle Coeffs"] = [
-            {"coeffs": [coeffs[0], coeffs[1]], "types": [angle_type]} for angle_type, coeffs in angle_coeffs
-        ]
-    forcefield = ForceField(
-        mass_info=[(label, representative_symbols[label]) for label in ordered_type_labels],
-        nonbond_coeffs=pairij_coeffs,
-        topo_coeffs=topo_coeffs or None,
+    masses = pd.DataFrame(
+        {"mass": [gemmi.Element(representative_symbols[label]).weight for label in ordered_type_labels]},
+        index=range(1, len(ordered_type_labels) + 1),
     )
-    topology = Topology(structure, ff_label="ff_map", topologies=topology_sections)
-    lammps_data = LammpsData.from_ff_and_topologies(box, forcefield, [topology], atom_style="molecular")
-    data_text = lammps_data.get_str(distance=10, charge=4, hybrid=False)
+    atoms = pd.DataFrame(
+        [
+            {
+                "molecule-ID": 1,
+                "type": atom_type_ids[atom_type_by_atom_id[atom.atom_id]],
+                "x": wrapped_cartesian_positions[atom.atom_id][0],
+                "y": wrapped_cartesian_positions[atom.atom_id][1],
+                "z": wrapped_cartesian_positions[atom.atom_id][2],
+            }
+            for atom in parsed.atoms
+        ],
+        index=range(1, len(parsed.atoms) + 1),
+    )
+    force_field: dict[str, pd.DataFrame] = {
+        "PairIJ Coeffs": pd.DataFrame(
+            pairij_coeff_rows,
+            columns=["id1", "id2", "coeff1", "coeff2"],
+        ),
+        "Bond Coeffs": _coeff_rows_to_dataframe(bond_coeff_rows),
+    }
+    if angle_coeff_rows:
+        force_field["Angle Coeffs"] = _coeff_rows_to_dataframe(angle_coeff_rows)
+    if dihedral_coeff_rows:
+        force_field["Dihedral Coeffs"] = _coeff_rows_to_dataframe(dihedral_coeff_rows)
+    if improper_coeff_rows:
+        force_field["Improper Coeffs"] = _coeff_rows_to_dataframe(improper_coeff_rows)
+    topology: dict[str, pd.DataFrame] = {
+        "Bonds": _topology_rows_to_dataframe(bond_topology_rows, ("type", "atom1", "atom2")),
+    }
+    if angle_topology_rows:
+        topology["Angles"] = _topology_rows_to_dataframe(angle_topology_rows, ("type", "atom1", "atom2", "atom3"))
+    if dihedral_topology_rows:
+        topology["Dihedrals"] = _topology_rows_to_dataframe(
+            dihedral_topology_rows,
+            ("type", "atom1", "atom2", "atom3", "atom4"),
+        )
+    if improper_topology_rows:
+        topology["Impropers"] = _topology_rows_to_dataframe(
+            improper_topology_rows,
+            ("type", "atom1", "atom2", "atom3", "atom4"),
+        )
+    lammps_data = LammpsData(
+        box=box,
+        masses=masses,
+        atoms=atoms,
+        force_field=force_field,
+        topology=topology,
+        atom_style="molecular",
+    )
+    data_text = lammps_data.get_str(distance=10, charge=4, hybrid=True)
     data_text = data_text.replace(
         "Generated by pymatgen.io.lammps.data.LammpsData",
-        "LAMMPS data file written by cofkit via pymatgen/Open Babel/RDKit",
+        "LAMMPS data file written by cofkit via pymatgen/Open Babel/UFF",
         1,
     )
     data_text = data_text.replace("\nAtoms\n\n", "\nAtoms # molecular\n\n", 1)
 
-    warnings: list[str] = [
-        "UFF-backed LAMMPS export currently includes bonded stretch/bend and van der Waals terms. "
-        "Dihedral and improper terms are not emitted yet.",
-    ]
+    warnings: list[str] = []
     if image_conflicts > 0:
         warnings.append(
             "Periodic spanning-tree unwrapping for UFF atom typing encountered one or more cell-cycle conflicts. "
             "cofkit kept the wrapped CIF coordinates for the LAMMPS data file and used the spanning tree only for "
-            "local bond-order perception."
+            "local UFF atom typing."
         )
     parameter_sources = {
         "forcefield": "UFF",
-        "atom_typing": "Open Babel UFF",
-        "bonded_parameters": "RDKit UFF parameter helpers",
-        "nonbond_parameters": "RDKit UFF parameter helpers",
+        "atom_typing": "Open Babel UFF atom types from the explicit CIF bond graph",
+        "bonded_parameters": "cofkit UFF formulas adapted from reference_repositories/lammps_interface",
+        "nonbond_parameters": "UFF.prm plus Lorentz-Berthelot mixing",
     }
     uff_parameter_file = _discover_uff_parameter_file()
     if uff_parameter_file is not None:
         parameter_sources["reference_parameter_file"] = str(uff_parameter_file)
+    parameter_sources["reference_logic"] = "reference_repositories/lammps_interface"
 
     return _PreparedLammpsSystem(
         data_text=data_text,
         atom_type_symbols={index: label for index, label in enumerate(ordered_type_labels, start=1)},
-        n_bond_types=len(bond_coeffs),
-        n_angle_types=len(angle_coeffs),
-        forcefield_backend="uff_openbabel_rdkit_pymatgen",
+        n_bond_types=len(bond_coeff_rows),
+        n_angle_types=len(angle_coeff_rows),
+        n_dihedral_types=len(dihedral_coeff_rows),
+        n_improper_types=len(improper_coeff_rows),
+        n_dihedrals=len(dihedral_topology_rows),
+        n_impropers=len(improper_topology_rows),
+        angle_styles=_ordered_coeff_styles(angle_coeff_rows),
+        dihedral_styles=("harmonic",) if dihedral_coeff_rows else (),
+        improper_styles=("fourier",) if improper_coeff_rows else (),
+        forcefield_backend="uff_openbabel_explicit_graph_pymatgen",
         parameter_sources=parameter_sources,
         warnings=tuple(warnings),
     )
@@ -604,10 +743,12 @@ def _require_uff_support() -> None:
         missing.append("gemmi")
     if ob is None:
         missing.append("openbabel")
-    if Chem is None or rdForceFieldHelpers is None:
-        missing.append("rdkit")
-    if any(item is None for item in (ForceField, LammpsBox, LammpsData, Lattice, Structure, Topology)):
+    if any(item is None for item in (LammpsBox, LammpsData)):
         missing.append("pymatgen")
+    if pd is None:
+        missing.append("pandas")
+    if _discover_uff_parameter_file() is None:
+        missing.append("UFF.prm")
     if missing:
         raise LammpsConfigurationError(
             "UFF-backed LAMMPS optimization requires these Python packages in the current environment: "
@@ -615,139 +756,480 @@ def _require_uff_support() -> None:
         )
 
 
-def _ordered_representative_atom_types(
+def _ordered_unique_uff_atom_types(
     atoms: tuple[_CifAtomRecord, ...],
     atom_type_by_atom_id: dict[int, str],
 ) -> tuple[list[str], dict[str, int], dict[str, str]]:
     ordered_types: list[str] = []
-    representative_atom_ids: dict[str, int] = {}
+    atom_type_ids: dict[str, int] = {}
     representative_symbols: dict[str, str] = {}
     for atom in atoms:
         atom_type = atom_type_by_atom_id[atom.atom_id]
-        if atom_type in representative_atom_ids:
+        if atom_type in atom_type_ids:
             continue
         ordered_types.append(atom_type)
-        representative_atom_ids[atom_type] = atom.atom_id
+        atom_type_ids[atom_type] = len(ordered_types)
         representative_symbols[atom_type] = atom.symbol
-    return ordered_types, representative_atom_ids, representative_symbols
+    return ordered_types, atom_type_ids, representative_symbols
 
 
-def _build_uff_pairij_coeffs(
-    rdkit_molecule,
+@lru_cache(maxsize=1)
+def _load_uff_parameters() -> dict[str, _UffAtomParameters]:
+    parameter_file = _discover_uff_parameter_file()
+    if parameter_file is None:
+        raise LammpsConfigurationError("Could not locate an installed UFF.prm file for the UFF LAMMPS backend.")
+    parameters: dict[str, _UffAtomParameters] = {}
+    for raw_line in parameter_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("param "):
+            continue
+        parts = line.split()
+        if len(parts) < 13:
+            continue
+        parameters[parts[1]] = _UffAtomParameters(*(float(value) for value in parts[2:13]))
+    if not parameters:
+        raise LammpsConfigurationError(f"No UFF parameter rows were parsed from {parameter_file}.")
+    return parameters
+
+
+def _build_uff_pairij_rows(
+    *,
     ordered_type_labels: list[str],
-    representative_atom_ids: dict[str, int],
+    atom_type_ids: dict[str, int],
+    parameters: dict[str, _UffAtomParameters],
 ) -> list[list[float]]:
-    coeffs: list[list[float]] = []
+    rows: list[list[float]] = []
     for left_index, left_label in enumerate(ordered_type_labels):
+        left_params = _uff_parameters_for_type(left_label, parameters)
         for right_label in ordered_type_labels[left_index:]:
-            params = rdForceFieldHelpers.GetUFFVdWParams(
-                rdkit_molecule,
-                representative_atom_ids[left_label] - 1,
-                representative_atom_ids[right_label] - 1,
-            )
-            if params is None:
-                raise LammpsInputError(
-                    f"UFF van der Waals parameters are unavailable for atom types {left_label!r} and {right_label!r}."
-                )
-            x_ij, d_ij = params
-            coeffs.append([float(d_ij), float(x_ij) / _UFF_RMIN_TO_SIGMA_FACTOR])
-    return coeffs
+            right_params = _uff_parameters_for_type(right_label, parameters)
+            epsilon = math.sqrt(left_params.d1 * right_params.d1)
+            sigma = ((left_params.x1 / _UFF_RMIN_TO_SIGMA_FACTOR) + (right_params.x1 / _UFF_RMIN_TO_SIGMA_FACTOR)) / 2.0
+            rows.append([atom_type_ids[left_label], atom_type_ids[right_label], float(epsilon), float(sigma)])
+    return rows
 
 
-def _build_uff_topology_coeffs(
+def _build_uff_bond_terms(
+    *,
     parsed: _ParsedExplicitBondCif,
-    rdkit_molecule,
     atom_type_by_atom_id: dict[int, str],
-) -> tuple[list[tuple[tuple[str, str], tuple[float, float]]], list[tuple[tuple[str, str, str], tuple[float, float]]]]:
-    bond_coeffs_by_type: dict[tuple[str, str], tuple[float, float]] = {}
-    angle_coeffs_by_type: dict[tuple[str, str, str], tuple[float, float]] = {}
-
+    parameters: dict[str, _UffAtomParameters],
+) -> tuple[list[list[int]], list[list[float]], dict[tuple[int, int], tuple[float, float]]]:
+    type_ids: dict[tuple[str, str, float], int] = {}
+    coeff_rows: list[list[float]] = []
+    topology_rows: list[list[int]] = []
+    bond_reference: dict[tuple[int, int], tuple[float, float]] = {}
     for bond in parsed.bonds:
+        assert bond.bond_order is not None
         left_type = atom_type_by_atom_id[bond.atom_id_1]
         right_type = atom_type_by_atom_id[bond.atom_id_2]
-        bond_type = _canonical_bond_type(left_type, right_type)
-        params = rdForceFieldHelpers.GetUFFBondStretchParams(
-            rdkit_molecule,
-            bond.atom_id_1 - 1,
-            bond.atom_id_2 - 1,
-        )
-        if params is None:
-            raise LammpsInputError(
-                f"UFF bond parameters are unavailable for bond {bond.label_1}-{bond.label_2} "
-                f"with atom types {left_type!r}/{right_type!r}."
+        bond_order = normalize_bond_order(bond.bond_order)
+        coefficient_key = _canonical_bond_term_key(left_type, right_type, bond_order)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            force_constant, equilibrium_distance = _compute_uff_bond_coefficients(
+                left_type=left_type,
+                right_type=right_type,
+                bond_order=bond_order,
+                parameters=parameters,
             )
-        kb, r0 = params
-        _store_unique_coefficients(
-            bond_coeffs_by_type,
-            bond_type,
-            (0.5 * float(kb), float(r0)),
-            kind="bond",
-        )
-
-    for angle in parsed.angles:
-        left_type = atom_type_by_atom_id[angle.atom_id_1]
-        center_type = atom_type_by_atom_id[angle.atom_id_2]
-        right_type = atom_type_by_atom_id[angle.atom_id_3]
-        angle_type = _canonical_angle_type(left_type, center_type, right_type)
-        params = rdForceFieldHelpers.GetUFFAngleBendParams(
-            rdkit_molecule,
-            angle.atom_id_1 - 1,
-            angle.atom_id_2 - 1,
-            angle.atom_id_3 - 1,
-        )
-        if params is None:
-            raise LammpsInputError(
-                "UFF angle parameters are unavailable for angle "
-                f"{angle.atom_id_1}-{angle.atom_id_2}-{angle.atom_id_3} with atom types "
-                f"{left_type!r}/{center_type!r}/{right_type!r}."
-            )
-        ka, theta0 = params
-        _store_unique_coefficients(
-            angle_coeffs_by_type,
-            angle_type,
-            (0.5 * float(ka), float(theta0)),
-            kind="angle",
-        )
-
-    return list(bond_coeffs_by_type.items()), list(angle_coeffs_by_type.items())
+            coeff_rows.append([force_constant, equilibrium_distance])
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        else:
+            equilibrium_distance = coeff_rows[type_id - 1][1]
+        topology_rows.append([type_id, bond.atom_id_1, bond.atom_id_2])
+        bond_reference[_canonical_atom_pair(bond.atom_id_1, bond.atom_id_2)] = (bond_order, equilibrium_distance)
+    return topology_rows, coeff_rows, bond_reference
 
 
-def _store_unique_coefficients(
-    table: dict[tuple[str, ...], tuple[float, float]],
-    key: tuple[str, ...],
-    values: tuple[float, float],
+def _build_uff_angle_terms(
     *,
-    kind: str,
-) -> None:
-    existing = table.get(key)
-    if existing is None:
-        table[key] = values
-        return
-    if _coefficients_close(existing, values):
-        return
-    raise LammpsInputError(
-        f"Encountered conflicting {kind} coefficients for forcefield type {key!r}: "
-        f"{existing!r} vs {values!r}."
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+    parameters: dict[str, _UffAtomParameters],
+    bond_reference: dict[tuple[int, int], tuple[float, float]],
+) -> tuple[list[list[int]], list[list[object]]]:
+    type_ids: dict[tuple[object, ...], int] = {}
+    coeff_rows: list[list[object]] = []
+    topology_rows: list[list[int]] = []
+    for angle in parsed.angles:
+        coeffs = _compute_uff_angle_coefficients(
+            angle=angle,
+            atom_type_by_atom_id=atom_type_by_atom_id,
+            parameters=parameters,
+            bond_reference=bond_reference,
+        )
+        coefficient_key = _freeze_coeff_values(coeffs)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            coeff_rows.append(list(coeffs))
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        topology_rows.append([type_id, angle.atom_id_1, angle.atom_id_2, angle.atom_id_3])
+    return topology_rows, coeff_rows
+
+
+def _build_uff_dihedral_terms(
+    *,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+    parameters: dict[str, _UffAtomParameters],
+) -> tuple[list[list[int]], list[list[float]]]:
+    type_ids: dict[tuple[object, ...], int] = {}
+    coeff_rows: list[list[float]] = []
+    topology_rows: list[list[int]] = []
+    for dihedral in parsed.dihedrals:
+        coeffs = _compute_uff_dihedral_coefficients(
+            dihedral=dihedral,
+            parsed=parsed,
+            atom_type_by_atom_id=atom_type_by_atom_id,
+            parameters=parameters,
+        )
+        if coeffs is None:
+            continue
+        coefficient_key = _freeze_coeff_values(coeffs)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            coeff_rows.append(list(coeffs))
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        topology_rows.append([type_id, dihedral.atom_id_1, dihedral.atom_id_2, dihedral.atom_id_3, dihedral.atom_id_4])
+    return topology_rows, coeff_rows
+
+
+def _build_uff_improper_terms(
+    *,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+    parameters: dict[str, _UffAtomParameters],
+) -> tuple[list[list[int]], list[list[float]]]:
+    type_ids: dict[tuple[object, ...], int] = {}
+    coeff_rows: list[list[float]] = []
+    topology_rows: list[list[int]] = []
+    degrees = _degree_by_atom(parsed)
+    for improper in parsed.impropers:
+        coeffs = _compute_uff_improper_coefficients(
+            improper=improper,
+            parsed=parsed,
+            atom_type_by_atom_id=atom_type_by_atom_id,
+            degrees=degrees,
+        )
+        if coeffs is None:
+            continue
+        coefficient_key = _freeze_coeff_values(coeffs)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            coeff_rows.append(list(coeffs))
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        topology_rows.append([type_id, improper.atom_id_1, improper.atom_id_2, improper.atom_id_3, improper.atom_id_4])
+    return topology_rows, coeff_rows
+
+
+def _coeff_rows_to_dataframe(rows: Sequence[Sequence[object]]) -> pd.DataFrame:
+    width = max(len(row) for row in rows)
+    dataframe = pd.DataFrame(list(rows), columns=[f"coeff{i}" for i in range(1, width + 1)])
+    dataframe.index = range(1, len(dataframe) + 1)
+    return dataframe
+
+
+def _topology_rows_to_dataframe(rows: Sequence[Sequence[int]], columns: Sequence[str]) -> pd.DataFrame:
+    dataframe = pd.DataFrame(list(rows), columns=list(columns))
+    dataframe.index = range(1, len(dataframe) + 1)
+    return dataframe
+
+
+def _compute_uff_bond_coefficients(
+    *,
+    left_type: str,
+    right_type: str,
+    bond_order: float,
+    parameters: dict[str, _UffAtomParameters],
+) -> tuple[float, float]:
+    left_parameters = _uff_parameters_for_type(left_type, parameters)
+    right_parameters = _uff_parameters_for_type(right_type, parameters)
+    rbo = -0.1332 * (left_parameters.r1 + right_parameters.r1) * math.log(bond_order)
+    ren = (
+        left_parameters.r1
+        * right_parameters.r1
+        * ((math.sqrt(left_parameters.xi) - math.sqrt(right_parameters.xi)) ** 2)
+        / (left_parameters.xi * left_parameters.r1 + right_parameters.xi * right_parameters.r1)
     )
+    equilibrium_distance = left_parameters.r1 + right_parameters.r1 + rbo - ren
+    force_constant = 664.12 * (left_parameters.z1 * right_parameters.z1) / (equilibrium_distance**3) / 2.0
+    return float(force_constant), float(equilibrium_distance)
 
 
-def _coefficients_close(left: tuple[float, float], right: tuple[float, float]) -> bool:
-    for a, b in zip(left, right):
-        absolute_delta = abs(a - b)
-        relative_scale = max(abs(a), abs(b), 1.0)
-        if absolute_delta > 5.0e-2 and absolute_delta / relative_scale > 2.0e-2:
-            return False
-    return True
+def _compute_uff_angle_coefficients(
+    *,
+    angle: _CifAngleRecord,
+    atom_type_by_atom_id: dict[int, str],
+    parameters: dict[str, _UffAtomParameters],
+    bond_reference: dict[tuple[int, int], tuple[float, float]],
+) -> tuple[object, ...]:
+    left_type = atom_type_by_atom_id[angle.atom_id_1]
+    center_type = atom_type_by_atom_id[angle.atom_id_2]
+    right_type = atom_type_by_atom_id[angle.atom_id_3]
+    center_parameters = _uff_parameters_for_type(center_type, parameters)
+    theta0 = center_parameters.theta0
+    angle_family = _uff_angle_family(center_type)
+    left_bond = bond_reference[_canonical_atom_pair(angle.atom_id_1, angle.atom_id_2)]
+    right_bond = bond_reference[_canonical_atom_pair(angle.atom_id_2, angle.atom_id_3)]
+    r_ab = left_bond[1]
+    r_bc = right_bond[1]
+    cos_theta0 = math.cos(math.radians(theta0))
+    za = _uff_parameters_for_type(left_type, parameters).z1
+    zc = _uff_parameters_for_type(right_type, parameters).z1
+    r_ac = math.sqrt(r_ab * r_ab + r_bc * r_bc - 2.0 * r_ab * r_bc * cos_theta0)
+    beta = 664.12 / r_ab / r_bc
+    ka = beta * (za * zc / (r_ac**5.0)) * r_ab * r_bc
+    ka *= 3.0 * r_ab * r_bc * (1.0 - cos_theta0 * cos_theta0) - r_ac * r_ac * cos_theta0
+
+    if angle_family in {"linear", "trigonal-planar", "square-planar", "octahedral"} or (
+        angle_family == "tetrahedral" and int(theta0) == 90
+    ):
+        if angle_family == "linear":
+            return ("cosine/periodic", float(ka), 1, 1)
+        if angle_family == "tetrahedral":
+            return ("cosine/periodic", float(ka), -1, 2)
+        if angle_family == "trigonal-planar":
+            return ("cosine/periodic", float(ka), -1, 3)
+        return ("cosine/periodic", float(ka), 1, 4)
+
+    sin_theta0 = math.sin(math.radians(theta0))
+    if abs(sin_theta0) <= 1.0e-12:
+        raise LammpsInputError(
+            f"UFF angle coefficient generation became singular for angle {angle.atom_id_1}-{angle.atom_id_2}-{angle.atom_id_3}."
+        )
+    c2 = 1.0 / (4.0 * sin_theta0 * sin_theta0)
+    c1 = -4.0 * c2 * cos_theta0
+    c0 = c2 * (2.0 * cos_theta0 * cos_theta0 + 1.0)
+    return ("fourier", float(ka), float(c0), float(c1), float(c2))
 
 
-def _canonical_bond_type(left_type: str, right_type: str) -> tuple[str, str]:
-    return min((left_type, right_type), (right_type, left_type))
+def _compute_uff_dihedral_coefficients(
+    *,
+    dihedral: _CifDihedralRecord,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+    parameters: dict[str, _UffAtomParameters],
+) -> tuple[float, int, int] | None:
+    left_center_type = atom_type_by_atom_id[dihedral.atom_id_2]
+    right_center_type = atom_type_by_atom_id[dihedral.atom_id_3]
+    left_center_symbol = parsed.atoms[dihedral.atom_id_2 - 1].symbol
+    right_center_symbol = parsed.atoms[dihedral.atom_id_3 - 1].symbol
+    if gemmi.Element(left_center_symbol).is_metal or gemmi.Element(right_center_symbol).is_metal:
+        return None
+
+    left_family = _uff_hybridization_family(left_center_type)
+    right_family = _uff_hybridization_family(right_center_type)
+    torsion_order = _bond_order_for_pair(parsed, dihedral.atom_id_2, dihedral.atom_id_3)
+    degree_by_atom = _degree_by_atom(parsed)
+    multiplicity = float((degree_by_atom[dihedral.atom_id_2] - 1) * (degree_by_atom[dihedral.atom_id_3] - 1))
+    if multiplicity <= 0.0:
+        return None
+
+    left_atomic_number = ob.GetAtomicNum(left_center_symbol)
+    right_atomic_number = ob.GetAtomicNum(right_center_symbol)
+    group6_atomic_numbers = {8, 16, 34, 52, 84}
+    left_sp2_like = left_family in {"sp2", "aromatic"}
+    right_sp2_like = right_family in {"sp2", "aromatic"}
+    all_sp3 = left_family == "sp3" and right_family == "sp3"
+    all_sp2 = left_sp2_like and right_sp2_like
+    mixed_case = (left_sp2_like and right_family == "sp3") or (left_family == "sp3" and right_sp2_like)
+
+    phase = 0.0
+    periodicity = 0
+    amplitude = 0.0
+    if all_sp3:
+        phase = 60.0
+        periodicity = 3
+        vi = _uff_parameters_for_type(left_center_type, parameters).vi
+        vj = _uff_parameters_for_type(right_center_type, parameters).vi
+        if left_atomic_number == 8:
+            vi = 2.0
+            periodicity = 2
+            phase = 90.0
+        elif left_atomic_number in group6_atomic_numbers - {8}:
+            vi = 6.8
+            periodicity = 2
+            phase = 90.0
+        if right_atomic_number == 8:
+            vj = 2.0
+            periodicity = 2
+            phase = 90.0
+        elif right_atomic_number in group6_atomic_numbers - {8}:
+            vj = 6.8
+            periodicity = 2
+            phase = 90.0
+        amplitude = math.sqrt(vi * vj)
+    elif all_sp2:
+        ui = _uff_parameters_for_type(left_center_type, parameters).uj
+        uj = _uff_parameters_for_type(right_center_type, parameters).uj
+        phase = 180.0
+        periodicity = 2
+        amplitude = 5.0 * math.sqrt(ui * uj) * (1.0 + 4.18 * math.log(torsion_order))
+    elif mixed_case:
+        phase = 180.0
+        periodicity = 3
+        amplitude = 2.0
+        if right_family == "sp3" and right_atomic_number in group6_atomic_numbers:
+            periodicity = 2
+            phase = 90.0
+        elif left_family == "sp3" and left_atomic_number in group6_atomic_numbers:
+            periodicity = 2
+            phase = 90.0
+        if periodicity == 2:
+            ui = _uff_parameters_for_type(left_center_type, parameters).uj
+            uj = _uff_parameters_for_type(right_center_type, parameters).uj
+            amplitude = 5.0 * math.sqrt(ui * uj) * (1.0 + 4.18 * math.log(torsion_order))
+    else:
+        return None
+
+    amplitude /= multiplicity
+    if abs(amplitude) <= 1.0e-12:
+        return None
+    d_value = int(round(-math.cos(math.radians(periodicity * phase))))
+    return float(0.5 * amplitude), d_value, int(periodicity)
 
 
-def _canonical_angle_type(left_type: str, center_type: str, right_type: str) -> tuple[str, str, str]:
-    forward = (left_type, center_type, right_type)
-    reverse = (right_type, center_type, left_type)
+def _compute_uff_improper_coefficients(
+    *,
+    improper: _CifImproperRecord,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+    degrees: dict[int, int],
+) -> tuple[float, float, float, float, int] | None:
+    center_type = atom_type_by_atom_id[improper.atom_id_2]
+    center_atomic_number = ob.GetAtomicNum(parsed.atoms[improper.atom_id_2 - 1].symbol)
+    allowed_atomic_numbers = {6, 7, 8, 15, 33, 51, 83}
+    if center_atomic_number not in allowed_atomic_numbers:
+        return None
+
+    if center_type in {"N_3", "N_2", "N_R", "O_2", "O_R"}:
+        return (2.0, 1.0, -1.0, 0.0, 0)
+    if center_type in {"P_3+3", "As3+3", "Sb3+3", "Bi3+3"}:
+        if center_type == "P_3+3":
+            phi = math.radians(84.4339)
+        elif center_type == "As3+3":
+            phi = math.radians(86.9735)
+        elif center_type == "Sb3+3":
+            phi = math.radians(87.7047)
+        else:
+            phi = math.radians(90.0)
+        c1 = -4.0 * math.cos(phi)
+        c2 = 1.0
+        c0 = -c1 * math.cos(phi) + c2 * math.cos(2.0 * phi)
+        return (22.0 / 3.0, float(c0), float(c1), float(c2), 0)
+    if center_type in {"C_2", "C_R"}:
+        force_constant = 2.0
+        for atom_id in (improper.atom_id_1, improper.atom_id_3, improper.atom_id_4):
+            if atom_type_by_atom_id[atom_id] == "O_2" and degrees[atom_id] == 1:
+                force_constant = 50.0 / 3.0
+                break
+        return (force_constant, 1.0, -1.0, 0.0, 0)
+    return None
+
+
+def _uff_parameters_for_type(
+    atom_type: str,
+    parameters: dict[str, _UffAtomParameters],
+) -> _UffAtomParameters:
+    try:
+        return parameters[atom_type]
+    except KeyError as exc:
+        raise LammpsInputError(f"UFF parameters are unavailable for atom type {atom_type!r}.") from exc
+
+
+def _canonical_atom_pair(left_atom_id: int, right_atom_id: int) -> tuple[int, int]:
+    return (left_atom_id, right_atom_id) if left_atom_id <= right_atom_id else (right_atom_id, left_atom_id)
+
+
+def _canonical_bond_term_key(left_type: str, right_type: str, bond_order: float) -> tuple[str, str, float]:
+    forward = (left_type, right_type, bond_order)
+    reverse = (right_type, left_type, bond_order)
     return min(forward, reverse)
+
+
+def _freeze_coeff_values(values: Sequence[object]) -> tuple[object, ...]:
+    frozen: list[object] = []
+    for value in values:
+        if isinstance(value, float):
+            frozen.append(round(value, 8))
+        else:
+            frozen.append(value)
+    return tuple(frozen)
+
+
+def _ordered_coeff_styles(rows: Sequence[Sequence[object]]) -> tuple[str, ...]:
+    styles: list[str] = []
+    for row in rows:
+        if not row or not isinstance(row[0], str):
+            continue
+        style = row[0]
+        if style not in styles:
+            styles.append(style)
+    return tuple(styles)
+
+
+def _uff_angle_family(atom_type: str) -> str:
+    if atom_type.endswith("_R") or atom_type.endswith("R"):
+        return "trigonal-planar"
+    if len(atom_type) < 3:
+        return "linear"
+    coordination = atom_type[2]
+    if coordination == "1":
+        return "linear"
+    if coordination in {"2", "R"}:
+        return "trigonal-planar"
+    if coordination == "3":
+        return "tetrahedral"
+    if coordination == "4":
+        return "square-planar"
+    if coordination == "5":
+        return "trigonal-bipyramidal"
+    if coordination == "6":
+        return "octahedral"
+    if coordination == "8":
+        return "cubic-antiprism"
+    return "linear"
+
+
+def _uff_hybridization_family(atom_type: str) -> str:
+    if atom_type.endswith("_R") or atom_type.endswith("R"):
+        return "aromatic"
+    if len(atom_type) < 3:
+        return "sp"
+    coordination = atom_type[2]
+    if coordination == "1":
+        return "sp"
+    if coordination == "2":
+        return "sp2"
+    if coordination in {"3", "4", "5", "6", "8"}:
+        return "sp3"
+    return "sp3"
+
+
+def _degree_by_atom(parsed: _ParsedExplicitBondCif) -> dict[int, int]:
+    degrees = {atom.atom_id: 0 for atom in parsed.atoms}
+    for bond in parsed.bonds:
+        degrees[bond.atom_id_1] += 1
+        degrees[bond.atom_id_2] += 1
+    return degrees
+
+
+def _bond_order_for_pair(parsed: _ParsedExplicitBondCif, left_atom_id: int, right_atom_id: int) -> float:
+    pair = _canonical_atom_pair(left_atom_id, right_atom_id)
+    for bond in parsed.bonds:
+        if _canonical_atom_pair(bond.atom_id_1, bond.atom_id_2) != pair:
+            continue
+        if bond.bond_order is None:
+            raise LammpsInputError(
+                f"Missing explicit bond order for bond {bond.label_1}-{bond.label_2} while assigning UFF torsions."
+            )
+        return normalize_bond_order(bond.bond_order)
+    raise LammpsInputError(f"Internal error: could not resolve bond order for atom pair {pair!r}.")
 
 
 def _compute_unwrapped_atom_images(parsed: _ParsedExplicitBondCif) -> tuple[dict[int, tuple[int, int, int]], int]:
@@ -809,12 +1291,36 @@ def _build_openbabel_molecule(
         ob_atom.SetAtomicNum(atomic_number)
         x, y, z = cartesian_positions[atom.atom_id]
         ob_atom.SetVector(x, y, z)
+    has_complete_explicit_bond_orders = all(bond.bond_order is not None for bond in parsed.bonds)
+    aromatic_atom_ids: set[int] = set()
     for bond in parsed.bonds:
-        if not molecule.AddBond(bond.atom_id_1, bond.atom_id_2, 1):
+        bond_order = 1
+        if bond.bond_order is not None and not is_aromatic_bond_order(bond.bond_order):
+            bond_order = max(1, int(round(normalize_bond_order(bond.bond_order))))
+        if not molecule.AddBond(bond.atom_id_1, bond.atom_id_2, bond_order):
             raise LammpsInputError(
                 f"Open Babel rejected explicit bond {bond.label_1}-{bond.label_2} while preparing the UFF model."
             )
-    molecule.PerceiveBondOrders()
+        if bond.bond_order is not None and is_aromatic_bond_order(bond.bond_order):
+            ob_bond = molecule.GetBond(bond.atom_id_1, bond.atom_id_2)
+            if ob_bond is None:
+                raise LammpsInputError(
+                    f"Open Babel could not resolve explicit aromatic bond {bond.label_1}-{bond.label_2}."
+                )
+            ob_bond.SetAromatic(True)
+            aromatic_atom_ids.add(bond.atom_id_1)
+            aromatic_atom_ids.add(bond.atom_id_2)
+    if has_complete_explicit_bond_orders:
+        for atom_id in aromatic_atom_ids:
+            ob_atom = molecule.GetAtom(atom_id)
+            if ob_atom is not None:
+                ob_atom.SetAromatic(True)
+        if aromatic_atom_ids:
+            molecule.SetAromaticPerceived(True)
+            molecule.FindRingAtomsAndBonds()
+            molecule.SetRingAtomsAndBondsPerceived(True)
+    else:
+        molecule.PerceiveBondOrders()
     return molecule
 
 
@@ -842,6 +1348,33 @@ def _assign_openbabel_uff_atom_types(ob_molecule) -> dict[int, str]:
     return atom_types
 
 
+def _build_rdkit_molecule(parsed: _ParsedExplicitBondCif, ob_molecule):
+    if all(bond.bond_order is not None for bond in parsed.bonds):
+        return _build_rdkit_molecule_from_explicit_bond_orders(parsed)
+    return _build_rdkit_molecule_from_openbabel(ob_molecule)
+
+
+def _build_rdkit_molecule_from_explicit_bond_orders(parsed: _ParsedExplicitBondCif):
+    molecule = Chem.RWMol()
+    for atom in parsed.atoms:
+        rd_atom = Chem.Atom(atom.symbol)
+        molecule.AddAtom(rd_atom)
+    aromatic_atom_ids: set[int] = set()
+    for bond in parsed.bonds:
+        if bond.bond_order is None:
+            raise LammpsInputError("Explicit-bond RDKit construction encountered a bond without a bond order.")
+        bond_type = _rdkit_bond_type_from_bond_order(bond.bond_order)
+        molecule.AddBond(bond.atom_id_1 - 1, bond.atom_id_2 - 1, bond_type)
+        if is_aromatic_bond_order(bond.bond_order):
+            aromatic_atom_ids.add(bond.atom_id_1 - 1)
+            aromatic_atom_ids.add(bond.atom_id_2 - 1)
+    rdkit_molecule = molecule.GetMol()
+    for atom_id in aromatic_atom_ids:
+        rdkit_molecule.GetAtomWithIdx(atom_id).SetIsAromatic(True)
+    Chem.SanitizeMol(rdkit_molecule)
+    return rdkit_molecule
+
+
 def _build_rdkit_molecule_from_openbabel(ob_molecule):
     converter = ob.OBConversion()
     if not converter.SetOutFormat("mol"):
@@ -853,6 +1386,19 @@ def _build_rdkit_molecule_from_openbabel(ob_molecule):
             "RDKit could not reconstruct a sanitized molecule from the Open Babel bond-order perception step."
         )
     return rdkit_molecule
+
+
+def _rdkit_bond_type_from_bond_order(bond_order: float):
+    normalized = normalize_bond_order(bond_order)
+    if is_aromatic_bond_order(normalized):
+        return Chem.BondType.AROMATIC
+    if abs(normalized - 1.0) <= 1.0e-6:
+        return Chem.BondType.SINGLE
+    if abs(normalized - 2.0) <= 1.0e-6:
+        return Chem.BondType.DOUBLE
+    if abs(normalized - 3.0) <= 1.0e-6:
+        return Chem.BondType.TRIPLE
+    raise LammpsInputError(f"Unsupported explicit bond order for RDKit UFF setup: {bond_order!r}")
 
 
 def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
@@ -901,6 +1447,9 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
             "_geom_bond_distance",
         ]
     )
+    bond_type_loop = block.find_loop("_ccdc_geom_bond_type")
+    if len(bond_type_loop) == 0:
+        bond_type_loop = block.find_loop("_geom_bond_type")
     if len(bond_table) == 0:
         raise LammpsInputError(
             f"CIF file does not contain an explicit _geom_bond_* loop and cannot drive the LAMMPS bonded cleanup: {cif_path}"
@@ -935,6 +1484,7 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
             basis=basis,
             reported_distance=equilibrium_distance,
         )
+        bond_order = cif_type_to_bond_order(str(bond_type_loop[bond_id]).strip()) if len(bond_type_loop) > bond_id else None
         bonds.append(
             _CifBondRecord(
                 bond_id=bond_id + 1,
@@ -947,10 +1497,13 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
                 shift_1=effective_shift_1,
                 shift_2=effective_shift_2,
                 equilibrium_distance=equilibrium_distance,
+                bond_order=bond_order,
             )
         )
 
     angles = _derive_angles(tuple(atoms), tuple(bonds), basis)
+    dihedrals = _derive_dihedrals(tuple(atoms), tuple(bonds))
+    impropers = _derive_impropers(tuple(atoms), tuple(bonds))
     return _ParsedExplicitBondCif(
         source_path=cif_path,
         data_name=str(block.name or cif_path.stem),
@@ -959,6 +1512,8 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
         atoms=tuple(atoms),
         bonds=tuple(bonds),
         angles=angles,
+        dihedrals=dihedrals,
+        impropers=impropers,
     )
 
 
@@ -1053,6 +1608,76 @@ def _derive_angles(
                     )
                 )
     return tuple(angles)
+
+
+def _derive_dihedrals(
+    atoms: tuple[_CifAtomRecord, ...],
+    bonds: tuple[_CifBondRecord, ...],
+) -> tuple[_CifDihedralRecord, ...]:
+    neighbors: dict[int, list[int]] = {atom.atom_id: [] for atom in atoms}
+    for bond in bonds:
+        neighbors[bond.atom_id_1].append(bond.atom_id_2)
+        neighbors[bond.atom_id_2].append(bond.atom_id_1)
+
+    dihedrals: list[_CifDihedralRecord] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for bond in bonds:
+        left_center = bond.atom_id_1
+        right_center = bond.atom_id_2
+        left_neighbors = [atom_id for atom_id in neighbors[left_center] if atom_id != right_center]
+        right_neighbors = [atom_id for atom_id in neighbors[right_center] if atom_id != left_center]
+        for left_atom_id in sorted(left_neighbors):
+            for right_atom_id in sorted(right_neighbors):
+                if left_atom_id == right_atom_id:
+                    continue
+                forward = (left_atom_id, left_center, right_center, right_atom_id)
+                reverse = tuple(reversed(forward))
+                key = min(forward, reverse)
+                if key in seen:
+                    continue
+                seen.add(key)
+                dihedrals.append(
+                    _CifDihedralRecord(
+                        dihedral_id=len(dihedrals) + 1,
+                        atom_id_1=forward[0],
+                        atom_id_2=forward[1],
+                        atom_id_3=forward[2],
+                        atom_id_4=forward[3],
+                    )
+                )
+    return tuple(dihedrals)
+
+
+def _derive_impropers(
+    atoms: tuple[_CifAtomRecord, ...],
+    bonds: tuple[_CifBondRecord, ...],
+) -> tuple[_CifImproperRecord, ...]:
+    neighbors: dict[int, list[int]] = {atom.atom_id: [] for atom in atoms}
+    for bond in bonds:
+        neighbors[bond.atom_id_1].append(bond.atom_id_2)
+        neighbors[bond.atom_id_2].append(bond.atom_id_1)
+
+    impropers: list[_CifImproperRecord] = []
+    for center_id, entries in sorted(neighbors.items()):
+        ordered = sorted(entries)
+        if len(ordered) != 3:
+            continue
+        permutations = [
+            (ordered[0], ordered[1], ordered[2]),
+            (ordered[1], ordered[0], ordered[2]),
+            (ordered[2], ordered[0], ordered[1]),
+        ]
+        for atom_id_1, atom_id_3, atom_id_4 in permutations:
+            impropers.append(
+                _CifImproperRecord(
+                    improper_id=len(impropers) + 1,
+                    atom_id_1=atom_id_1,
+                    atom_id_2=center_id,
+                    atom_id_3=atom_id_3,
+                    atom_id_4=atom_id_4,
+                )
+            )
+    return tuple(impropers)
 
 
 def _resolve_effective_bond_geometry(
@@ -1234,6 +1859,7 @@ def _render_lammps_input_script(
     dump_path: Path,
     settings: LammpsOptimizationSettings,
     parsed: _ParsedExplicitBondCif,
+    prepared: _PreparedLammpsSystem,
 ) -> str:
     forcefield = _normalize_forcefield_name(settings.forcefield)
     thermo_terms = ["step", "pe", "ebond"]
@@ -1247,9 +1873,15 @@ def _render_lammps_input_script(
         "special_bonds lj 0.0 0.0 1.0",
         "bond_style harmonic",
     ]
-    if parsed.angles:
-        lines.append("angle_style harmonic")
+    if prepared.angle_styles:
+        lines.append(_render_style_line("angle_style", prepared.angle_styles, force_hybrid=True))
         thermo_terms.append("eangle")
+    if prepared.dihedral_styles:
+        lines.append(_render_style_line("dihedral_style", prepared.dihedral_styles))
+        thermo_terms.append("edihed")
+    if prepared.improper_styles:
+        lines.append(_render_style_line("improper_style", prepared.improper_styles))
+        thermo_terms.append("eimp")
     thermo_terms.extend(["evdwl", "press"])
     lines.extend(
         [
@@ -1269,6 +1901,35 @@ def _render_lammps_input_script(
         ]
     )
     active_restraint_force_constant: float | None = None
+    if settings.pre_minimization_steps > 0:
+        initial_restraint_force_constant = minimization_stages[0].position_restraint_force_constant
+        lines.append("# pre_minimization")
+        if initial_restraint_force_constant > 0.0:
+            lines.append(f"fix cofkit_hold all spring/self {initial_restraint_force_constant:.6f}")
+            lines.append("fix_modify cofkit_hold energy yes")
+            active_restraint_force_constant = initial_restraint_force_constant
+        lines.extend(
+            [
+                (
+                    f"velocity all create {settings.pre_minimization_temperature:.8g} "
+                    f"{settings.pre_minimization_seed} mom yes rot yes dist gaussian"
+                ),
+                (
+                    f"fix cofkit_prerun_nve all nve/limit "
+                    f"{settings.pre_minimization_displacement_limit:.8g}"
+                ),
+                (
+                    f"fix cofkit_prerun_langevin all langevin "
+                    f"{settings.pre_minimization_temperature:.8g} "
+                    f"{settings.pre_minimization_temperature:.8g} "
+                    f"{settings.pre_minimization_damping:.8g} "
+                    f"{settings.pre_minimization_seed + 104729}"
+                ),
+                f"run {settings.pre_minimization_steps}",
+                "unfix cofkit_prerun_langevin",
+                "unfix cofkit_prerun_nve",
+            ]
+        )
     for stage in minimization_stages:
         lines.append(f"# {stage.label}")
         if active_restraint_force_constant is not None and (
@@ -1359,6 +2020,13 @@ def _run_lammps(
 def _default_lammps_omp_num_threads() -> int:
     cpu_count = os.cpu_count() or 1
     return max(1, cpu_count // 2)
+
+
+def _render_style_line(keyword: str, styles: Sequence[str], *, force_hybrid: bool = False) -> str:
+    unique_styles = tuple(dict.fromkeys(styles))
+    if len(unique_styles) == 1 and not force_hybrid:
+        return f"{keyword} {unique_styles[0]}"
+    return f"{keyword} hybrid {' '.join(unique_styles)}"
 
 
 def _parse_lammps_dump_last_frame(
@@ -1492,6 +2160,7 @@ def _render_optimized_cif(
             "_geom_bond_site_symmetry_1",
             "_geom_bond_site_symmetry_2",
             "_geom_bond_distance",
+            "_ccdc_geom_bond_type",
         ]
     )
     for bond in parsed.bonds:
@@ -1518,7 +2187,8 @@ def _render_optimized_cif(
             parsed.lammps_basis,
         )
         lines.append(
-            f"{bond.label_1} {bond.label_2} {symmetry_1} {symmetry_2} {distance:.6f}"
+            f"{bond.label_1} {bond.label_2} {symmetry_1} {symmetry_2} {distance:.6f} "
+            f"{bond_order_to_cif_type(bond.bond_order if bond.bond_order is not None else 1.0)}"
         )
     lines.append("")
     return "\n".join(lines)

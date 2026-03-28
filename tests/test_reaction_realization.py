@@ -270,10 +270,15 @@ class ReactionRealizationTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.metadata["applied_templates"], {"keto_enamine_bridge": 1})
         self.assertEqual(result.metadata["removed_atom_symbols"], {"H": 2, "O": 1})
-        self.assertEqual(len(result.bonds), 1)
-        self.assertEqual(result.bonds[0].label_1, "m2_C1")
-        self.assertEqual(result.bonds[0].label_2, "m1_N1")
-        self.assertAlmostEqual(result.bonds[0].distance, 1.36, places=6)
+        self.assertEqual(len(result.bonds), 2)
+        inter_monomer_bond = next(bond for bond in result.bonds if {bond.label_1, bond.label_2} == {"m2_C1", "m1_N1"})
+        tautomerized_carbonyl_bond = next(
+            bond for bond in result.bonds if {bond.label_1, bond.label_2} == {"m2_C3", "m2_O4"}
+        )
+        self.assertAlmostEqual(inter_monomer_bond.distance, 1.36, places=6)
+        self.assertEqual(inter_monomer_bond.bond_order, 2.0)
+        self.assertAlmostEqual(tautomerized_carbonyl_bond.distance, 1.24, places=2)
+        self.assertEqual(tautomerized_carbonyl_bond.bond_order, 2.0)
         keto_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance["m2"]}
         self.assertNotIn(1, keto_atoms)
         self.assertNotIn(4, keto_atoms)

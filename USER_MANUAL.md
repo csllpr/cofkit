@@ -563,6 +563,97 @@ The output directory stores:
 
 Current scope note: the public wrapper currently focuses on basic pore metrics plus surface-area / pore-volume summaries. Richer Zeo++ modes such as PSD histograms, grids, ray analyses, ZeoVis exports, and other hidden commands remain out of the public `cofkit` CLI for now.
 
+## Workflow 7: Initial LAMMPS CIF Cleanup
+
+The first `calculate`-namespace external-tool wrapper is a conservative LAMMPS local cleanup for explicit-bond CIFs.
+
+### Environment setup
+
+Point `cofkit` at the LAMMPS executable through an environment variable:
+
+```bash
+export COFKIT_LMP_PATH=/path/to/lmp_mpi
+```
+
+In the current development environment, `cofkit` also falls back to `/opt/homebrew/bin/lmp_mpi` if that path exists.
+
+### CLI usage
+
+```bash
+cofkit calculate lammps-optimize \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_lammps_opt \
+  --forcefield uff \
+  --json
+```
+
+### Exposed CLI controls
+
+The public `lammps-optimize` command already exposes the main optimization settings directly:
+
+- `--forcefield {uff}` selects the force-field backend
+- `--pair-cutoff` sets the LJ cutoff used by the current backend
+- `--position-restraint-force-constant` controls the stage-1 local `spring/self` restraint
+- `--pre-minimization-steps` plus the `--pre-minimization-*` flags add an optional short restrained `langevin + nve/limit` prerun before minimization
+- `--two-stage` plus the `--stage2-*` flags add a weaker or unrestrained second minimization stage
+- `--energy-tolerance`, `--force-tolerance`, `--max-iterations`, `--max-evaluations`, and `--min-style` control stage 1
+- `--timestep` and the `--min-modify-*` flags expose the main LAMMPS minimizer tuning controls
+- `--relax-cell` plus the `--box-relax-*` flags append a final `fix box/relax` stage using a compatible minimizer such as `cg`
+- `--timeout-seconds` sets the subprocess timeout
+- `--lmp-path` overrides `COFKIT_LMP_PATH` for one run
+
+If `OMP_NUM_THREADS` is not already set, `cofkit` launches LAMMPS with a default of half the machine core count.
+
+A more explicitly tuned run looks like:
+
+```bash
+cofkit calculate lammps-optimize \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_lammps_opt \
+  --pair-cutoff 14.0 \
+  --position-restraint-force-constant 0.10 \
+  --pre-minimization-steps 100 \
+  --pre-minimization-temperature 300 \
+  --pre-minimization-damping 100 \
+  --pre-minimization-displacement-limit 0.05 \
+  --two-stage \
+  --stage2-position-restraint-force-constant 0.02 \
+  --energy-tolerance 1e-8 \
+  --force-tolerance 1e-8 \
+  --max-iterations 5000 \
+  --max-evaluations 50000 \
+  --min-style fire \
+  --timestep 0.5 \
+  --min-modify-dmax 0.15 \
+  --min-modify-fire-integrator verlet \
+  --min-modify-fire-tmax 4.0 \
+  --relax-cell \
+  --box-relax-min-style cg \
+  --box-relax-vmax 0.001
+```
+
+Current behavior:
+
+- input must be a `P1` CIF with an explicit `_geom_bond_*` loop
+- `cofkit` atomistic CIF exports now write `_ccdc_geom_bond_type`, and the LAMMPS wrapper requires that explicit bond-type field for every bond
+- the run can stay fixed-cell or append a final `fix box/relax` stage
+- the explicit CIF bond graph drives the bonded topology written into the LAMMPS data file
+- the implemented backend is `UFF`, using Open Babel UFF atom typing plus formulas and parameter tables aligned with the installed Open Babel `UFF.prm` and the reference `lammps_interface` logic
+- `UFF` is the default and currently only implemented force-field backend in the public workflow
+- the current UFF export writes bond, angle, dihedral, improper, and van der Waals terms
+- optional `spring/self` restraints keep the optimization local by default, and their energy is included in the minimization objective via `fix_modify energy yes`
+
+The output directory stores:
+
+- the generated `lammps_input.data`
+- the generated `lammps_minimize.in`
+- `lammps.log`, `lammps.stdout.log`, and `lammps.stderr.log`
+- `lammps_trajectory.lammpstrj`
+- `lammps_report.json`
+- one updated `*_lammps_optimized.cif`
+
+Current scope note: this is a topology-preserving local cleanup step for generated explicit-bond COF CIFs. The current UFF-backed export is now explicit-bond-order-driven and includes torsion and improper terms, but it still omits charges, so even with staged minimization and optional box relaxation it should be treated as a pre-optimization candidate generator rather than a final optimized structure.
+
 ### Quantitative rules
 
 Current `warning` criteria:

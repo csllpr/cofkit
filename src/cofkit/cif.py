@@ -5,6 +5,7 @@ from math import acos, degrees, floor
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from .bond_types import bond_order_to_cif_type, normalize_bond_order
 from .chem.motif_registry import motif_pseudo_atom_symbol
 from .geometry import Vec3, add, cross, dot, matmul_vec, norm
 from .model import Candidate, MonomerSpec, Pose
@@ -248,11 +249,13 @@ class CIFWriter:
                     "_geom_bond_site_symmetry_1",
                     "_geom_bond_site_symmetry_2",
                     "_geom_bond_distance",
+                    "_ccdc_geom_bond_type",
                 ]
             )
             for bond in bonds:
                 lines.append(
-                    f"{bond.label_1} {bond.label_2} {bond.symmetry_1} {bond.symmetry_2} {bond.distance:.6f}"
+                    f"{bond.label_1} {bond.label_2} {bond.symmetry_1} {bond.symmetry_2} {bond.distance:.6f} "
+                    f"{bond_order_to_cif_type(bond.bond_order)}"
                 )
         lines.append("")
         return "\n".join(lines)
@@ -295,7 +298,7 @@ class CIFWriter:
                 }
             exported_labels.update(atom_labels.values())
             pose = candidate.state.monomer_poses[instance_id]
-            for atom_id_1, atom_id_2, _ in monomer.bonds:
+            for atom_id_1, atom_id_2, bond_order in monomer.bonds:
                 if atom_id_1 not in atom_labels or atom_id_2 not in atom_labels:
                     continue
                 world_1 = self._world_position(pose, atom_positions[atom_id_1])
@@ -305,6 +308,7 @@ class CIFWriter:
                         label_1=atom_labels[atom_id_1],
                         label_2=atom_labels[atom_id_2],
                         distance=self._distance(world_1, world_2),
+                        bond_order=normalize_bond_order(bond_order),
                     )
                 )
 
@@ -315,15 +319,20 @@ class CIFWriter:
         return self._dedupe_bonds(bonds)
 
     def _dedupe_bonds(self, bonds: list[RealizedBond]) -> list[RealizedBond]:
-        seen: set[tuple[str, str, str, str]] = set()
         unique: list[RealizedBond] = []
+        index_by_key: dict[tuple[str, str, str, str], int] = {}
         for bond in bonds:
             key = (bond.label_1, bond.label_2, bond.symmetry_1, bond.symmetry_2)
             reverse_key = (bond.label_2, bond.label_1, bond.symmetry_2, bond.symmetry_1)
-            if key in seen or reverse_key in seen:
+            existing_index = index_by_key.get(key)
+            if existing_index is None:
+                existing_index = index_by_key.get(reverse_key)
+            if existing_index is None:
+                index_by_key[key] = len(unique)
+                unique.append(bond)
                 continue
-            seen.add(key)
-            unique.append(bond)
+            unique[existing_index] = bond
+            index_by_key[key] = existing_index
         return unique
 
     def _cell_parameters(self, cell: tuple[Vec3, Vec3, Vec3]) -> tuple[float, float, float, float, float, float]:

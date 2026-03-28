@@ -11,18 +11,33 @@ All notable changes to `cofkit` are recorded here.
 - point-probe Zeo++ pore baselines in the public CLI, now including `-resex`, `-sa 0 0`, and `-vol 0 0`
 - optional repeated accessibility-aware Zeo++ probe scans, with parsed channel, surface-area, pore-volume, and Voronoi-node accessibility summaries
 - an internal Zeo++ capability map in [agent-docs/ZEOPP_CAPABILITY_MAP.md](agent-docs/ZEOPP_CAPABILITY_MAP.md)
+- initial `cofkit calculate lammps-optimize` wrapper for fixed-cell local cleanup of explicit-bond `P1` CIFs
+- LAMMPS binary discovery through `COFKIT_LMP_PATH`, plus a development fallback to `/opt/homebrew/bin/lmp_mpi` when present
+- generated LAMMPS data/input files, stdout/stderr logs, dump trajectory, optimized CIF export, and `lammps_report.json` for the new cleanup workflow
+- a real UFF-backed LAMMPS parameterization path using Open Babel UFF atom typing, installed `UFF.prm` parameters, and `pymatgen` LAMMPS-data generation
+- staged LAMMPS optimization controls, including `timestep`, `min_modify`, an optional second minimization stage, and an optional final `fix box/relax` stage with a box-relax-compatible minimizer
+- optional short restrained LAMMPS preruns before minimization, using `velocity create` plus `langevin` and `nve/limit`
+- explicit atomistic CIF bond-type export through `_ccdc_geom_bond_type`, plus LAMMPS bond-order reuse from that field when present
+- explicit-bond-order-driven UFF assignment in the LAMMPS path, now adapted from the local `reference_repositories/lammps_interface` logic and including dihedral and improper terms in the generated data file
 
 ### Scope
 
 - the public Zeo++ integration is still selective; richer PSD, grid, ray, ZeoVis, and hidden diagnostic commands remain outside the public `cofkit` CLI for now
+- the first public LAMMPS integration is intentionally conservative; it is a topology-preserving local cleanup step, not yet a chemistry-aware production force-field workflow
+- `UFF` is now the default and currently only implemented public force-field backend for `cofkit calculate lammps-optimize`
 
 ### Fixed
 - Imine atomistic realization now converts event-local heavy-atom overrides back into monomer-local coordinates with the correct periodic-image shift removed before CIF export. This fixes periodic-image bridge events that could previously place retained aldehydic hydrogens in obviously wrong directions.
 - Imine-specific effective motif-origin correction is now applied consistently in the supported `3D` builder paths as well as the older `2D` paths. In practice this restores bent `C-C=N-C` geometry for high-connectivity `dia`-style imine builds instead of leaving some `4+2` bridge events nearly linear.
+- The new LAMMPS wrapper now infers nearest-image bond lengths for explicit-bond CIF rows that omit periodic image hints, which is necessary for generated periodic COF CIFs whose bond loops encode the right connectivity but not always the shortest image directly.
+- The LAMMPS wrapper no longer synthesizes generic bonded and nonbonded coefficients internally. The current working backend now uses UFF-derived parameters from installed chemistry libraries instead.
+- `spring/self` restraints in the generated LAMMPS input now use `fix_modify energy yes`, so restrained runs minimize the same objective they report through LAMMPS potential energy.
+- The UFF-backed LAMMPS workflow now requires explicit bond orders on every CIF bond row through `_ccdc_geom_bond_type`, and it no longer falls back to geometry-driven bond-order perception for force-field assignment.
 
 ### Verification
-- Local test suite passes (`137/137` tests at verification time).
+- Local test suite passes (`151/151` tests at verification time).
 - The previously reported `amines_count_2_0188` / `aldehydes_count_4_0008` `dia` example now exports with bridge-hydrogen angles in the expected bent-imine range instead of the earlier near-`0°` / near-`180°` failures.
+- `cofkit calculate lammps-optimize --forcefield uff` completed on the shipped `tapb__tfb__hcb.cif` atomistic example and wrote an updated CIF plus full LAMMPS artifacts under `out/lammps_tapb_tfb_uff_smoke/`.
 
 ## 2026-03-25
 

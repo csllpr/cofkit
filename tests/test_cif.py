@@ -119,7 +119,8 @@ class CIFWriterTests(unittest.TestCase):
         self.assertIn("m1_C1 C 0.100000 0.900000 0.500000 1.00", result.text)
         self.assertIn("m1_N2 N 0.250000 0.900000 0.500000 1.00", result.text)
         self.assertIn("_geom_bond_atom_site_label_1", result.text)
-        self.assertIn("m1_C1 m1_N2 . . 1.500000", result.text)
+        self.assertIn("_ccdc_geom_bond_type", result.text)
+        self.assertIn("m1_C1 m1_N2 . . 1.500000 S", result.text)
 
     def test_keto_enamine_export_shortens_tautomerized_carbonyl_bond_and_removes_phenolic_hydrogen(self):
         amine = MonomerSpec(
@@ -199,10 +200,11 @@ class CIFWriterTests(unittest.TestCase):
         realization = result.metadata["reaction_realization"]
         self.assertEqual(realization["removed_atom_symbols"], {"H": 2, "O": 1})
         self.assertNotIn("m2_H5", result.text)
-        bond_lines = [line for line in result.text.splitlines() if line.startswith("m") and len(line.split()) == 5]
+        bond_lines = [line for line in result.text.splitlines() if line.startswith("m") and len(line.split()) == 6]
         carbonyl_bonds = [line for line in bond_lines if line.startswith("m2_C3 m2_O4") or line.startswith("m2_O4 m2_C3")]
         self.assertEqual(len(carbonyl_bonds), 1)
-        self.assertAlmostEqual(float(carbonyl_bonds[0].split()[-1]), 1.24, places=2)
+        self.assertAlmostEqual(float(carbonyl_bonds[0].split()[-2]), 1.24, places=2)
+        self.assertEqual(carbonyl_bonds[0].split()[-1], "D")
 
     def test_hydrazone_export_removes_both_terminal_hydrazide_hydrogens(self):
         hydrazide = MonomerSpec(

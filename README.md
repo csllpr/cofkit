@@ -36,6 +36,8 @@ Optional tools you may want in your environment:
 - `gemmi` for rebuilding topology metadata with generic space-group expansion, CIF-backed coarse validation, and broader `2D` / `3D` two-monomer compatibility scans
 - `RDKit` for SMILES-based monomer construction and the practical batch-generation workflows
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
+- `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
+- `Open Babel`, `pymatgen`, and the installed Open Babel `UFF.prm` parameter file for the currently implemented UFF-backed LAMMPS force-field path
 - `pytest` to run the test suite
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
@@ -50,6 +52,7 @@ Inspect the available commands with:
 cofkit --help
 cofkit build --help
 cofkit analyze --help
+cofkit calculate --help
 cofkit build list-templates
 ```
 
@@ -60,6 +63,7 @@ The most useful grouped commands are:
 - `cofkit build batch-all-binary-bridges`
 - `cofkit analyze classify-output`
 - `cofkit analyze zeopp`
+- `cofkit calculate lammps-optimize`
 - `cofkit build default-library`
 
 Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
@@ -156,6 +160,74 @@ cofkit analyze zeopp \
 ```
 
 Each requested probe radius adds one scan with channel, surface-area, volume, and accessibility outputs for that probe. The wrapper keeps the raw Zeo++ outputs plus stdout/stderr logs in the output directory and records a `zeopp_report.json` summary there.
+
+### Run an initial LAMMPS local cleanup on one CIF
+
+```bash
+export COFKIT_LMP_PATH=/path/to/lmp_mpi
+
+cofkit calculate lammps-optimize \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_lammps_opt \
+  --forcefield uff \
+  --json
+```
+
+The `lammps-optimize` CLI already exposes the main runtime and minimization controls:
+
+- `--forcefield {uff}` selects the force-field backend
+- `--pair-cutoff` sets the global LJ cutoff
+- `--position-restraint-force-constant` controls the stage-1 local `spring/self` restraint
+- `--pre-minimization-steps` plus the `--pre-minimization-*` flags add an optional short restrained `langevin + nve/limit` prerun before minimization
+- `--two-stage` plus the `--stage2-*` flags append a weaker or unrestrained second minimization stage
+- `--energy-tolerance`, `--force-tolerance`, `--max-iterations`, `--max-evaluations`, and `--min-style` control stage 1
+- `--timestep` and the `--min-modify-*` flags expose the main LAMMPS minimizer tuning knobs
+- `--relax-cell` plus the `--box-relax-*` flags append a final `fix box/relax` stage using a compatible minimizer such as `cg`
+- `--timeout-seconds` caps wall-clock subprocess time
+- `--lmp-path` overrides `COFKIT_LMP_PATH` for one run
+
+If `OMP_NUM_THREADS` is not already set in the environment, `cofkit` now launches LAMMPS with a default of half the machine core count.
+
+For example, a longer staged run can be launched as:
+
+```bash
+cofkit calculate lammps-optimize \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_lammps_opt \
+  --pair-cutoff 14.0 \
+  --position-restraint-force-constant 0.10 \
+  --pre-minimization-steps 100 \
+  --pre-minimization-temperature 300 \
+  --pre-minimization-damping 100 \
+  --pre-minimization-displacement-limit 0.05 \
+  --two-stage \
+  --stage2-position-restraint-force-constant 0.02 \
+  --energy-tolerance 1e-8 \
+  --force-tolerance 1e-8 \
+  --max-iterations 5000 \
+  --max-evaluations 50000 \
+  --min-style fire \
+  --timestep 0.5 \
+  --min-modify-dmax 0.15 \
+  --min-modify-fire-integrator verlet \
+  --min-modify-fire-tmax 4.0 \
+  --relax-cell \
+  --box-relax-min-style cg \
+  --box-relax-vmax 0.001
+```
+
+This first LAMMPS wrapper is still conservative, but it no longer invents generic bonded/nonbonded coefficients:
+
+- it requires a `P1` CIF with an explicit `_geom_bond_*` loop
+- explicit CIF bond types in `_ccdc_geom_bond_type` are required, and `cofkit` atomistic exports now write them by default
+- it can run fixed-cell minimization only, or append an optional final `fix box/relax` stage
+- it builds a bonded LAMMPS data file from the explicit CIF bond graph
+- the public force-field backend is `UFF`, using Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled Open Babel `UFF.prm` and the reference `lammps_interface` logic
+- `UFF` is the default and currently only implemented force-field backend in the public workflow
+- the current UFF path writes bond, angle, dihedral, improper, and van der Waals terms, plus optional local position restraints whose energy is explicitly included in minimization through `fix_modify energy yes`
+- it writes an updated CIF, the generated LAMMPS data/input files, logs, a trajectory dump, and `lammps_report.json`
+
+This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current UFF path is now explicit-bond-order-driven and includes torsions and impropers, but it is still uncharged and should be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
 
 ### Rebuild the detector-scanned example library
 

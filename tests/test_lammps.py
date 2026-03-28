@@ -16,6 +16,7 @@ import cofkit.lammps as lammps_module
 from cofkit.lammps import (
     COFKIT_LMP_ENV_VAR,
     LammpsConfigurationError,
+    LammpsInputError,
     LammpsOptimizationSettings,
     optimize_cif_with_lammps,
     resolve_lammps_binary,
@@ -51,16 +52,19 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(result.n_atoms, 3)
             self.assertEqual(result.n_bonds, 2)
             self.assertEqual(result.n_angles, 1)
-            self.assertEqual(result.forcefield_backend, "uff_openbabel_rdkit_pymatgen")
+            self.assertEqual(result.n_dihedrals, 0)
+            self.assertEqual(result.n_impropers, 0)
+            self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
             self.assertIn("WARNING: fake warning from test binary", result.warnings)
-            self.assertTrue(any("Dihedral and improper terms are not emitted yet." in item for item in result.warnings))
 
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
+            self.assertIn("_ccdc_geom_bond_type", optimized_text)
             self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00", optimized_text)
-            self.assertIn("a1 a2 . . 1.030776", optimized_text)
+            self.assertIn("a1 a2 . . 1.030776 D", optimized_text)
 
             report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
             self.assertEqual(report["n_angles"], 1)
+            self.assertEqual(report["n_dihedrals"], 0)
             self.assertEqual(report["settings"]["forcefield"], "uff")
             self.assertEqual(report["n_atom_types"], 2)
             self.assertTrue(report["atom_type_symbols"]["1"])
@@ -76,7 +80,7 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(cif_path, output_dir=temp_path / "default_uff_out")
 
         self.assertEqual(result.settings.forcefield, "uff")
-        self.assertEqual(result.forcefield_backend, "uff_openbabel_rdkit_pymatgen")
+        self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
 
     def test_lammps_script_includes_fix_modify_for_restraint_energy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -133,6 +137,37 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("fix cofkit_hold all spring/self 0.050000", script_text)
             self.assertIn("min_modify dmax 0.15 line quadratic norm max integrator verlet tmax 4 abcfire yes", script_text)
             self.assertEqual(script_text.count("minimize "), 2)
+
+    def test_lammps_script_supports_optional_pre_minimization_prerun(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+            settings = LammpsOptimizationSettings(
+                forcefield="uff",
+                pre_minimization_steps=25,
+                pre_minimization_temperature=350.0,
+                pre_minimization_damping=50.0,
+                pre_minimization_seed=13579,
+                pre_minimization_displacement_limit=0.05,
+            )
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "prerun_out",
+                    settings=settings,
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("# pre_minimization", script_text)
+            self.assertIn("velocity all create 350 13579 mom yes rot yes dist gaussian", script_text)
+            self.assertIn("fix cofkit_prerun_nve all nve/limit 0.05", script_text)
+            self.assertIn("fix cofkit_prerun_langevin all langevin 350 350 50 118308", script_text)
+            self.assertIn("run 25", script_text)
+            self.assertIn("unfix cofkit_prerun_langevin", script_text)
+            self.assertIn("unfix cofkit_prerun_nve", script_text)
 
     def test_lammps_script_supports_final_box_relax_stage(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -280,7 +315,50 @@ class LammpsTests(unittest.TestCase):
                 )
 
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
-            self.assertIn("a1 a2 . 1_655 1.030776", optimized_text)
+            self.assertIn("a1 a2 . 1_655 1.030776 S", optimized_text)
+
+    def test_lammps_rejects_legacy_cif_without_explicit_bond_type(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "legacy_example.cif"
+            cif_path.write_text(self._example_cif_text(include_bond_type=False), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                with self.assertRaises(LammpsInputError) as raised:
+                    optimize_cif_with_lammps(
+                        cif_path,
+                        output_dir=temp_path / "legacy_out",
+                        settings=LammpsOptimizationSettings(forcefield="uff"),
+                    )
+
+            self.assertIn("_ccdc_geom_bond_type", str(raised.exception))
+
+    def test_lammps_data_can_include_dihedrals_and_impropers_from_explicit_cif(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "multi_term_example.cif"
+            cif_path.write_text(self._multi_term_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "multi_term_out",
+                    settings=LammpsOptimizationSettings(forcefield="uff"),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            self.assertIn("angle_style hybrid cosine/periodic", script_text)
+            self.assertIn("dihedral_style harmonic", script_text)
+            self.assertIn("improper_style fourier", script_text)
+            self.assertIn("Dihedral Coeffs", data_text)
+            self.assertIn("Improper Coeffs", data_text)
+            self.assertIn("Dihedrals", data_text)
+            self.assertIn("Impropers", data_text)
+            self.assertGreaterEqual(result.n_dihedrals, 1)
+            self.assertGreaterEqual(result.n_impropers, 1)
 
     def test_calculate_help_lists_lammps_optimize(self):
         buffer = io.StringIO()
@@ -374,7 +452,8 @@ class LammpsTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
 
-    def _example_cif_text(self) -> str:
+    def _example_cif_text(self, *, include_bond_type: bool = True) -> str:
+        bond_type_header = "_ccdc_geom_bond_type\n" if include_bond_type else ""
         return (
             "data_example\n"
             "_audit_creation_method 'cofkit test'\n"
@@ -408,8 +487,9 @@ class LammpsTests(unittest.TestCase):
             "_geom_bond_site_symmetry_1\n"
             "_geom_bond_site_symmetry_2\n"
             "_geom_bond_distance\n"
-            "a1 a2 . . 1.000000\n"
-            "a2 a3 . . 1.000000\n"
+            f"{bond_type_header}"
+            f"a1 a2 . . 1.000000{' D' if include_bond_type else ''}\n"
+            f"a2 a3 . . 1.000000{' S' if include_bond_type else ''}\n"
         )
 
     def _periodic_example_cif_text(self) -> str:
@@ -445,5 +525,49 @@ class LammpsTests(unittest.TestCase):
             "_geom_bond_site_symmetry_1\n"
             "_geom_bond_site_symmetry_2\n"
             "_geom_bond_distance\n"
-            "a1 a2 . . 1.000000\n"
+            "_ccdc_geom_bond_type\n"
+            "a1 a2 . . 1.000000 S\n"
+        )
+
+    def _multi_term_cif_text(self) -> str:
+        return (
+            "data_multi_term_example\n"
+            "_audit_creation_method 'cofkit test'\n"
+            "_space_group_name_H-M_alt 'P 1'\n"
+            "_space_group_IT_number 1\n"
+            "_cell_length_a 20.000000\n"
+            "_cell_length_b 20.000000\n"
+            "_cell_length_c 20.000000\n"
+            "_cell_angle_alpha 90.000000\n"
+            "_cell_angle_beta 90.000000\n"
+            "_cell_angle_gamma 90.000000\n"
+            "\n"
+            "loop_\n"
+            "_space_group_symop_operation_xyz\n"
+            "'x,y,z'\n"
+            "\n"
+            "loop_\n"
+            "_atom_site_label\n"
+            "_atom_site_type_symbol\n"
+            "_atom_site_fract_x\n"
+            "_atom_site_fract_y\n"
+            "_atom_site_fract_z\n"
+            "_atom_site_occupancy\n"
+            "a1 N 0.100000 0.100000 0.100000 1.00\n"
+            "a2 C 0.160000 0.100000 0.100000 1.00\n"
+            "a3 O 0.220000 0.100000 0.100000 1.00\n"
+            "a4 C 0.160000 0.160000 0.100000 1.00\n"
+            "a5 C 0.220000 0.160000 0.100000 1.00\n"
+            "\n"
+            "loop_\n"
+            "_geom_bond_atom_site_label_1\n"
+            "_geom_bond_atom_site_label_2\n"
+            "_geom_bond_site_symmetry_1\n"
+            "_geom_bond_site_symmetry_2\n"
+            "_geom_bond_distance\n"
+            "_ccdc_geom_bond_type\n"
+            "a1 a2 . . 1.000000 S\n"
+            "a2 a3 . . 1.000000 D\n"
+            "a2 a4 . . 1.000000 S\n"
+            "a4 a5 . . 1.000000 S\n"
         )

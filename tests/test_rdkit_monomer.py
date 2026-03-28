@@ -239,10 +239,12 @@ class RDKitMonomerTests(unittest.TestCase):
             f"{ReactionRealizer.atom_label(aldehyde_ref.monomer_instance_id, 'C', aldehyde_motif.metadata['reactive_atom_id'])} "
             f"{ReactionRealizer.atom_label(amine_ref.monomer_instance_id, 'N', amine_motif.metadata['reactive_atom_id'])}"
         )
-        bond_lines = [line for line in result.text.splitlines() if line.startswith("m") and len(line.split()) == 5]
+        self.assertIn("_ccdc_geom_bond_type", result.text)
+        bond_lines = [line for line in result.text.splitlines() if line.startswith("m") and len(line.split()) == 6]
         matching_bonds = [line for line in bond_lines if line.startswith(expected_prefix)]
         self.assertEqual(len(matching_bonds), 1)
-        self.assertAlmostEqual(float(matching_bonds[0].split()[-1]), 1.3, places=2)
+        self.assertAlmostEqual(float(matching_bonds[0].split()[-2]), 1.3, places=2)
+        self.assertEqual(matching_bonds[0].split()[-1], "D")
         self.assertGreater(len(bond_lines), len(candidate.events))
         self.assertTrue(any(line.startswith("m1_C1 m1_C2 ") for line in bond_lines))
         self.assertFalse(any(line.startswith("m1_N19 m1_H") or line.startswith("m1_N26 m1_H") or line.startswith("m1_N27 m1_H") for line in bond_lines))
