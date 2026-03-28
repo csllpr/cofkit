@@ -7,22 +7,28 @@ This reference maps natural-language requests onto the current `cofkit` interfac
 Use one of these equivalent launch styles:
 
 - installed CLI: `cofkit ...`
-- repo-local fallback: `PYTHONPATH=src .venv/bin/python -m cofkit.cli ...`
+- repo-local fallback: `PYTHONPATH=src python -m cofkit.cli ...`
 
 ## Request Patterns
 
 ### Show what the toolkit can do today
 
-Use:
+Use the grouped help plus build-template discovery:
 
 ```bash
+cofkit --help
+cofkit analyze --help
+cofkit calculate --help
 cofkit build list-templates --json
 ```
 
 Interpretation rules:
 
+- `cofkit build list-templates --json` only describes the build chemistry surface, not every public CLI workflow.
 - Focus on templates where `supports_pair_generation` is `true` for practical structure generation.
 - Registered templates with `supports_pair_generation=false` are still part of the reaction library, but they are not on the current topology-guided pair-generation path.
+- `cofkit analyze --help` is where current pore-analysis and output-triage workflows show up.
+- `cofkit calculate --help` is where current external optimization workflows show up.
 
 ### Build one COF from two monomers
 
@@ -136,6 +142,67 @@ Primary artifacts:
 - `hard_invalid/manifest.jsonl`
 - `hard_hard_invalid/manifest.jsonl`
 
+### Run Zeo++ pore analysis on one CIF
+
+Use `analyze zeopp`.
+
+```bash
+export COFKIT_ZEOPP_PATH=/path/to/zeo++/network
+
+cofkit analyze zeopp \
+  <STRUCTURE_CIF> \
+  --output-dir out/zeopp_run \
+  --json
+```
+
+Useful variants:
+
+- repeat `--probe-radius ...` to request accessibility-aware scans in addition to the default point-probe baseline
+- add `--channel-radius ...` when channel scans should use a shared radius instead of matching each probe radius
+- tune `--surface-samples-per-atom` and `--volume-samples-total` when Zeo++ Monte Carlo settings need to change
+- add `--zeopp-path ...` if `COFKIT_ZEOPP_PATH` is not configured
+
+Primary artifacts:
+
+- `zeopp_report.json`
+- raw Zeo++ output files and stdout/stderr logs under the output directory
+
+### Run LAMMPS local optimization on one CIF
+
+Use `calculate lammps-optimize`.
+
+```bash
+export COFKIT_LMP_PATH=/path/to/lmp_mpi
+
+cofkit calculate lammps-optimize \
+  <STRUCTURE_CIF> \
+  --output-dir out/lammps_opt \
+  --json
+```
+
+Useful variants:
+
+- add `--pre-minimization-steps ...` plus the other `--pre-minimization-*` flags for a short restrained prerun before minimization
+- add `--two-stage` plus `--stage2-*` for a weaker or unrestrained second minimization stage
+- add `--relax-cell` plus `--box-relax-*` for a final box/relax stage
+- tune `--energy-tolerance`, `--force-tolerance`, `--max-iterations`, `--max-evaluations`, `--min-style`, `--timestep`, and `--min-modify-*` as needed
+- add `--lmp-path ...` if `COFKIT_LMP_PATH` is not configured
+
+Requirements:
+
+- input must be an explicit-bond `P1` CIF
+- `_ccdc_geom_bond_type` must be present on every bond row
+- the current public force-field backend is `UFF` only
+
+Primary artifacts:
+
+- `lammps_report.json`
+- `*_lammps_optimized.cif`
+- `lammps_input.data`
+- `lammps_minimize.in`
+- `lammps.log`, `lammps.stdout.log`, `lammps.stderr.log`
+- `lammps_trajectory.lammpstrj`
+
 ### Work from Python instead of the CLI
 
 Choose the API by how much the user already knows:
@@ -152,11 +219,16 @@ Choose the API by how much the user already knows:
 - For `summary.md`, treat it as the human-readable batch overview, not the detailed machine-readable source of truth.
 - For `combined_summary.json`, summarize each template separately and do not collapse per-template counts together without saying so.
 - For classification outputs, keep the four-way split explicit: `valid`, `warning`, `hard_invalid`, `hard_hard_invalid`.
+- For `zeopp_report.json`, keep the point-probe baseline separate from any requested probe scans. Do not assume `probe_scans_successful` means no useful probe data exists; inspect individual scan status and parsed fields.
+- For `lammps_report.json`, report the optimized CIF path, atom/bond/angle/dihedral/improper counts, the forcefield backend, the key settings used, and any warnings.
 
 ## Common Traps
 
+- Do not treat `cofkit build list-templates` as a complete picture of the whole toolkit; it only covers the build chemistry surface.
 - Do not treat every template returned by `cofkit build list-templates` as immediately runnable for structure generation.
 - Do not use `--auto-detect-libraries` on `examples/default_monomers_library`.
 - Do not claim stacking workflows are supported; `stacking_mode` remains `"disabled"`.
+- Do not route users to the current internal benzothiazole/sulfur-enabled conversion prototype through the public CLI.
+- Do not send legacy atomistic CIFs without `_ccdc_geom_bond_type` into `cofkit calculate lammps-optimize`.
 - Do not answer from docs alone when the command can be run and the artifacts can be inspected directly.
 - Do not default to deprecated flat aliases such as `cofkit batch-imine` when the grouped binary-bridge interface expresses the same task more clearly.
