@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 try:  # pragma: no cover - exercised in integration environments
     import gemmi
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover - import guard for incomplete environments
     gemmi = None
 
 from .topologies import get_topology_hint
@@ -190,9 +190,9 @@ class CoarseStructureValidator:
         *,
         topology_id: str | None,
     ) -> tuple[dict[str, object], tuple[str, ...]]:
-        if gemmi is None:  # pragma: no cover - optional dependency
+        if gemmi is None:  # pragma: no cover - import guard for incomplete environments
             raise ModuleNotFoundError(
-                "gemmi is required for CIF-backed coarse validation. Install the 'crystal' extra."
+                "gemmi is required for CIF-backed coarse validation. Install gemmi into this environment."
             )
 
         metrics: dict[str, object] = {}

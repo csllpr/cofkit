@@ -1,6 +1,6 @@
 # Current Scope
 
-The current package still keeps mandatory runtime dependencies at zero so the scientific core can be exercised in a clean Python runtime. Optional extras add RDKit-backed monomer construction and gemmi-backed CIF/topology utilities for the practical workflows.
+The base package now installs `rdkit` and `gemmi` as mandatory runtime dependencies because the practical monomer-construction, CIF, and topology workflows depend on them. External binaries such as Zeo++ and LAMMPS remain optional add-ons.
 
 ## Implemented so far
 
@@ -11,7 +11,7 @@ The current package still keeps mandatory runtime dependencies at zero so the sc
 - topology repository/index support for RCSR CGD-style bundles, with bundled topology data preferred by default and builtin fallback hints
 - a discrete assignment layer for motif-to-reaction event matching
 - registry-backed motif metadata plus lightweight geometric motif detection for the currently supported fallback kinds
-- optional RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazide, boronic acid, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention when RDKit is installed
+- RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazide, boronic acid, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention in the standard install
 - initial linkage geometry helpers for bridge-forming reactions
 - initial periodic embedding for monomer instances from topology hints and motif/reaction heuristics, including oblique `hcb` cells for asymmetric `3+3` and `3+2` cases when a symmetric hexagonal metric is too restrictive
 - a dependency-free continuous optimization pass for seed cell/pose refinement after embedding

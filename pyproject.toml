@@ -21,21 +21,13 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "Topic :: Scientific/Engineering :: Chemistry",
 ]
-dependencies = []
+dependencies = [
+  "gemmi>=0.7",
+  "rdkit",
+]
 
 [project.optional-dependencies]
-crystal = [
-  "gemmi>=0.7",
-]
-rdkit = [
-  "rdkit",
-]
 dev = [
-  "pytest>=8",
-]
-all = [
-  "gemmi>=0.7",
-  "rdkit",
   "pytest>=8",
 ]
 

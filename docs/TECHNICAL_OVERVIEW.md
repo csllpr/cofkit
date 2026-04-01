@@ -50,7 +50,7 @@ The engine currently runs:
 The batch binary-bridge pipeline builds on top of that:
 
 1. monomer-library loading
-2. optional RDKit monomer construction / caching
+2. RDKit monomer construction / caching
 3. pair enumeration from registered binary-bridge role prefixes and monomer connectivities
 4. topology-family-aware candidate generation
 5. manifest / summary writing

@@ -29,12 +29,10 @@ After editable install, the unified CLI is available as:
 cofkit --help
 ```
 
-Core `cofkit` has no mandatory third-party runtime dependencies beyond Python `3.10+`.
+Base `cofkit` requires Python `3.10+` plus the packaged runtime dependencies `gemmi` and `rdkit`. `python3 -m pip install -e .` installs those automatically.
 
-Optional tools you may want in your environment:
+Optional external tools you may want in your environment:
 
-- `gemmi` for rebuilding topology metadata with generic space-group expansion, CIF-backed coarse validation, and broader `2D` / `3D` two-monomer compatibility scans
-- `RDKit` for SMILES-based monomer construction and the practical batch-generation workflows
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
 - `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
 - `Open Babel`, `pymatgen`, and the installed Open Babel `UFF.prm` parameter file for the currently implemented UFF-backed LAMMPS force-field path

@@ -57,10 +57,14 @@ Core install:
 python3 -m pip install -e .
 ```
 
-Optional tools:
+Installed runtime dependencies:
 
 - `gemmi` for CIF-backed coarse validation and the broader topology scan / symmetry-expansion utilities
 - `RDKit` for SMILES-based monomer construction and the practical batch workflows
+- these are installed automatically by `python3 -m pip install -e .`
+
+Optional add-ons:
+
 - `pytest` if you want to run the tests locally
 
 The bundled topology data shipped with the package is enough for normal structure generation. External RCSR archives are optional advanced inputs, not required setup.

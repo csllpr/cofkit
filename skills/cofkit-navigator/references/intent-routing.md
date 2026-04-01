@@ -9,6 +9,8 @@ Use one of these equivalent launch styles:
 - installed CLI: `cofkit ...`
 - repo-local fallback: `PYTHONPATH=src python -m cofkit.cli ...`
 
+The repo-local fallback still requires the project dependencies to be installed in that interpreter.
+
 ## Request Patterns
 
 ### Show what the toolkit can do today
@@ -44,6 +46,8 @@ cofkit build single-pair \
   --output-dir out/single_pair_run
 ```
 
+When `--topology` is omitted, the current CLI keeps `--all-topologies` enabled and enumerates every applicable topology for the pair.
+
 Useful variants:
 
 - add `--first-motif-kind ...` and `--second-motif-kind ...` when the roles are already known
@@ -67,7 +71,14 @@ cofkit build batch-binary-bridge \
   --max-workers 8
 ```
 
+When `--topology` is omitted, the current CLI keeps `--all-topologies` enabled and attempts every applicable topology for each compatible monomer pair.
+
 Add `--auto-detect-libraries` only when `<LIBRARY_DIR>` contains raw generic `.txt` SMILES files rather than grouped files like `amines_count_3.txt`.
+
+Useful variants:
+
+- add one or more `--topology ...` values to restrict the run to explicit topologies
+- add `--no-all-topologies` when the user wants only the best topology per pair instead of the full supported set
 
 Primary artifacts:
 
@@ -226,6 +237,7 @@ Choose the API by how much the user already knows:
 
 - Do not treat `cofkit build list-templates` as a complete picture of the whole toolkit; it only covers the build chemistry surface.
 - Do not treat every template returned by `cofkit build list-templates` as immediately runnable for structure generation.
+- Do not assume an unspecified topology means one implicit default topology; the current `single-pair` and `batch-binary-bridge` CLIs enumerate all applicable topologies unless the user passes `--no-all-topologies` or explicit `--topology` values.
 - Do not use `--auto-detect-libraries` on `examples/default_monomers_library`.
 - Do not claim stacking workflows are supported; `stacking_mode` remains `"disabled"`.
 - Do not route users to the current internal benzothiazole/sulfur-enabled conversion prototype through the public CLI.
