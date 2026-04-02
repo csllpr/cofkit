@@ -18,6 +18,7 @@ from cofkit import (
     Candidate,
     ReactionEvent,
 )
+from cofkit.reaction_realization import ReactionRealizationResult, RealizedAtom, RealizedBond
 
 
 def trigonal_motifs(prefix: str, kind: str, radius: float) -> tuple[ReactiveMotif, ...]:
@@ -121,6 +122,118 @@ class CIFWriterTests(unittest.TestCase):
         self.assertIn("_geom_bond_atom_site_label_1", result.text)
         self.assertIn("_ccdc_geom_bond_type", result.text)
         self.assertIn("m1_C1 m1_N2 . . 1.500000 S", result.text)
+
+    def test_atomistic_export_writes_explicit_periodic_bond_symmetry_for_wrapped_bond(self):
+        monomer = MonomerSpec(
+            id="mono",
+            name="wrapped bond monomer",
+            motifs=(
+                ReactiveMotif(
+                    id="n1",
+                    kind="amine",
+                    atom_ids=(1,),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                ),
+            ),
+            atom_symbols=("C", "N"),
+            atom_positions=((0.0, 0.0, 0.0), (1.5, 0.0, 0.0)),
+            bonds=((0, 1, 1.0),),
+        )
+        candidate = Candidate(
+            id="wrapped-bond-demo",
+            score=0.0,
+            state=AssemblyState(
+                cell=((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0)),
+                monomer_poses={"m1": Pose(translation=(9.5, 0.0, 5.0))},
+                stacking_state="disabled",
+            ),
+            events=(),
+            metadata={"instance_to_monomer": {"m1": "mono"}},
+        )
+
+        result = CIFWriter().export_candidate(candidate, {"mono": monomer})
+
+        self.assertIn("m1_C1 C 0.950000 0.000000 0.500000 1.00", result.text)
+        self.assertIn("m1_N2 N 0.100000 0.000000 0.500000 1.00", result.text)
+        self.assertIn("m1_C1 m1_N2 . 1_655 1.500000 S", result.text)
+
+    def test_atomistic_export_uses_minimum_image_symmetry_for_periodic_fragment_reaction_bond(self):
+        carbon = MonomerSpec(
+            id="carbon",
+            name="single carbon",
+            motifs=(
+                ReactiveMotif(
+                    id="c1",
+                    kind="aldehyde",
+                    atom_ids=(0,),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                ),
+            ),
+            atom_symbols=("C",),
+            atom_positions=((0.0, 0.0, 0.0),),
+            bonds=(),
+        )
+        hydrazine = MonomerSpec(
+            id="hydrazine",
+            name="periodic hydrazine fragment",
+            motifs=(
+                ReactiveMotif(
+                    id="h1",
+                    kind="hydrazine",
+                    atom_ids=(0, 1),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                ),
+            ),
+            atom_symbols=("N", "N"),
+            atom_positions=((0.0, 0.0, 0.0), (1.268, 0.0, 0.0)),
+            bonds=((0, 1, 1.0),),
+        )
+        candidate = Candidate(
+            id="periodic-fragment-reaction-bond",
+            score=0.0,
+            state=AssemblyState(
+                cell=((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0)),
+                monomer_poses={
+                    "m1": Pose(translation=(8.1, 5.0, 5.0)),
+                    "m2": Pose(translation=(9.4, 5.0, 5.0)),
+                },
+                stacking_state="disabled",
+            ),
+            events=(),
+            metadata={"instance_to_monomer": {"m1": "carbon", "m2": "hydrazine"}},
+        )
+        realization = ReactionRealizationResult(
+            atoms_by_instance={
+                "m1": (
+                    RealizedAtom(atom_id=0, label="m1_C1", symbol="C", local_position=(0.0, 0.0, 0.0)),
+                ),
+                "m2": (
+                    RealizedAtom(atom_id=0, label="m2_N1", symbol="N", local_position=(0.0, 0.0, 0.0)),
+                    RealizedAtom(atom_id=1, label="m2_N2", symbol="N", local_position=(1.268, 0.0, 0.0)),
+                ),
+            },
+            bonds=(
+                RealizedBond(label_1="m1_C1", label_2="m2_N1", distance=1.3, bond_order=2.0),
+            ),
+        )
+
+        class StubReactionRealizer:
+            def __init__(self, result: ReactionRealizationResult) -> None:
+                self._result = result
+
+            def realize(self, candidate, monomer_specs, instance_to_monomer):
+                return self._result
+
+        result = CIFWriter(reaction_realizer=StubReactionRealizer(realization)).export_candidate(
+            candidate,
+            {"carbon": carbon, "hydrazine": hydrazine},
+        )
+
+        self.assertIn("m1_C1 C 0.810000 0.500000 0.500000 1.00", result.text)
+        self.assertIn("m2_N1 N 0.940000 0.500000 0.500000 1.00", result.text)
+        self.assertIn("m2_N2 N 0.066800 0.500000 0.500000 1.00", result.text)
+        self.assertIn("m2_N1 m2_N2 . 1_655 1.268000 S", result.text)
+        self.assertIn("m1_C1 m2_N1 . . 1.300000 D", result.text)
 
     def test_keto_enamine_export_shortens_tautomerized_carbonyl_bond_and_removes_phenolic_hydrogen(self):
         amine = MonomerSpec(

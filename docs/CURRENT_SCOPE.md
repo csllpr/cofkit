@@ -11,14 +11,14 @@ The base package now installs `rdkit` and `gemmi` as mandatory runtime dependenc
 - topology repository/index support for RCSR CGD-style bundles, with bundled topology data preferred by default and builtin fallback hints
 - a discrete assignment layer for motif-to-reaction event matching
 - registry-backed motif metadata plus lightweight geometric motif detection for the currently supported fallback kinds
-- RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazide, boronic acid, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention in the standard install
+- RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazine, hydrazide, boronic acid, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention in the standard install
 - initial linkage geometry helpers for bridge-forming reactions
 - initial periodic embedding for monomer instances from topology hints and motif/reaction heuristics, including oblique `hcb` cells for asymmetric `3+3` and `3+2` cases when a symmetric hexagonal metric is too restrictive
 - a dependency-free continuous optimization pass for seed cell/pose refinement after embedding
 - first-pass candidate scoring with event coverage, bridge geometry, topology bonuses, and unreacted penalties
 - candidate metadata carrying embedding provenance, optimizer metrics, and score breakdowns
 - legal P1 CIF export, with atomistic output when monomer coordinates are available and a coarse fallback otherwise, now including explicit `_ccdc_geom_bond_type` records for atomistic bond loops
-- registry-backed atomistic reaction realization for the currently implemented binary-bridge products: imine, hydrazone, beta-ketoenamine, boronate ester, and vinylene
+- registry-backed atomistic reaction realization for the currently implemented binary-bridge products: imine, hydrazone, azine, beta-ketoenamine, boronate ester, and vinylene
 - periodic-image-safe imine atomistic realization, with the same bent-linkage motif-origin correction now applied across the supported `2D` and `3D` builder paths
 - reaction-aware batch binary-bridge generation over monomer libraries, with imine workflows as the primary documented path, including `3+3`, `3+2`, `4+4`, `4+2`, and `6+2` enumeration, manifest/summary writing, and CIF export enabled by default
 - automatic monomer-role detection for batch library loading, so generic `.txt` SMILES libraries can be regrouped by detected role/connectivity instead of relying only on `*_count_N.txt` filenames

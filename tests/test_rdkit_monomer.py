@@ -76,6 +76,20 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertIn("hydrazone_bridge", motif.allowed_reaction_templates)
         self.assertIn("carbonyl_carbon_atom_id", motif.metadata)
 
+    def test_build_rdkit_monomer_detects_hydrazine(self):
+        monomer = build_rdkit_monomer(
+            "hydrazine",
+            "hydrazine",
+            "NN",
+            "hydrazine",
+        )
+
+        self.assertEqual(len(monomer.motifs), 2)
+        self.assertTrue(all(motif.kind == "hydrazine" for motif in monomer.motifs))
+        self.assertTrue(all("azine_bridge" in motif.allowed_reaction_templates for motif in monomer.motifs))
+        self.assertTrue(all(len(motif.metadata["hydrogen_atom_ids"]) == 2 for motif in monomer.motifs))
+        self.assertEqual(len(monomer.atom_symbols), len(monomer.atom_positions))
+
     def test_build_rdkit_monomer_detects_boronic_acid_and_catechol(self):
         boronic = build_rdkit_monomer(
             "phenyl_boronic_acid",

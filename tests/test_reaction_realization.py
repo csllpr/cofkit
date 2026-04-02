@@ -37,6 +37,9 @@ def _single_event_candidate(
 
 
 class ReactionRealizationTests(unittest.TestCase):
+    def _world_position(self, pose: Pose, local_position):
+        return ReactionRealizer()._world_position(pose, local_position)
+
     def _assert_retained_hydrogen_reoriented(
         self,
         *,
@@ -204,6 +207,201 @@ class ReactionRealizationTests(unittest.TestCase):
             parent_atom_id=0,
             hydrogen_atom_id=3,
         )
+
+    def test_azine_realization_removes_oxygen_and_both_hydrazine_hydrogens(self):
+        hydrazine = MonomerSpec(
+            id="hydrazine",
+            name="minimal hydrazine",
+            motifs=(
+                ReactiveMotif(
+                    id="hyd1",
+                    kind="hydrazine",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={
+                        "reactive_atom_id": 0,
+                        "anchor_atom_id": 1,
+                        "hydrogen_atom_ids": (2, 3),
+                        "internal_nitrogen_atom_id": 1,
+                    },
+                ),
+            ),
+            atom_symbols=("N", "N", "H", "H", "H", "H"),
+            atom_positions=(
+                (0.0, 0.0, 0.0),
+                (-1.1, 0.0, 0.0),
+                (0.2, 1.0, 0.0),
+                (0.2, -1.0, 0.0),
+                (-1.3, 1.0, 0.0),
+                (-1.3, -1.0, 0.0),
+            ),
+            bonds=((0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0), (1, 4, 1.0), (1, 5, 1.0)),
+        )
+        aldehyde = MonomerSpec(
+            id="aldehyde",
+            name="minimal aldehyde",
+            motifs=(
+                ReactiveMotif(
+                    id="ald1",
+                    kind="aldehyde",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 2},
+                ),
+            ),
+            atom_symbols=("C", "O", "C", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+            bonds=((0, 1, 2.0), (0, 2, 1.0), (0, 3, 1.0)),
+        )
+        candidate = _single_event_candidate(
+            "azine_bridge",
+            MotifRef(monomer_instance_id="m1", monomer_id="hydrazine", motif_id="hyd1"),
+            MotifRef(monomer_instance_id="m2", monomer_id="aldehyde", motif_id="ald1"),
+        )
+
+        result = ReactionRealizer().realize(candidate, {"hydrazine": hydrazine, "aldehyde": aldehyde}, {"m1": "hydrazine", "m2": "aldehyde"})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.metadata["applied_templates"], {"azine_bridge": 1})
+        self.assertEqual(result.metadata["removed_atom_symbols"], {"H": 2, "O": 1})
+        self.assertEqual([atom.symbol for atom in result.atoms_by_instance["m1"]], ["N", "N", "H", "H"])
+        self.assertEqual(len(result.bonds), 1)
+        self.assertEqual(result.bonds[0].label_1, "m2_C1")
+        self.assertEqual(result.bonds[0].label_2, "m1_N1")
+        self.assertAlmostEqual(result.bonds[0].distance, 1.3, places=6)
+        self.assertEqual(result.metadata["hydrogen_cleanup"]["atom_labels"], ("m2_H4",))
+        self._assert_retained_hydrogen_reoriented(
+            result=result,
+            monomer=aldehyde,
+            instance_id="m2",
+            parent_atom_id=0,
+            hydrogen_atom_id=3,
+        )
+
+    def test_azine_realization_bends_shared_hydrazine_bridge_toward_120_degrees(self):
+        hydrazine = MonomerSpec(
+            id="hydrazine",
+            name="linked hydrazine",
+            motifs=(
+                ReactiveMotif(
+                    id="hyd_left",
+                    kind="hydrazine",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(-0.71735, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={
+                        "reactive_atom_id": 0,
+                        "anchor_atom_id": 1,
+                        "hydrogen_atom_ids": (2, 3),
+                        "internal_nitrogen_atom_id": 1,
+                    },
+                ),
+                ReactiveMotif(
+                    id="hyd_right",
+                    kind="hydrazine",
+                    atom_ids=(0, 1, 4, 5),
+                    frame=Frame(origin=(0.71735, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={
+                        "reactive_atom_id": 1,
+                        "anchor_atom_id": 0,
+                        "hydrogen_atom_ids": (4, 5),
+                        "internal_nitrogen_atom_id": 0,
+                    },
+                ),
+            ),
+            atom_symbols=("N", "N", "H", "H", "H", "H"),
+            atom_positions=(
+                (-0.71735, 0.0, 0.0),
+                (0.71735, 0.0, 0.0),
+                (-0.9, 0.95, 0.0),
+                (-0.9, -0.95, 0.0),
+                (0.9, 0.95, 0.0),
+                (0.9, -0.95, 0.0),
+            ),
+            bonds=((0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0), (1, 4, 1.0), (1, 5, 1.0)),
+        )
+        aldehyde = MonomerSpec(
+            id="aldehyde",
+            name="minimal aldehyde",
+            motifs=(
+                ReactiveMotif(
+                    id="ald1",
+                    kind="aldehyde",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 2},
+                ),
+            ),
+            atom_symbols=("C", "O", "C", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+            bonds=((0, 1, 2.0), (0, 2, 1.0), (0, 3, 1.0)),
+        )
+        candidate = Candidate(
+            id="azine-double-demo",
+            score=0.0,
+            state=AssemblyState(
+                cell=((20.0, 0.0, 0.0), (0.0, 20.0, 0.0), (0.0, 0.0, 10.0)),
+                monomer_poses={
+                    "m1": Pose(translation=(0.0, 0.0, 0.0)),
+                    "m2": Pose(
+                        translation=(-1.2, 0.0, 0.0),
+                        rotation_matrix=((-1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+                    ),
+                    "m3": Pose(translation=(1.2, 0.0, 0.0)),
+                },
+                stacking_state="disabled",
+            ),
+            events=(
+                ReactionEvent(
+                    id="rxn1",
+                    template_id="azine_bridge",
+                    participants=(
+                        MotifRef(monomer_instance_id="m1", monomer_id="hydrazine", motif_id="hyd_left"),
+                        MotifRef(monomer_instance_id="m2", monomer_id="aldehyde", motif_id="ald1"),
+                    ),
+                ),
+                ReactionEvent(
+                    id="rxn2",
+                    template_id="azine_bridge",
+                    participants=(
+                        MotifRef(monomer_instance_id="m1", monomer_id="hydrazine", motif_id="hyd_right"),
+                        MotifRef(monomer_instance_id="m3", monomer_id="aldehyde", motif_id="ald1"),
+                    ),
+                ),
+            ),
+            metadata={"instance_to_monomer": {"m1": "hydrazine", "m2": "aldehyde", "m3": "aldehyde"}},
+        )
+
+        realizer = ReactionRealizer()
+        result = realizer.realize(candidate, {"hydrazine": hydrazine, "aldehyde": aldehyde}, {"m1": "hydrazine", "m2": "aldehyde", "m3": "aldehyde"})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("coordinated bridge fit", " ".join(result.metadata["notes"]))
+
+        hydrazine_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance["m1"]}
+        left_aldehyde_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance["m2"]}
+        right_aldehyde_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance["m3"]}
+
+        left_n_world = self._world_position(candidate.state.monomer_poses["m1"], hydrazine_atoms[0].local_position)
+        right_n_world = self._world_position(candidate.state.monomer_poses["m1"], hydrazine_atoms[1].local_position)
+        left_c_world = self._world_position(candidate.state.monomer_poses["m2"], left_aldehyde_atoms[0].local_position)
+        right_c_world = self._world_position(candidate.state.monomer_poses["m3"], right_aldehyde_atoms[0].local_position)
+
+        self.assertAlmostEqual(realizer._distance(left_n_world, right_n_world), 1.268, delta=0.06)
+        self.assertAlmostEqual(realizer._distance(left_c_world, left_n_world), 1.3, delta=0.03)
+        self.assertAlmostEqual(realizer._distance(right_c_world, right_n_world), 1.3, delta=0.03)
+        left_h_world = self._world_position(candidate.state.monomer_poses["m2"], left_aldehyde_atoms[3].local_position)
+        right_h_world = self._world_position(candidate.state.monomer_poses["m3"], right_aldehyde_atoms[3].local_position)
+        self.assertAlmostEqual(realizer._distance(left_c_world, left_h_world), 0.8, delta=0.08)
+        self.assertAlmostEqual(realizer._distance(right_c_world, right_h_world), 0.8, delta=0.08)
+        self.assertLess(realizer._angle(left_c_world, left_n_world, right_n_world), 150.0)
+        self.assertLess(realizer._angle(right_c_world, right_n_world, left_n_world), 150.0)
 
     def test_keto_enamine_realization_removes_oxygen_and_one_amine_hydrogen(self):
         amine = MonomerSpec(

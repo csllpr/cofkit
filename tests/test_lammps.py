@@ -81,6 +81,8 @@ class LammpsTests(unittest.TestCase):
 
         self.assertEqual(result.settings.forcefield, "uff")
         self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
+        self.assertEqual(result.settings.max_iterations, 200000)
+        self.assertEqual(result.settings.max_evaluations, 2000000)
 
     def test_lammps_script_includes_fix_modify_for_restraint_energy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -317,6 +319,30 @@ class LammpsTests(unittest.TestCase):
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
             self.assertIn("a1 a2 . 1_655 1.030776 S", optimized_text)
 
+    def test_lammps_uses_replicated_cluster_fallback_for_conflicted_primitive_bond_graph(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "conflicted_ring.cif"
+            cif_path.write_text(self._conflicted_ring_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "conflicted_out",
+                    settings=LammpsOptimizationSettings(forcefield="uff"),
+                )
+
+            self.assertGreater(result.n_atoms, 4)
+            self.assertIn("replicated finite-cover cluster", " ".join(result.warnings))
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("boundary f f f", script_text)
+
+            optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
+            self.assertIn("a1 C", optimized_text)
+            self.assertIn("a4 C", optimized_text)
+
     def test_lammps_rejects_legacy_cif_without_explicit_bond_type(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -527,6 +553,48 @@ class LammpsTests(unittest.TestCase):
             "_geom_bond_distance\n"
             "_ccdc_geom_bond_type\n"
             "a1 a2 . . 1.000000 S\n"
+        )
+
+    def _conflicted_ring_cif_text(self) -> str:
+        return (
+            "data_conflicted_ring\n"
+            "_audit_creation_method 'cofkit test'\n"
+            "_space_group_name_H-M_alt 'P 1'\n"
+            "_space_group_IT_number 1\n"
+            "_cell_length_a 10.000000\n"
+            "_cell_length_b 10.000000\n"
+            "_cell_length_c 10.000000\n"
+            "_cell_angle_alpha 90.000000\n"
+            "_cell_angle_beta 90.000000\n"
+            "_cell_angle_gamma 90.000000\n"
+            "\n"
+            "loop_\n"
+            "_space_group_symop_operation_xyz\n"
+            "'x,y,z'\n"
+            "\n"
+            "loop_\n"
+            "_atom_site_label\n"
+            "_atom_site_type_symbol\n"
+            "_atom_site_fract_x\n"
+            "_atom_site_fract_y\n"
+            "_atom_site_fract_z\n"
+            "_atom_site_occupancy\n"
+            "a1 C 0.900000 0.100000 0.100000 1.00\n"
+            "a2 C 0.050000 0.100000 0.100000 1.00\n"
+            "a3 C 0.050000 0.250000 0.100000 1.00\n"
+            "a4 C 0.900000 0.250000 0.100000 1.00\n"
+            "\n"
+            "loop_\n"
+            "_geom_bond_atom_site_label_1\n"
+            "_geom_bond_atom_site_label_2\n"
+            "_geom_bond_site_symmetry_1\n"
+            "_geom_bond_site_symmetry_2\n"
+            "_geom_bond_distance\n"
+            "_ccdc_geom_bond_type\n"
+            "a1 a2 . 1_655 1.500000 S\n"
+            "a2 a3 . . 1.500000 S\n"
+            "a3 a4 . 1_655 1.500000 S\n"
+            "a4 a1 . . 1.500000 S\n"
         )
 
     def _multi_term_cif_text(self) -> str:

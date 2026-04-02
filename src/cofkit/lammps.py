@@ -98,8 +98,8 @@ class LammpsOptimizationSettings:
     stage2_position_restraint_force_constant: float | None = None
     energy_tolerance: float = 1.0e-6
     force_tolerance: float = 1.0e-6
-    max_iterations: int = 500
-    max_evaluations: int = 5000
+    max_iterations: int = 200000
+    max_evaluations: int = 2000000
     min_style: str = "fire"
     stage2_energy_tolerance: float | None = None
     stage2_force_tolerance: float | None = None
@@ -293,6 +293,7 @@ class _ParsedExplicitBondCif:
 @dataclass(frozen=True)
 class _PreparedLammpsSystem:
     data_text: str
+    has_image_flags: bool
     atom_type_symbols: dict[int, str]
     n_bond_types: int
     n_angle_types: int
@@ -306,6 +307,16 @@ class _PreparedLammpsSystem:
     forcefield_backend: str
     parameter_sources: dict[str, str]
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _OptimizationModel:
+    parsed: _ParsedExplicitBondCif
+    boundary: str
+    output_atom_id_by_model_atom_id: dict[int, int]
+    projection_scale: tuple[int, int, int]
+    projection_min_tile: tuple[int, int, int]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -376,7 +387,8 @@ def optimize_cif_with_lammps(
 
     binary = resolve_lammps_binary(lmp_path)
     parsed = _parse_explicit_bond_cif(input_path)
-    prepared = _prepare_lammps_system(parsed, settings=settings)
+    optimization_model = _build_optimization_model(parsed, settings=settings)
+    prepared = _prepare_lammps_system(optimization_model.parsed, settings=settings)
     run_dir = _resolve_output_dir(input_path, output_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -395,8 +407,9 @@ def optimize_cif_with_lammps(
             data_path=data_path,
             dump_path=dump_path,
             settings=settings,
-            parsed=parsed,
+            parsed=optimization_model.parsed,
             prepared=prepared,
+            boundary=optimization_model.boundary,
         ),
         encoding="utf-8",
     )
@@ -409,14 +422,21 @@ def optimize_cif_with_lammps(
         stderr_log_path=stderr_log_path,
         timeout_seconds=timeout_seconds,
     )
-    final_cartesian_positions = _parse_lammps_dump_last_frame(dump_path, expected_atoms=len(parsed.atoms))
-    final_fractional_positions = _cartesian_positions_to_fractional(parsed, final_cartesian_positions)
+    final_cartesian_positions = _parse_lammps_dump_last_frame(
+        dump_path,
+        expected_atoms=len(optimization_model.parsed.atoms),
+    )
+    model_fractional_positions = _cartesian_positions_to_fractional(optimization_model.parsed, final_cartesian_positions)
+    final_fractional_positions = _project_optimized_fractional_positions(
+        optimization_model,
+        model_fractional_positions,
+    )
     optimized_cif_path.write_text(
         _render_optimized_cif(parsed, final_fractional_positions),
         encoding="utf-8",
     )
 
-    all_warnings = tuple(prepared.warnings) + tuple(execution_warnings)
+    all_warnings = tuple(optimization_model.warnings) + tuple(prepared.warnings) + tuple(execution_warnings)
     result = LammpsOptimizationResult(
         input_cif=str(input_path),
         optimized_cif=str(optimized_cif_path),
@@ -429,9 +449,9 @@ def optimize_cif_with_lammps(
         stdout_log_path=str(stdout_log_path),
         stderr_log_path=str(stderr_log_path),
         report_path=str(report_path),
-        n_atoms=len(parsed.atoms),
-        n_bonds=len(parsed.bonds),
-        n_angles=len(parsed.angles),
+        n_atoms=len(optimization_model.parsed.atoms),
+        n_bonds=len(optimization_model.parsed.bonds),
+        n_angles=len(optimization_model.parsed.angles),
         n_dihedrals=prepared.n_dihedrals,
         n_impropers=prepared.n_impropers,
         n_atom_types=len(prepared.atom_type_symbols),
@@ -533,6 +553,179 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
             "box_relax_min_style is incompatible with LAMMPS fix box/relax. "
             "Choose a minimizer such as cg or sd instead."
         )
+
+
+def _build_optimization_model(
+    parsed: _ParsedExplicitBondCif,
+    *,
+    settings: LammpsOptimizationSettings,
+) -> _OptimizationModel:
+    _atom_images, image_conflicts = _compute_unwrapped_atom_images(parsed)
+    if image_conflicts == 0:
+        return _OptimizationModel(
+            parsed=parsed,
+            boundary="p p p",
+            output_atom_id_by_model_atom_id={atom.atom_id: atom.atom_id for atom in parsed.atoms},
+            projection_scale=(1, 1, 1),
+            projection_min_tile=(0, 0, 0),
+        )
+    if settings.relax_cell:
+        raise LammpsInputError(
+            "Primitive CIFs that require replicated finite-cover LAMMPS cleanup are incompatible with `--relax-cell`. "
+            "Disable cell relaxation for this structure."
+        )
+    return _build_replicated_cluster_model(parsed, image_conflicts=image_conflicts)
+
+
+def _build_replicated_cluster_model(
+    parsed: _ParsedExplicitBondCif,
+    *,
+    image_conflicts: int,
+) -> _OptimizationModel:
+    shell = []
+    for axis in range(3):
+        axis_extent = max(
+            [0]
+            + [abs(_sub_shift(bond.shift_2, bond.shift_1)[axis]) for bond in parsed.bonds]
+        )
+        shell.append(axis_extent)
+    if not any(shell):
+        raise LammpsInputError(
+            "The CIF bond graph requires a replicated finite-cover LAMMPS model, but cofkit could not infer a "
+            "non-trivial replication window from the atom-image conflicts."
+        )
+
+    min_tile = tuple(-extent for extent in shell)
+    max_tile = tuple(extent for extent in shell)
+    scale = tuple(2 * extent + 1 if extent > 0 else 1 for extent in shell)
+    tile_ranges = tuple(range(min_tile[index], max_tile[index] + 1) for index in range(3))
+
+    a, b, c, alpha, beta, gamma = parsed.cell_parameters
+    supercell_cell_parameters = (
+        a * scale[0],
+        b * scale[1],
+        c * scale[2],
+        alpha,
+        beta,
+        gamma,
+    )
+    supercell_basis = (
+        tuple(component * scale[0] for component in parsed.lammps_basis[0]),
+        tuple(component * scale[1] for component in parsed.lammps_basis[1]),
+        tuple(component * scale[2] for component in parsed.lammps_basis[2]),
+    )
+
+    atoms: list[_CifAtomRecord] = []
+    model_atom_id_by_original_key: dict[tuple[int, tuple[int, int, int]], int] = {}
+    labels_by_model_atom_id: dict[int, str] = {}
+    output_atom_id_by_model_atom_id: dict[int, int] = {}
+    for tile in itertools.product(*tile_ranges):
+        for atom in parsed.atoms:
+            model_atom_id = len(atoms) + 1
+            model_label = _replicated_atom_label(atom.label, tile)
+            model_atom_id_by_original_key[(atom.atom_id, tile)] = model_atom_id
+            labels_by_model_atom_id[model_atom_id] = model_label
+            if tile == (0, 0, 0):
+                output_atom_id_by_model_atom_id[model_atom_id] = atom.atom_id
+            atoms.append(
+                _CifAtomRecord(
+                    atom_id=model_atom_id,
+                    label=model_label,
+                    symbol=atom.symbol,
+                    occupancy=atom.occupancy,
+                    fractional_position=tuple(
+                        (atom.fractional_position[index] + tile[index] - min_tile[index]) / scale[index]
+                        for index in range(3)
+                    ),
+                )
+            )
+
+    bonds: list[_CifBondRecord] = []
+    for tile in itertools.product(*tile_ranges):
+        for bond in parsed.bonds:
+            delta = _sub_shift(bond.shift_2, bond.shift_1)
+            target_tile = tuple(tile[index] + delta[index] for index in range(3))
+            if not _tile_within_window(target_tile, min_tile, max_tile):
+                continue
+            atom_id_1 = model_atom_id_by_original_key[(bond.atom_id_1, tile)]
+            atom_id_2 = model_atom_id_by_original_key[(bond.atom_id_2, target_tile)]
+            bonds.append(
+                _CifBondRecord(
+                    bond_id=len(bonds) + 1,
+                    atom_id_1=atom_id_1,
+                    atom_id_2=atom_id_2,
+                    label_1=labels_by_model_atom_id[atom_id_1],
+                    label_2=labels_by_model_atom_id[atom_id_2],
+                    symmetry_1=".",
+                    symmetry_2=".",
+                    shift_1=(0, 0, 0),
+                    shift_2=(0, 0, 0),
+                    equilibrium_distance=bond.equilibrium_distance,
+                    bond_order=bond.bond_order,
+                )
+            )
+
+    atom_records = tuple(atoms)
+    bond_records = tuple(bonds)
+    angles = _derive_angles(atom_records, bond_records, supercell_basis)
+    dihedrals = _derive_dihedrals(atom_records, bond_records)
+    impropers = _derive_impropers(atom_records, bond_records)
+    replicated_parsed = _ParsedExplicitBondCif(
+        source_path=parsed.source_path,
+        data_name=f"{parsed.data_name}_replicated_cluster",
+        cell_parameters=supercell_cell_parameters,
+        lammps_basis=supercell_basis,
+        atoms=atom_records,
+        bonds=bond_records,
+        angles=angles,
+        dihedrals=dihedrals,
+        impropers=impropers,
+    )
+    warning = (
+        "Primitive CIF bond unwrapping was topologically inconsistent for direct periodic LAMMPS export. "
+        f"cofkit built a replicated finite-cover cluster ({scale[0]}x{scale[1]}x{scale[2]}) with fixed boundaries "
+        "for optimization and projected the central copy back onto the primitive CIF."
+    )
+    return _OptimizationModel(
+        parsed=replicated_parsed,
+        boundary="f f f",
+        output_atom_id_by_model_atom_id=output_atom_id_by_model_atom_id,
+        projection_scale=scale,
+        projection_min_tile=min_tile,
+        warnings=(warning,),
+    )
+
+
+def _project_optimized_fractional_positions(
+    optimization_model: _OptimizationModel,
+    model_fractional_positions: dict[int, tuple[float, float, float]],
+) -> dict[int, tuple[float, float, float]]:
+    projected: dict[int, tuple[float, float, float]] = {}
+    for model_atom_id, output_atom_id in optimization_model.output_atom_id_by_model_atom_id.items():
+        fractional = model_fractional_positions[model_atom_id]
+        projected[output_atom_id] = tuple(
+            _wrap_fraction(
+                fractional[index] * optimization_model.projection_scale[index]
+                + optimization_model.projection_min_tile[index]
+            )
+            for index in range(3)
+        )
+    return projected
+
+
+def _replicated_atom_label(label: str, tile: tuple[int, int, int]) -> str:
+    def _component(value: int) -> str:
+        return f"m{abs(value)}" if value < 0 else str(value)
+
+    return f"{label}__tx{_component(tile[0])}_ty{_component(tile[1])}_tz{_component(tile[2])}"
+
+
+def _tile_within_window(
+    tile: tuple[int, int, int],
+    min_tile: tuple[int, int, int],
+    max_tile: tuple[int, int, int],
+) -> bool:
+    return all(min_tile[index] <= tile[index] <= max_tile[index] for index in range(3))
 
 
 def _normalize_forcefield_name(forcefield: str) -> str:
@@ -680,6 +873,9 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         1,
     )
     data_text = data_text.replace("\nAtoms\n\n", "\nAtoms # molecular\n\n", 1)
+    has_image_flags = image_conflicts == 0
+    if has_image_flags:
+        data_text = _inject_atom_image_flags(data_text, atom_images)
 
     warnings: list[str] = []
     if image_conflicts > 0:
@@ -701,6 +897,7 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
 
     return _PreparedLammpsSystem(
         data_text=data_text,
+        has_image_flags=has_image_flags,
         atom_type_symbols={index: label for index, label in enumerate(ordered_type_labels, start=1)},
         n_bond_types=len(bond_coeff_rows),
         n_angle_types=len(angle_coeff_rows),
@@ -715,6 +912,28 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         parameter_sources=parameter_sources,
         warnings=tuple(warnings),
     )
+
+
+def _inject_atom_image_flags(
+    data_text: str,
+    atom_images: Mapping[int, tuple[int, int, int]],
+) -> str:
+    lines = data_text.splitlines()
+    try:
+        atoms_header_index = lines.index("Atoms # molecular")
+    except ValueError:
+        return data_text
+    atom_line_index = atoms_header_index + 2
+    while atom_line_index < len(lines):
+        line = lines[atom_line_index]
+        if not line.strip():
+            break
+        fields = line.split()
+        atom_id = int(fields[0])
+        image = atom_images.get(atom_id, (0, 0, 0))
+        lines[atom_line_index] = f"{line} {image[0]} {image[1]} {image[2]}"
+        atom_line_index += 1
+    return "\n".join(lines) + ("\n" if data_text.endswith("\n") else "")
 
 
 def _discover_uff_parameter_file() -> Path | None:
@@ -1860,6 +2079,7 @@ def _render_lammps_input_script(
     settings: LammpsOptimizationSettings,
     parsed: _ParsedExplicitBondCif,
     prepared: _PreparedLammpsSystem,
+    boundary: str,
 ) -> str:
     forcefield = _normalize_forcefield_name(settings.forcefield)
     thermo_terms = ["step", "pe", "ebond"]
@@ -1867,7 +2087,7 @@ def _render_lammps_input_script(
     lines = [
         "units real",
         "atom_style molecular",
-        "boundary p p p",
+        f"boundary {boundary}",
         f"pair_style lj/cut {settings.pair_cutoff:.6f}",
         "pair_modify shift yes",
         "special_bonds lj 0.0 0.0 1.0",

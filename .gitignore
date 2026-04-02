@@ -18,3 +18,5 @@ out/
 *.bak
 
 reference_repositories/
+files_for_reference/
+.vscode/

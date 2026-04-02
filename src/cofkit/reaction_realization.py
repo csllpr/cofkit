@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from math import acos, cos, pi, sin
+from dataclasses import dataclass, field, replace
+from math import acos, atan2, cos, pi, sin
 from typing import Callable, Mapping
 
 from .geometry import Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub, transpose
@@ -78,6 +78,7 @@ class ReactionEventRealizationRegistry:
         registry = cls()
         registry.register("imine_bridge", _dispatch_imine_bridge_event)
         registry.register("hydrazone_bridge", _dispatch_hydrazone_bridge_event)
+        registry.register("azine_bridge", _dispatch_azine_bridge_event)
         registry.register("keto_enamine_bridge", _dispatch_keto_enamine_bridge_event)
         registry.register("boronate_ester_bridge", _dispatch_boronate_ester_bridge_event)
         registry.register("vinylene_bridge", _dispatch_vinylene_bridge_event)
@@ -122,6 +123,20 @@ class ReactionRealizer:
                 atom_position_overrides[instance_id].update(overrides)
             bonds.extend(realization.bonds)
             notes.extend(realization.notes)
+
+        notes.extend(
+            self._fit_azine_bridge_geometries(
+                candidate,
+                monomer_specs,
+                atom_position_overrides,
+            )
+        )
+        bonds = self._refresh_azine_bridge_bond_distances(
+            candidate,
+            monomer_specs,
+            atom_position_overrides,
+            bonds,
+        )
 
         post_build_metadata: dict[str, object] = {}
         post_build_realization = self._apply_post_build_conversions(
@@ -1483,6 +1498,532 @@ class ReactionRealizer:
         cosine = (vector_ba[0] * vector_bc[0] + vector_ba[1] * vector_bc[1]) / (norm_ba * norm_bc)
         return 180.0 * acos(max(-1.0, min(1.0, cosine))) / pi
 
+    def _fit_azine_bridge_geometries(
+        self,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+        atom_position_overrides: dict[str, dict[int, Vec3]],
+    ) -> tuple[str, ...]:
+        azine_groups: dict[str, list[tuple[ReactionEvent, MotifRef, MotifRef]]] = defaultdict(list)
+        for event in candidate.events:
+            if linkage_event_realizer(event.template_id) != "azine_bridge":
+                continue
+            hydrazine_ref, aldehyde_ref = self._split_bridge_participants(
+                event,
+                monomer_specs,
+                "hydrazine",
+                "aldehyde",
+            )
+            azine_groups[hydrazine_ref.monomer_instance_id].append((event, hydrazine_ref, aldehyde_ref))
+
+        if not azine_groups:
+            return ()
+
+        target_cn_distance = bridge_target_distance("azine_bridge")
+        target_nn_distance = 1.268
+        target_cnn_angle = 120.0
+        target_anchor_cn_angle = 120.0
+        applied_count = 0
+
+        for instance_id, grouped_events in azine_groups.items():
+            if len(grouped_events) != 2:
+                continue
+            hydrazine_spec = monomer_specs[grouped_events[0][1].monomer_id]
+            hydrazine_pose = candidate.state.monomer_poses[instance_id]
+            entries: list[dict[str, object]] = []
+            for event, hydrazine_ref, aldehyde_ref in grouped_events:
+                hydrazine_motif = hydrazine_spec.motif_by_id(hydrazine_ref.motif_id)
+                aldehyde_spec = monomer_specs[aldehyde_ref.monomer_id]
+                aldehyde_motif = aldehyde_spec.motif_by_id(aldehyde_ref.motif_id)
+                reactive_atom_id = self._reactive_atom_id(hydrazine_motif)
+                internal_nitrogen_atom_id = self._motif_atom_id_from_metadata(
+                    hydrazine_motif,
+                    "internal_nitrogen_atom_id",
+                    context=f"{event.id} hydrazine internal nitrogen",
+                )
+                carbon_atom_id = self._reactive_atom_id(aldehyde_motif)
+                anchor_atom_id = self._motif_atom_id_from_metadata(
+                    aldehyde_motif,
+                    "anchor_atom_id",
+                    context=f"{event.id} aldehyde anchor",
+                )
+                oxygen_atom_id = self._unique_symbol_atom_id(
+                    aldehyde_spec,
+                    aldehyde_motif.atom_ids,
+                    "O",
+                    context=f"{event.id} aldehyde oxygen",
+                )
+                hydrazine_normal = matmul_vec(hydrazine_pose.rotation_matrix, hydrazine_motif.frame.normal)
+                aldehyde_pose = candidate.state.monomer_poses[aldehyde_ref.monomer_instance_id]
+                aldehyde_normal = matmul_vec(aldehyde_pose.rotation_matrix, aldehyde_motif.frame.normal)
+                entries.append(
+                    {
+                        "event": event,
+                        "hydrazine_ref": hydrazine_ref,
+                        "aldehyde_ref": aldehyde_ref,
+                        "aldehyde_spec": aldehyde_spec,
+                        "reactive_atom_id": reactive_atom_id,
+                        "internal_nitrogen_atom_id": internal_nitrogen_atom_id,
+                        "carbon_atom_id": carbon_atom_id,
+                        "anchor_atom_id": anchor_atom_id,
+                        "oxygen_atom_id": oxygen_atom_id,
+                        "nitrogen_world": self._world_atom_position(
+                            candidate,
+                            hydrazine_ref,
+                            hydrazine_spec,
+                            reactive_atom_id,
+                            atom_position_overrides=atom_position_overrides,
+                        ),
+                        "carbon_world": self._world_atom_position(
+                            candidate,
+                            aldehyde_ref,
+                            aldehyde_spec,
+                            carbon_atom_id,
+                            atom_position_overrides=atom_position_overrides,
+                        ),
+                        "anchor_world": self._world_atom_position(
+                            candidate,
+                            aldehyde_ref,
+                            aldehyde_spec,
+                            anchor_atom_id,
+                            atom_position_overrides=atom_position_overrides,
+                        ),
+                        "oxygen_world": self._world_atom_position(
+                            candidate,
+                            aldehyde_ref,
+                            aldehyde_spec,
+                            oxygen_atom_id,
+                            atom_position_overrides=atom_position_overrides,
+                        ),
+                        "hydrazine_normal": hydrazine_normal,
+                        "aldehyde_normal": aldehyde_normal,
+                        "moving_atom_ids": self._terminal_fragment_atom_ids(
+                            aldehyde_spec,
+                            carbon_atom_id,
+                            anchor_atom_id,
+                        ),
+                    }
+                )
+
+            reactive_atom_ids = {
+                int(entry["reactive_atom_id"])
+                for entry in entries
+            }
+            if len(reactive_atom_ids) != 2:
+                continue
+
+            current_nitrogen_positions = {
+                int(entry["reactive_atom_id"]): entry["nitrogen_world"]
+                for entry in entries
+            }
+            axis_seed = sub(
+                current_nitrogen_positions[max(reactive_atom_ids)],
+                current_nitrogen_positions[min(reactive_atom_ids)],
+            )
+            if norm(axis_seed) < 1e-8:
+                axis_seed = sub(entries[1]["carbon_world"], entries[0]["carbon_world"])
+            if norm(axis_seed) < 1e-8:
+                axis_seed = sub(entries[1]["anchor_world"], entries[0]["anchor_world"])
+            if norm(axis_seed) < 1e-8:
+                continue
+            axis = normalize(axis_seed)
+
+            plane_seed = (0.0, 0.0, 0.0)
+            for entry in entries:
+                plane_seed = add(plane_seed, entry["hydrazine_normal"])
+                plane_seed = add(plane_seed, entry["aldehyde_normal"])
+            plane_normal = self._orthogonal_component(plane_seed, axis)
+            if norm(plane_normal) < 1e-8:
+                plane_normal = self._orthogonal_component(
+                    cross(axis, sub(entries[1]["anchor_world"], entries[0]["anchor_world"])),
+                    axis,
+                )
+            if norm(plane_normal) < 1e-8:
+                plane_normal = self._orthogonal_component(
+                    cross(axis, sub(entries[0]["oxygen_world"], entries[0]["carbon_world"])),
+                    axis,
+                )
+            if norm(plane_normal) < 1e-8:
+                plane_normal = (0.0, 0.0, 1.0) if abs(axis[2]) < 0.9 else (1.0, 0.0, 0.0)
+            plane_normal = normalize(plane_normal)
+            lateral_axis = cross(plane_normal, axis)
+            if norm(lateral_axis) < 1e-8:
+                continue
+            lateral_axis = normalize(lateral_axis)
+
+            ordered_atom_ids = sorted(
+                reactive_atom_ids,
+                key=lambda atom_id: dot(current_nitrogen_positions[atom_id], axis),
+            )
+            midpoint = scale(
+                add(current_nitrogen_positions[ordered_atom_ids[0]], current_nitrogen_positions[ordered_atom_ids[1]]),
+                0.5,
+            )
+            fitted_nitrogen_positions = {
+                ordered_atom_ids[0]: add(midpoint, scale(axis, -0.5 * target_nn_distance)),
+                ordered_atom_ids[1]: add(midpoint, scale(axis, 0.5 * target_nn_distance)),
+            }
+
+            fitted_fragment_positions: dict[tuple[str, int], Vec3] = {}
+            success = True
+            for entry in entries:
+                reactive_atom_id = int(entry["reactive_atom_id"])
+                other_reactive_atom_id = next(atom_id for atom_id in reactive_atom_ids if atom_id != reactive_atom_id)
+                aldehyde_ref = entry["aldehyde_ref"]
+                aldehyde_spec = entry["aldehyde_spec"]
+                moving_atom_ids = tuple(int(atom_id) for atom_id in entry["moving_atom_ids"])
+                fixed_atom_world_positions = tuple(
+                    (
+                        aldehyde_spec.atom_symbols[atom_id],
+                        self._world_atom_position(
+                            candidate,
+                            aldehyde_ref,
+                            aldehyde_spec,
+                            atom_id,
+                            atom_position_overrides=atom_position_overrides,
+                        ),
+                    )
+                    for atom_id in range(len(aldehyde_spec.atom_symbols))
+                    if atom_id not in moving_atom_ids
+                    and atom_id != int(entry["anchor_atom_id"])
+                    and atom_id != int(entry["oxygen_atom_id"])
+                )
+                fitted_world_positions = self._fit_azine_endpoint_carbon_position(
+                    anchor_world=entry["anchor_world"],
+                    carbon_world=entry["carbon_world"],
+                    oxygen_world=entry["oxygen_world"],
+                    nitrogen_world=fitted_nitrogen_positions[reactive_atom_id],
+                    other_nitrogen_world=fitted_nitrogen_positions[other_reactive_atom_id],
+                    axis=axis,
+                    lateral_axis=lateral_axis,
+                    plane_normal=plane_normal,
+                    carbon_atom_id=int(entry["carbon_atom_id"]),
+                    moving_atom_world_positions={
+                        atom_id: self._world_atom_position(
+                            candidate,
+                            aldehyde_ref,
+                            aldehyde_spec,
+                            atom_id,
+                            atom_position_overrides=atom_position_overrides,
+                        )
+                        for atom_id in moving_atom_ids
+                    },
+                    moving_atom_symbols={
+                        atom_id: aldehyde_spec.atom_symbols[atom_id]
+                        for atom_id in moving_atom_ids
+                    },
+                    fixed_atom_world_positions=fixed_atom_world_positions,
+                    target_cn_distance=target_cn_distance,
+                    target_cnn_angle=target_cnn_angle,
+                    target_anchor_cn_angle=target_anchor_cn_angle,
+                )
+                if fitted_world_positions is None:
+                    success = False
+                    break
+                for atom_id, fitted_world in fitted_world_positions.items():
+                    fitted_fragment_positions[(aldehyde_ref.monomer_instance_id, atom_id)] = fitted_world
+            if not success:
+                continue
+
+            for entry in entries:
+                reactive_atom_id = int(entry["reactive_atom_id"])
+                hydrazine_ref = entry["hydrazine_ref"]
+                atom_position_overrides[instance_id][reactive_atom_id] = self._local_position_from_world(
+                    hydrazine_pose,
+                    fitted_nitrogen_positions[reactive_atom_id],
+                    image_shift=self._periodic_offset(candidate.state.cell, hydrazine_ref.periodic_image),
+                )
+                aldehyde_ref = entry["aldehyde_ref"]
+                aldehyde_pose = candidate.state.monomer_poses[aldehyde_ref.monomer_instance_id]
+                for atom_id in tuple(int(value) for value in entry["moving_atom_ids"]):
+                    fitted_world = fitted_fragment_positions.get((aldehyde_ref.monomer_instance_id, atom_id))
+                    if fitted_world is None:
+                        continue
+                    atom_position_overrides[aldehyde_ref.monomer_instance_id][atom_id] = self._local_position_from_world(
+                        aldehyde_pose,
+                        fitted_world,
+                        image_shift=self._periodic_offset(candidate.state.cell, aldehyde_ref.periodic_image),
+                    )
+            applied_count += 1
+
+        if applied_count == 0:
+            return ()
+        return (
+            "The exported azine product applies a coordinated bridge fit so the retained C=N-N=C segment is shortened and bent toward a ca. 120 degree geometry instead of remaining collinear.",
+        )
+
+    def _fit_azine_endpoint_carbon_position(
+        self,
+        *,
+        anchor_world: Vec3,
+        carbon_world: Vec3,
+        oxygen_world: Vec3,
+        nitrogen_world: Vec3,
+        other_nitrogen_world: Vec3,
+        axis: Vec3,
+        lateral_axis: Vec3,
+        plane_normal: Vec3,
+        carbon_atom_id: int,
+        moving_atom_world_positions: Mapping[int, Vec3],
+        moving_atom_symbols: Mapping[int, str],
+        fixed_atom_world_positions: tuple[tuple[str, Vec3], ...],
+        target_cn_distance: float,
+        target_cnn_angle: float,
+        target_anchor_cn_angle: float,
+    ) -> dict[int, Vec3] | None:
+        carbon_length = self._distance(anchor_world, carbon_world)
+        if carbon_length < 1e-8:
+            return None
+
+        current_carbon_2d = (
+            dot(sub(carbon_world, anchor_world), axis),
+            dot(sub(carbon_world, anchor_world), lateral_axis),
+        )
+        nitrogen_2d = (
+            dot(sub(nitrogen_world, anchor_world), axis),
+            dot(sub(nitrogen_world, anchor_world), lateral_axis),
+        )
+        other_nitrogen_2d = (
+            dot(sub(other_nitrogen_world, anchor_world), axis),
+            dot(sub(other_nitrogen_world, anchor_world), lateral_axis),
+        )
+        preferred_side = self._signed_value(
+            dot(sub(oxygen_world, carbon_world), lateral_axis),
+            default=1.0,
+        )
+        fragment_coordinates = {
+            atom_id: (
+                dot(sub(world, anchor_world), axis),
+                dot(sub(world, anchor_world), lateral_axis),
+                dot(sub(world, anchor_world), plane_normal),
+            )
+            for atom_id, world in moving_atom_world_positions.items()
+        }
+        best: tuple[float, dict[int, Vec3]] | None = None
+        exact_candidates = self._circle_intersections_2d(
+            (0.0, 0.0),
+            carbon_length,
+            nitrogen_2d,
+            target_cn_distance,
+        )
+
+        if exact_candidates:
+            for candidate_carbon_2d in exact_candidates:
+                fitted_positions = self._rotate_azine_fragment_positions(
+                    anchor_world=anchor_world,
+                    carbon_atom_id=carbon_atom_id,
+                    current_carbon_2d=current_carbon_2d,
+                    candidate_carbon_2d=candidate_carbon_2d,
+                    fragment_coordinates=fragment_coordinates,
+                    axis=axis,
+                    lateral_axis=lateral_axis,
+                    plane_normal=plane_normal,
+                )
+                objective = 0.18 * (
+                    self._planar_angle_2d(candidate_carbon_2d, nitrogen_2d, other_nitrogen_2d) - target_cnn_angle
+                ) ** 2
+                objective += 0.24 * (
+                    self._planar_angle_2d((0.0, 0.0), candidate_carbon_2d, nitrogen_2d) - target_anchor_cn_angle
+                ) ** 2
+                objective += 0.35 * self._squared_distance_2d(candidate_carbon_2d, current_carbon_2d)
+                objective += self._azine_fragment_steric_penalty(
+                    fitted_positions,
+                    moving_atom_symbols,
+                    fixed_atom_world_positions,
+                )
+                if preferred_side * candidate_carbon_2d[1] <= -1e-6:
+                    objective += 0.6
+                if best is None or objective < best[0]:
+                    best = (objective, fitted_positions)
+        else:
+            for step in range(721):
+                theta = 2.0 * pi * step / 720.0
+                candidate_carbon_2d = (
+                    carbon_length * cos(theta),
+                    carbon_length * sin(theta),
+                )
+                fitted_positions = self._rotate_azine_fragment_positions(
+                    anchor_world=anchor_world,
+                    carbon_atom_id=carbon_atom_id,
+                    current_carbon_2d=current_carbon_2d,
+                    candidate_carbon_2d=candidate_carbon_2d,
+                    fragment_coordinates=fragment_coordinates,
+                    axis=axis,
+                    lateral_axis=lateral_axis,
+                    plane_normal=plane_normal,
+                )
+                objective = 120.0 * (self._distance_2d(candidate_carbon_2d, nitrogen_2d) - target_cn_distance) ** 2
+                objective += 0.08 * (
+                    self._planar_angle_2d(candidate_carbon_2d, nitrogen_2d, other_nitrogen_2d) - target_cnn_angle
+                ) ** 2
+                objective += 0.16 * (
+                    self._planar_angle_2d((0.0, 0.0), candidate_carbon_2d, nitrogen_2d) - target_anchor_cn_angle
+                ) ** 2
+                objective += 0.2 * self._squared_distance_2d(candidate_carbon_2d, current_carbon_2d)
+                objective += self._azine_fragment_steric_penalty(
+                    fitted_positions,
+                    moving_atom_symbols,
+                    fixed_atom_world_positions,
+                )
+                if preferred_side * candidate_carbon_2d[1] <= -1e-6:
+                    objective += 0.6
+                if best is None or objective < best[0]:
+                    best = (objective, fitted_positions)
+
+        if best is None:
+            return None
+
+        return best[1]
+
+    def _rotate_azine_fragment_positions(
+        self,
+        *,
+        anchor_world: Vec3,
+        carbon_atom_id: int,
+        current_carbon_2d: tuple[float, float],
+        candidate_carbon_2d: tuple[float, float],
+        fragment_coordinates: Mapping[int, tuple[float, float, float]],
+        axis: Vec3,
+        lateral_axis: Vec3,
+        plane_normal: Vec3,
+    ) -> dict[int, Vec3]:
+        rotation_angle = self._signed_rotation_angle_2d(current_carbon_2d, candidate_carbon_2d)
+        cosine = cos(rotation_angle)
+        sine = sin(rotation_angle)
+        fitted_positions: dict[int, Vec3] = {}
+        for atom_id, (axis_component, lateral_component, normal_component) in fragment_coordinates.items():
+            if atom_id == carbon_atom_id:
+                fitted_positions[atom_id] = add(
+                    anchor_world,
+                    add(scale(axis, candidate_carbon_2d[0]), scale(lateral_axis, candidate_carbon_2d[1])),
+                )
+                continue
+            rotated_axis = axis_component * cosine - lateral_component * sine
+            rotated_lateral = axis_component * sine + lateral_component * cosine
+            fitted_positions[atom_id] = add(
+                anchor_world,
+                add(
+                    add(scale(axis, rotated_axis), scale(lateral_axis, rotated_lateral)),
+                    scale(plane_normal, normal_component),
+                ),
+            )
+        return fitted_positions
+
+    def _azine_fragment_steric_penalty(
+        self,
+        fitted_positions: Mapping[int, Vec3],
+        moving_atom_symbols: Mapping[int, str],
+        fixed_atom_world_positions: tuple[tuple[str, Vec3], ...],
+    ) -> float:
+        penalty = 0.0
+        for atom_id, moved_world in fitted_positions.items():
+            moved_symbol = moving_atom_symbols.get(atom_id, "C")
+            for fixed_symbol, fixed_world in fixed_atom_world_positions:
+                minimum_distance = 1.75 if "H" in {moved_symbol, fixed_symbol} else 1.95
+                distance = self._distance(moved_world, fixed_world)
+                if distance < minimum_distance:
+                    penalty += 900.0 * (minimum_distance - distance) ** 2
+        return penalty
+
+    def _signed_rotation_angle_2d(
+        self,
+        current: tuple[float, float],
+        target: tuple[float, float],
+    ) -> float:
+        return atan2(
+            current[0] * target[1] - current[1] * target[0],
+            current[0] * target[0] + current[1] * target[1],
+        )
+
+    def _terminal_fragment_atom_ids(
+        self,
+        monomer: MonomerSpec,
+        start_atom_id: int,
+        blocked_atom_id: int,
+    ) -> tuple[int, ...]:
+        adjacency: dict[int, set[int]] = defaultdict(set)
+        for first_atom_id, second_atom_id, _order in monomer.bonds:
+            adjacency[first_atom_id].add(second_atom_id)
+            adjacency[second_atom_id].add(first_atom_id)
+
+        visited: set[int] = set()
+        stack = [start_atom_id]
+        while stack:
+            atom_id = stack.pop()
+            if atom_id in visited:
+                continue
+            visited.add(atom_id)
+            for neighbor_id in adjacency.get(atom_id, ()):
+                if atom_id == start_atom_id and neighbor_id == blocked_atom_id:
+                    continue
+                if neighbor_id == blocked_atom_id:
+                    continue
+                stack.append(neighbor_id)
+        return tuple(sorted(visited))
+
+    def _refresh_azine_bridge_bond_distances(
+        self,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+        atom_position_overrides: Mapping[str, Mapping[int, Vec3]],
+        bonds: list[RealizedBond],
+    ) -> list[RealizedBond]:
+        updated_distances: dict[tuple[str, str], float] = {}
+        for event in candidate.events:
+            if linkage_event_realizer(event.template_id) != "azine_bridge":
+                continue
+            hydrazine_ref, aldehyde_ref = self._split_bridge_participants(
+                event,
+                monomer_specs,
+                "hydrazine",
+                "aldehyde",
+            )
+            hydrazine_spec = monomer_specs[hydrazine_ref.monomer_id]
+            aldehyde_spec = monomer_specs[aldehyde_ref.monomer_id]
+            hydrazine_motif = hydrazine_spec.motif_by_id(hydrazine_ref.motif_id)
+            aldehyde_motif = aldehyde_spec.motif_by_id(aldehyde_ref.motif_id)
+            nitrogen_atom_id = self._reactive_atom_id(hydrazine_motif)
+            carbon_atom_id = self._reactive_atom_id(aldehyde_motif)
+            carbon_world = self._world_atom_position(
+                candidate,
+                aldehyde_ref,
+                aldehyde_spec,
+                carbon_atom_id,
+                atom_position_overrides=atom_position_overrides,
+            )
+            nitrogen_world = self._world_atom_position(
+                candidate,
+                hydrazine_ref,
+                hydrazine_spec,
+                nitrogen_atom_id,
+                atom_position_overrides=atom_position_overrides,
+            )
+            label_1 = self.atom_label(
+                aldehyde_ref.monomer_instance_id,
+                aldehyde_spec.atom_symbols[carbon_atom_id],
+                carbon_atom_id,
+            )
+            label_2 = self.atom_label(
+                hydrazine_ref.monomer_instance_id,
+                hydrazine_spec.atom_symbols[nitrogen_atom_id],
+                nitrogen_atom_id,
+            )
+            updated_distances[(label_1, label_2)] = self._distance(carbon_world, nitrogen_world)
+
+        if not updated_distances:
+            return bonds
+
+        refreshed_bonds: list[RealizedBond] = []
+        for bond in bonds:
+            distance = updated_distances.get((bond.label_1, bond.label_2))
+            if distance is None:
+                distance = updated_distances.get((bond.label_2, bond.label_1))
+            if distance is None:
+                refreshed_bonds.append(bond)
+                continue
+            refreshed_bonds.append(replace(bond, distance=distance))
+        return refreshed_bonds
+
     def _angle(self, point_a: Vec3, point_b: Vec3, point_c: Vec3) -> float:
         vector_ba = sub(point_a, point_b)
         vector_bc = sub(point_c, point_b)
@@ -1671,6 +2212,67 @@ class ReactionRealizer:
             notes=(
                 "Hydrazone realization removes the aldehyde oxygen and both terminal hydrazide hydrogens per reacting pair.",
                 "The hydrazide carbonyl is retained; the exported product realizes the inter-monomer C=N connectivity only.",
+            ),
+        )
+
+    def _realize_azine_bridge(
+        self,
+        event: ReactionEvent,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+    ) -> EventRealization:
+        hydrazine_ref, aldehyde_ref = self._split_bridge_participants(event, monomer_specs, "hydrazine", "aldehyde")
+        hydrazine_spec = monomer_specs[hydrazine_ref.monomer_id]
+        aldehyde_spec = monomer_specs[aldehyde_ref.monomer_id]
+        hydrazine_motif = hydrazine_spec.motif_by_id(hydrazine_ref.motif_id)
+        aldehyde_motif = aldehyde_spec.motif_by_id(aldehyde_ref.motif_id)
+
+        nitrogen_atom_id = self._reactive_atom_id(hydrazine_motif)
+        carbon_atom_id = self._reactive_atom_id(aldehyde_motif)
+        oxygen_atom_id = self._unique_symbol_atom_id(
+            aldehyde_spec,
+            aldehyde_motif.atom_ids,
+            "O",
+            context=f"{event.id} aldehyde oxygen",
+        )
+        carbon_world = self._world_atom_position(candidate, aldehyde_ref, aldehyde_spec, carbon_atom_id)
+        hydrogen_atom_ids = self._select_hydrogens(
+            candidate,
+            hydrazine_ref,
+            hydrazine_spec,
+            self._hydrogen_atom_ids_for_atom(hydrazine_spec, hydrazine_motif, nitrogen_atom_id),
+            target=carbon_world,
+            count=2,
+            context="azine formation",
+        )
+        nitrogen_world = self._world_atom_position(candidate, hydrazine_ref, hydrazine_spec, nitrogen_atom_id)
+
+        return EventRealization(
+            removed_atom_ids={
+                hydrazine_ref.monomer_instance_id: tuple(sorted(hydrogen_atom_ids)),
+                aldehyde_ref.monomer_instance_id: (oxygen_atom_id,),
+            },
+            bonds=(
+                RealizedBond(
+                    label_1=self.atom_label(
+                        aldehyde_ref.monomer_instance_id,
+                        aldehyde_spec.atom_symbols[carbon_atom_id],
+                        carbon_atom_id,
+                    ),
+                    label_2=self.atom_label(
+                        hydrazine_ref.monomer_instance_id,
+                        hydrazine_spec.atom_symbols[nitrogen_atom_id],
+                        nitrogen_atom_id,
+                    ),
+                    distance=self._distance(carbon_world, nitrogen_world),
+                    symmetry_1=".",
+                    symmetry_2=self._symmetry_code(hydrazine_ref.periodic_image),
+                    bond_order=2.0,
+                ),
+            ),
+            notes=(
+                "Azine realization removes the aldehyde oxygen and both hydrazine hydrogens on the reacting nitrogen per event.",
+                "The exported product realizes the inter-monomer C=N connectivity before any coordinated azine bridge correction is applied.",
             ),
         )
 
@@ -2250,11 +2852,13 @@ class ReactionRealizer:
         monomer_specs: Mapping[str, MonomerSpec],
     ) -> tuple[tuple[MotifRef, int, MotifRef, int], ...]:
         realizer_id = linkage_event_realizer(event.template_id)
-        if realizer_id in {"imine_bridge", "hydrazone_bridge", "keto_enamine_bridge", "vinylene_bridge"}:
+        if realizer_id in {"imine_bridge", "hydrazone_bridge", "azine_bridge", "keto_enamine_bridge", "vinylene_bridge"}:
             if realizer_id == "imine_bridge":
                 first_kind, second_kind = "amine", "aldehyde"
             elif realizer_id == "hydrazone_bridge":
                 first_kind, second_kind = "hydrazide", "aldehyde"
+            elif realizer_id == "azine_bridge":
+                first_kind, second_kind = "hydrazine", "aldehyde"
             elif realizer_id == "keto_enamine_bridge":
                 first_kind, second_kind = "amine", "keto_aldehyde"
             else:
@@ -2749,6 +3353,15 @@ def _dispatch_hydrazone_bridge_event(
     monomer_specs: Mapping[str, MonomerSpec],
 ) -> EventRealization:
     return realizer._realize_hydrazone_bridge(event, candidate, monomer_specs)
+
+
+def _dispatch_azine_bridge_event(
+    realizer: ReactionRealizer,
+    event: ReactionEvent,
+    candidate: Candidate,
+    monomer_specs: Mapping[str, MonomerSpec],
+) -> EventRealization:
+    return realizer._realize_azine_bridge(event, candidate, monomer_specs)
 
 
 def _dispatch_keto_enamine_bridge_event(

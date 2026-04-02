@@ -137,14 +137,14 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=500,
-        help="Stage-1 maximum LAMMPS minimization iterations. Default: 500.",
+        default=200000,
+        help="Stage-1 maximum LAMMPS minimization iterations. Default: 200000.",
     )
     parser.add_argument(
         "--max-evaluations",
         type=int,
-        default=5000,
-        help="Stage-1 maximum LAMMPS minimization force evaluations. Default: 5000.",
+        default=2000000,
+        help="Stage-1 maximum LAMMPS minimization force evaluations. Default: 2000000.",
     )
     parser.add_argument(
         "--min-style",

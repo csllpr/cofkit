@@ -142,6 +142,7 @@ The current end-to-end binary-bridge path now covers:
 
 - `imine_bridge`
 - `hydrazone_bridge`
+- `azine_bridge`
 - `keto_enamine_bridge`
 - `boronate_ester_bridge`
 - `vinylene_bridge`
@@ -150,6 +151,7 @@ The current batch autodetect surface is aligned to the practical RDKit motif reg
 
 - `amine`
 - `aldehyde`
+- `hydrazine`
 - `hydrazide`
 - `boronic_acid`
 - `catechol`

@@ -13,10 +13,12 @@ class MotifDetectorTests(unittest.TestCase):
 
         self.assertIn("amine", registry.supported_kinds())
         self.assertIn("aldehyde", registry.supported_kinds())
+        self.assertIn("hydrazine", registry.supported_kinds())
         self.assertIn("hydrazide", registry.supported_kinds())
         self.assertIn("activated_methylene", registry.supported_kinds())
         self.assertEqual(registry.get("boronic_acid").cif_symbol, "B")
         self.assertEqual(registry.get("amine").allowed_reaction_templates, ("imine_bridge", "keto_enamine_bridge"))
+        self.assertEqual(registry.get("hydrazine").allowed_reaction_templates, ("azine_bridge",))
         self.assertEqual(registry.get("hydrazide").allowed_reaction_templates, ("hydrazone_bridge",))
 
     def test_detect_amine(self):
@@ -77,7 +79,10 @@ H -1.8  1.2  0.0
         self.assertEqual(motif.atom_ids[0], 6)
         self.assertEqual(motif.atom_ids[1], 7)
         self.assertEqual(motif.atom_ids[2], 8)
-        self.assertEqual(motif.allowed_reaction_templates, ("imine_bridge", "hydrazone_bridge", "vinylene_bridge"))
+        self.assertEqual(
+            motif.allowed_reaction_templates,
+            ("imine_bridge", "hydrazone_bridge", "azine_bridge", "vinylene_bridge"),
+        )
         self.assertEqual(motif.metadata["reactive_atom_id"], 6)
         self.assertEqual(len(spec.atom_symbols), len(spec.atom_positions))
         self.assertEqual(spec.atom_symbols[7], "O")

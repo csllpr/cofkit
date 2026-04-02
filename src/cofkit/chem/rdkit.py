@@ -121,7 +121,7 @@ class RDKitMotifBuilder:
             handler = self._match_handlers[definition.kind]
         except KeyError as exc:
             raise ValueError(f"motif kind {definition.kind!r} has no RDKit match handler") from exc
-        matches = molecule.GetSubstructMatches(pattern)
+        matches = molecule.GetSubstructMatches(pattern, uniquify=False)
         detected_by_atoms: dict[tuple[int, ...], _DetectedMotif] = {}
         for match in matches:
             detected = handler(molecule, conformer, tuple(int(atom_id) for atom_id in match), definition)
@@ -157,6 +157,7 @@ class RDKitMotifBuilder:
         builder = cls(motif_registry=motif_registry)
         builder.register_match_handler("amine", _interpret_primary_amine_match)
         builder.register_match_handler("aldehyde", _interpret_aldehyde_match)
+        builder.register_match_handler("hydrazine", _interpret_hydrazine_match)
         builder.register_match_handler("hydrazide", _interpret_hydrazide_match)
         builder.register_match_handler("boronic_acid", _interpret_boronic_acid_match)
         builder.register_match_handler("catechol", _interpret_catechol_match)
@@ -332,6 +333,26 @@ def _interpret_aldehyde_match(molecule, conformer, match: tuple[int, ...], defin
         atom_ids=tuple(atom_ids),
         origin=_conformer_point(conformer, reactive_atom_id),
         anchor=_conformer_point(conformer, anchor_atom_id),
+    )
+
+
+def _interpret_hydrazine_match(molecule, conformer, match: tuple[int, ...], definition: MotifKindDefinition) -> _DetectedMotif | None:
+    del definition
+    reactive_atom_id, anchor_atom_id = (int(match[0]), int(match[1]))
+    hydrogen_atom_ids = _attached_hydrogen_ids(molecule, reactive_atom_id)
+    if len(hydrogen_atom_ids) < 2:
+        return None
+    atom_ids = sorted({reactive_atom_id, anchor_atom_id, *hydrogen_atom_ids})
+    return _DetectedMotif(
+        reactive_atom_id=reactive_atom_id,
+        anchor_atom_id=anchor_atom_id,
+        atom_ids=tuple(atom_ids),
+        origin=_conformer_point(conformer, reactive_atom_id),
+        anchor=_conformer_point(conformer, anchor_atom_id),
+        metadata={
+            "internal_nitrogen_atom_id": anchor_atom_id,
+            "hydrogen_atom_ids": hydrogen_atom_ids,
+        },
     )
 
 

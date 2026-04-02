@@ -58,9 +58,13 @@ class CliTests(unittest.TestCase):
             cli_main(["build", "list-templates", "--json"])
         rows = json.loads(buffer.getvalue())
 
+        azine = next(row for row in rows if row["template_id"] == "azine_bridge")
         imine = next(row for row in rows if row["template_id"] == "imine_bridge")
         boroxine = next(row for row in rows if row["template_id"] == "boroxine_trimerization")
 
+        self.assertTrue(azine["supports_pair_generation"])
+        self.assertTrue(azine["supports_atomistic_realization"])
+        self.assertEqual(azine["workflow_family"], "binary_bridge")
         self.assertTrue(imine["supports_pair_generation"])
         self.assertTrue(imine["supports_atomistic_realization"])
         self.assertEqual(imine["workflow_family"], "binary_bridge")

@@ -134,12 +134,13 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             (temp_path / "amines_count_3.txt").write_text(f"smiles\n{TAPB}\n", encoding="utf-8")
             (temp_path / "aldehydes_count_3.txt").write_text(f"smiles\n{TFB}\n", encoding="utf-8")
+            (temp_path / "hydrazines_count_2.txt").write_text("smiles\nNN\n", encoding="utf-8")
             (temp_path / "hydrazides_count_2.txt").write_text(f"smiles\n{COF42_HYDRAZIDE}\n", encoding="utf-8")
             (temp_path / "keto_aldehydes_count_3.txt").write_text(f"smiles\n{TP}\n", encoding="utf-8")
 
             template_ids = self.generator.available_binary_bridge_template_ids(temp_path)
 
-        self.assertEqual(template_ids, ("hydrazone_bridge", "imine_bridge", "keto_enamine_bridge"))
+        self.assertEqual(template_ids, ("azine_bridge", "hydrazone_bridge", "imine_bridge", "keto_enamine_bridge"))
 
     def test_custom_smiles_monomer_builder_can_be_injected(self):
         calls = []
@@ -258,6 +259,40 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         assert candidate is not None
         self.assertEqual(candidate.metadata["net_plan"]["topology"], "hcb")
         self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "node-linker-single-node")
+
+    def test_experimental_azine_pair_builds_hcb_candidate(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                allowed_reactions=("azine_bridge",),
+                rdkit_num_conformers=2,
+                retain_top_results=5,
+                single_node_topology_ids=("hcb",),
+            )
+        )
+        hydrazine = BatchMonomerRecord(
+            id="hydrazine",
+            name="hydrazine",
+            smiles="NN",
+            motif_kind="hydrazine",
+            expected_connectivity=2,
+        )
+        tfb = BatchMonomerRecord(
+            id="tfb",
+            name="tfb",
+            smiles=TFB,
+            motif_kind="aldehyde",
+            expected_connectivity=3,
+        )
+
+        summary, candidate = generator.generate_pair_candidate(hydrazine, tfb)
+
+        self.assertEqual(summary.status, "ok")
+        self.assertEqual(summary.pair_mode, "3+2-node-linker")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.metadata["net_plan"]["topology"], "hcb")
+        self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "node-linker-single-node")
+        self.assertGreater(candidate.metadata["graph_summary"]["n_reaction_events"], 0)
         self.assertEqual(candidate.metadata["graph_summary"]["n_monomer_instances"], 5)
         self.assertEqual(candidate.metadata["graph_summary"]["n_reaction_events"], 6)
         self.assertNotIn("unreacted_motifs:1", candidate.flags)

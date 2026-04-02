@@ -257,6 +257,16 @@ def _builtin_templates() -> tuple[ReactionTemplate, ...]:
             allowed_dimensionalities=("2D", "3D"),
         ),
         ReactionTemplate(
+            id="azine_bridge",
+            arity=2,
+            reactant_motif_kinds=("hydrazine", "aldehyde"),
+            product_name="azine",
+            topology_role="bridge",
+            planarity_prior="planar",
+            torsion_prior="restricted",
+            allowed_dimensionalities=("2D", "3D"),
+        ),
+        ReactionTemplate(
             id="boronate_ester_bridge",
             arity=2,
             reactant_motif_kinds=("boronic_acid", "catechol"),
@@ -332,6 +342,17 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
             event_realizer="hydrazone_bridge",
             geometry_profile_id="hydrazone_bridge",
             validation_profile_id="hydrazone_bridge",
+        ),
+        ReactionLinkageProfile(
+            template_id="azine_bridge",
+            bridge_target_distance=1.3,
+            binary_bridge_roles=(
+                BinaryBridgeRole(role_id="hydrazine", motif_kind="hydrazine", library_prefix="hydrazines"),
+                BinaryBridgeRole(role_id="aldehyde", motif_kind="aldehyde", library_prefix="aldehydes"),
+            ),
+            event_realizer="azine_bridge",
+            geometry_profile_id="azine_bridge",
+            validation_profile_id="azine_bridge",
         ),
         ReactionLinkageProfile(
             template_id="boronate_ester_bridge",

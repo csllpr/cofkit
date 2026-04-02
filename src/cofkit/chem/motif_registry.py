@@ -62,13 +62,15 @@ def _builtin_motif_kind_definitions() -> tuple[MotifKindDefinition, ...]:
             kind="aldehyde",
             id_prefix="ald",
             cif_symbol="C",
-            allowed_reaction_templates=("imine_bridge", "hydrazone_bridge", "vinylene_bridge"),
+            allowed_reaction_templates=("imine_bridge", "hydrazone_bridge", "azine_bridge", "vinylene_bridge"),
             rdkit_smarts="[CX3H1](=[OX1])-[#6]",
         ),
         MotifKindDefinition(
             kind="hydrazine",
             id_prefix="hyd",
             cif_symbol="N",
+            allowed_reaction_templates=("azine_bridge",),
+            rdkit_smarts="[NX3;H2]-[NX3;H2]",
         ),
         MotifKindDefinition(
             kind="hydrazide",

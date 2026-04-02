@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import acos, degrees, floor
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, Mapping
 
 from .bond_types import bond_order_to_cif_type, normalize_bond_order
 from .chem.motif_registry import motif_pseudo_atom_symbol
-from .geometry import Vec3, add, cross, dot, matmul_vec, norm
+from .geometry import Vec3, add, cross, dot, matmul_vec, norm, scale
 from .model import Candidate, MonomerSpec, Pose
 from .reaction_realization import RealizedBond, ReactionRealizationResult, ReactionRealizer
 
@@ -94,13 +95,14 @@ class CIFWriter:
         atomistic_instances = 0
         coarse_instances = 0
         realization = self.reaction_realizer.realize(candidate, monomer_specs, instance_to_monomer)
+        atomistic_shift = self._atomistic_c_axis_shift(candidate, monomer_specs, instance_to_monomer, realization)
 
         for instance_id, pose in candidate.state.monomer_poses.items():
             monomer_id = instance_to_monomer[instance_id]
             monomer = monomer_specs[monomer_id]
             if monomer.atom_symbols and monomer.atom_positions:
                 atomistic_instances += 1
-                sites.extend(self._atomistic_sites(instance_id, pose, monomer, cell, realization))
+                sites.extend(self._atomistic_sites(instance_id, pose, monomer, cell, realization, atomistic_shift))
             else:
                 coarse_instances += 1
                 sites.extend(self._coarse_sites(instance_id, pose, monomer, cell))
@@ -117,7 +119,7 @@ class CIFWriter:
             "coarse_instances": coarse_instances,
             "n_monomer_instances": len(candidate.state.monomer_poses),
         }
-        bonds.extend(self._atomistic_bonds(candidate, monomer_specs, instance_to_monomer, realization))
+        bonds.extend(self._atomistic_bonds(candidate, monomer_specs, instance_to_monomer, realization, cell, atomistic_shift))
         if realization is not None:
             metadata["reaction_realization"] = dict(realization.metadata)
         return sites, bonds, mode, metadata
@@ -129,6 +131,7 @@ class CIFWriter:
         monomer: MonomerSpec,
         cell: tuple[Vec3, Vec3, Vec3],
         realization: ReactionRealizationResult | None,
+        atomistic_shift: Vec3,
     ) -> list[AtomSite]:
         sites: list[AtomSite] = []
         realized_atoms = None if realization is None else realization.atoms_by_instance.get(instance_id)
@@ -145,7 +148,7 @@ class CIFWriter:
             )
         )
         for label, symbol, local_pos in atom_rows:
-            world = self._world_position(pose, local_pos)
+            world = add(self._world_position(pose, local_pos), atomistic_shift)
             frac = self._wrap_fractional(self._cartesian_to_fractional(cell, world))
             sites.append(
                 AtomSite(
@@ -266,9 +269,12 @@ class CIFWriter:
         monomer_specs: Mapping[str, MonomerSpec],
         instance_to_monomer: Mapping[str, str],
         realization: ReactionRealizationResult | None,
+        cell: tuple[Vec3, Vec3, Vec3],
+        atomistic_shift: Vec3,
     ) -> list[RealizedBond]:
         bonds: list[RealizedBond] = []
         exported_labels: set[str] = set()
+        fractional_by_label: dict[str, Vec3] = {}
         removed_atom_ids_by_instance = {} if realization is None else realization.removed_atom_ids_by_instance
 
         for instance_id, monomer_id in instance_to_monomer.items():
@@ -298,16 +304,26 @@ class CIFWriter:
                 }
             exported_labels.update(atom_labels.values())
             pose = candidate.state.monomer_poses[instance_id]
+            for atom_id, label in atom_labels.items():
+                world = add(self._world_position(pose, atom_positions[atom_id]), atomistic_shift)
+                fractional_by_label[label] = self._wrap_fractional(self._cartesian_to_fractional(cell, world))
             for atom_id_1, atom_id_2, bond_order in monomer.bonds:
                 if atom_id_1 not in atom_labels or atom_id_2 not in atom_labels:
                     continue
-                world_1 = self._world_position(pose, atom_positions[atom_id_1])
-                world_2 = self._world_position(pose, atom_positions[atom_id_2])
+                label_1 = atom_labels[atom_id_1]
+                label_2 = atom_labels[atom_id_2]
+                relative_shift, distance = self._minimum_image_bond_geometry(
+                    cell,
+                    fractional_by_label[label_1],
+                    fractional_by_label[label_2],
+                )
                 bonds.append(
                     RealizedBond(
-                        label_1=atom_labels[atom_id_1],
-                        label_2=atom_labels[atom_id_2],
-                        distance=self._distance(world_1, world_2),
+                        label_1=label_1,
+                        label_2=label_2,
+                        distance=distance,
+                        symmetry_1=".",
+                        symmetry_2=self._format_p1_symmetry_shift(relative_shift),
                         bond_order=normalize_bond_order(bond_order),
                     )
                 )
@@ -315,8 +331,60 @@ class CIFWriter:
         if realization is not None:
             for bond in realization.bonds:
                 if bond.label_1 in exported_labels and bond.label_2 in exported_labels:
-                    bonds.append(bond)
+                    fractional_1 = fractional_by_label.get(bond.label_1)
+                    fractional_2 = fractional_by_label.get(bond.label_2)
+                    if fractional_1 is None or fractional_2 is None:
+                        bonds.append(bond)
+                        continue
+                    relative_shift, distance = self._minimum_image_bond_geometry(
+                        cell,
+                        fractional_1,
+                        fractional_2,
+                    )
+                    bonds.append(
+                        replace(
+                            bond,
+                            distance=distance,
+                            symmetry_1=".",
+                            symmetry_2=self._format_p1_symmetry_shift(relative_shift),
+                        )
+                    )
         return self._dedupe_bonds(bonds)
+
+    def _atomistic_c_axis_shift(
+        self,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+        instance_to_monomer: Mapping[str, str],
+        realization: ReactionRealizationResult | None,
+    ) -> Vec3:
+        fractional_z_values: list[float] = []
+        cell = candidate.state.cell
+        for instance_id, pose in candidate.state.monomer_poses.items():
+            monomer = monomer_specs[instance_to_monomer[instance_id]]
+            if not (monomer.atom_symbols and monomer.atom_positions):
+                continue
+            realized_atoms = None if realization is None else realization.atoms_by_instance.get(instance_id)
+            atom_positions = (
+                (atom.local_position for atom in realized_atoms)
+                if realized_atoms is not None
+                else monomer.atom_positions
+            )
+            for local_position in atom_positions:
+                world = self._world_position(pose, local_position)
+                fractional_z_values.append(self._cartesian_to_fractional(cell, world)[2])
+        if not fractional_z_values:
+            return (0.0, 0.0, 0.0)
+        min_z = min(fractional_z_values)
+        max_z = max(fractional_z_values)
+        if max_z - min_z >= 0.5:
+            return (0.0, 0.0, 0.0)
+        shift_fractional_z = 0.5 - 0.5 * (min_z + max_z)
+        return (
+            cell[2][0] * shift_fractional_z,
+            cell[2][1] * shift_fractional_z,
+            cell[2][2] * shift_fractional_z,
+        )
 
     def _dedupe_bonds(self, bonds: list[RealizedBond]) -> list[RealizedBond]:
         unique: list[RealizedBond] = []
@@ -363,6 +431,42 @@ class CIFWriter:
 
     def _wrap_fractional(self, frac: Vec3) -> Vec3:
         return tuple(value - floor(value) for value in frac)  # type: ignore[return-value]
+
+    def _format_p1_symmetry_shift(self, shift: tuple[int, int, int]) -> str:
+        if shift == (0, 0, 0):
+            return "."
+        if any(component < -4 or component > 4 for component in shift):
+            raise ValueError(f"periodic image shift {shift!r} exceeds CIF P1 formatter range")
+        return "1_" + "".join(str(component + 5) for component in shift)
+
+    def _minimum_image_bond_geometry(
+        self,
+        cell: tuple[Vec3, Vec3, Vec3],
+        left_fractional: Vec3,
+        right_fractional: Vec3,
+    ) -> tuple[tuple[int, int, int], float]:
+        best_shift = (0, 0, 0)
+        best_distance = float("inf")
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    shift = (dx, dy, dz)
+                    vector = (
+                        (right_fractional[0] + dx) - left_fractional[0],
+                        (right_fractional[1] + dy) - left_fractional[1],
+                        (right_fractional[2] + dz) - left_fractional[2],
+                    )
+                    distance = norm(self._fractional_vector_to_cartesian(cell, vector))
+                    if distance + 1e-9 < best_distance:
+                        best_distance = distance
+                        best_shift = shift
+                    elif abs(distance - best_distance) <= 1e-9 and shift == (0, 0, 0):
+                        best_shift = shift
+        return best_shift, best_distance
+
+    def _fractional_vector_to_cartesian(self, cell: tuple[Vec3, Vec3, Vec3], vector: Vec3) -> Vec3:
+        a_vec, b_vec, c_vec = cell
+        return add(add(scale(a_vec, vector[0]), scale(b_vec, vector[1])), scale(c_vec, vector[2]))
 
     def _world_position(self, pose: Pose, local_position: Vec3) -> Vec3:
         return add(pose.translation, matmul_vec(pose.rotation_matrix, local_position))
