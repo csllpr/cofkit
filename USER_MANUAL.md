@@ -5,7 +5,7 @@ This manual covers the current practical workflows for generating COF structures
 The examples below focus on the repository's current supported generation path:
 
 - binary-bridge COFs generated from one role-specific monomer on each side
-- current practical chemistries: imine, beta-ketoenamine, hydrazone, boronate ester, and vinylene
+- current practical chemistries: imine, hydrazone, azine, beta-ketoenamine, boronate ester, and vinylene
 - supported one-node topology families in `2D` and `3D`
 - CIF export for inspection
 - optional post-generation triage into `valid`, `warning`, `hard_invalid`, and `hard_hard_invalid`
@@ -65,9 +65,22 @@ Installed runtime dependencies:
 
 Optional add-ons:
 
+- `EQeq` if you want to use `cofkit calculate graspa-widom` for framework charge assignment
+- `gRASPA` if you want to use `cofkit calculate graspa-widom` for Widom insertion
 - `pytest` if you want to run the tests locally
 
 The bundled topology data shipped with the package is enough for normal structure generation. External RCSR archives are optional advanced inputs, not required setup.
+
+### Recommended external installs
+
+For the current wrappers, use these upstreams instead of ad hoc local builds:
+
+- `Zeo++`: use `http://www.zeoplusplus.org/zeo++-0.3.tar.gz`, build the `network` binary, then point `COFKIT_ZEOPP_PATH` at that binary
+- `LAMMPS`: install from `conda-forge`, then point `COFKIT_LMP_PATH` at `lmp` or `lmp_mpi`
+- `EQeq`: use `https://github.com/csllpr/EQeq`, build the `eqeq` executable, then point `COFKIT_EQEQ_PATH` at it
+- `gRASPA`: prefer `https://github.com/csllpr/gRASPA`, with `https://github.com/snurr-group/gRASPA` as the fallback upstream; build `nvc_main.x` and point `COFKIT_GRASPA_PATH` at that binary
+
+Concrete shell commands for those installs are documented in [README.md](README.md) under `Supported External Tool Installs`.
 
 Typical invocation style:
 
@@ -319,7 +332,7 @@ With `--template-id imine_bridge`, this produces the same structures as the imin
 
 The generic batch path now uses the default `8`-worker process pool for pair generation unless you override `--max-workers` or the Python config.
 
-If you use a different registered binary-bridge template, make sure the input directory contains the expected role-specific libraries for that template. Atomistic reaction realization is currently implemented for `imine_bridge`, `hydrazone_bridge`, `keto_enamine_bridge`, `boronate_ester_bridge`, and `vinylene_bridge`.
+If you use a different registered binary-bridge template, make sure the input directory contains the expected role-specific libraries for that template. Atomistic reaction realization is currently implemented for `imine_bridge`, `hydrazone_bridge`, `azine_bridge`, `keto_enamine_bridge`, `boronate_ester_bridge`, and `vinylene_bridge`.
 
 ### Auto-detected libraries
 
@@ -338,6 +351,7 @@ This is useful when the filenames do not already encode role information. The au
 
 - `amine`
 - `aldehyde`
+- `hydrazine`
 - `hydrazide`
 - `boronic_acid`
 - `catechol`
@@ -364,7 +378,7 @@ python3 examples/build_default_monomers_library.py
 
 ### CLI usage
 
-The installable CLI is grouped under `cofkit build` and `cofkit analyze`. Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` still work for now, but they emit deprecation warnings.
+The installable CLI is grouped under `cofkit build`, `cofkit analyze`, and `cofkit calculate`. Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` still work for now, but they emit deprecation warnings.
 
 ```bash
 cofkit build batch-binary-bridge \
@@ -657,6 +671,82 @@ The output directory stores:
 - one updated `*_lammps_optimized.cif`
 
 Current scope note: this is a topology-preserving local cleanup step for generated explicit-bond COF CIFs. The current UFF-backed export is now explicit-bond-order-driven and includes torsion and improper terms, but it still omits charges, so even with staged minimization and optional box relaxation it should be treated as a pre-optimization candidate generator rather than a final optimized structure.
+
+## Workflow 8: EQeq + gRASPA Widom Insertion
+
+The second `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA` Widom insertion workflow for one CIF.
+
+### Environment setup
+
+Point `cofkit` at the EQeq and gRASPA executables through environment variables:
+
+```bash
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+```
+
+The gRASPA executable is commonly named `nvc_main.x`. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
+
+### CLI usage
+
+```bash
+cofkit calculate graspa-widom \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_graspa \
+  --json
+```
+
+The wrapper runs these stages:
+
+- copy the input CIF into `eqeq/` and run EQeq directly on that CIF
+- take the charged EQeq CIF output and copy it to `widom/framework.cif`
+- copy the packaged gRASPA `.def` files into `widom/`
+- render `widom/simulation.input`
+- derive `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
+- run gRASPA inside `widom/`
+- parse `widom/Output/*.data` into structured component results
+
+No Open Babel conversion is part of this workflow. The current public wrapper assumes EQeq accepts ordinary CIF inputs directly.
+
+### Exposed CLI controls
+
+The public `graspa-widom` command exposes the main staging and runtime controls directly:
+
+- `--eqeq-path` and `--graspa-path` override `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`
+- `--eqeq-lambda`, `--eqeq-h-i0`, `--eqeq-charge-precision`, `--eqeq-method`, `--eqeq-real-space-cells`, `--eqeq-reciprocal-space-cells`, and `--eqeq-eta` control the EQeq stage
+- `--temperature`, `--pressure`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated gRASPA `simulation.input`
+- `--eqeq-timeout-seconds` and `--graspa-timeout-seconds` cap the subprocess wall-clock runtime
+
+### Current bundled Widom screen
+
+The packaged template currently runs one multi-component Widom screen containing:
+
+- `TIP4P`
+- `CO2`
+- `H2`
+- `N2`
+- `SO2`
+
+The input framework is always materialized as `widom/framework.cif`, and the current `simulation.input` uses CIF-backed framework input plus charges read from that charged CIF.
+
+### Output structure
+
+The output directory stores:
+
+- `eqeq/` with the copied input CIF, EQeq stdout/stderr logs, the charged CIF, and the optional EQeq JSON output if the executable writes it
+- `widom/framework.cif`
+- `widom/simulation.input`
+- the packaged Widom `.def` files copied into `widom/`
+- `widom/graspa.stdout.log` and `widom/graspa.stderr.log`
+- one or more `widom/Output/*.data` files from gRASPA
+- `widom/Output/results.csv`
+- `graspa_widom_report.json`
+
+`results.csv` records the parsed Widom energy and Henry coefficient summaries for each component. `graspa_widom_report.json` also records the resolved executable paths, the computed `UnitCells`, the effective EQeq and Widom settings, and any warnings collected during parsing.
+
+### Current scope note
+
+This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one bundled component set, and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact.
 
 ### Quantitative rules
 

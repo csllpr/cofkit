@@ -1,6 +1,6 @@
 # Current Scope
 
-The base package now installs `rdkit` and `gemmi` as mandatory runtime dependencies because the practical monomer-construction, CIF, and topology workflows depend on them. External binaries such as Zeo++ and LAMMPS remain optional add-ons.
+The base package now installs `rdkit` and `gemmi` as mandatory runtime dependencies because the practical monomer-construction, CIF, and topology workflows depend on them. External binaries such as Zeo++, LAMMPS, EQeq, and gRASPA remain optional add-ons.
 
 ## Implemented so far
 
@@ -31,6 +31,7 @@ The base package now installs `rdkit` and `gemmi` as mandatory runtime dependenc
 - coarse post-generation validation with `valid` / `warning` / `hard_invalid` / `hard_hard_invalid` triage, categorized CIF output trees, and export blocking for obviously broken structures
 - an initial `cofkit analyze zeopp` wrapper for Zeo++ pore analysis from CIF input, including a point-probe baseline from `-res` / `-resex` / `-chan 0` / `-sa 0 0` / `-vol 0 0` plus optional repeated probe-radius scans with accessibility summaries, with binary discovery through `COFKIT_ZEOPP_PATH`
 - an initial `cofkit calculate lammps-optimize` wrapper for LAMMPS optimization of explicit-bond `P1` CIFs, including env-based binary discovery through `COFKIT_LMP_PATH`, nearest-image bond-length inference when CIF bond rows omit periodic image hints, required explicit bond-type reuse from CIF `_ccdc_geom_bond_type`, library-backed LAMMPS data-file generation, optional short restrained preruns before minimization, staged minimization support, optional final `fix box/relax`, and updated CIF export
+- an initial `cofkit calculate graspa-widom` wrapper for staged `EQeq -> gRASPA` Widom insertion on one CIF, including env-based executable discovery through `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`, packaged Widom-template asset materialization, automatic `UnitCells` sizing from CIF cell lengths plus cutoff settings, parsed `results.csv` generation, and `graspa_widom_report.json` output
 - a working UFF-backed LAMMPS parameterization path using Open Babel UFF atom typing, installed `UFF.prm` parameters, and `pymatgen` LAMMPS-data generation for bond, angle, dihedral, improper, and van der Waals terms; this is the default and currently only implemented public LAMMPS force field, and local `spring/self` restraints now contribute to the minimized objective through `fix_modify energy yes`
 - process-level batch pair generation with an `8`-worker default budget for the practical CLI workflows
 - an installable `cofkit` CLI, organized under grouped `build` / `analyze` namespaces for direct `single-pair` generation plus unified batch, classification, and library-building entry points
@@ -47,6 +48,7 @@ The base package now installs `rdkit` and `gemmi` as mandatory runtime dependenc
 - a supported public benzothiazole conversion workflow; the current sulfur-enabled imine conversion prototype remains internal-only until its local geometry is more reliable
 - Zeo++ PSD histograms, grid outputs, ray analyses, ZeoVis exports, and broader hidden or specialized workflows beyond the current pore-summary wrapper
 - fuller LAMMPS force-field coverage beyond the current UFF-backed uncharged path, especially charge models and broader force-field families
+- broader gRASPA workflow coverage beyond the current bundled Widom-template family, bundled component set, and Henry-coefficient / Widom-energy result parser
 - non-`P1` bonded CIF optimization beyond the current conservative local cleanup wrapper
 - chemically faithful atomistic CIF generation for arbitrary monomers without fallback/pseudo-sites
 - semiempirical or quantum-chemistry cleanup beyond the current external-tool wrappers

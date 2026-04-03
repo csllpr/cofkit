@@ -39,6 +39,7 @@ packages = ["src/cofkit"]
 
 [tool.hatch.build]
 include = [
+  "src/cofkit/data/graspa/**/*.def",
   "src/cofkit/data/topologies/**/*.cgd",
   "src/cofkit/data/topologies/*.json",
 ]

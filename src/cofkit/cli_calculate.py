@@ -3,6 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 
+from .graspa import (
+    EqeqChargeSettings,
+    EqeqExecutionError,
+    GraspaConfigurationError,
+    GraspaError,
+    GraspaExecutionError,
+    GraspaParseError,
+    GraspaWidomSettings,
+    run_graspa_widom_workflow,
+)
 from .lammps import (
     LammpsConfigurationError,
     LammpsError,
@@ -24,6 +34,7 @@ def add_calculate_group(subparsers) -> None:
 
     calculate_subparsers = parser.add_subparsers(dest="calculate_command")
     _add_lammps_optimize_parser(calculate_subparsers)
+    _add_graspa_widom_parser(calculate_subparsers)
 
 
 def _set_help_default(parser: argparse.ArgumentParser) -> None:
@@ -367,5 +378,214 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
     print("n_bond_types:", result.n_bond_types)
     print("n_angle_types:", result.n_angle_types)
     print("forcefield_backend:", result.forcefield_backend)
+    print("warnings:", list(result.warnings))
+    print("report_path:", result.report_path)
+
+
+def _add_graspa_widom_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "graspa-widom",
+        help="Run an EQeq-to-gRASPA Widom insertion workflow for one CIF file.",
+        description=(
+            "Assign framework charges with EQeq, prepare a gRASPA Widom insertion "
+            "run directory, execute gRASPA, and parse Henry coefficients plus "
+            "Widom excess chemical potentials into a JSON report."
+        ),
+    )
+    parser.add_argument("cif_path", help="Input CIF file to charge and screen with gRASPA Widom insertion.")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for EQeq artifacts, the prepared gRASPA run tree, parsed results, and the JSON report.",
+    )
+    parser.add_argument(
+        "--eqeq-path",
+        default=None,
+        help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
+    )
+    parser.add_argument(
+        "--graspa-path",
+        default=None,
+        help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
+    )
+    parser.add_argument(
+        "--eqeq-lambda",
+        type=float,
+        default=1.2,
+        help="EQeq dielectric screening parameter. Default: 1.2.",
+    )
+    parser.add_argument(
+        "--eqeq-h-i0",
+        type=float,
+        default=-2.0,
+        help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
+    )
+    parser.add_argument(
+        "--eqeq-charge-precision",
+        type=int,
+        default=3,
+        help="Number of digits for EQeq point charges. Default: 3.",
+    )
+    parser.add_argument(
+        "--eqeq-method",
+        choices=("ewald", "nonperiodic"),
+        default="ewald",
+        help="EQeq Coulomb treatment. Default: ewald.",
+    )
+    parser.add_argument(
+        "--eqeq-real-space-cells",
+        type=int,
+        default=2,
+        help="EQeq real-space expansion count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-reciprocal-space-cells",
+        type=int,
+        default=2,
+        help="EQeq reciprocal-space expansion count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-eta",
+        type=float,
+        default=50.0,
+        help="EQeq Ewald splitting parameter. Default: 50.0.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=300.0,
+        help="gRASPA Widom temperature in K. Default: 300.0.",
+    )
+    parser.add_argument(
+        "--pressure",
+        type=float,
+        default=100000.0,
+        help="gRASPA Widom pressure in Pa. Default: 100000.0.",
+    )
+    parser.add_argument(
+        "--initialization-cycles",
+        type=int,
+        default=0,
+        help="gRASPA NumberOfInitializationCycles. Default: 0.",
+    )
+    parser.add_argument(
+        "--equilibration-cycles",
+        type=int,
+        default=0,
+        help="gRASPA NumberOfEquilibrationCycles. Default: 0.",
+    )
+    parser.add_argument(
+        "--production-cycles",
+        type=int,
+        default=10000000,
+        help="gRASPA NumberOfProductionCycles. Default: 10000000.",
+    )
+    parser.add_argument(
+        "--trial-positions",
+        type=int,
+        default=10,
+        help="gRASPA NumberOfTrialPositions. Default: 10.",
+    )
+    parser.add_argument(
+        "--trial-orientations",
+        type=int,
+        default=10,
+        help="gRASPA NumberOfTrialOrientations. Default: 10.",
+    )
+    parser.add_argument(
+        "--cutoff-vdw",
+        type=float,
+        default=12.8,
+        help="gRASPA CutOffVDW in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--cutoff-coulomb",
+        type=float,
+        default=12.8,
+        help="gRASPA CutOffCoulomb in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--ewald-precision",
+        type=float,
+        default=1.0e-6,
+        help="gRASPA EwaldPrecision. Default: 1e-6.",
+    )
+    parser.add_argument(
+        "--eqeq-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Optional timeout for the EQeq subprocess. Default: 300.",
+    )
+    parser.add_argument(
+        "--graspa-timeout-seconds",
+        type=float,
+        default=None,
+        help="Optional timeout for the gRASPA subprocess. Default: no timeout.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full Widom workflow report as JSON instead of a short human-readable summary.",
+    )
+    parser.set_defaults(func=_run_graspa_widom)
+
+
+def _run_graspa_widom(args: argparse.Namespace) -> None:
+    eqeq_settings = EqeqChargeSettings(
+        lambda_value=args.eqeq_lambda,
+        hydrogen_electron_affinity=args.eqeq_h_i0,
+        charge_precision=args.eqeq_charge_precision,
+        method=args.eqeq_method,
+        real_space_cells=args.eqeq_real_space_cells,
+        reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
+        eta=args.eqeq_eta,
+    )
+    widom_settings = GraspaWidomSettings(
+        temperature=args.temperature,
+        pressure=args.pressure,
+        initialization_cycles=args.initialization_cycles,
+        equilibration_cycles=args.equilibration_cycles,
+        production_cycles=args.production_cycles,
+        number_of_trial_positions=args.trial_positions,
+        number_of_trial_orientations=args.trial_orientations,
+        cutoff_vdw=args.cutoff_vdw,
+        cutoff_coulomb=args.cutoff_coulomb,
+        ewald_precision=args.ewald_precision,
+    )
+    try:
+        result = run_graspa_widom_workflow(
+            args.cif_path,
+            output_dir=args.output_dir,
+            eqeq_path=args.eqeq_path,
+            graspa_path=args.graspa_path,
+            eqeq_settings=eqeq_settings,
+            widom_settings=widom_settings,
+            eqeq_timeout_seconds=args.eqeq_timeout_seconds,
+            graspa_timeout_seconds=args.graspa_timeout_seconds,
+        )
+    except (
+        FileNotFoundError,
+        ValueError,
+        EqeqExecutionError,
+        GraspaConfigurationError,
+        GraspaExecutionError,
+        GraspaParseError,
+        GraspaError,
+    ) as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+        return
+
+    print("input_cif:", result.input_cif)
+    print("eqeq_binary:", result.eqeq_binary)
+    print("graspa_binary:", result.graspa_binary)
+    print("output_dir:", result.output_dir)
+    print("eqeq_charged_cif:", result.eqeq_charged_cif)
+    print("widom_framework_cif:", result.widom_framework_cif)
+    print("unit_cells:", list(result.unit_cells))
+    print("components:", [row.component for row in result.component_results])
+    print("results_csv_path:", result.results_csv_path)
     print("warnings:", list(result.warnings))
     print("report_path:", result.report_path)

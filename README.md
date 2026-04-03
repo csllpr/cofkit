@@ -35,10 +35,88 @@ Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
 - `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
+- `EQeq` for the initial `cofkit calculate graspa-widom` charge-assignment stage, with the executable path provided through `COFKIT_EQEQ_PATH`
+- `gRASPA` for the initial `cofkit calculate graspa-widom` Widom-insertion stage, with the executable path provided through `COFKIT_GRASPA_PATH`
 - `Open Babel`, `pymatgen`, and the installed Open Babel `UFF.prm` parameter file for the currently implemented UFF-backed LAMMPS force-field path
 - `pytest` to run the test suite
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
+
+### Supported External Tool Installs
+
+For reproducible wrapper behavior, prefer these exact upstreams and binary names.
+
+#### Zeo++
+
+Use Zeo++ `0.3` from the upstream tarball:
+
+- download: `http://www.zeoplusplus.org/zeo++-0.3.tar.gz`
+- expected binary: `network`
+
+Typical build:
+
+```bash
+curl -LO http://www.zeoplusplus.org/zeo++-0.3.tar.gz
+gunzip zeo++-0.3.tar.gz
+tar xvf zeo++-0.3.tar
+cd zeo++-0.3/voro++/src
+make
+cd ../..
+make
+export COFKIT_ZEOPP_PATH="$PWD/network"
+```
+
+#### LAMMPS
+
+Install LAMMPS from `conda-forge`:
+
+```bash
+conda create -n cofkit-lammps -c conda-forge lammps
+conda activate cofkit-lammps
+export COFKIT_LMP_PATH="$(command -v lmp || command -v lmp_mpi)"
+```
+
+`cofkit` accepts either `lmp` or `lmp_mpi` as long as `COFKIT_LMP_PATH` points to a working executable.
+
+#### EQeq
+
+Use the CIF-capable fork:
+
+- source: `https://github.com/csllpr/EQeq`
+- expected binary: `eqeq`
+
+Typical build:
+
+```bash
+git clone https://github.com/csllpr/EQeq.git
+cd EQeq
+g++ main.cpp -O3 -o eqeq
+export COFKIT_EQEQ_PATH="$PWD/eqeq"
+```
+
+That fork reads `data/ionizationdata.dat` and `data/chargecenters.dat` relative to the executable by default, so extra path arguments are usually unnecessary. `EQEQ_IONIZATION_DATA_PATH` and `EQEQ_CHARGE_CENTERS_PATH` remain available if you need to override them.
+
+#### gRASPA
+
+Use one of these repositories:
+
+- preferred: `https://github.com/csllpr/gRASPA`
+- fallback upstream: `https://github.com/snurr-group/gRASPA`
+- expected binary: `nvc_main.x`
+
+The preferred fork is the one we use for higher-throughput GPU scheduling because it carries local performance tweaks. gRASPA is source-first, so the exact build depends on your NVIDIA HPC SDK / CUDA installation. The checked-in `NVC_COMPILE` script in both repositories is the reference starting point and produces `nvc_main.x`.
+
+Typical flow:
+
+```bash
+git clone https://github.com/csllpr/gRASPA.git
+cd gRASPA
+# Edit NVC_COMPILE if your NVIDIA HPC SDK / CUDA paths differ.
+bash NVC_COMPILE
+export COFKIT_GRASPA_PATH="$PWD/nvc_main.x"
+```
+
+If your local build places the binary somewhere else, such as `src_clean/nvc_main.x`, point `COFKIT_GRASPA_PATH` there instead.
 
 ## CLI
 
@@ -62,6 +140,7 @@ The most useful grouped commands are:
 - `cofkit analyze classify-output`
 - `cofkit analyze zeopp`
 - `cofkit calculate lammps-optimize`
+- `cofkit calculate graspa-widom`
 - `cofkit build default-library`
 
 Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
@@ -227,6 +306,37 @@ This first LAMMPS wrapper is still conservative, but it no longer invents generi
 
 This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current UFF path is now explicit-bond-order-driven and includes torsions and impropers, but it is still uncharged and should be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
 
+### Run EQeq + gRASPA Widom insertion on one CIF
+
+```bash
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+
+cofkit calculate graspa-widom \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_graspa \
+  --json
+```
+
+The `graspa-widom` wrapper runs one staged workflow:
+
+- copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
+- copy the charged framework into `widom/framework.cif`
+- materialize the packaged gRASPA Widom template files in `widom/`
+- compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
+- run gRASPA and parse the Widom summary values from `widom/Output/*.data`
+
+The current bundled Widom screen probes five rigid components in one run: `TIP4P`, `CO2`, `H2`, `N2`, and `SO2`.
+
+The wrapper writes:
+
+- `eqeq/` logs plus the charged CIF emitted by EQeq
+- `widom/simulation.input`, `widom/framework.cif`, and the packaged `.def` files
+- `widom/Output/results.csv` with the parsed Widom energy and Henry coefficient summaries
+- `graspa_widom_report.json` with paths, settings, parsed component results, and warnings
+
+`COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH` can both be overridden per run with `--eqeq-path` and `--graspa-path`. On many installations the gRASPA executable is named `nvc_main.x`. If gRASPA emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run.
+
 ### Rebuild the detector-scanned example library
 
 ```bash
@@ -240,6 +350,7 @@ If you are using Codex inside this repository, load [skills/cofkit-navigator/SKI
 - single-pair generation from two SMILES strings
 - library-scale binary-bridge screening
 - classification of finished output trees
+- EQeq + gRASPA Widom insertion on an exported CIF
 - rebuilding the detector-scanned default monomer library
 - choosing between the CLI, `BatchStructureGenerator`, and `COFEngine`
 
@@ -248,6 +359,7 @@ Typical prompts:
 - "Build a single-pair imine COF from these two SMILES."
 - "Run all supported binary-bridge batches over this library directory."
 - "Classify this finished output tree into validation buckets."
+- "Run the gRASPA Widom wrapper on this optimized CIF."
 - "Should I use the CLI, `BatchStructureGenerator`, or `COFEngine` for this task?"
 
 The skill prefers the installed `cofkit` CLI. If the package is not installed in editable mode, it falls back to an equivalent `PYTHONPATH=src ...` launcher.

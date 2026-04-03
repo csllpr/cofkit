@@ -1,0 +1,30 @@
+# general rule for shifted vs truncated
+truncated
+# general rule tailcorrections
+no
+# number of defined interactions
+20
+# type,        interaction,  epsilon [K],  sigma [A] IMPORTANT: define shortest matches first, so that more specific ones overwrites these
+H             lennard-jones   7.648938   2.84642      // DREIDING  S.L. Mayo et al., J. Phys. Chem. 1990, 94, 8897-8909.
+B             lennard-jones    47.8058   3.58141      // DREIDING
+C             lennard-jones    47.8562   3.47299      // DREIDING
+N             lennard-jones    38.9492   3.26256      // DREIDING
+O             lennard-jones    48.1581   3.03315      // DREIDING
+F             lennard-jones    36.4834   3.09320      // DREIDING
+P             lennard-jones   161.0303   3.69723      // DREIDING
+S             lennard-jones   173.1075   3.59032      // DREIDING
+Cl            lennard-jones   142.5621   3.51932      // DREIDING
+Ow_T4          lennard-jones    77.99902   3.1536      // Jorgensen, et al. J. Chem. Phys, (1983).
+Hw_T4          lennard-jones    0.0 0.0                                    // idem
+M_T4          lennard-jones    0.0 0.0                                    // idem
+O_co2          lennard-jones    79.0000   3.05000      // J. Potoff, and J.I. Siepmann, AIChE J. 47, 1676-1682 (2001).
+C_co2          lennard-jones    27.0000   2.80000      // idem
+N_n2           lennard-jones    38.2980   3.30600      // A. Martin-Calvo et al. , Phys. Chem. Chem. Phys. 2011, 13, 11165-11174.
+N_com          lennard-jones    0.0 0.0                                   // idem
+H_h2           lennard-jones    0.0 0.0                                    // Paula Garc a-Holley et al., ACS Energy Lett. 2018, 3, 3, 748-754
+H2_com          feynman-hibbs-lennard-jones    36.7000   2.95800    1.008  //
+S_so2          lennard-jones    73.8       3.39        // J. Phys. Chem. B 2011, 115, 17, 4949-4954
+O_so2          lennard-jones    79.0       3.05        // J. Phys. Chem. B 2011, 115, 17, 4949-4954
+
+# general mixing rule for Lennard-Jones
+Lorentz-Berthelot
