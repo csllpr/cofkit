@@ -77,6 +77,8 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertFalse((Path(result.eqeq_run_dir) / "data_C.cif").exists())
 
             simulation_input = Path(result.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("UseGPUReduction yes", simulation_input)
+            self.assertIn("UseFastHostRNG yes", simulation_input)
             self.assertIn("FrameworkName framework", simulation_input)
             self.assertIn("UnitCells 0 1 2 3", simulation_input)
             self.assertIn("Component 4 MoleculeName              SO2", simulation_input)
@@ -96,6 +98,8 @@ class GraspaWidomTests(unittest.TestCase):
 
             report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
             self.assertEqual(report["unit_cells"], [1, 2, 3])
+            self.assertTrue(report["widom_settings"]["use_gpu_reduction"])
+            self.assertTrue(report["widom_settings"]["use_fast_host_rng"])
             self.assertEqual(report["component_results"][1]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["henry"], 2e-05)
 

@@ -77,7 +77,8 @@ class EqeqChargeSettings:
 @dataclass(frozen=True)
 class GraspaWidomSettings:
     components: tuple[str, ...] = _DEFAULT_WIDOM_COMPONENTS
-    use_gpu_reduction: bool = False
+    use_gpu_reduction: bool = True
+    use_fast_host_rng: bool = True
     use_flag: bool = True
     initialization_cycles: int = 0
     equilibration_cycles: int = 0
@@ -110,6 +111,7 @@ class GraspaWidomSettings:
         return {
             "components": list(self.components),
             "use_gpu_reduction": self.use_gpu_reduction,
+            "use_fast_host_rng": self.use_fast_host_rng,
             "use_flag": self.use_flag,
             "initialization_cycles": self.initialization_cycles,
             "equilibration_cycles": self.equilibration_cycles,
@@ -595,6 +597,7 @@ def _render_widom_simulation_input(
 ) -> str:
     lines = [
         f"UseGPUReduction {_bool_token(settings.use_gpu_reduction)}",
+        f"UseFastHostRNG {_bool_token(settings.use_fast_host_rng)}",
         f"Useflag {_bool_token(settings.use_flag)}",
         "",
         f"NumberOfInitializationCycles {settings.initialization_cycles}",
