@@ -17,7 +17,7 @@ COFKIT_GRASPA_ENV_VAR = "COFKIT_GRASPA_PATH"
 DEFAULT_EQEQ_BINARY: Path | None = None
 DEFAULT_GRASPA_BINARY: Path | None = None
 _SUPPORTED_EQEQ_METHODS = {"ewald", "nonperiodic"}
-_DEFAULT_WIDOM_COMPONENTS = ("TIP4P", "CO2", "H2", "N2", "SO2")
+_DEFAULT_WIDOM_COMPONENTS = ("TIP4P", "CO2", "H2", "N2", "SO2", "Xe", "Kr")
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 _FLOAT_TOKEN_PATTERN = r"(?:[-+]?(?:nan|inf)|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
 _WIDOM_RESULT_RE = re.compile(
@@ -82,7 +82,7 @@ class GraspaWidomSettings:
     use_flag: bool = True
     initialization_cycles: int = 0
     equilibration_cycles: int = 0
-    production_cycles: int = 10_000_000
+    production_cycles: int = 2_000_000
     use_max_step: bool = True
     max_step_per_cycle: int = 1
     use_charges_from_cif_file: bool = True

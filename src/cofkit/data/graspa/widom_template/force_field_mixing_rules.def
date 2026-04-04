@@ -3,7 +3,7 @@ truncated
 # general rule tailcorrections
 no
 # number of defined interactions
-20
+22
 # type,        interaction,  epsilon [K],  sigma [A] IMPORTANT: define shortest matches first, so that more specific ones overwrites these
 H             lennard-jones   7.648938   2.84642      // DREIDING  S.L. Mayo et al., J. Phys. Chem. 1990, 94, 8897-8909.
 B             lennard-jones    47.8058   3.58141      // DREIDING
@@ -25,6 +25,8 @@ H_h2           lennard-jones    0.0 0.0                                    // Pa
 H2_com          feynman-hibbs-lennard-jones    36.7000   2.95800    1.008  //
 S_so2          lennard-jones    73.8       3.39        // J. Phys. Chem. B 2011, 115, 17, 4949-4954
 O_so2          lennard-jones    79.0       3.05        // J. Phys. Chem. B 2011, 115, 17, 4949-4954
+Xe             lennard-jones   221.0000   4.10000      // Adapted from the local gRASPA XeKr-Mixture example.
+Kr             lennard-jones   166.4000   3.63600      // Adapted from the local gRASPA XeKr-Mixture example.
 
 # general mixing rule for Lennard-Jones
 Lorentz-Berthelot

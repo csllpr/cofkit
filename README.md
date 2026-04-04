@@ -326,7 +326,7 @@ The `graspa-widom` wrapper runs one staged workflow:
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run gRASPA and parse the Widom summary values from `widom/Output/*.data`
 
-The current bundled Widom screen probes five rigid components in one run: `TIP4P`, `CO2`, `H2`, `N2`, and `SO2`.
+The current bundled Widom screen probes seven rigid components in one run: `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`.
 
 The wrapper writes:
 

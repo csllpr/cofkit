@@ -70,18 +70,23 @@ class GraspaWidomTests(unittest.TestCase):
                 )
 
             self.assertEqual(result.unit_cells, (1, 2, 3))
-            self.assertEqual(len(result.component_results), 5)
+            self.assertEqual(len(result.component_results), 7)
             self.assertTrue(Path(result.eqeq_charged_cif).is_file())
             self.assertTrue(Path(result.results_csv_path).is_file())
             self.assertTrue(Path(result.report_path).is_file())
             self.assertFalse((Path(result.eqeq_run_dir) / "data_C.cif").exists())
+            self.assertTrue((Path(result.widom_run_dir) / "Xe.def").is_file())
+            self.assertTrue((Path(result.widom_run_dir) / "Kr.def").is_file())
 
             simulation_input = Path(result.simulation_input_path).read_text(encoding="utf-8")
             self.assertIn("UseGPUReduction yes", simulation_input)
             self.assertIn("UseFastHostRNG yes", simulation_input)
             self.assertIn("FrameworkName framework", simulation_input)
             self.assertIn("UnitCells 0 1 2 3", simulation_input)
+            self.assertIn("NumberOfProductionCycles     2000000", simulation_input)
             self.assertIn("Component 4 MoleculeName              SO2", simulation_input)
+            self.assertIn("Component 5 MoleculeName              Xe", simulation_input)
+            self.assertIn("Component 6 MoleculeName              Kr", simulation_input)
 
             eqeq_audit = json.loads((Path(result.eqeq_run_dir) / "eqeq_invocation.json").read_text(encoding="utf-8"))
             self.assertEqual(eqeq_audit["argv"][0], "example_framework.cif")
@@ -90,18 +95,25 @@ class GraspaWidomTests(unittest.TestCase):
             graspa_audit = json.loads((Path(result.widom_run_dir) / "graspa_invocation.json").read_text(encoding="utf-8"))
             self.assertEqual(graspa_audit["framework_name"], "framework")
             self.assertEqual(graspa_audit["unit_cells"], [1, 2, 3])
-            self.assertEqual(graspa_audit["components"], ["TIP4P", "CO2", "H2", "N2", "SO2"])
+            self.assertEqual(graspa_audit["components"], ["TIP4P", "CO2", "H2", "N2", "SO2", "Xe", "Kr"])
 
             csv_text = Path(result.results_csv_path).read_text(encoding="utf-8")
             self.assertIn("component,widom_energy,widom_energy_errorbar,henry,henry_errorbar", csv_text)
             self.assertIn("CO2", csv_text)
+            self.assertIn("Xe", csv_text)
+            self.assertIn("Kr", csv_text)
 
             report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
             self.assertEqual(report["unit_cells"], [1, 2, 3])
             self.assertTrue(report["widom_settings"]["use_gpu_reduction"])
             self.assertTrue(report["widom_settings"]["use_fast_host_rng"])
+            self.assertEqual(report["widom_settings"]["production_cycles"], 2000000)
             self.assertEqual(report["component_results"][1]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["henry"], 2e-05)
+            self.assertEqual(report["component_results"][5]["component"], "Xe")
+            self.assertEqual(report["component_results"][5]["henry"], 6e-05)
+            self.assertEqual(report["component_results"][6]["component"], "Kr")
+            self.assertEqual(report["component_results"][6]["henry"], 7e-05)
 
     def test_calculate_graspa_widom_cli_prints_json_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -145,7 +157,7 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["output_dir"], str(output_dir.resolve()))
             self.assertEqual(report["unit_cells"], [1, 2, 3])
             self.assertEqual(report["widom_settings"]["production_cycles"], 5000)
-            self.assertEqual(len(report["component_results"]), 5)
+            self.assertEqual(len(report["component_results"]), 7)
             self.assertEqual(report["component_results"][0]["component"], "TIP4P")
 
     def test_calculate_help_lists_graspa_widom(self):
@@ -157,7 +169,7 @@ class GraspaWidomTests(unittest.TestCase):
 
     def _write_fake_eqeq_binary(self, path: Path) -> Path:
         path.write_text(
-            "#!/usr/bin/env python\n"
+            f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
             "import json\n"
             "import sys\n"
@@ -191,7 +203,7 @@ class GraspaWidomTests(unittest.TestCase):
 
     def _write_fake_graspa_binary(self, path: Path) -> Path:
         path.write_text(
-            "#!/usr/bin/env python\n"
+            f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
             "import json\n"
             "import re\n"

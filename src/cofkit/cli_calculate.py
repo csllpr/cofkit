@@ -477,8 +477,8 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--production-cycles",
         type=int,
-        default=10000000,
-        help="gRASPA NumberOfProductionCycles. Default: 10000000.",
+        default=2000000,
+        help="gRASPA NumberOfProductionCycles. Default: 2000000.",
     )
     parser.add_argument(
         "--trial-positions",
