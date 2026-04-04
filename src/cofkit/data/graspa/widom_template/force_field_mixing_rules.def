@@ -3,7 +3,7 @@ truncated
 # general rule tailcorrections
 no
 # number of defined interactions
-22
+23
 # type,        interaction,  epsilon [K],  sigma [A] IMPORTANT: define shortest matches first, so that more specific ones overwrites these
 H             lennard-jones   7.648938   2.84642      // DREIDING  S.L. Mayo et al., J. Phys. Chem. 1990, 94, 8897-8909.
 B             lennard-jones    47.8058   3.58141      // DREIDING
@@ -14,6 +14,7 @@ F             lennard-jones    36.4834   3.09320      // DREIDING
 P             lennard-jones   161.0303   3.69723      // DREIDING
 S             lennard-jones   173.1075   3.59032      // DREIDING
 Cl            lennard-jones   142.5621   3.51932      // DREIDING
+Br            lennard-jones   126.2900   3.73000      // Adapted from local gRASPA BlockPocket / Simplify_Force_Field_Files examples.
 Ow_T4          lennard-jones    77.99902   3.1536      // Jorgensen, et al. J. Chem. Phys, (1983).
 Hw_T4          lennard-jones    0.0 0.0                                    // idem
 M_T4          lennard-jones    0.0 0.0                                    // idem
