@@ -78,11 +78,15 @@ class LammpsTests(unittest.TestCase):
 
             with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
                 result = optimize_cif_with_lammps(cif_path, output_dir=temp_path / "default_uff_out")
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
 
         self.assertEqual(result.settings.forcefield, "uff")
         self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
+        self.assertEqual(result.settings.pre_minimization_steps, 10000)
         self.assertEqual(result.settings.max_iterations, 200000)
         self.assertEqual(result.settings.max_evaluations, 2000000)
+        self.assertIn("# pre_minimization", script_text)
+        self.assertIn("run 10000", script_text)
 
     def test_lammps_script_includes_fix_modify_for_restraint_energy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -319,7 +323,39 @@ class LammpsTests(unittest.TestCase):
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
             self.assertIn("a1 a2 . 1_655 1.030776 S", optimized_text)
 
-    def test_lammps_uses_replicated_cluster_fallback_for_conflicted_primitive_bond_graph(self):
+    def test_output_cif_recomputes_explicit_periodic_bond_symmetry_from_final_geometry(self):
+        cif_path = Path(__file__).resolve().parent / "fixtures" / "tabf3__tctb__hcb_periodic_conflict.cif"
+        parsed = lammps_module._parse_explicit_bond_cif(cif_path)
+        final_positions = {atom.atom_id: atom.fractional_position for atom in parsed.atoms}
+        atom_id_by_label = {atom.label: atom.atom_id for atom in parsed.atoms}
+        final_positions[atom_id_by_label["m2_C14"]] = (0.520042, 0.014438, 0.415150)
+        final_positions[atom_id_by_label["m1_N6"]] = (0.408258, 0.104422, 0.485174)
+
+        rendered = lammps_module._render_optimized_cif(parsed, final_positions)
+        self.assertIn("m2_C14 m1_N6 . .", rendered)
+        self.assertNotIn("m2_C14 m1_N6 . 1_565", rendered)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rendered_path = Path(temp_dir) / "rendered.cif"
+            rendered_path.write_text(rendered, encoding="utf-8")
+            reparsed = lammps_module._parse_explicit_bond_cif(rendered_path)
+
+        for bond in reparsed.bonds:
+            if {bond.label_1, bond.label_2} != {"m2_C14", "m1_N6"}:
+                continue
+            distance = lammps_module._bond_distance(
+                reparsed.atoms[bond.atom_id_1 - 1].fractional_position,
+                reparsed.atoms[bond.atom_id_2 - 1].fractional_position,
+                bond.shift_1,
+                bond.shift_2,
+                reparsed.lammps_basis,
+            )
+            self.assertLess(distance, 2.0)
+            break
+        else:
+            self.fail("Rendered CIF did not preserve the m2_C14-m1_N6 bond.")
+
+    def test_lammps_keeps_periodic_primitive_model_for_conflicted_primitive_bond_graph(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
@@ -333,15 +369,55 @@ class LammpsTests(unittest.TestCase):
                     settings=LammpsOptimizationSettings(forcefield="uff"),
                 )
 
-            self.assertGreater(result.n_atoms, 4)
-            self.assertIn("replicated finite-cover cluster", " ".join(result.warnings))
+            self.assertEqual(result.n_atoms, 4)
+            self.assertNotIn("replicated finite-cover cluster", " ".join(result.warnings))
 
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
-            self.assertIn("boundary f f f", script_text)
+            self.assertIn("boundary p p p", script_text)
 
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
             self.assertIn("a1 C", optimized_text)
             self.assertIn("a4 C", optimized_text)
+
+    def test_conflicted_periodic_primitive_graph_preserves_requested_prerun(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "conflicted_ring.cif"
+            cif_path.write_text(self._conflicted_ring_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "conflicted_prerun_out",
+                    settings=LammpsOptimizationSettings(
+                        forcefield="uff",
+                        pre_minimization_steps=5,
+                        timestep=0.5,
+                    ),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("boundary p p p", script_text)
+            self.assertIn("# pre_minimization", script_text)
+            self.assertIn("run 5", script_text)
+            self.assertEqual(result.settings.pre_minimization_steps, 5)
+            self.assertNotIn("Skipped pre-minimization MD", " ".join(result.warnings))
+
+    def test_conflicted_periodic_fixture_stays_primitive_periodic_model(self):
+        cif_path = Path(__file__).resolve().parent / "fixtures" / "tabf3__tctb__hcb_periodic_conflict.cif"
+        parsed = lammps_module._parse_explicit_bond_cif(cif_path)
+        _atom_images, image_conflicts = lammps_module._compute_unwrapped_atom_images(parsed)
+        self.assertGreater(image_conflicts, 0)
+        model = lammps_module._build_optimization_model(
+            parsed,
+            settings=LammpsOptimizationSettings(forcefield="uff"),
+        )
+
+        self.assertEqual(model.boundary, "p p p")
+        self.assertIsNone(model.primitive_parsed)
+        self.assertEqual(model.parsed, parsed)
+        self.assertEqual(len(model.output_atom_id_by_model_atom_id), len(parsed.atoms))
 
     def test_lammps_rejects_legacy_cif_without_explicit_bond_type(self):
         with tempfile.TemporaryDirectory() as temp_dir:

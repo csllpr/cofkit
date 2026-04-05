@@ -89,10 +89,10 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--pre-minimization-steps",
         type=int,
-        default=0,
+        default=10000,
         help=(
-            "Optional restrained pre-minimization MD run length in timesteps. "
-            "Default: 0, which disables the prerun."
+            "Restrained pre-minimization MD run length in timesteps. "
+            "Default: 10000. Set to 0 to disable the prerun."
         ),
     )
     parser.add_argument(
