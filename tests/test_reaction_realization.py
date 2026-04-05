@@ -393,7 +393,7 @@ class ReactionRealizationTests(unittest.TestCase):
         left_c_world = self._world_position(candidate.state.monomer_poses["m2"], left_aldehyde_atoms[0].local_position)
         right_c_world = self._world_position(candidate.state.monomer_poses["m3"], right_aldehyde_atoms[0].local_position)
 
-        self.assertAlmostEqual(realizer._distance(left_n_world, right_n_world), 1.268, delta=0.06)
+        self.assertAlmostEqual(realizer._distance(left_n_world, right_n_world), 1.408, delta=0.06)
         self.assertAlmostEqual(realizer._distance(left_c_world, left_n_world), 1.3, delta=0.03)
         self.assertAlmostEqual(realizer._distance(right_c_world, right_n_world), 1.3, delta=0.03)
         left_h_world = self._world_position(candidate.state.monomer_poses["m2"], left_aldehyde_atoms[3].local_position)

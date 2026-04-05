@@ -99,30 +99,34 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         "--pre-minimization-temperature",
         type=float,
         default=300.0,
-        help="Target temperature in K for the optional prerun Langevin stage. Default: 300.0.",
+        help="Target temperature in K for the default prerun Langevin stage. Default: 300.0.",
     )
     parser.add_argument(
         "--pre-minimization-damping",
         type=float,
         default=100.0,
-        help="Langevin damping parameter in fs for the optional prerun stage. Default: 100.0.",
+        help="Langevin damping parameter in fs for the default prerun stage. Default: 100.0.",
     )
     parser.add_argument(
         "--pre-minimization-seed",
         type=int,
         default=246813,
-        help="Random seed for the optional prerun velocity/Langevin setup. Default: 246813.",
+        help="Random seed for the default prerun velocity/Langevin setup. Default: 246813.",
     )
     parser.add_argument(
         "--pre-minimization-displacement-limit",
         type=float,
         default=0.10,
-        help="Per-step displacement cap in angstrom for the optional prerun nve/limit stage. Default: 0.10.",
+        help="Per-step displacement cap in angstrom for the default prerun nve/limit stage. Default: 0.10.",
     )
     parser.add_argument(
         "--two-stage",
-        action="store_true",
-        help="Run a second minimization stage with a weaker or user-specified restraint.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable or disable a second minimization stage. Default: enabled. "
+            "When enabled and no explicit stage-2 restraint is provided, stage 2 is unrestrained."
+        ),
     )
     parser.add_argument(
         "--stage2-position-restraint-force-constant",
@@ -130,7 +134,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         default=None,
         help=(
             "Optional stage-2 spring/self restraint in kcal/mol/A^2. "
-            "Default when --two-stage is enabled: min(stage1*0.25, 0.05)."
+            "Default when stage 2 is enabled: 0.0."
         ),
     )
     parser.add_argument(
@@ -234,8 +238,12 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--relax-cell",
-        action="store_true",
-        help="Append a final box/relax minimization stage using a box-relax-compatible minimizer.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable or disable a final box/relax minimization stage using a box-relax-compatible minimizer. "
+            "Default: enabled."
+        ),
     )
     parser.add_argument(
         "--box-relax-mode",

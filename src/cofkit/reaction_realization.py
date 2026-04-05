@@ -60,6 +60,10 @@ ReactionEventRealizationHandler = Callable[
 ]
 
 
+# Azine bridges retain an N-N single bond in the exported C=N-N=C segment.
+AZINE_NN_TARGET_DISTANCE = 1.408
+
+
 class ReactionEventRealizationRegistry:
     def __init__(self, handlers: Mapping[str, ReactionEventRealizationHandler] | None = None) -> None:
         self._handlers: dict[str, ReactionEventRealizationHandler] = dict(handlers or {})
@@ -1520,7 +1524,7 @@ class ReactionRealizer:
             return ()
 
         target_cn_distance = bridge_target_distance("azine_bridge")
-        target_nn_distance = 1.268
+        target_nn_distance = AZINE_NN_TARGET_DISTANCE
         target_cnn_angle = 120.0
         target_anchor_cn_angle = 120.0
         applied_count = 0

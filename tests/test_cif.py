@@ -185,7 +185,7 @@ class CIFWriterTests(unittest.TestCase):
                 ),
             ),
             atom_symbols=("N", "N"),
-            atom_positions=((0.0, 0.0, 0.0), (1.268, 0.0, 0.0)),
+            atom_positions=((0.0, 0.0, 0.0), (1.408, 0.0, 0.0)),
             bonds=((0, 1, 1.0),),
         )
         candidate = Candidate(
@@ -209,7 +209,7 @@ class CIFWriterTests(unittest.TestCase):
                 ),
                 "m2": (
                     RealizedAtom(atom_id=0, label="m2_N1", symbol="N", local_position=(0.0, 0.0, 0.0)),
-                    RealizedAtom(atom_id=1, label="m2_N2", symbol="N", local_position=(1.268, 0.0, 0.0)),
+                    RealizedAtom(atom_id=1, label="m2_N2", symbol="N", local_position=(1.408, 0.0, 0.0)),
                 ),
             },
             bonds=(
@@ -231,8 +231,8 @@ class CIFWriterTests(unittest.TestCase):
 
         self.assertIn("m1_C1 C 0.810000 0.500000 0.500000 1.00", result.text)
         self.assertIn("m2_N1 N 0.940000 0.500000 0.500000 1.00", result.text)
-        self.assertIn("m2_N2 N 0.066800 0.500000 0.500000 1.00", result.text)
-        self.assertIn("m2_N1 m2_N2 . 1_655 1.268000 S", result.text)
+        self.assertIn("m2_N2 N 0.080800 0.500000 0.500000 1.00", result.text)
+        self.assertIn("m2_N1 m2_N2 . 1_655 1.408000 S", result.text)
         self.assertIn("m1_C1 m2_N1 . . 1.300000 D", result.text)
 
     def test_keto_enamine_export_shortens_tautomerized_carbonyl_bond_and_removes_phenolic_hydrogen(self):

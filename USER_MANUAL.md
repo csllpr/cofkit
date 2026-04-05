@@ -612,11 +612,11 @@ The public `lammps-optimize` command already exposes the main optimization setti
 - `--forcefield {uff}` selects the force-field backend
 - `--pair-cutoff` sets the LJ cutoff used by the current backend
 - `--position-restraint-force-constant` controls the stage-1 local `spring/self` restraint
-- `--pre-minimization-steps` plus the `--pre-minimization-*` flags add an optional short restrained `langevin + nve/limit` prerun before minimization
-- `--two-stage` plus the `--stage2-*` flags add a weaker or unrestrained second minimization stage
+- `--pre-minimization-steps` plus the `--pre-minimization-*` flags tune the default restrained `langevin + nve/limit` prerun; the default is `10000` steps and `--pre-minimization-steps 0` disables it
+- `--two-stage` and `--no-two-stage` plus the `--stage2-*` flags control the second minimization stage; it is enabled by default and unrestrained unless you set a stage-2 restraint explicitly
 - `--energy-tolerance`, `--force-tolerance`, `--max-iterations`, `--max-evaluations`, and `--min-style` control stage 1
 - `--timestep` and the `--min-modify-*` flags expose the main LAMMPS minimizer tuning controls
-- `--relax-cell` plus the `--box-relax-*` flags append a final `fix box/relax` stage using a compatible minimizer such as `cg`
+- `--relax-cell` and `--no-relax-cell` control the final `fix box/relax` stage; cell relaxation is enabled by default and the `--box-relax-*` flags tune it
 - `--timeout-seconds` sets the subprocess timeout
 - `--lmp-path` overrides `COFKIT_LMP_PATH` for one run
 
@@ -634,7 +634,6 @@ cofkit calculate lammps-optimize \
   --pre-minimization-temperature 300 \
   --pre-minimization-damping 100 \
   --pre-minimization-displacement-limit 0.05 \
-  --two-stage \
   --stage2-position-restraint-force-constant 0.02 \
   --energy-tolerance 1e-8 \
   --force-tolerance 1e-8 \
@@ -645,7 +644,6 @@ cofkit calculate lammps-optimize \
   --min-modify-dmax 0.15 \
   --min-modify-fire-integrator verlet \
   --min-modify-fire-tmax 4.0 \
-  --relax-cell \
   --box-relax-min-style cg \
   --box-relax-vmax 0.001
 ```

@@ -83,10 +83,17 @@ class LammpsTests(unittest.TestCase):
         self.assertEqual(result.settings.forcefield, "uff")
         self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
         self.assertEqual(result.settings.pre_minimization_steps, 10000)
+        self.assertTrue(result.settings.two_stage_protocol)
+        self.assertTrue(result.settings.relax_cell)
         self.assertEqual(result.settings.max_iterations, 200000)
         self.assertEqual(result.settings.max_evaluations, 2000000)
         self.assertIn("# pre_minimization", script_text)
         self.assertIn("run 10000", script_text)
+        self.assertIn("# stage2", script_text)
+        self.assertIn("# box_relax", script_text)
+        self.assertEqual(script_text.count("fix cofkit_hold all spring/self"), 1)
+        self.assertEqual(script_text.count("minimize "), 3)
+        self.assertIn("fix cofkit_boxrelax all box/relax aniso 0 vmax 0.001", script_text)
 
     def test_lammps_script_includes_fix_modify_for_restraint_energy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -117,6 +124,7 @@ class LammpsTests(unittest.TestCase):
                 two_stage_protocol=True,
                 stage2_position_restraint_force_constant=0.05,
                 stage2_min_style="cg",
+                relax_cell=False,
                 timestep=0.5,
                 min_modify_dmax=0.15,
                 min_modify_line="quadratic",
@@ -305,6 +313,8 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(report["n_bonds"], 2)
             self.assertEqual(report["n_angles"], 1)
             self.assertEqual(report["settings"]["forcefield"], "uff")
+            self.assertTrue(report["settings"]["two_stage_protocol"])
+            self.assertTrue(report["settings"]["relax_cell"])
 
     def test_output_cif_writes_inferred_periodic_bond_symmetry_when_needed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -354,6 +364,83 @@ class LammpsTests(unittest.TestCase):
             break
         else:
             self.fail("Rendered CIF did not preserve the m2_C14-m1_N6 bond.")
+
+    def test_output_cif_uses_relaxed_dump_cell_and_origin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+            parsed = lammps_module._parse_explicit_bond_cif(cif_path)
+            basis = lammps_module._lammps_basis_from_cell(8.0, 9.0, 10.0, 90.0, 90.0, 60.0)
+            origin = (0.5, 1.0, 2.0)
+            a_vec, b_vec, c_vec = basis
+            xy = b_vec[0]
+            xz = c_vec[0]
+            yz = c_vec[1]
+            xlo = origin[0]
+            xhi = origin[0] + a_vec[0]
+            ylo = origin[1]
+            yhi = origin[1] + a_vec[1] + b_vec[1]
+            zlo = origin[2]
+            zhi = origin[2] + c_vec[2]
+            xlo_bound = xlo + min(0.0, xy, xz, xy + xz)
+            xhi_bound = xhi + max(0.0, xy, xz, xy + xz)
+            ylo_bound = ylo + min(0.0, yz)
+            yhi_bound = yhi + max(0.0, yz)
+
+            atom_lines: list[str] = []
+            for atom in parsed.atoms:
+                x, y, z = lammps_module._fractional_to_lammps(atom.fractional_position, basis)
+                atom_lines.append(
+                    f"{atom.atom_id} {x + origin[0]:.6f} {y + origin[1]:.6f} {z + origin[2]:.6f}"
+                )
+
+            dump_path = temp_path / "relaxed.lammpstrj"
+            dump_path.write_text(
+                "\n".join(
+                    [
+                        "ITEM: TIMESTEP",
+                        "0",
+                        "ITEM: NUMBER OF ATOMS",
+                        str(len(parsed.atoms)),
+                        "ITEM: BOX BOUNDS xy xz yz pp pp pp",
+                        f"{xlo_bound:.6f} {xhi_bound:.6f} {xy:.6f}",
+                        f"{ylo_bound:.6f} {yhi_bound:.6f} {xz:.6f}",
+                        f"{zlo:.6f} {zhi:.6f} {yz:.6f}",
+                        "ITEM: ATOMS id x y z",
+                        *atom_lines,
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            frame = lammps_module._parse_lammps_dump_last_frame(dump_path, expected_atoms=len(parsed.atoms))
+            final_positions = lammps_module._cartesian_positions_to_fractional(
+                frame.lammps_origin,
+                frame.lammps_basis,
+                frame.cartesian_positions,
+            )
+            rendered = lammps_module._render_optimized_cif(
+                parsed,
+                final_positions,
+                cell_parameters=frame.cell_parameters,
+                basis=frame.lammps_basis,
+            )
+
+            self.assertIn("_cell_length_a 8.000000", rendered)
+            self.assertIn("_cell_length_b 9.000000", rendered)
+            self.assertIn("_cell_length_c 10.000000", rendered)
+            self.assertIn("a2 C 0.200000 0.100000 0.100000 1.00", rendered)
+            self.assertIn("a1 a2 . . 0.800000 D", rendered)
+
+            rendered_path = temp_path / "rendered.cif"
+            rendered_path.write_text(rendered, encoding="utf-8")
+            reparsed = lammps_module._parse_explicit_bond_cif(rendered_path)
+            self.assertAlmostEqual(reparsed.cell_parameters[0], 8.0, places=6)
+            self.assertAlmostEqual(reparsed.cell_parameters[1], 9.0, places=6)
+            self.assertAlmostEqual(reparsed.cell_parameters[2], 10.0, places=6)
+            self.assertAlmostEqual(reparsed.cell_parameters[5], 60.0, places=5)
 
     def test_lammps_keeps_periodic_primitive_model_for_conflicted_primitive_bond_graph(self):
         with tempfile.TemporaryDirectory() as temp_dir:

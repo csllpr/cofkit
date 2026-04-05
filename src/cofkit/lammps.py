@@ -94,7 +94,7 @@ class LammpsOptimizationSettings:
     pre_minimization_damping: float = 100.0
     pre_minimization_seed: int = 246813
     pre_minimization_displacement_limit: float = 0.10
-    two_stage_protocol: bool = False
+    two_stage_protocol: bool = True
     stage2_position_restraint_force_constant: float | None = None
     energy_tolerance: float = 1.0e-6
     force_tolerance: float = 1.0e-6
@@ -113,7 +113,7 @@ class LammpsOptimizationSettings:
     min_modify_fire_integrator: str | None = None
     min_modify_fire_tmax: float | None = None
     min_modify_fire_abcfire: bool | None = None
-    relax_cell: bool = False
+    relax_cell: bool = True
     box_relax_mode: str = "auto"
     box_relax_target_pressure: float = 0.0
     box_relax_vmax: float = 0.001
@@ -350,6 +350,14 @@ class _LammpsMinimizationStage:
     relax_cell: bool = False
 
 
+@dataclass(frozen=True)
+class _LammpsDumpFrame:
+    cartesian_positions: dict[int, tuple[float, float, float]]
+    lammps_origin: tuple[float, float, float]
+    lammps_basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+    cell_parameters: tuple[float, float, float, float, float, float]
+
+
 def resolve_lammps_binary(lmp_path: str | Path | None = None) -> Path:
     raw_value = str(lmp_path) if lmp_path is not None else os.environ.get(COFKIT_LMP_ENV_VAR)
     if raw_value:
@@ -430,18 +438,27 @@ def optimize_cif_with_lammps(
         stderr_log_path=stderr_log_path,
         timeout_seconds=timeout_seconds,
     )
-    final_cartesian_positions = _parse_lammps_dump_last_frame(
+    final_frame = _parse_lammps_dump_last_frame(
         dump_path,
         expected_atoms=len(optimization_model.parsed.atoms),
     )
-    model_fractional_positions = _cartesian_positions_to_fractional(optimization_model.parsed, final_cartesian_positions)
+    model_fractional_positions = _cartesian_positions_to_fractional(
+        final_frame.lammps_origin,
+        final_frame.lammps_basis,
+        final_frame.cartesian_positions,
+    )
     final_fractional_positions = _project_optimized_fractional_positions(
         optimization_model,
-        model_cartesian_positions=final_cartesian_positions,
+        model_cartesian_positions=final_frame.cartesian_positions,
         model_fractional_positions=model_fractional_positions,
     )
     optimized_cif_path.write_text(
-        _render_optimized_cif(parsed, final_fractional_positions),
+        _render_optimized_cif(
+            parsed,
+            final_fractional_positions,
+            cell_parameters=final_frame.cell_parameters,
+            basis=final_frame.lammps_basis,
+        ),
         encoding="utf-8",
     )
 
@@ -2094,9 +2111,7 @@ def _closest_periodic_shifts(
 
 
 def _default_stage2_restraint_force_constant(settings: LammpsOptimizationSettings) -> float:
-    if settings.position_restraint_force_constant <= 0.0:
-        return 0.0
-    return min(settings.position_restraint_force_constant * 0.25, 0.05)
+    return 0.0
 
 
 def _build_minimization_stages(
@@ -2388,13 +2403,16 @@ def _parse_lammps_dump_last_frame(
     dump_path: Path,
     *,
     expected_atoms: int,
-) -> dict[int, tuple[float, float, float]]:
+) -> _LammpsDumpFrame:
     if not dump_path.is_file():
         raise LammpsParseError(f"LAMMPS dump file was not created: {dump_path}")
 
     lines = dump_path.read_text(encoding="utf-8").splitlines()
     index = 0
     last_frame: dict[int, tuple[float, float, float]] | None = None
+    last_origin: tuple[float, float, float] | None = None
+    last_basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None
+    last_cell_parameters: tuple[float, float, float, float, float, float] | None = None
     while index < len(lines):
         if lines[index].strip() != "ITEM: TIMESTEP":
             raise LammpsParseError(f"Unexpected LAMMPS dump format in {dump_path}: missing ITEM: TIMESTEP")
@@ -2414,6 +2432,7 @@ def _parse_lammps_dump_last_frame(
         index += 1
         if index >= len(lines) or not lines[index].startswith("ITEM: BOX BOUNDS"):
             raise LammpsParseError(f"Unexpected LAMMPS dump format in {dump_path}: missing box-bounds header")
+        origin, basis, cell_parameters = _parse_lammps_dump_box(lines[index : index + 4], dump_path=dump_path)
         index += 4
         if index > len(lines) or not lines[index - 1]:
             pass
@@ -2437,35 +2456,48 @@ def _parse_lammps_dump_last_frame(
             atom_id = int(parts[0])
             frame[atom_id] = (float(parts[1]), float(parts[2]), float(parts[3]))
         last_frame = frame
+        last_origin = origin
+        last_basis = basis
+        last_cell_parameters = cell_parameters
 
-    if last_frame is None:
+    if last_frame is None or last_origin is None or last_basis is None or last_cell_parameters is None:
         raise LammpsParseError(f"LAMMPS dump file did not contain any frames: {dump_path}")
     if len(last_frame) != expected_atoms:
         raise LammpsParseError(
             f"LAMMPS dump file {dump_path} contained {len(last_frame)} atoms in the final frame, expected {expected_atoms}"
         )
-    return last_frame
+    return _LammpsDumpFrame(
+        cartesian_positions=last_frame,
+        lammps_origin=last_origin,
+        lammps_basis=last_basis,
+        cell_parameters=last_cell_parameters,
+    )
 
 
 def _cartesian_positions_to_fractional(
-    parsed: _ParsedExplicitBondCif,
+    origin: tuple[float, float, float],
+    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
     final_cartesian_positions: dict[int, tuple[float, float, float]],
 ) -> dict[int, tuple[float, float, float]]:
-    a_vec, b_vec, c_vec = parsed.lammps_basis
+    a_vec, b_vec, c_vec = basis
     ax = a_vec[0]
     by = b_vec[1]
     xy = b_vec[0]
     xz = c_vec[0]
     yz = c_vec[1]
     cz = c_vec[2]
+    origin_x, origin_y, origin_z = origin
 
     positions: dict[int, tuple[float, float, float]] = {}
     for atom_id, (x, y, z) in final_cartesian_positions.items():
         if abs(cz) < 1e-12 or abs(by) < 1e-12 or abs(ax) < 1e-12:
             raise LammpsParseError("LAMMPS cell basis is singular and cannot be converted back to fractional coordinates.")
-        fz = z / cz
-        fy = (y - fz * yz) / by
-        fx = (x - fy * xy - fz * xz) / ax
+        relative_x = x - origin_x
+        relative_y = y - origin_y
+        relative_z = z - origin_z
+        fz = relative_z / cz
+        fy = (relative_y - fz * yz) / by
+        fx = (relative_x - fy * xy - fz * xz) / ax
         positions[atom_id] = (_wrap_fraction(fx), _wrap_fraction(fy), _wrap_fraction(fz))
     return positions
 
@@ -2473,8 +2505,13 @@ def _cartesian_positions_to_fractional(
 def _render_optimized_cif(
     parsed: _ParsedExplicitBondCif,
     final_fractional_positions: dict[int, tuple[float, float, float]],
+    *,
+    cell_parameters: tuple[float, float, float, float, float, float] | None = None,
+    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None,
 ) -> str:
-    a, b, c, alpha, beta, gamma = parsed.cell_parameters
+    active_cell_parameters = cell_parameters or parsed.cell_parameters
+    active_basis = basis or parsed.lammps_basis
+    a, b, c, alpha, beta, gamma = active_cell_parameters
     lines = [
         f"data_{_sanitize_data_name(parsed.source_path.stem + '_lammps_optimized')}",
         "# CIF generated by cofkit LAMMPS optimization wrapper",
@@ -2524,7 +2561,7 @@ def _render_optimized_cif(
         output_shift_1, output_shift_2 = _closest_periodic_shifts(
             left_fractional=fractional_1,
             right_fractional=fractional_2,
-            basis=parsed.lammps_basis,
+            basis=active_basis,
         )
         symmetry_1 = _format_p1_symmetry_shift(output_shift_1)
         symmetry_2 = _format_p1_symmetry_shift(output_shift_2)
@@ -2533,7 +2570,7 @@ def _render_optimized_cif(
             fractional_2,
             output_shift_1,
             output_shift_2,
-            parsed.lammps_basis,
+            active_basis,
         )
         lines.append(
             f"{bond.label_1} {bond.label_2} {symmetry_1} {symmetry_2} {distance:.6f} "
@@ -2573,6 +2610,69 @@ def _lammps_basis_from_cell(
         (xy, by, 0.0),
         (xz, yz, cz),
     )
+
+
+def _cell_parameters_from_lammps_basis(
+    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+) -> tuple[float, float, float, float, float, float]:
+    a_vec, b_vec, c_vec = basis
+    a = _norm(a_vec)
+    b = _norm(b_vec)
+    c = _norm(c_vec)
+    if a < 1e-12 or b < 1e-12 or c < 1e-12:
+        raise LammpsParseError("LAMMPS dump box basis is singular and cannot be converted into CIF cell parameters.")
+    alpha = math.degrees(math.acos(max(-1.0, min(1.0, _dot(b_vec, c_vec) / (b * c)))))
+    beta = math.degrees(math.acos(max(-1.0, min(1.0, _dot(a_vec, c_vec) / (a * c)))))
+    gamma = math.degrees(math.acos(max(-1.0, min(1.0, _dot(a_vec, b_vec) / (a * b)))))
+    return (a, b, c, alpha, beta, gamma)
+
+
+def _parse_lammps_dump_box(
+    lines: Sequence[str],
+    *,
+    dump_path: Path,
+) -> tuple[
+    tuple[float, float, float],
+    tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    tuple[float, float, float, float, float, float],
+]:
+    if len(lines) != 4:
+        raise LammpsParseError(f"Unexpected LAMMPS dump box block in {dump_path}: expected 4 lines, got {len(lines)}")
+    header = lines[0].split()
+    if header[:3] != ["ITEM:", "BOX", "BOUNDS"]:
+        raise LammpsParseError(f"Unexpected LAMMPS dump box header in {dump_path}: {lines[0]!r}")
+    triclinic = "xy" in header and "xz" in header and "yz" in header
+    try:
+        bounds = [tuple(float(value) for value in line.split()) for line in lines[1:4]]
+    except ValueError as exc:
+        raise LammpsParseError(f"Invalid numeric box-bounds line in {dump_path}") from exc
+    if triclinic:
+        if any(len(row) != 3 for row in bounds):
+            raise LammpsParseError(f"Unexpected triclinic box-bounds format in {dump_path}")
+        (xlo_bound, xhi_bound, xy), (ylo_bound, yhi_bound, xz), (zlo_bound, zhi_bound, yz) = bounds
+        xlo = xlo_bound - min(0.0, xy, xz, xy + xz)
+        xhi = xhi_bound - max(0.0, xy, xz, xy + xz)
+        ylo = ylo_bound - min(0.0, yz)
+        yhi = yhi_bound - max(0.0, yz)
+        zlo = zlo_bound
+        zhi = zhi_bound
+        basis = (
+            (xhi - xlo, 0.0, 0.0),
+            (xy, yhi - ylo, 0.0),
+            (xz, yz, zhi - zlo),
+        )
+        origin = (xlo, ylo, zlo)
+    else:
+        if any(len(row) != 2 for row in bounds):
+            raise LammpsParseError(f"Unexpected orthogonal box-bounds format in {dump_path}")
+        (xlo, xhi), (ylo, yhi), (zlo, zhi) = bounds
+        basis = (
+            (xhi - xlo, 0.0, 0.0),
+            (0.0, yhi - ylo, 0.0),
+            (0.0, 0.0, zhi - zlo),
+        )
+        origin = (xlo, ylo, zlo)
+    return origin, basis, _cell_parameters_from_lammps_basis(basis)
 
 
 def _fractional_to_lammps(
