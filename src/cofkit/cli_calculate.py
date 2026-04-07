@@ -75,10 +75,78 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         ),
     )
     parser.add_argument(
+        "--charge-model",
+        default="eqeq",
+        choices=("none", "eqeq"),
+        help=(
+            "Charge assignment path for the LAMMPS export. "
+            "Default: eqeq. Use none only when you explicitly want an uncharged export."
+        ),
+    )
+    parser.add_argument(
+        "--eqeq-path",
+        default=None,
+        help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH when charges are enabled.",
+    )
+    parser.add_argument(
+        "--eqeq-lambda",
+        type=float,
+        default=1.2,
+        help="EQeq lambda parameter for the default LAMMPS charge-assignment stage. Default: 1.2.",
+    )
+    parser.add_argument(
+        "--eqeq-h-i0",
+        type=float,
+        default=-2.0,
+        help="EQeq hydrogen electron affinity for the default LAMMPS charge-assignment stage. Default: -2.0.",
+    )
+    parser.add_argument(
+        "--eqeq-charge-precision",
+        type=int,
+        default=3,
+        help="Number of digits for EQeq point charges in the default LAMMPS charge stage. Default: 3.",
+    )
+    parser.add_argument(
+        "--eqeq-method",
+        choices=("ewald", "nonperiodic"),
+        default="ewald",
+        help="EQeq method for the default LAMMPS charge stage. Default: ewald.",
+    )
+    parser.add_argument(
+        "--eqeq-real-space-cells",
+        type=int,
+        default=2,
+        help="EQeq real-space image count for the default LAMMPS charge stage. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-reciprocal-space-cells",
+        type=int,
+        default=2,
+        help="EQeq reciprocal-space image count for the default LAMMPS charge stage. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-eta",
+        type=float,
+        default=50.0,
+        help="EQeq eta parameter for the default LAMMPS charge stage. Default: 50.0.",
+    )
+    parser.add_argument(
         "--pair-cutoff",
         type=float,
         default=12.0,
         help="Global LJ cutoff in angstrom for the selected forcefield backend. Default: 12.0.",
+    )
+    parser.add_argument(
+        "--coulomb-cutoff",
+        type=float,
+        default=12.0,
+        help="Coulomb cutoff in angstrom when the LAMMPS export includes charges. Default: 12.0.",
+    )
+    parser.add_argument(
+        "--ewald-precision",
+        type=float,
+        default=1.0e-6,
+        help="LAMMPS Ewald precision when the export includes periodic charges. Default: 1e-6.",
     )
     parser.add_argument(
         "--position-restraint-force-constant",
@@ -305,6 +373,12 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         help="Per-run timeout for the LAMMPS subprocess. Default: 300.",
     )
     parser.add_argument(
+        "--eqeq-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Per-run timeout for the default EQeq charge-assignment subprocess. Default: 300.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print the full result report as JSON instead of a short human-readable summary.",
@@ -315,7 +389,10 @@ def _add_lammps_optimize_parser(subparsers) -> None:
 def _run_lammps_optimize(args: argparse.Namespace) -> None:
     settings = LammpsOptimizationSettings(
         forcefield=args.forcefield,
+        charge_model=args.charge_model,
         pair_cutoff=args.pair_cutoff,
+        coulomb_cutoff=args.coulomb_cutoff,
+        ewald_precision=args.ewald_precision,
         position_restraint_force_constant=args.position_restraint_force_constant,
         pre_minimization_steps=args.pre_minimization_steps,
         pre_minimization_temperature=args.pre_minimization_temperature,
@@ -352,17 +429,31 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         box_relax_max_iterations=args.box_relax_max_iterations,
         box_relax_max_evaluations=args.box_relax_max_evaluations,
     )
+    eqeq_settings = EqeqChargeSettings(
+        lambda_value=args.eqeq_lambda,
+        hydrogen_electron_affinity=args.eqeq_h_i0,
+        charge_precision=args.eqeq_charge_precision,
+        method=args.eqeq_method,
+        real_space_cells=args.eqeq_real_space_cells,
+        reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
+        eta=args.eqeq_eta,
+    )
     try:
         result = optimize_cif_with_lammps(
             args.cif_path,
             output_dir=args.output_dir,
             lmp_path=args.lmp_path,
+            eqeq_path=args.eqeq_path,
             settings=settings,
             timeout_seconds=args.timeout_seconds,
+            eqeq_settings=eqeq_settings,
+            eqeq_timeout_seconds=args.eqeq_timeout_seconds,
         )
     except (
         FileNotFoundError,
         ValueError,
+        GraspaConfigurationError,
+        EqeqExecutionError,
         LammpsConfigurationError,
         LammpsInputError,
         LammpsExecutionError,
@@ -386,6 +477,9 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
     print("n_bond_types:", result.n_bond_types)
     print("n_angle_types:", result.n_angle_types)
     print("forcefield_backend:", result.forcefield_backend)
+    print("charge_model:", result.charge_model)
+    print("n_charged_atoms:", result.n_charged_atoms)
+    print("net_charge:", result.net_charge)
     print("warnings:", list(result.warnings))
     print("report_path:", result.report_path)
 

@@ -75,6 +75,32 @@ class EqeqChargeSettings:
 
 
 @dataclass(frozen=True)
+class EqeqChargeResult:
+    input_cif: str
+    output_dir: str
+    eqeq_binary: str
+    eqeq_input_cif: str
+    eqeq_charged_cif: str
+    eqeq_json_output_path: str | None
+    eqeq_stdout_log_path: str
+    eqeq_stderr_log_path: str
+    settings: EqeqChargeSettings
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "input_cif": self.input_cif,
+            "output_dir": self.output_dir,
+            "eqeq_binary": self.eqeq_binary,
+            "eqeq_input_cif": self.eqeq_input_cif,
+            "eqeq_charged_cif": self.eqeq_charged_cif,
+            "eqeq_json_output_path": self.eqeq_json_output_path,
+            "eqeq_stdout_log_path": self.eqeq_stdout_log_path,
+            "eqeq_stderr_log_path": self.eqeq_stderr_log_path,
+            "settings": self.settings.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class GraspaWidomSettings:
     components: tuple[str, ...] = _DEFAULT_WIDOM_COMPONENTS
     use_gpu_reduction: bool = True
@@ -236,6 +262,91 @@ def resolve_graspa_binary(graspa_path: str | Path | None = None) -> Path:
     )
 
 
+def assign_eqeq_charges_to_cif(
+    cif_path: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    eqeq_path: str | Path | None = None,
+    settings: EqeqChargeSettings | None = None,
+    timeout_seconds: float | None = 300.0,
+) -> EqeqChargeResult:
+    input_path = Path(cif_path).expanduser().resolve()
+    if not input_path.is_file():
+        raise FileNotFoundError(f"CIF file does not exist: {input_path}")
+
+    settings = settings or EqeqChargeSettings()
+    _validate_eqeq_settings(settings)
+    timeout_seconds = _normalize_timeout(timeout_seconds, "timeout_seconds")
+    eqeq_binary = resolve_eqeq_binary(eqeq_path)
+
+    run_dir = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir is not None
+        else input_path.parent / f"{input_path.stem}_eqeq"
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    eqeq_input_path = run_dir / input_path.name
+    shutil.copy2(input_path, eqeq_input_path)
+    eqeq_stdout_log_path = run_dir / "eqeq.stdout.log"
+    eqeq_stderr_log_path = run_dir / "eqeq.stderr.log"
+
+    eqeq_command = [
+        str(eqeq_binary),
+        eqeq_input_path.name,
+        _format_cli_number(settings.lambda_value),
+        _format_cli_number(settings.hydrogen_electron_affinity),
+        str(settings.charge_precision),
+        settings.method,
+        str(settings.real_space_cells),
+        str(settings.reciprocal_space_cells),
+        _format_cli_number(settings.eta),
+    ]
+    try:
+        with eqeq_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
+            with eqeq_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
+                eqeq_completed = subprocess.run(
+                    eqeq_command,
+                    cwd=run_dir,
+                    check=False,
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    text=True,
+                    timeout=timeout_seconds,
+                )
+    except subprocess.TimeoutExpired as exc:
+        raise EqeqExecutionError(
+            f"EQeq timed out after {timeout_seconds} seconds. "
+            f"See {eqeq_stdout_log_path} and {eqeq_stderr_log_path}."
+        ) from exc
+
+    eqeq_output_stem = _expected_eqeq_output_stem(eqeq_input_path.name, settings)
+    eqeq_charged_cif_path = run_dir / f"{eqeq_output_stem}.cif"
+    eqeq_json_output_path = run_dir / f"{eqeq_output_stem}.json"
+
+    if eqeq_completed.returncode != 0:
+        raise EqeqExecutionError(
+            f"EQeq failed with exit code {eqeq_completed.returncode}. "
+            f"See {eqeq_stdout_log_path} and {eqeq_stderr_log_path}."
+        )
+    if not eqeq_charged_cif_path.is_file():
+        raise EqeqExecutionError(
+            f"EQeq completed without writing the expected charged CIF: {eqeq_charged_cif_path}"
+        )
+
+    return EqeqChargeResult(
+        input_cif=str(input_path),
+        output_dir=str(run_dir),
+        eqeq_binary=str(eqeq_binary),
+        eqeq_input_cif=str(eqeq_input_path),
+        eqeq_charged_cif=str(eqeq_charged_cif_path),
+        eqeq_json_output_path=str(eqeq_json_output_path) if eqeq_json_output_path.is_file() else None,
+        eqeq_stdout_log_path=str(eqeq_stdout_log_path),
+        eqeq_stderr_log_path=str(eqeq_stderr_log_path),
+        settings=settings,
+    )
+
+
 def run_graspa_widom_workflow(
     cif_path: str | Path,
     *,
@@ -253,70 +364,25 @@ def run_graspa_widom_workflow(
 
     eqeq_settings = eqeq_settings or EqeqChargeSettings()
     widom_settings = widom_settings or GraspaWidomSettings()
-    _validate_eqeq_settings(eqeq_settings)
     _validate_widom_settings(widom_settings)
-    eqeq_timeout_seconds = _normalize_timeout(eqeq_timeout_seconds, "eqeq_timeout_seconds")
     graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
 
-    eqeq_binary = resolve_eqeq_binary(eqeq_path)
     graspa_binary = resolve_graspa_binary(graspa_path)
 
     run_dir = _resolve_output_dir(input_path, output_dir)
     eqeq_run_dir = run_dir / "eqeq"
     widom_run_dir = run_dir / "widom"
-    eqeq_run_dir.mkdir(parents=True, exist_ok=True)
     widom_run_dir.mkdir(parents=True, exist_ok=True)
-
-    eqeq_input_path = eqeq_run_dir / input_path.name
-    shutil.copy2(input_path, eqeq_input_path)
-    eqeq_stdout_log_path = eqeq_run_dir / "eqeq.stdout.log"
-    eqeq_stderr_log_path = eqeq_run_dir / "eqeq.stderr.log"
-
-    eqeq_command = [
-        str(eqeq_binary),
-        eqeq_input_path.name,
-        _format_cli_number(eqeq_settings.lambda_value),
-        _format_cli_number(eqeq_settings.hydrogen_electron_affinity),
-        str(eqeq_settings.charge_precision),
-        eqeq_settings.method,
-        str(eqeq_settings.real_space_cells),
-        str(eqeq_settings.reciprocal_space_cells),
-        _format_cli_number(eqeq_settings.eta),
-    ]
-    try:
-        with eqeq_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
-            with eqeq_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
-                eqeq_completed = subprocess.run(
-                    eqeq_command,
-                    cwd=eqeq_run_dir,
-                    check=False,
-                    stdout=stdout_handle,
-                    stderr=stderr_handle,
-                    text=True,
-                    timeout=eqeq_timeout_seconds,
-                )
-    except subprocess.TimeoutExpired as exc:
-        raise EqeqExecutionError(
-            f"EQeq timed out after {eqeq_timeout_seconds} seconds. "
-            f"See {eqeq_stdout_log_path} and {eqeq_stderr_log_path}."
-        ) from exc
-
-    eqeq_output_stem = _expected_eqeq_output_stem(eqeq_input_path.name, eqeq_settings)
-    eqeq_charged_cif_path = eqeq_run_dir / f"{eqeq_output_stem}.cif"
-    eqeq_json_output_path = eqeq_run_dir / f"{eqeq_output_stem}.json"
-
-    if eqeq_completed.returncode != 0:
-        raise EqeqExecutionError(
-            f"EQeq failed with exit code {eqeq_completed.returncode}. "
-            f"See {eqeq_stdout_log_path} and {eqeq_stderr_log_path}."
-        )
-    if not eqeq_charged_cif_path.is_file():
-        raise EqeqExecutionError(
-            f"EQeq completed without writing the expected charged CIF: {eqeq_charged_cif_path}"
-        )
+    eqeq_result = assign_eqeq_charges_to_cif(
+        input_path,
+        output_dir=eqeq_run_dir,
+        eqeq_path=eqeq_path,
+        settings=eqeq_settings,
+        timeout_seconds=eqeq_timeout_seconds,
+    )
 
     widom_framework_cif_path = widom_run_dir / f"{widom_settings.framework_name}.cif"
-    shutil.copy2(eqeq_charged_cif_path, widom_framework_cif_path)
+    shutil.copy2(eqeq_result.eqeq_charged_cif, widom_framework_cif_path)
     _copy_widom_template_assets(widom_run_dir, widom_settings.components)
 
     unit_cells = _compute_unit_cells_from_cif(
@@ -372,7 +438,7 @@ def run_graspa_widom_workflow(
     _write_results_csv(component_results, results_csv_path)
 
     warnings: list[str] = []
-    if not eqeq_json_output_path.is_file():
+    if eqeq_result.eqeq_json_output_path is None:
         warnings.append("EQeq did not write the companion JSON output file.")
     if len(data_file_paths) > 1:
         warnings.append(f"Parsed Widom results from {len(data_file_paths)} data files.")
@@ -394,16 +460,16 @@ def run_graspa_widom_workflow(
     result = GraspaWidomResult(
         input_cif=str(input_path),
         output_dir=str(run_dir),
-        eqeq_binary=str(eqeq_binary),
+        eqeq_binary=eqeq_result.eqeq_binary,
         graspa_binary=str(graspa_binary),
-        eqeq_run_dir=str(eqeq_run_dir),
+        eqeq_run_dir=eqeq_result.output_dir,
         widom_run_dir=str(widom_run_dir),
-        eqeq_input_cif=str(eqeq_input_path),
-        eqeq_charged_cif=str(eqeq_charged_cif_path),
+        eqeq_input_cif=eqeq_result.eqeq_input_cif,
+        eqeq_charged_cif=eqeq_result.eqeq_charged_cif,
         widom_framework_cif=str(widom_framework_cif_path),
-        eqeq_json_output_path=str(eqeq_json_output_path) if eqeq_json_output_path.is_file() else None,
-        eqeq_stdout_log_path=str(eqeq_stdout_log_path),
-        eqeq_stderr_log_path=str(eqeq_stderr_log_path),
+        eqeq_json_output_path=eqeq_result.eqeq_json_output_path,
+        eqeq_stdout_log_path=eqeq_result.eqeq_stdout_log_path,
+        eqeq_stderr_log_path=eqeq_result.eqeq_stderr_log_path,
         simulation_input_path=str(simulation_input_path),
         graspa_stdout_log_path=str(graspa_stdout_log_path),
         graspa_stderr_log_path=str(graspa_stderr_log_path),

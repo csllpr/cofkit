@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import math
 import os
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
+
+from .graspa import (
+    EqeqChargeResult,
+    EqeqChargeSettings,
+    assign_eqeq_charges_to_cif,
+)
 
 try:
     import pandas as pd
@@ -56,12 +62,14 @@ except ImportError:  # pragma: no cover - exercised in environments without RDKi
 COFKIT_LMP_ENV_VAR = "COFKIT_LMP_PATH"
 DEFAULT_LAMMPS_BINARY = Path("/opt/homebrew/bin/lmp_mpi")
 _SUPPORTED_FORCEFIELDS = ("uff",)
+_SUPPORTED_CHARGE_MODELS = ("none", "eqeq")
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
 _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic", "spin_none"}
 _MIN_MODIFY_NORM_OPTIONS = {"two", "inf", "max"}
 _MIN_MODIFY_FIRE_INTEGRATOR_OPTIONS = {"eulerimplicit", "verlet", "leapfrog", "eulerexplicit"}
 _BOX_RELAX_MODE_OPTIONS = {"auto", "iso", "aniso", "tri"}
 _UNSUPPORTED_BOX_RELAX_MIN_STYLES = {"quickmin", "fire", "hftn", "cg/kk"}
+_PINNED_UFF_PARAMETER_SHA256 = "934cb0e2ee1ef2102b2ae8dba74b1e9853b299bd7e26f695fb1fe6e55727bdc5"
 
 
 class LammpsError(RuntimeError):
@@ -87,7 +95,10 @@ class LammpsParseError(LammpsError):
 @dataclass(frozen=True)
 class LammpsOptimizationSettings:
     forcefield: str = "uff"
+    charge_model: str = "eqeq"
     pair_cutoff: float = 12.0
+    coulomb_cutoff: float = 12.0
+    ewald_precision: float = 1.0e-6
     position_restraint_force_constant: float = 0.20
     pre_minimization_steps: int = 10000
     pre_minimization_temperature: float = 300.0
@@ -127,7 +138,10 @@ class LammpsOptimizationSettings:
     def to_dict(self) -> dict[str, object]:
         return {
             "forcefield": self.forcefield,
+            "charge_model": self.charge_model,
             "pair_cutoff": self.pair_cutoff,
+            "coulomb_cutoff": self.coulomb_cutoff,
+            "ewald_precision": self.ewald_precision,
             "position_restraint_force_constant": self.position_restraint_force_constant,
             "pre_minimization_steps": self.pre_minimization_steps,
             "pre_minimization_temperature": self.pre_minimization_temperature,
@@ -193,7 +207,17 @@ class LammpsOptimizationResult:
     settings: LammpsOptimizationSettings
     forcefield_backend: str
     parameter_sources: dict[str, str]
+    charge_model: str
+    n_charged_atoms: int
+    net_charge: float | None
+    eqeq_binary: str | None = None
+    eqeq_run_dir: str | None = None
+    eqeq_charged_cif: str | None = None
+    eqeq_stdout_log_path: str | None = None
+    eqeq_stderr_log_path: str | None = None
+    eqeq_json_output_path: str | None = None
     warnings: tuple[str, ...] = ()
+
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -222,8 +246,23 @@ class LammpsOptimizationResult:
             "settings": self.settings.to_dict(),
             "forcefield_backend": self.forcefield_backend,
             "parameter_sources": dict(self.parameter_sources),
+            "charge_model": self.charge_model,
+            "n_charged_atoms": self.n_charged_atoms,
+            "net_charge": self.net_charge,
+            "eqeq_binary": self.eqeq_binary,
+            "eqeq_run_dir": self.eqeq_run_dir,
+            "eqeq_charged_cif": self.eqeq_charged_cif,
+            "eqeq_stdout_log_path": self.eqeq_stdout_log_path,
+            "eqeq_stderr_log_path": self.eqeq_stderr_log_path,
+            "eqeq_json_output_path": self.eqeq_json_output_path,
             "warnings": list(self.warnings),
         }
+
+
+@dataclass(frozen=True)
+class _AtomChargeExtractionResult:
+    charges_by_label: dict[str, float]
+    used_atom_order_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -233,6 +272,7 @@ class _CifAtomRecord:
     symbol: str
     occupancy: float
     fractional_position: tuple[float, float, float]
+    charge: float | None = None
 
 
 @dataclass(frozen=True)
@@ -294,6 +334,7 @@ class _ParsedExplicitBondCif:
 class _PreparedLammpsSystem:
     data_text: str
     has_image_flags: bool
+    has_charges: bool
     atom_type_symbols: dict[int, str]
     n_bond_types: int
     n_angle_types: int
@@ -306,6 +347,8 @@ class _PreparedLammpsSystem:
     improper_styles: tuple[str, ...]
     forcefield_backend: str
     parameter_sources: dict[str, str]
+    n_charged_atoms: int
+    net_charge: float | None
     warnings: tuple[str, ...]
 
 
@@ -385,11 +428,16 @@ def optimize_cif_with_lammps(
     *,
     output_dir: str | Path | None = None,
     lmp_path: str | Path | None = None,
+    eqeq_path: str | Path | None = None,
     settings: LammpsOptimizationSettings | None = None,
     timeout_seconds: float = 300.0,
+    eqeq_settings: EqeqChargeSettings | None = None,
+    eqeq_timeout_seconds: float | None = 300.0,
 ) -> LammpsOptimizationResult:
     if timeout_seconds <= 0.0:
         raise ValueError("timeout_seconds must be positive.")
+    if eqeq_timeout_seconds is not None and eqeq_timeout_seconds <= 0.0:
+        raise ValueError("eqeq_timeout_seconds must be positive when provided.")
     settings = settings or LammpsOptimizationSettings()
     _validate_settings(settings)
 
@@ -398,15 +446,39 @@ def optimize_cif_with_lammps(
         raise FileNotFoundError(f"CIF file does not exist: {input_path}")
 
     binary = resolve_lammps_binary(lmp_path)
+    run_dir = _resolve_output_dir(input_path, output_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     parsed = _parse_explicit_bond_cif(input_path)
+    eqeq_result: EqeqChargeResult | None = None
+    warnings: list[str] = []
+    if _normalize_charge_model_name(settings.charge_model) == "eqeq":
+        eqeq_result = assign_eqeq_charges_to_cif(
+            input_path,
+            output_dir=run_dir / "eqeq",
+            eqeq_path=eqeq_path,
+            settings=eqeq_settings,
+            timeout_seconds=eqeq_timeout_seconds,
+        )
+        extracted_charges = _extract_atom_site_charges_from_cif(
+            Path(eqeq_result.eqeq_charged_cif),
+            expected_labels=[atom.label for atom in parsed.atoms],
+        )
+        parsed = _with_atom_charges(
+            parsed,
+            extracted_charges.charges_by_label,
+            source_path=Path(eqeq_result.eqeq_charged_cif),
+        )
+        warnings.append(
+            "EQeq charges were assigned on the input CIF and carried through the LAMMPS optimization. "
+            "If you need post-relaxation charges, rerun EQeq on the optimized CIF."
+        )
     optimization_model = _build_optimization_model(parsed, settings=settings)
     effective_settings, model_execution_warnings = _effective_settings_for_optimization_model(
         settings,
         optimization_model=optimization_model,
     )
     prepared = _prepare_lammps_system(optimization_model.parsed, settings=effective_settings)
-    run_dir = _resolve_output_dir(input_path, output_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     data_path = run_dir / "lammps_input.data"
     input_script_path = run_dir / "lammps_minimize.in"
@@ -462,7 +534,13 @@ def optimize_cif_with_lammps(
         encoding="utf-8",
     )
 
-    all_warnings = tuple(optimization_model.warnings) + tuple(prepared.warnings) + tuple(execution_warnings)
+    parameter_sources = dict(prepared.parameter_sources)
+    if eqeq_result is not None:
+        parameter_sources["charge_assignment"] = "EQeq charges assigned from the input CIF before LAMMPS export"
+    all_warnings = tuple(warnings) + tuple(optimization_model.warnings) + tuple(prepared.warnings) + tuple(execution_warnings)
+    resolved_charge_model = (
+        "eqeq" if eqeq_result is not None else ("input_cif" if prepared.has_charges else "none")
+    )
     result = LammpsOptimizationResult(
         input_cif=str(input_path),
         optimized_cif=str(optimized_cif_path),
@@ -488,7 +566,16 @@ def optimize_cif_with_lammps(
         atom_type_symbols=prepared.atom_type_symbols,
         settings=effective_settings,
         forcefield_backend=prepared.forcefield_backend,
-        parameter_sources=prepared.parameter_sources,
+        parameter_sources=parameter_sources,
+        charge_model=resolved_charge_model,
+        n_charged_atoms=prepared.n_charged_atoms,
+        net_charge=prepared.net_charge,
+        eqeq_binary=eqeq_result.eqeq_binary if eqeq_result is not None else None,
+        eqeq_run_dir=eqeq_result.output_dir if eqeq_result is not None else None,
+        eqeq_charged_cif=eqeq_result.eqeq_charged_cif if eqeq_result is not None else None,
+        eqeq_stdout_log_path=eqeq_result.eqeq_stdout_log_path if eqeq_result is not None else None,
+        eqeq_stderr_log_path=eqeq_result.eqeq_stderr_log_path if eqeq_result is not None else None,
+        eqeq_json_output_path=eqeq_result.eqeq_json_output_path if eqeq_result is not None else None,
         warnings=all_warnings + tuple(model_execution_warnings),
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
@@ -501,8 +588,17 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError(
             f"Unsupported forcefield {settings.forcefield!r}. Expected one of: {', '.join(_SUPPORTED_FORCEFIELDS)}."
         )
+    charge_model = _normalize_charge_model_name(settings.charge_model)
+    if charge_model not in _SUPPORTED_CHARGE_MODELS:
+        raise ValueError(
+            f"Unsupported charge_model {settings.charge_model!r}. Expected one of: {', '.join(_SUPPORTED_CHARGE_MODELS)}."
+        )
     if settings.pair_cutoff <= 0.0:
         raise ValueError("pair_cutoff must be positive.")
+    if settings.coulomb_cutoff <= 0.0:
+        raise ValueError("coulomb_cutoff must be positive.")
+    if settings.ewald_precision <= 0.0:
+        raise ValueError("ewald_precision must be positive.")
     if settings.position_restraint_force_constant < 0.0:
         raise ValueError("position_restraint_force_constant must be non-negative.")
     if settings.pre_minimization_steps < 0:
@@ -880,6 +976,10 @@ def _normalize_forcefield_name(forcefield: str) -> str:
     return forcefield.strip().lower().replace("-", "_")
 
 
+def _normalize_charge_model_name(charge_model: str) -> str:
+    return charge_model.strip().lower().replace("-", "_")
+
+
 def _normalize_min_style_name(min_style: str) -> str:
     return min_style.strip().lower()
 
@@ -910,6 +1010,12 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         raise LammpsInputError(
             "UFF-backed LAMMPS optimization now requires explicit bond orders for every bond. "
             "Populate `_ccdc_geom_bond_type` in the CIF bond loop before running `cofkit calculate lammps-optimize`."
+        )
+    has_any_charges = any(atom.charge is not None for atom in parsed.atoms)
+    has_all_charges = all(atom.charge is not None for atom in parsed.atoms)
+    if has_any_charges and not has_all_charges:
+        raise LammpsInputError(
+            "LAMMPS export requires either a complete set of atom charges or no atom charges at all."
         )
 
     atom_images, image_conflicts = _compute_unwrapped_atom_images(parsed)
@@ -967,13 +1073,24 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
     )
     atoms = pd.DataFrame(
         [
-            {
-                "molecule-ID": 1,
-                "type": atom_type_ids[atom_type_by_atom_id[atom.atom_id]],
-                "x": wrapped_cartesian_positions[atom.atom_id][0],
-                "y": wrapped_cartesian_positions[atom.atom_id][1],
-                "z": wrapped_cartesian_positions[atom.atom_id][2],
-            }
+            (
+                {
+                    "molecule-ID": 1,
+                    "type": atom_type_ids[atom_type_by_atom_id[atom.atom_id]],
+                    "q": float(atom.charge),
+                    "x": wrapped_cartesian_positions[atom.atom_id][0],
+                    "y": wrapped_cartesian_positions[atom.atom_id][1],
+                    "z": wrapped_cartesian_positions[atom.atom_id][2],
+                }
+                if has_all_charges
+                else {
+                    "molecule-ID": 1,
+                    "type": atom_type_ids[atom_type_by_atom_id[atom.atom_id]],
+                    "x": wrapped_cartesian_positions[atom.atom_id][0],
+                    "y": wrapped_cartesian_positions[atom.atom_id][1],
+                    "z": wrapped_cartesian_positions[atom.atom_id][2],
+                }
+            )
             for atom in parsed.atoms
         ],
         index=range(1, len(parsed.atoms) + 1),
@@ -1012,7 +1129,7 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         atoms=atoms,
         force_field=force_field,
         topology=topology,
-        atom_style="molecular",
+        atom_style="full" if has_all_charges else "molecular",
     )
     data_text = lammps_data.get_str(distance=10, charge=4, hybrid=True)
     data_text = data_text.replace(
@@ -1020,7 +1137,11 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         "LAMMPS data file written by cofkit via pymatgen/Open Babel/UFF",
         1,
     )
-    data_text = data_text.replace("\nAtoms\n\n", "\nAtoms # molecular\n\n", 1)
+    data_text = data_text.replace(
+        "\nAtoms\n\n",
+        "\nAtoms # full\n\n" if has_all_charges else "\nAtoms # molecular\n\n",
+        1,
+    )
     has_image_flags = image_conflicts == 0
     if has_image_flags:
         data_text = _inject_atom_image_flags(data_text, atom_images)
@@ -1038,14 +1159,18 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         "bonded_parameters": "cofkit UFF formulas adapted from reference_repositories/lammps_interface",
         "nonbond_parameters": "UFF.prm plus Lorentz-Berthelot mixing",
     }
-    uff_parameter_file = _discover_uff_parameter_file()
-    if uff_parameter_file is not None:
-        parameter_sources["reference_parameter_file"] = str(uff_parameter_file)
+    uff_parameter_file = _bundled_uff_parameter_file()
+    parameter_sources["reference_parameter_file"] = str(uff_parameter_file)
+    parameter_sources["reference_parameter_sha256"] = _bundled_uff_parameter_sha256()
     parameter_sources["reference_logic"] = "reference_repositories/lammps_interface"
+    if has_all_charges:
+        parameter_sources["electrostatics"] = "Explicit atom charges carried into the LAMMPS data file"
+        parameter_sources["charge_assignment"] = "Atom charges read from the CIF atom-site charge loop"
 
     return _PreparedLammpsSystem(
         data_text=data_text,
         has_image_flags=has_image_flags,
+        has_charges=has_all_charges,
         atom_type_symbols={index: label for index, label in enumerate(ordered_type_labels, start=1)},
         n_bond_types=len(bond_coeff_rows),
         n_angle_types=len(angle_coeff_rows),
@@ -1058,6 +1183,8 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         improper_styles=("fourier",) if improper_coeff_rows else (),
         forcefield_backend="uff_openbabel_explicit_graph_pymatgen",
         parameter_sources=parameter_sources,
+        n_charged_atoms=len(parsed.atoms) if has_all_charges else 0,
+        net_charge=(sum(float(atom.charge) for atom in parsed.atoms) if has_all_charges else None),
         warnings=tuple(warnings),
     )
 
@@ -1067,9 +1194,14 @@ def _inject_atom_image_flags(
     atom_images: Mapping[int, tuple[int, int, int]],
 ) -> str:
     lines = data_text.splitlines()
-    try:
-        atoms_header_index = lines.index("Atoms # molecular")
-    except ValueError:
+    atoms_header_index = None
+    for candidate in ("Atoms # molecular", "Atoms # full"):
+        try:
+            atoms_header_index = lines.index(candidate)
+            break
+        except ValueError:
+            continue
+    if atoms_header_index is None:
         return data_text
     atom_line_index = atoms_header_index + 2
     while atom_line_index < len(lines):
@@ -1084,24 +1216,22 @@ def _inject_atom_image_flags(
     return "\n".join(lines) + ("\n" if data_text.endswith("\n") else "")
 
 
-def _discover_uff_parameter_file() -> Path | None:
-    candidate_roots = [
-        Path(sys.prefix) / "share",
-        Path(sys.base_prefix) / "share",
-        Path("/opt/homebrew/share"),
-        Path("/usr/local/share"),
-    ]
-    seen: set[Path] = set()
-    for root in candidate_roots:
-        if not root.exists():
-            continue
-        for path in root.glob("openbabel*/**/UFF.prm"):
-            resolved = path.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            return resolved
-    return None
+def _bundled_uff_parameter_file() -> Path:
+    path = Path(__file__).resolve().parent / "data" / "forcefields" / "openbabel" / "3.1.0" / "UFF.prm"
+    if not path.is_file():
+        raise LammpsConfigurationError(f"Bundled UFF.prm is missing from the package data: {path}")
+    return path
+
+
+@lru_cache(maxsize=1)
+def _bundled_uff_parameter_sha256() -> str:
+    digest = hashlib.sha256(_bundled_uff_parameter_file().read_bytes()).hexdigest()
+    if digest != _PINNED_UFF_PARAMETER_SHA256:
+        raise LammpsConfigurationError(
+            "Bundled UFF.prm does not match the pinned Open Babel reference hash. "
+            f"Expected {_PINNED_UFF_PARAMETER_SHA256}, observed {digest}."
+        )
+    return digest
 
 
 def _require_uff_support() -> None:
@@ -1114,8 +1244,10 @@ def _require_uff_support() -> None:
         missing.append("pymatgen")
     if pd is None:
         missing.append("pandas")
-    if _discover_uff_parameter_file() is None:
-        missing.append("UFF.prm")
+    try:
+        _bundled_uff_parameter_sha256()
+    except LammpsConfigurationError:
+        missing.append("bundled UFF.prm")
     if missing:
         raise LammpsConfigurationError(
             "UFF-backed LAMMPS optimization requires these Python packages in the current environment: "
@@ -1142,9 +1274,8 @@ def _ordered_unique_uff_atom_types(
 
 @lru_cache(maxsize=1)
 def _load_uff_parameters() -> dict[str, _UffAtomParameters]:
-    parameter_file = _discover_uff_parameter_file()
-    if parameter_file is None:
-        raise LammpsConfigurationError("Could not locate an installed UFF.prm file for the UFF LAMMPS backend.")
+    parameter_file = _bundled_uff_parameter_file()
+    _bundled_uff_parameter_sha256()
     parameters: dict[str, _UffAtomParameters] = {}
     for raw_line in parameter_file.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw_line.strip()
@@ -1803,6 +1934,12 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
                 fractional_position=(float(site.fract.x), float(site.fract.y), float(site.fract.z)),
             )
         )
+    atom_charge_result = _extract_atom_site_charges_from_block(block, label_to_atom_id.keys())
+    if atom_charge_result.charges_by_label:
+        atoms = [
+            replace(atom, charge=atom_charge_result.charges_by_label[atom.label])
+            for atom in atoms
+        ]
     positions = {atom.atom_id: atom.fractional_position for atom in atoms}
 
     bond_table = block.find(
@@ -1925,6 +2062,86 @@ def _parse_p1_symmetry_shift(value: str) -> tuple[int, int, int]:
     if len(translation) != 3 or not translation.isdigit():
         raise LammpsInputError(f"Unsupported CIF bond symmetry translation {value!r}.")
     return tuple(int(ch) - 5 for ch in translation)  # type: ignore[return-value]
+
+
+def _extract_atom_site_charges_from_cif(
+    cif_path: Path,
+    expected_labels: Sequence[str] | None = None,
+) -> _AtomChargeExtractionResult:
+    if gemmi is None:
+        raise LammpsConfigurationError(
+            "gemmi is required for CIF-backed charge extraction in the LAMMPS workflow."
+        )
+    block = gemmi.cif.read_file(str(cif_path)).sole_block()
+    return _extract_atom_site_charges_from_block(block, expected_labels)
+
+
+def _extract_atom_site_charges_from_block(
+    block,
+    expected_labels: Sequence[str] | None = None,
+) -> _AtomChargeExtractionResult:
+    charge_column_names = ("_atom_site_charge", "_atom_site_partial_charge")
+    expected_label_sequence = tuple(str(label) for label in (expected_labels or ()))
+    expected_label_set = set(expected_label_sequence)
+    for charge_column_name in charge_column_names:
+        table = block.find(["_atom_site_label", charge_column_name])
+        if len(table) == 0:
+            continue
+        charges_by_label: dict[str, float] = {}
+        charges_in_row_order: list[float] = []
+        duplicate_labels = False
+        for row_index in range(len(table)):
+            row = table[row_index]
+            label = str(row[0]).strip()
+            if not label:
+                raise LammpsInputError(f"CIF charge loop {charge_column_name} contains an empty atom label.")
+            try:
+                charge = float(row[1])
+            except ValueError as exc:
+                raise LammpsInputError(
+                    f"CIF charge loop {charge_column_name} contains a non-numeric value for atom {label!r}: {row[1]!r}"
+                ) from exc
+            if label in charges_by_label:
+                duplicate_labels = True
+            charges_by_label[label] = charge
+            charges_in_row_order.append(charge)
+        if expected_label_set:
+            missing = sorted(expected_label_set - charges_by_label.keys())
+            if missing:
+                matching_labels = expected_label_set.intersection(charges_by_label)
+                if len(charges_in_row_order) == len(expected_label_sequence) and (
+                    duplicate_labels or not matching_labels
+                ):
+                    return _AtomChargeExtractionResult(
+                        charges_by_label={
+                            label: charges_in_row_order[index]
+                            for index, label in enumerate(expected_label_sequence)
+                        },
+                        used_atom_order_fallback=True,
+                    )
+                raise LammpsInputError(
+                    f"CIF charge loop {charge_column_name} is missing charges for atom labels: {', '.join(missing)}"
+                )
+        return _AtomChargeExtractionResult(charges_by_label=charges_by_label)
+    return _AtomChargeExtractionResult(charges_by_label={})
+
+
+def _with_atom_charges(
+    parsed: _ParsedExplicitBondCif,
+    charge_by_label: dict[str, float],
+    *,
+    source_path: Path,
+) -> _ParsedExplicitBondCif:
+    missing = [atom.label for atom in parsed.atoms if atom.label not in charge_by_label]
+    if missing:
+        raise LammpsInputError(
+            f"Charge source {source_path} is missing atom charges for labels: {', '.join(sorted(missing))}"
+        )
+    atoms = tuple(
+        replace(atom, charge=float(charge_by_label[atom.label]))
+        for atom in parsed.atoms
+    )
+    return replace(parsed, atoms=atoms)
 
 
 def _derive_angles(
@@ -2234,13 +2451,26 @@ def _render_lammps_input_script(
     forcefield = _normalize_forcefield_name(settings.forcefield)
     thermo_terms = ["step", "pe", "ebond"]
     minimization_stages = _build_minimization_stages(settings)
+    periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
+    pair_style_line = (
+        f"pair_style lj/cut/coul/long {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
+        if periodic_electrostatics
+        else (
+            f"pair_style lj/cut/coul/cut {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
+            if prepared.has_charges
+            else f"pair_style lj/cut {settings.pair_cutoff:.6f}"
+        )
+    )
+    special_bonds_line = (
+        "special_bonds lj/coul 0.0 0.0 1.0" if prepared.has_charges else "special_bonds lj 0.0 0.0 1.0"
+    )
     lines = [
         "units real",
-        "atom_style molecular",
+        "atom_style full" if prepared.has_charges else "atom_style molecular",
         f"boundary {boundary}",
-        f"pair_style lj/cut {settings.pair_cutoff:.6f}",
+        pair_style_line,
         "pair_modify shift yes",
-        "special_bonds lj 0.0 0.0 1.0",
+        special_bonds_line,
         "bond_style harmonic",
     ]
     if prepared.angle_styles:
@@ -2252,10 +2482,16 @@ def _render_lammps_input_script(
     if prepared.improper_styles:
         lines.append(_render_style_line("improper_style", prepared.improper_styles))
         thermo_terms.append("eimp")
-    thermo_terms.extend(["evdwl", "press"])
+    thermo_terms.append("evdwl")
+    if prepared.has_charges:
+        thermo_terms.append("ecoul")
+        if periodic_electrostatics:
+            thermo_terms.append("elong")
+    thermo_terms.append("press")
     lines.extend(
         [
             f"read_data {data_path}",
+            *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
         ]
@@ -2512,6 +2748,7 @@ def _render_optimized_cif(
     active_cell_parameters = cell_parameters or parsed.cell_parameters
     active_basis = basis or parsed.lammps_basis
     a, b, c, alpha, beta, gamma = active_cell_parameters
+    has_charges = any(atom.charge is not None for atom in parsed.atoms)
     lines = [
         f"data_{_sanitize_data_name(parsed.source_path.stem + '_lammps_optimized')}",
         "# CIF generated by cofkit LAMMPS optimization wrapper",
@@ -2537,11 +2774,17 @@ def _render_optimized_cif(
         "_atom_site_fract_z",
         "_atom_site_occupancy",
     ]
+    if has_charges:
+        lines.append("_atom_site_charge")
     for atom in parsed.atoms:
         fractional = final_fractional_positions[atom.atom_id]
-        lines.append(
-            f"{atom.label} {atom.symbol} {fractional[0]:.6f} {fractional[1]:.6f} {fractional[2]:.6f} {atom.occupancy:.2f}"
+        line = (
+            f"{atom.label} {atom.symbol} {fractional[0]:.6f} {fractional[1]:.6f} "
+            f"{fractional[2]:.6f} {atom.occupancy:.2f}"
         )
+        if has_charges:
+            line += f" {float(atom.charge):.6f}"
+        lines.append(line)
 
     lines.extend(
         [

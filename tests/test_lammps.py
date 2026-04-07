@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.cli import main as cli_main
 import cofkit.lammps as lammps_module
+from cofkit.graspa import COFKIT_EQEQ_ENV_VAR, EqeqChargeSettings
 from cofkit.lammps import (
     COFKIT_LMP_ENV_VAR,
     LammpsConfigurationError,
@@ -44,7 +46,7 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(
                     cif_path,
                     output_dir=output_dir,
-                    settings=LammpsOptimizationSettings(forcefield="uff"),
+                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                 )
 
             self.assertTrue(Path(result.optimized_cif).is_file())
@@ -73,20 +75,30 @@ class LammpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
             cif_path = temp_path / "example.cif"
             cif_path.write_text(self._example_cif_text(), encoding="utf-8")
 
-            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+            with patch.dict(
+                os.environ,
+                {COFKIT_LMP_ENV_VAR: str(fake_binary), COFKIT_EQEQ_ENV_VAR: str(fake_eqeq)},
+                clear=False,
+            ):
                 result = optimize_cif_with_lammps(cif_path, output_dir=temp_path / "default_uff_out")
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
 
         self.assertEqual(result.settings.forcefield, "uff")
+        self.assertEqual(result.settings.charge_model, "eqeq")
+        self.assertEqual(result.charge_model, "eqeq")
         self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
+        self.assertEqual(result.n_charged_atoms, 3)
         self.assertEqual(result.settings.pre_minimization_steps, 10000)
         self.assertTrue(result.settings.two_stage_protocol)
         self.assertTrue(result.settings.relax_cell)
         self.assertEqual(result.settings.max_iterations, 200000)
         self.assertEqual(result.settings.max_evaluations, 2000000)
+        self.assertIn("pair_style lj/cut/coul/long 12.000000 12.000000", script_text)
+        self.assertIn("kspace_style ewald 1e-06", script_text)
         self.assertIn("# pre_minimization", script_text)
         self.assertIn("run 10000", script_text)
         self.assertIn("# stage2", script_text)
@@ -94,6 +106,12 @@ class LammpsTests(unittest.TestCase):
         self.assertEqual(script_text.count("fix cofkit_hold all spring/self"), 1)
         self.assertEqual(script_text.count("minimize "), 3)
         self.assertIn("fix cofkit_boxrelax all box/relax aniso 0 vmax 0.001", script_text)
+
+    def test_lammps_uses_bundled_pinned_uff_parameter_file(self):
+        bundled_path = lammps_module._bundled_uff_parameter_file()
+        self.assertTrue(bundled_path.is_file())
+        digest = hashlib.sha256(bundled_path.read_bytes()).hexdigest()
+        self.assertEqual(digest, lammps_module._PINNED_UFF_PARAMETER_SHA256)
 
     def test_lammps_script_includes_fix_modify_for_restraint_energy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,7 +124,7 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(
                     cif_path,
                     output_dir=temp_path / "fix_modify_out",
-                    settings=LammpsOptimizationSettings(forcefield="uff"),
+                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                 )
 
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
@@ -121,6 +139,7 @@ class LammpsTests(unittest.TestCase):
             cif_path.write_text(self._example_cif_text(), encoding="utf-8")
             settings = LammpsOptimizationSettings(
                 forcefield="uff",
+                charge_model="none",
                 two_stage_protocol=True,
                 stage2_position_restraint_force_constant=0.05,
                 stage2_min_style="cg",
@@ -160,6 +179,7 @@ class LammpsTests(unittest.TestCase):
             cif_path.write_text(self._example_cif_text(), encoding="utf-8")
             settings = LammpsOptimizationSettings(
                 forcefield="uff",
+                charge_model="none",
                 pre_minimization_steps=25,
                 pre_minimization_temperature=350.0,
                 pre_minimization_damping=50.0,
@@ -191,6 +211,7 @@ class LammpsTests(unittest.TestCase):
             cif_path.write_text(self._example_cif_text(), encoding="utf-8")
             settings = LammpsOptimizationSettings(
                 forcefield="uff",
+                charge_model="none",
                 two_stage_protocol=True,
                 stage2_position_restraint_force_constant=0.0,
                 relax_cell=True,
@@ -255,7 +276,7 @@ class LammpsTests(unittest.TestCase):
                     result = optimize_cif_with_lammps(
                         cif_path,
                         output_dir=output_dir,
-                        settings=LammpsOptimizationSettings(forcefield="uff"),
+                        settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                     )
 
             stdout_text = Path(result.stdout_log_path).read_text(encoding="utf-8")
@@ -278,7 +299,7 @@ class LammpsTests(unittest.TestCase):
                     result = optimize_cif_with_lammps(
                         cif_path,
                         output_dir=output_dir,
-                        settings=LammpsOptimizationSettings(forcefield="uff"),
+                        settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                     )
 
             stdout_text = Path(result.stdout_log_path).read_text(encoding="utf-8")
@@ -288,12 +309,17 @@ class LammpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
             cif_path = temp_path / "example.cif"
             cif_path.write_text(self._example_cif_text(), encoding="utf-8")
             output_dir = temp_path / "cli_out"
             buffer = io.StringIO()
 
-            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+            with patch.dict(
+                os.environ,
+                {COFKIT_LMP_ENV_VAR: str(fake_binary), COFKIT_EQEQ_ENV_VAR: str(fake_eqeq)},
+                clear=False,
+            ):
                 with contextlib.redirect_stdout(buffer):
                     cli_main(
                         [
@@ -313,8 +339,92 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(report["n_bonds"], 2)
             self.assertEqual(report["n_angles"], 1)
             self.assertEqual(report["settings"]["forcefield"], "uff")
+            self.assertEqual(report["settings"]["charge_model"], "eqeq")
             self.assertTrue(report["settings"]["two_stage_protocol"])
             self.assertTrue(report["settings"]["relax_cell"])
+
+    def test_lammps_eqeq_charge_model_writes_charged_export(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_LMP_ENV_VAR: str(fake_binary),
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                },
+                clear=False,
+            ):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "charged_out",
+                    settings=LammpsOptimizationSettings(
+                        forcefield="uff",
+                        charge_model="eqeq",
+                        pair_cutoff=10.0,
+                        coulomb_cutoff=11.0,
+                        ewald_precision=1.0e-5,
+                        pre_minimization_steps=0,
+                        relax_cell=False,
+                    ),
+                    eqeq_settings=EqeqChargeSettings(),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
+
+            self.assertEqual(result.charge_model, "eqeq")
+            self.assertEqual(result.n_charged_atoms, 3)
+            self.assertAlmostEqual(result.net_charge or 0.0, 0.0, places=6)
+            self.assertTrue(Path(result.eqeq_charged_cif).is_file())
+            self.assertIn("pair_style lj/cut/coul/long 10.000000 11.000000", script_text)
+            self.assertIn("special_bonds lj/coul 0.0 0.0 1.0", script_text)
+            self.assertIn("kspace_style ewald 1e-05", script_text)
+            self.assertIn("atom_style full", script_text)
+            self.assertIn("Atoms # full", data_text)
+            self.assertIn("_atom_site_charge", optimized_text)
+            self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.100000", optimized_text)
+
+    def test_lammps_eqeq_charge_model_maps_collapsed_eqeq_labels_by_atom_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", collapse_labels=True)
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_LMP_ENV_VAR: str(fake_binary),
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                },
+                clear=False,
+            ):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "collapsed_label_out",
+                    settings=LammpsOptimizationSettings(
+                        forcefield="uff",
+                        charge_model="eqeq",
+                        pre_minimization_steps=0,
+                        relax_cell=False,
+                    ),
+                    eqeq_settings=EqeqChargeSettings(),
+                )
+
+            optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
+            self.assertEqual(result.charge_model, "eqeq")
+            self.assertEqual(result.n_charged_atoms, 3)
+            self.assertIn("_atom_site_charge", optimized_text)
+            self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.100000", optimized_text)
+            self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00 0.000000", optimized_text)
+            self.assertIn("a3 O 0.300000 0.100000 0.100000 1.00 -0.100000", optimized_text)
 
     def test_output_cif_writes_inferred_periodic_bond_symmetry_when_needed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -327,7 +437,7 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(
                     cif_path,
                     output_dir=temp_path / "periodic_out",
-                    settings=LammpsOptimizationSettings(forcefield="uff"),
+                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                 )
 
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
@@ -453,7 +563,7 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(
                     cif_path,
                     output_dir=temp_path / "conflicted_out",
-                    settings=LammpsOptimizationSettings(forcefield="uff"),
+                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                 )
 
             self.assertEqual(result.n_atoms, 4)
@@ -479,6 +589,7 @@ class LammpsTests(unittest.TestCase):
                     output_dir=temp_path / "conflicted_prerun_out",
                     settings=LammpsOptimizationSettings(
                         forcefield="uff",
+                        charge_model="none",
                         pre_minimization_steps=5,
                         timestep=0.5,
                     ),
@@ -498,7 +609,7 @@ class LammpsTests(unittest.TestCase):
         self.assertGreater(image_conflicts, 0)
         model = lammps_module._build_optimization_model(
             parsed,
-            settings=LammpsOptimizationSettings(forcefield="uff"),
+            settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
         )
 
         self.assertEqual(model.boundary, "p p p")
@@ -518,7 +629,7 @@ class LammpsTests(unittest.TestCase):
                     optimize_cif_with_lammps(
                         cif_path,
                         output_dir=temp_path / "legacy_out",
-                        settings=LammpsOptimizationSettings(forcefield="uff"),
+                        settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                     )
 
             self.assertIn("_ccdc_geom_bond_type", str(raised.exception))
@@ -534,7 +645,7 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(
                     cif_path,
                     output_dir=temp_path / "multi_term_out",
-                    settings=LammpsOptimizationSettings(forcefield="uff"),
+                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
                 )
 
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
@@ -600,10 +711,12 @@ class LammpsTests(unittest.TestCase):
             "\n"
             "atoms = []\n"
             "in_atoms = False\n"
+            "atom_style = 'molecular'\n"
             "for raw in data_path.read_text(encoding='utf-8').splitlines():\n"
             "    line = raw.strip()\n"
             "    if line.startswith('Atoms'):\n"
             "        in_atoms = True\n"
+            "        atom_style = 'full' if 'full' in line else 'molecular'\n"
             "        continue\n"
             "    if not in_atoms:\n"
             "        continue\n"
@@ -614,9 +727,14 @@ class LammpsTests(unittest.TestCase):
             "    parts = line.split()\n"
             "    if len(parts) >= 6:\n"
             "        atom_id = int(parts[0])\n"
-            "        x = float(parts[3])\n"
-            "        y = float(parts[4])\n"
-            "        z = float(parts[5])\n"
+            "        if atom_style == 'full':\n"
+            "            x = float(parts[4])\n"
+            "            y = float(parts[5])\n"
+            "            z = float(parts[6])\n"
+            "        else:\n"
+            "            x = float(parts[3])\n"
+            "            y = float(parts[4])\n"
+            "            z = float(parts[5])\n"
             "        if atom_id == 2:\n"
             "            y += 0.25\n"
             "        atoms.append((atom_id, x, y, z))\n"
@@ -639,6 +757,70 @@ class LammpsTests(unittest.TestCase):
             encoding="utf-8",
         )
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
+    def _write_fake_eqeq_binary(self, path: Path, *, collapse_labels: bool = False) -> Path:
+        path.write_text(
+            "#!/usr/bin/env python\n"
+            "from __future__ import annotations\n"
+            "import json\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "\n"
+            f"collapse_labels = {collapse_labels!r}\n"
+            "\n"
+            "args = sys.argv[1:]\n"
+            "if len(args) < 8:\n"
+            "    sys.stderr.write('insufficient arguments\\n')\n"
+            "    sys.exit(2)\n"
+            "\n"
+            "input_name = args[0]\n"
+            "lambda_value = float(args[1])\n"
+            "h_i0 = float(args[2])\n"
+            "method = args[4]\n"
+            "input_path = Path(input_name)\n"
+            "if not input_path.is_file():\n"
+            "    sys.stderr.write('missing input\\n')\n"
+            "    sys.exit(3)\n"
+            "\n"
+            "lines = input_path.read_text(encoding='utf-8').splitlines()\n"
+            "output_lines = []\n"
+            "in_atom_loop = False\n"
+            "charge_header_added = False\n"
+            "charges = {'a1': 0.1, 'a2': 0.0, 'a3': -0.1}\n"
+            "for line in lines:\n"
+            "    stripped = line.strip()\n"
+            "    output_lines.append(line)\n"
+            "    if stripped == '_atom_site_occupancy':\n"
+            "        output_lines.append('_atom_site_charge')\n"
+            "        in_atom_loop = True\n"
+            "        charge_header_added = True\n"
+            "        continue\n"
+            "    if in_atom_loop and stripped and not stripped.startswith('_') and not stripped.startswith('loop_'):\n"
+            "        parts = stripped.split()\n"
+            "        label = parts[0]\n"
+            "        if collapse_labels and len(parts) >= 2:\n"
+            "            parts[0] = parts[1]\n"
+            "            output_lines[-1] = ' '.join(parts) + f' {charges.get(label, 0.0):.6f}'\n"
+            "        else:\n"
+            "            output_lines[-1] = line + f' {charges.get(label, 0.0):.6f}'\n"
+            "        continue\n"
+            "    if in_atom_loop and (not stripped or stripped.startswith('loop_') or stripped.startswith('_geom_bond_')):\n"
+            "        in_atom_loop = False\n"
+            "\n"
+            "if not charge_header_added:\n"
+            "    sys.stderr.write('missing atom loop\\n')\n"
+            "    sys.exit(4)\n"
+            "\n"
+            "stem = f'{input_name}_EQeq_{method}_{lambda_value:.2f}_{h_i0:.2f}'\n"
+            "Path(stem + '.cif').write_text('\\n'.join(output_lines) + '\\n', encoding='utf-8')\n"
+            "Path(stem + '.json').write_text(json.dumps({'argv': args}, indent=2), encoding='utf-8')\n"
+            "sys.stdout.write('fake eqeq stdout\\n')\n"
+            "sys.stderr.write('fake eqeq stderr\\n')\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
         return path
 
     def _example_cif_text(self, *, include_bond_type: bool = True) -> str:

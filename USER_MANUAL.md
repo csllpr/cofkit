@@ -654,9 +654,11 @@ Current behavior:
 - `cofkit` atomistic CIF exports now write `_ccdc_geom_bond_type`, and the LAMMPS wrapper requires that explicit bond-type field for every bond
 - the run can stay fixed-cell or append a final `fix box/relax` stage
 - the explicit CIF bond graph drives the bonded topology written into the LAMMPS data file
-- the implemented backend is `UFF`, using Open Babel UFF atom typing plus formulas and parameter tables aligned with the installed Open Babel `UFF.prm` and the reference `lammps_interface` logic
+- the implemented backend is `UFF`, using Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled pinned Open Babel `UFF.prm` reference and the `lammps_interface` logic
 - `UFF` is the default and currently only implemented force-field backend in the public workflow
 - the current UFF export writes bond, angle, dihedral, improper, and van der Waals terms
+- the default LAMMPS path runs EQeq before export, writes charged `atom_style full` data, and enables Coulomb terms in the generated LAMMPS input
+- `--charge-model none` remains available when you explicitly want an uncharged export
 - optional `spring/self` restraints keep the optimization local by default, and their energy is included in the minimization objective via `fix_modify energy yes`
 
 The output directory stores:
@@ -668,7 +670,7 @@ The output directory stores:
 - `lammps_report.json`
 - one updated `*_lammps_optimized.cif`
 
-Current scope note: this is a topology-preserving local cleanup step for generated explicit-bond COF CIFs. The current UFF-backed export is now explicit-bond-order-driven and includes torsion and improper terms, but it still omits charges, so even with staged minimization and optional box relaxation it should be treated as a pre-optimization candidate generator rather than a final optimized structure.
+Current scope note: this is a topology-preserving local cleanup step for generated explicit-bond COF CIFs. The current UFF-backed export is now explicit-bond-order-driven and includes torsion and improper terms. EQeq charges are now part of the default LAMMPS export, but even with staged minimization and optional box relaxation it should still be treated as a pre-optimization candidate generator rather than a final optimized structure.
 
 ## Workflow 8: EQeq + gRASPA Widom Insertion
 

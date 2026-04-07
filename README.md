@@ -35,9 +35,9 @@ Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
 - `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
-- `EQeq` for the initial `cofkit calculate graspa-widom` charge-assignment stage, with the executable path provided through `COFKIT_EQEQ_PATH`
+- `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage and the `cofkit calculate graspa-widom` workflow, with the executable path provided through `COFKIT_EQEQ_PATH`
 - `gRASPA` for the initial `cofkit calculate graspa-widom` Widom-insertion stage, with the executable path provided through `COFKIT_GRASPA_PATH`
-- `Open Babel`, `pymatgen`, and the installed Open Babel `UFF.prm` parameter file for the currently implemented UFF-backed LAMMPS force-field path
+- `Open Babel` and `pymatgen` for the currently implemented UFF-backed LAMMPS force-field path; `cofkit` now ships the pinned Open Babel `UFF.prm` reference it uses for export
 - `pytest` to run the test suite
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
@@ -300,9 +300,11 @@ This first LAMMPS wrapper is still conservative, but it no longer invents generi
 - the public force-field backend is `UFF`, using Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled Open Babel `UFF.prm` and the reference `lammps_interface` logic
 - `UFF` is the default and currently only implemented force-field backend in the public workflow
 - the current UFF path writes bond, angle, dihedral, improper, and van der Waals terms, plus optional local position restraints whose energy is explicitly included in minimization through `fix_modify energy yes`
+- the default LAMMPS path stages EQeq before export, writes charged `atom_style full` data, and enables Coulomb terms in the generated LAMMPS input
+- `--charge-model none` is still available when you explicitly want an uncharged export
 - it writes an updated CIF, the generated LAMMPS data/input files, logs, a trajectory dump, and `lammps_report.json`
 
-This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current UFF path is now explicit-bond-order-driven and includes torsions and impropers, but it is still uncharged and should be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
+This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current UFF path is now explicit-bond-order-driven and includes torsions and impropers. Charges are now assigned through EQeq by default, but the workflow should still be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
 
 ### Run EQeq + gRASPA Widom insertion on one CIF
 

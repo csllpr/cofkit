@@ -28,6 +28,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "openbabel-wheel",
+  "pandas",
+  "pymatgen",
   "pytest>=8",
 ]
 
@@ -39,6 +42,7 @@ packages = ["src/cofkit"]
 
 [tool.hatch.build]
 include = [
+  "src/cofkit/data/forcefields/**/*.prm",
   "src/cofkit/data/graspa/**/*.def",
   "src/cofkit/data/topologies/**/*.cgd",
   "src/cofkit/data/topologies/*.json",
