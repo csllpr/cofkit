@@ -21,7 +21,7 @@ Prefer the installed `cofkit` CLI for human-facing requests. If you are working 
 - `cofkit analyze classify-output`: post-process an existing batch output tree into `valid`, `warning`, `hard_invalid`, and `hard_hard_invalid`.
 - `cofkit analyze zeopp`: run Zeo++ pore-property analysis on one CIF, including the default point-probe baseline and optional repeated accessibility-aware probe scans.
 - `cofkit calculate lammps-optimize`: run the current UFF-backed LAMMPS local optimization on one explicit-bond `P1` CIF.
-- `cofkit calculate graspa-widom`: run the current staged `EQeq -> gRASPA` Widom insertion workflow on one CIF and parse the bundled component screen.
+- `cofkit calculate graspa-widom`: run the current staged `EQeq -> gRASPA` Widom insertion workflow on one CIF and parse the selected packaged Widom component screen.
 - `cofkit build default-library`: rebuild the detector-scanned grouped example library from `examples/batch_test_monomers`.
 - `BatchStructureGenerator`: use this when code already has `MonomerSpec` objects or when you need library/template discovery from Python.
 - `COFEngine`: use this when the user already knows the target topology and wants the direct project-style API.
@@ -39,7 +39,7 @@ Prefer the installed `cofkit` CLI for human-facing requests. If you are working 
 - `cofkit analyze zeopp` requires the Zeo++ `network` binary through `COFKIT_ZEOPP_PATH` or `--zeopp-path`. Without any `--probe-radius`, it still writes a point-probe baseline. Probe scans can fail partially; inspect `zeopp_report.json` instead of assuming one success count captures the whole run.
 - `cofkit calculate lammps-optimize` requires an explicit-bond `P1` CIF with `_geom_bond_*` and `_ccdc_geom_bond_type`. The public force field is `UFF` only. `COFKIT_LMP_PATH` or `--lmp-path` selects the executable, and if `OMP_NUM_THREADS` is unset, cofkit defaults LAMMPS to half the machine core count.
 - `cofkit calculate graspa-widom` requires one CIF, an EQeq executable through `COFKIT_EQEQ_PATH` or `--eqeq-path`, and a gRASPA executable through `COFKIT_GRASPA_PATH` or `--graspa-path`. The current wrapper runs EQeq directly on the CIF, materializes `widom/framework.cif`, derives `UnitCells` from the cell lengths plus the larger cutoff, and expects gRASPA output under `widom/Output/*.data`. On many installations the gRASPA binary is named `nvc_main.x`.
-- The current public gRASPA wrapper is intentionally narrow: it runs one bundled Widom-template family and parses the current `TIP4P`, `CO2`, `H2`, `N2`, and `SO2` summary outputs. Non-finite uncertainty fields can appear in raw gRASPA output; check `graspa_widom_report.json` warnings and expect those specific values to be recorded as `null`.
+- The current public gRASPA wrapper is intentionally narrow: it runs one bundled Widom-template family, activates packaged probes on demand through repeated `--component NAME` flags or `--all-components`, derives total production cycles from `--widom-moves-per-component` unless `--production-cycles` is set, and parses the resulting Widom / Henry summaries. Packaged probes currently cover `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Non-finite uncertainty fields can appear in raw gRASPA output; check `graspa_widom_report.json` warnings and expect those specific values to be recorded as `null`.
 
 ## Minimal Input Checklist
 

@@ -315,6 +315,9 @@ export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 cofkit calculate graspa-widom \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_graspa \
+  --component CO2 \
+  --component N2 \
+  --widom-moves-per-component 300000 \
   --json
 ```
 
@@ -326,7 +329,7 @@ The `graspa-widom` wrapper runs one staged workflow:
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run gRASPA and parse the Widom summary values from `widom/Output/*.data`
 
-The current bundled Widom screen probes seven rigid components in one run: `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`.
+Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
 
 The wrapper writes:
 

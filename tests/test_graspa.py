@@ -83,6 +83,7 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("UseFastHostRNG yes", simulation_input)
             self.assertIn("FrameworkName framework", simulation_input)
             self.assertIn("UnitCells 0 1 2 3", simulation_input)
+            self.assertIn("NumberOfBlocks 5", simulation_input)
             self.assertIn("NumberOfProductionCycles     2000000", simulation_input)
             self.assertIn("Component 4 MoleculeName              SO2", simulation_input)
             self.assertIn("Component 5 MoleculeName              Xe", simulation_input)
@@ -107,7 +108,9 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["unit_cells"], [1, 2, 3])
             self.assertTrue(report["widom_settings"]["use_gpu_reduction"])
             self.assertTrue(report["widom_settings"]["use_fast_host_rng"])
+            self.assertEqual(report["widom_settings"]["number_of_blocks"], 5)
             self.assertEqual(report["widom_settings"]["production_cycles"], 2000000)
+            self.assertIsNone(report["widom_settings"]["widom_moves_per_component"])
             self.assertEqual(report["component_results"][1]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["henry"], 2e-05)
             self.assertEqual(report["component_results"][5]["component"], "Xe")
@@ -147,8 +150,12 @@ class GraspaWidomTests(unittest.TestCase):
                             str(cif_path),
                             "--output-dir",
                             str(output_dir),
-                            "--production-cycles",
-                            "5000",
+                            "--component",
+                            "CO2",
+                            "--component",
+                            "Xe",
+                            "--widom-moves-per-component",
+                            "2500",
                             "--json",
                         ]
                     )
@@ -156,9 +163,11 @@ class GraspaWidomTests(unittest.TestCase):
             report = json.loads(buffer.getvalue())
             self.assertEqual(report["output_dir"], str(output_dir.resolve()))
             self.assertEqual(report["unit_cells"], [1, 2, 3])
+            self.assertEqual(report["widom_settings"]["widom_moves_per_component"], 2500)
             self.assertEqual(report["widom_settings"]["production_cycles"], 5000)
-            self.assertEqual(len(report["component_results"]), 7)
-            self.assertEqual(report["component_results"][0]["component"], "TIP4P")
+            self.assertEqual(len(report["component_results"]), 2)
+            self.assertEqual(report["component_results"][0]["component"], "CO2")
+            self.assertEqual(report["component_results"][1]["component"], "Xe")
 
     def test_calculate_help_lists_graspa_widom(self):
         buffer = io.StringIO()

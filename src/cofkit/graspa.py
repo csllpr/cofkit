@@ -18,6 +18,8 @@ DEFAULT_EQEQ_BINARY: Path | None = None
 DEFAULT_GRASPA_BINARY: Path | None = None
 _SUPPORTED_EQEQ_METHODS = {"ewald", "nonperiodic"}
 _DEFAULT_WIDOM_COMPONENTS = ("TIP4P", "CO2", "H2", "N2", "SO2", "Xe", "Kr")
+AVAILABLE_WIDOM_COMPONENTS = _DEFAULT_WIDOM_COMPONENTS
+DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 _FLOAT_TOKEN_PATTERN = r"(?:[-+]?(?:nan|inf)|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
 _WIDOM_RESULT_RE = re.compile(
@@ -109,6 +111,7 @@ class GraspaWidomSettings:
     initialization_cycles: int = 0
     equilibration_cycles: int = 0
     production_cycles: int = 2_000_000
+    widom_moves_per_component: int | None = None
     use_max_step: bool = True
     max_step_per_cycle: int = 1
     use_charges_from_cif_file: bool = True
@@ -116,7 +119,7 @@ class GraspaWidomSettings:
     random_seed: int = 0
     number_of_trial_positions: int = 10
     number_of_trial_orientations: int = 10
-    number_of_blocks: int = 1
+    number_of_blocks: int = 5
     adsorbate_allocate_space: int = 10_240
     number_of_simulations: int = 1
     single_simulation: bool = True
@@ -142,6 +145,7 @@ class GraspaWidomSettings:
             "initialization_cycles": self.initialization_cycles,
             "equilibration_cycles": self.equilibration_cycles,
             "production_cycles": self.production_cycles,
+            "widom_moves_per_component": self.widom_moves_per_component,
             "use_max_step": self.use_max_step,
             "max_step_per_cycle": self.max_step_per_cycle,
             "use_charges_from_cif_file": self.use_charges_from_cif_file,
@@ -550,6 +554,8 @@ def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
         raise ValueError("equilibration_cycles must be non-negative.")
     if settings.production_cycles <= 0:
         raise ValueError("production_cycles must be positive.")
+    if settings.widom_moves_per_component is not None and settings.widom_moves_per_component <= 0:
+        raise ValueError("widom_moves_per_component must be positive when provided.")
     if settings.number_of_trial_positions <= 0 or settings.number_of_trial_orientations <= 0:
         raise ValueError("number_of_trial_positions and number_of_trial_orientations must be positive.")
     if settings.number_of_blocks <= 0:

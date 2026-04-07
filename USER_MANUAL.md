@@ -693,6 +693,9 @@ The gRASPA executable is commonly named `nvc_main.x`. Both executables can also 
 cofkit calculate graspa-widom \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_graspa \
+  --component CO2 \
+  --component N2 \
+  --widom-moves-per-component 300000 \
   --json
 ```
 
@@ -714,20 +717,24 @@ The public `graspa-widom` command exposes the main staging and runtime controls 
 
 - `--eqeq-path` and `--graspa-path` override `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`
 - `--eqeq-lambda`, `--eqeq-h-i0`, `--eqeq-charge-precision`, `--eqeq-method`, `--eqeq-real-space-cells`, `--eqeq-reciprocal-space-cells`, and `--eqeq-eta` control the EQeq stage
+- `--component NAME` repeats to activate packaged Widom probe molecules on demand, and `--all-components` activates the full packaged set
+- `--widom-moves-per-component` controls the target Widom sampling per active component; `cofkit` derives `NumberOfProductionCycles` from that target unless `--production-cycles` is explicitly provided
 - `--temperature`, `--pressure`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated gRASPA `simulation.input`
 - `--eqeq-timeout-seconds` and `--graspa-timeout-seconds` cap the subprocess wall-clock runtime
 
-### Current bundled Widom screen
+### Available packaged Widom probes
 
-The packaged template currently runs one multi-component Widom screen containing:
+The packaged Widom template currently ships definitions for:
 
 - `TIP4P`
 - `CO2`
 - `H2`
 - `N2`
 - `SO2`
+- `Xe`
+- `Kr`
 
-The input framework is always materialized as `widom/framework.cif`, and the current `simulation.input` uses CIF-backed framework input plus charges read from that charged CIF.
+Activate probes explicitly with repeated `--component NAME` flags or `--all-components`. The generated `simulation.input` always uses CIF-backed framework input plus charges read from that charged CIF. `NumberOfBlocks` now defaults to `5`, and when `--production-cycles` is omitted, `cofkit` sets `NumberOfProductionCycles = (--widom-moves-per-component) * (number of active components)`.
 
 ### Output structure
 
@@ -746,7 +753,7 @@ The output directory stores:
 
 ### Current scope note
 
-This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one bundled component set, and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact.
+This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact.
 
 ### Quantitative rules
 

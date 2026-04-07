@@ -48,7 +48,7 @@ The base package now installs `rdkit` and `gemmi` as mandatory runtime dependenc
 - a supported public benzothiazole conversion workflow; the current sulfur-enabled imine conversion prototype remains internal-only until its local geometry is more reliable
 - Zeo++ PSD histograms, grid outputs, ray analyses, ZeoVis exports, and broader hidden or specialized workflows beyond the current pore-summary wrapper
 - fuller LAMMPS force-field coverage beyond the current UFF-backed path, especially validated charge models and broader force-field families
-- broader gRASPA workflow coverage beyond the current bundled Widom-template family, bundled component set, and Henry-coefficient / Widom-energy result parser
+- broader gRASPA workflow coverage beyond the current bundled Widom-template family, selectable packaged probe set, and Henry-coefficient / Widom-energy result parser
 - non-`P1` bonded CIF optimization beyond the current conservative local cleanup wrapper
 - chemically faithful atomistic CIF generation for arbitrary monomers without fallback/pseudo-sites
 - semiempirical or quantum-chemistry cleanup beyond the current external-tool wrappers

@@ -6,8 +6,10 @@ from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary,
 from .build_workflows import BuildWorkflowDefinition, BuildWorkflowRegistry, builtin_build_workflow_registry
 from .cif import CIFExportResult, CIFWriter, candidate_to_cif, write_candidate_cif
 from .graspa import (
+    AVAILABLE_WIDOM_COMPONENTS,
     COFKIT_EQEQ_ENV_VAR,
     COFKIT_GRASPA_ENV_VAR,
+    DEFAULT_WIDOM_MOVES_PER_COMPONENT,
     DEFAULT_EQEQ_BINARY,
     DEFAULT_GRASPA_BINARY,
     EqeqChargeSettings,
@@ -139,6 +141,7 @@ __all__ = [
     "BatchPairSummary",
     "BatchRunSummary",
     "BatchStructureGenerator",
+    "AVAILABLE_WIDOM_COMPONENTS",
     "BuildWorkflowDefinition",
     "BuildWorkflowRegistry",
     "BinaryBridgeLibraryLoader",
@@ -166,6 +169,7 @@ __all__ = [
     "Frame",
     "DEFAULT_EQEQ_BINARY",
     "DEFAULT_GRASPA_BINARY",
+    "DEFAULT_WIDOM_MOVES_PER_COMPONENT",
     "EqeqChargeResult",
     "EqeqChargeSettings",
     "EqeqExecutionError",

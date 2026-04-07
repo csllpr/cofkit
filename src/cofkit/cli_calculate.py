@@ -4,6 +4,8 @@ import argparse
 import json
 
 from .graspa import (
+    AVAILABLE_WIDOM_COMPONENTS,
+    DEFAULT_WIDOM_MOVES_PER_COMPONENT,
     EqeqChargeSettings,
     EqeqExecutionError,
     GraspaConfigurationError,
@@ -24,6 +26,9 @@ from .lammps import (
 )
 
 
+_WIDOM_COMPONENT_NAME_MAP = {name.casefold(): name for name in AVAILABLE_WIDOM_COMPONENTS}
+
+
 def add_calculate_group(subparsers) -> None:
     parser = subparsers.add_parser(
         "calculate",
@@ -42,6 +47,19 @@ def _set_help_default(parser: argparse.ArgumentParser) -> None:
         parser.print_help()
 
     parser.set_defaults(func=_show_help)
+
+
+def _parse_widom_component_name(raw_value: str) -> str:
+    component_name = raw_value.strip()
+    if component_name == "":
+        raise argparse.ArgumentTypeError("Widom component names must not be blank.")
+    normalized = _WIDOM_COMPONENT_NAME_MAP.get(component_name.casefold())
+    if normalized is None:
+        supported = ", ".join(AVAILABLE_WIDOM_COMPONENTS)
+        raise argparse.ArgumentTypeError(
+            f"Unsupported Widom component {raw_value!r}. Supported components: {supported}."
+        )
+    return normalized
 
 
 def _add_lammps_optimize_parser(subparsers) -> None:
@@ -565,6 +583,33 @@ def _add_graspa_widom_parser(subparsers) -> None:
         help="gRASPA Widom pressure in Pa. Default: 100000.0.",
     )
     parser.add_argument(
+        "--component",
+        dest="components",
+        action="append",
+        type=_parse_widom_component_name,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Activate one packaged Widom probe component. Repeat for multiple components. "
+            f"Supported: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}."
+        ),
+    )
+    parser.add_argument(
+        "--all-components",
+        action="store_true",
+        help="Activate all packaged Widom probe components.",
+    )
+    parser.add_argument(
+        "--widom-moves-per-component",
+        type=int,
+        default=DEFAULT_WIDOM_MOVES_PER_COMPONENT,
+        help=(
+            "Target Widom moves per active component. cofkit multiplies this by the number of "
+            f"selected components to derive NumberOfProductionCycles unless --production-cycles is set. "
+            f"Default: {DEFAULT_WIDOM_MOVES_PER_COMPONENT}."
+        ),
+    )
+    parser.add_argument(
         "--initialization-cycles",
         type=int,
         default=0,
@@ -579,8 +624,12 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--production-cycles",
         type=int,
-        default=2000000,
-        help="gRASPA NumberOfProductionCycles. Default: 2000000.",
+        default=None,
+        help=(
+            "Optional explicit gRASPA NumberOfProductionCycles override. "
+            "When omitted, cofkit derives the total from --widom-moves-per-component "
+            "times the number of active components."
+        ),
     )
     parser.add_argument(
         "--trial-positions",
@@ -633,6 +682,25 @@ def _add_graspa_widom_parser(subparsers) -> None:
 
 
 def _run_graspa_widom(args: argparse.Namespace) -> None:
+    if args.production_cycles is None and args.widom_moves_per_component <= 0:
+        raise SystemExit("error: --widom-moves-per-component must be positive.")
+
+    selected_components: list[str] = []
+    if args.all_components:
+        selected_components.extend(AVAILABLE_WIDOM_COMPONENTS)
+    if args.components:
+        selected_components.extend(args.components)
+    deduped_components = tuple(dict.fromkeys(selected_components))
+    if not deduped_components:
+        raise SystemExit("error: select at least one Widom component with --component or --all-components.")
+
+    if args.production_cycles is None:
+        production_cycles = args.widom_moves_per_component * len(deduped_components)
+        widom_moves_per_component = args.widom_moves_per_component
+    else:
+        production_cycles = args.production_cycles
+        widom_moves_per_component = None
+
     eqeq_settings = EqeqChargeSettings(
         lambda_value=args.eqeq_lambda,
         hydrogen_electron_affinity=args.eqeq_h_i0,
@@ -643,11 +711,13 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
         eta=args.eqeq_eta,
     )
     widom_settings = GraspaWidomSettings(
+        components=deduped_components,
         temperature=args.temperature,
         pressure=args.pressure,
         initialization_cycles=args.initialization_cycles,
         equilibration_cycles=args.equilibration_cycles,
-        production_cycles=args.production_cycles,
+        production_cycles=production_cycles,
+        widom_moves_per_component=widom_moves_per_component,
         number_of_trial_positions=args.trial_positions,
         number_of_trial_orientations=args.trial_orientations,
         cutoff_vdw=args.cutoff_vdw,
