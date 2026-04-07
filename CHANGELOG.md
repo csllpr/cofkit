@@ -2,6 +2,13 @@
 
 All notable changes to `cofkit` are recorded here.
 
+## 2026-04-07
+
+### Fixed
+
+- removed the hardcoded local LAMMPS binary fallback from runtime resolution; `cofkit` now relies on `COFKIT_LMP_PATH` or `--lmp-path` instead of a machine-specific absolute path
+- removed machine-specific absolute paths from the user and agent documentation
+
 ## 2026-03-27
 
 ### Added
@@ -12,7 +19,7 @@ All notable changes to `cofkit` are recorded here.
 - optional repeated accessibility-aware Zeo++ probe scans, with parsed channel, surface-area, pore-volume, and Voronoi-node accessibility summaries
 - an internal Zeo++ capability map in [agent-docs/ZEOPP_CAPABILITY_MAP.md](agent-docs/ZEOPP_CAPABILITY_MAP.md)
 - initial `cofkit calculate lammps-optimize` wrapper for fixed-cell local cleanup of explicit-bond `P1` CIFs
-- LAMMPS binary discovery through `COFKIT_LMP_PATH`, plus a development fallback to `/opt/homebrew/bin/lmp_mpi` when present
+- LAMMPS binary discovery through `COFKIT_LMP_PATH` for the new cleanup workflow
 - generated LAMMPS data/input files, stdout/stderr logs, dump trajectory, optimized CIF export, and `lammps_report.json` for the new cleanup workflow
 - a real UFF-backed LAMMPS parameterization path using Open Babel UFF atom typing, installed `UFF.prm` parameters, and `pymatgen` LAMMPS-data generation
 - staged LAMMPS optimization controls, including `timestep`, `min_modify`, an optional second minimization stage, and an optional final `fix box/relax` stage with a box-relax-compatible minimizer

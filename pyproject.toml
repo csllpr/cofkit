@@ -23,14 +23,14 @@ classifiers = [
 ]
 dependencies = [
   "gemmi>=0.7",
+  "openbabel-wheel",
+  "pandas",
+  "pymatgen",
   "rdkit",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "openbabel-wheel",
-  "pandas",
-  "pymatgen",
   "pytest>=8",
 ]
 

@@ -5,8 +5,7 @@ This note records the local Zeo++ `network` capability surface discovered during
 ## Binary and environment
 
 - `cofkit` resolves Zeo++ from `COFKIT_ZEOPP_PATH`
-- development machine path used during integration:
-  `/Users/csllpr/software/zeo++-0.3/network`
+- integration used a local Zeo++ `network` build exposed through `COFKIT_ZEOPP_PATH`; the machine-specific absolute path is intentionally omitted here
 
 ## Important behavior notes
 

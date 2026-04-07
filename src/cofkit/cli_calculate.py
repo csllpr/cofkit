@@ -101,7 +101,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--lmp-path",
         default=None,
-        help="Optional explicit path to the LAMMPS executable or alias. Defaults to COFKIT_LMP_PATH or the dev fallback.",
+        help="Optional explicit path to the LAMMPS executable or alias. Defaults to COFKIT_LMP_PATH.",
     )
     parser.add_argument(
         "--forcefield",

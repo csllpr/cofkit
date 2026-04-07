@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - exercised in environments without RDKi
 
 
 COFKIT_LMP_ENV_VAR = "COFKIT_LMP_PATH"
-DEFAULT_LAMMPS_BINARY = Path("/opt/homebrew/bin/lmp_mpi")
+DEFAULT_LAMMPS_BINARY: Path | None = None
 _SUPPORTED_FORCEFIELDS = ("uff",)
 _SUPPORTED_CHARGE_MODELS = ("none", "eqeq")
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
@@ -409,7 +409,7 @@ def resolve_lammps_binary(lmp_path: str | Path | None = None) -> Path:
             resolved = shutil.which(raw_value)
             if resolved:
                 path = Path(resolved)
-    elif DEFAULT_LAMMPS_BINARY.is_file():
+    elif DEFAULT_LAMMPS_BINARY is not None and DEFAULT_LAMMPS_BINARY.is_file():
         path = DEFAULT_LAMMPS_BINARY
     else:
         raise LammpsConfigurationError(

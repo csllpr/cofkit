@@ -17,28 +17,25 @@ For current capabilities and limits, see [docs/CURRENT_SCOPE.md](docs/CURRENT_SC
 
 ## Installation and dependencies
 
-Core install:
+Canonical repository install:
 
 ```bash
-python3 -m pip install -e .
+uv sync --locked
+uv run cofkit --help
 ```
 
-After editable install, the unified CLI is available as:
+`uv` is the canonical install method for this repository. The base environment installs the mandatory Python runtime dependencies `gemmi`, `rdkit`, `openbabel-wheel`, `pandas`, and `pymatgen`.
 
-```bash
-cofkit --help
-```
-
-Base `cofkit` requires Python `3.10+` plus the packaged runtime dependencies `gemmi` and `rdkit`. `python3 -m pip install -e .` installs those automatically.
-
-For local development and verification in this repository, prefer `uv` so the lockfile-defined dev environment and the repo virtualenv stay aligned:
+For local development and verification, add the `dev` extra:
 
 ```bash
 uv sync --locked --extra dev
 uv run pytest -q
 ```
 
-`uv run ...` is the canonical local test path for this repo because it runs tools from the repo-managed `.venv` and ensures helper executables spawned during tests resolve the same interpreter and dependencies.
+`uv run ...` is the canonical local execution path for this repo because it uses the repo-managed `.venv` and keeps helper executables aligned with the same interpreter and dependencies.
+
+If you explicitly want an editable install inside an existing Python environment, `python3 -m pip install -e .` still works, but it is no longer the canonical repo setup.
 
 Optional external tools you may want in your environment:
 
@@ -46,8 +43,7 @@ Optional external tools you may want in your environment:
 - `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
 - `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage plus the `cofkit calculate graspa-widom` and `cofkit calculate graspa-isotherm` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
 - `gRASPA` for the initial `cofkit calculate graspa-widom` Widom-insertion stage and the `cofkit calculate graspa-isotherm` adsorption stage, with the executable path provided through `COFKIT_GRASPA_PATH`
-- `Open Babel` and `pymatgen` for the currently implemented UFF-backed LAMMPS force-field path; `cofkit` now ships the pinned Open Babel `UFF.prm` reference it uses for export
-- `pytest` to run the test suite
+- `pytest` to run the local test suite when you install the `dev` extra
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
 
@@ -85,7 +81,7 @@ conda activate cofkit-lammps
 export COFKIT_LMP_PATH="$(command -v lmp || command -v lmp_mpi)"
 ```
 
-`cofkit` accepts either `lmp` or `lmp_mpi` as long as `COFKIT_LMP_PATH` points to a working executable.
+Conda is still useful here because LAMMPS is an external executable, not part of the canonical `uv`-managed Python environment for `cofkit`. `cofkit` accepts either `lmp` or `lmp_mpi` as long as `COFKIT_LMP_PATH` points to a working executable.
 
 #### EQeq
 

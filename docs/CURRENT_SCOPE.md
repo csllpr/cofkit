@@ -1,6 +1,6 @@
 # Current Scope
 
-The base package now installs `rdkit` and `gemmi` as mandatory runtime dependencies because the practical monomer-construction, CIF, and topology workflows depend on them. External binaries such as Zeo++, LAMMPS, EQeq, and gRASPA remain optional add-ons.
+The base package now installs `rdkit`, `gemmi`, `openbabel-wheel`, `pandas`, and `pymatgen` as mandatory runtime dependencies because the practical monomer-construction, CIF, topology, and UFF-backed LAMMPS workflows depend on them. External binaries such as Zeo++, LAMMPS, EQeq, and gRASPA remain optional add-ons. The canonical repository install path is `uv sync --locked`, with `uv sync --locked --extra dev` for local verification tools such as `pytest`.
 
 ## Implemented so far
 

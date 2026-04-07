@@ -141,25 +141,25 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "gemmi" },
-    { name = "rdkit" },
-]
-
-[package.optional-dependencies]
-dev = [
     { name = "openbabel-wheel" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pymatgen", version = "2025.10.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pymatgen", version = "2026.3.23", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "rdkit" },
+]
+
+[package.optional-dependencies]
+dev = [
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gemmi", specifier = ">=0.7" },
-    { name = "openbabel-wheel", marker = "extra == 'dev'" },
-    { name = "pandas", marker = "extra == 'dev'" },
-    { name = "pymatgen", marker = "extra == 'dev'" },
+    { name = "openbabel-wheel" },
+    { name = "pandas" },
+    { name = "pymatgen" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "rdkit" },
 ]

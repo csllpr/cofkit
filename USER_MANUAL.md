@@ -51,32 +51,36 @@ Use [examples/classify_batch_output.py](examples/classify_batch_output.py) when:
 
 Use any Python `3.10+` environment.
 
-Core install:
+Canonical repository install:
 
 ```bash
-python3 -m pip install -e .
+uv sync --locked
+uv run cofkit --help
 ```
 
-Installed runtime dependencies:
+Installed mandatory runtime dependencies:
 
 - `gemmi` for CIF-backed coarse validation and the broader topology scan / symmetry-expansion utilities
 - `RDKit` for SMILES-based monomer construction and the practical batch workflows
-- these are installed automatically by `python3 -m pip install -e .`
+- `openbabel-wheel`, `pandas`, and `pymatgen` for the current UFF-backed LAMMPS workflow and related report/data handling
+- these are installed automatically by `uv sync --locked`
 
-For local development and verification in this repository, prefer the lockfile-backed `uv` environment:
+For local development and verification in this repository, use the lockfile-backed `uv` environment with the `dev` extra:
 
 ```bash
 uv sync --locked --extra dev
 uv run pytest -q
 ```
 
-That is the canonical local test path for this repo and avoids PATH-sensitive behavior from helper executables spawned during wrapper tests.
+That is the canonical local test path for this repo and avoids PATH-sensitive behavior from helper executables spawned during wrapper tests. If you explicitly need an editable install inside an existing Python environment, `python3 -m pip install -e .` still works, but it is no longer the canonical repo setup.
 
-Optional add-ons:
+Optional external add-ons:
 
+- `Zeo++` if you want to use `cofkit analyze zeopp`
+- `LAMMPS` if you want to use `cofkit calculate lammps-optimize`
 - `EQeq` if you want to use `cofkit calculate graspa-widom` or `cofkit calculate graspa-isotherm` for framework charge assignment
 - `gRASPA` if you want to use `cofkit calculate graspa-widom` for Widom insertion or `cofkit calculate graspa-isotherm` for real adsorption simulations
-- `pytest` if you want to run the tests locally
+- `pytest` if you want to run the tests locally via the `dev` extra
 
 The bundled topology data shipped with the package is enough for normal structure generation. External RCSR archives are optional advanced inputs, not required setup.
 
@@ -602,7 +606,7 @@ Point `cofkit` at the LAMMPS executable through an environment variable:
 export COFKIT_LMP_PATH=/path/to/lmp_mpi
 ```
 
-In the current development environment, `cofkit` also falls back to `/opt/homebrew/bin/lmp_mpi` if that path exists.
+Alternatively, pass `--lmp-path` per run if you do not want to export `COFKIT_LMP_PATH`.
 
 ### CLI usage
 
