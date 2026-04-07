@@ -53,6 +53,8 @@ Optional external tools you may want in your environment:
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
 
+For CLI convenience, `cofkit` automatically loads the nearest `.env` file by searching upward from the current working directory. Values already present in the shell environment are left unchanged, so explicit exports still take precedence.
+
 ### Supported External Tool Installs
 
 For reproducible wrapper behavior, prefer these exact upstreams and binary names.

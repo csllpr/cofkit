@@ -11,6 +11,7 @@ from typing import Iterable, Mapping
 
 from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
 from .chem.rdkit import build_rdkit_monomer
+from .cofid import try_generate_cofid
 from .cif import CIFWriter
 from .embedding import EmbeddingConfig, EmbeddingResult, PeriodicEmbedder
 from .engine import COFEngineConfig, COFProject
@@ -3582,6 +3583,7 @@ class BatchStructureGenerator:
         reactant_connectivities: Mapping[str, int],
         reactant_roles: tuple[str, str],
         template_id: str,
+        cofid: str | None,
         hard_hard_invalid_reasons: tuple[str, ...] = (),
         hard_hard_invalid_metrics: Mapping[str, object] | None = None,
     ) -> BatchPairSummary:
@@ -3619,6 +3621,7 @@ class BatchStructureGenerator:
                 "reactant_connectivities": dict(reactant_connectivities),
                 "reactant_roles": reactant_roles,
                 "template_id": template_id,
+                **({"cofid": cofid} if cofid is not None else {}),
                 **(
                     {
                         "post_build_conversions": dict(
@@ -3664,6 +3667,24 @@ class BatchStructureGenerator:
             "metrics": self._json_safe({"cif_path": None, **dict(metrics)}),
         }
 
+    def _validation_unavailable_metadata(
+        self,
+        *,
+        cif_path: str,
+        error: str,
+    ) -> dict[str, object]:
+        return {
+            "classification": "unvalidated",
+            "is_valid": None,
+            "passes_hard_validation": None,
+            "blocks_cif_export": False,
+            "reasons": ["validation_backend_unavailable"],
+            "hard_hard_invalid_reasons": [],
+            "warning_reasons": [],
+            "hard_invalid_reasons": [],
+            "metrics": self._json_safe({"cif_path": cif_path, "error": error}),
+        }
+
     def _classified_cif_destination(
         self,
         out_dir: str | Path,
@@ -3690,6 +3711,8 @@ class BatchStructureGenerator:
         monomer_specs: Mapping[str, MonomerSpec] | Iterable[MonomerSpec],
         provisional_summary: BatchPairSummary,
     ) -> tuple[str | None, dict[str, object] | None]:
+        cofid = provisional_summary.metadata.get("cofid")
+        cofid_value = cofid if isinstance(cofid, str) and cofid else None
         if not self.config.separate_cif_outputs_by_validation:
             out_path = Path(out_dir) / f"{structure_id}.cif"
             self.cif_writer.write_candidate(
@@ -3697,6 +3720,7 @@ class BatchStructureGenerator:
                 candidate,
                 monomer_specs,
                 data_name=structure_id,
+                cofid=cofid_value,
             )
             return str(out_path), None
 
@@ -3708,9 +3732,22 @@ class BatchStructureGenerator:
             candidate,
             monomer_specs,
             data_name=structure_id,
+            cofid=cofid_value,
         )
         validation_record = self._summary_to_dict(replace(provisional_summary, cif_path=str(staging_path)))
-        report = self.structure_validator.validate_manifest_record(validation_record)
+        try:
+            report = self.structure_validator.validate_manifest_record(validation_record)
+        except ModuleNotFoundError as exc:
+            if "gemmi is required" not in str(exc):
+                raise
+            final_path = self._classified_cif_destination(
+                out_dir,
+                structure_id=structure_id,
+                classification="valid",
+            )
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            staging_path.replace(final_path)
+            return str(final_path), self._validation_unavailable_metadata(cif_path=str(final_path), error=str(exc))
         if report.classification == "hard_hard_invalid":
             staging_path.unlink(missing_ok=True)
             return None, self._validation_metadata(report, cif_path=None)
@@ -3815,6 +3852,7 @@ class BatchStructureGenerator:
             topology_id = candidate.metadata["net_plan"]["topology"]
             structure_id = f"{pair_id}__{topology_id}" if topology_id is not None else pair_id
             hard_hard_invalid_reasons, hard_hard_invalid_metrics = self._hard_hard_invalid_reasons(candidate)
+            cofid = try_generate_cofid(candidate, (first, second))
             export_index = 0
             provisional_summary = self._candidate_to_summary(
                 pair_id=pair_id,
@@ -3833,6 +3871,7 @@ class BatchStructureGenerator:
                 reactant_connectivities=role_connectivities,
                 reactant_roles=pair.role_ids,
                 template_id=pair.template.id,
+                cofid=cofid,
                 hard_hard_invalid_reasons=hard_hard_invalid_reasons,
                 hard_hard_invalid_metrics=hard_hard_invalid_metrics,
             )

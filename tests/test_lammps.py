@@ -39,7 +39,8 @@ class LammpsTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
             cif_path = temp_path / "example.cif"
-            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+            cofid = "3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.2:aldehyde:O=Cc1ccc(C=O)cc1&&hcb&&imine"
+            cif_path.write_text(f"# COFid: {cofid}\n{self._example_cif_text()}", encoding="utf-8")
             output_dir = temp_path / "lammps_out"
 
             with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
@@ -60,6 +61,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("WARNING: fake warning from test binary", result.warnings)
 
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
+            self.assertEqual(optimized_text.splitlines()[0], f"# COFid: {cofid}")
             self.assertIn("_ccdc_geom_bond_type", optimized_text)
             self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00", optimized_text)
             self.assertIn("a1 a2 . . 1.030776 D", optimized_text)

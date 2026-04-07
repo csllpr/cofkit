@@ -10,6 +10,7 @@ from typing import Iterable
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .chem.rdkit import build_rdkit_monomer
+from .cofid import cofid_to_build_request
 from .monomer_library import MonomerRoleResolver
 from .reactions import ReactionLibrary
 
@@ -98,7 +99,8 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
 
 
 def _configure_generator(args: argparse.Namespace, *, template_id: str | None = None) -> BatchStructureGenerator:
-    allowed_reactions = (template_id or getattr(args, "template_id", "imine_bridge"),)
+    effective_template_id = template_id or getattr(args, "template_id", None) or "imine_bridge"
+    allowed_reactions = (effective_template_id,)
     return BatchStructureGenerator(
         BatchGenerationConfig(
             allowed_reactions=allowed_reactions,
@@ -121,9 +123,10 @@ def _add_single_pair_parser(subparsers) -> None:
         help="Generate one COF candidate set from two monomers.",
         description="Generate one single-pair COF candidate set from two monomers using an explicit or autodetected binary-bridge template.",
     )
+    parser.add_argument("--cofid", default=None, help="COFid string to build from. When supplied, it defines the monomers, topology, and linkage.")
     parser.add_argument("--template-id", default="imine_bridge", help="Binary bridge template to use.")
-    parser.add_argument("--first-smiles", required=True, help="SMILES for the first monomer.")
-    parser.add_argument("--second-smiles", required=True, help="SMILES for the second monomer.")
+    parser.add_argument("--first-smiles", default=None, help="SMILES for the first monomer.")
+    parser.add_argument("--second-smiles", default=None, help="SMILES for the second monomer.")
     parser.add_argument("--first-id", default="monomer_a", help="Identifier for the first monomer.")
     parser.add_argument("--second-id", default="monomer_b", help="Identifier for the second monomer.")
     parser.add_argument("--first-name", default=None, help="Display name for the first monomer.")
@@ -188,6 +191,42 @@ def _add_single_pair_parser(subparsers) -> None:
 
 
 def _run_single_pair(args: argparse.Namespace) -> None:
+    if args.cofid is not None and (
+        args.first_smiles is not None
+        or args.second_smiles is not None
+        or args.first_motif_kind is not None
+        or args.second_motif_kind is not None
+        or args.topology
+    ):
+        raise SystemExit(
+            "--cofid cannot be combined with --first-smiles/--second-smiles, "
+            "--first-motif-kind/--second-motif-kind, or --topology"
+        )
+
+    requested_cofid = None
+    if args.cofid is not None:
+        request = cofid_to_build_request(args.cofid)
+        args = argparse.Namespace(**vars(args))
+        requested_cofid = request.cofid
+        args.template_id = request.template_id
+        args.first_smiles = request.monomers[0].canonical_smiles
+        args.second_smiles = request.monomers[1].canonical_smiles
+        args.first_motif_kind = request.monomers[0].motif_kind
+        args.second_motif_kind = request.monomers[1].motif_kind
+        args.target_dimensionality = request.target_dimensionality
+        args.topology = [request.topology]
+        args.all_topologies = False
+        if args.first_id == "monomer_a":
+            args.first_id = "cofid_m1"
+        if args.second_id == "monomer_b":
+            args.second_id = "cofid_m2"
+        if args.first_name is None:
+            args.first_name = args.first_id
+        if args.second_name is None:
+            args.second_name = args.second_id
+    elif args.first_smiles is None or args.second_smiles is None:
+        raise SystemExit("single-pair requires either --cofid or both --first-smiles and --second-smiles")
+
     library = ReactionLibrary.builtin()
     profile = library.linkage_profile(args.template_id)
     if profile is None or not profile.supports_binary_bridge_pair_generation:
@@ -256,6 +295,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         attempted_structures = 1 if summary.status == "ok" else 0
 
     report = {
+        **({"requested_cofid": requested_cofid} if requested_cofid is not None else {}),
         "template_id": args.template_id,
         "target_dimensionality": args.target_dimensionality,
         "first": {"id": args.first_id, "name": args.first_name or args.first_id, "motif_kind": first_kind, "motif_count": len(first.motifs)},
@@ -268,6 +308,8 @@ def _run_single_pair(args: argparse.Namespace) -> None:
     (output_dir / "summary.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     print("template_id:", args.template_id)
+    if requested_cofid is not None:
+        print("requested_cofid:", requested_cofid)
     print("target_dimensionality:", args.target_dimensionality)
     print("first_monomer:", args.first_id, first_kind, len(first.motifs))
     print("second_monomer:", args.second_id, second_kind, len(second.motifs))

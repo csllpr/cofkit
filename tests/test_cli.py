@@ -1,10 +1,12 @@
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -16,6 +18,13 @@ try:
     from rdkit import Chem  # noqa: F401
 except ImportError:  # pragma: no cover - environment-dependent
     Chem = None
+
+
+def _canonical(smiles: str) -> str:
+    assert Chem is not None
+    molecule = Chem.MolFromSmiles(smiles)
+    assert molecule is not None
+    return str(Chem.MolToSmiles(molecule, canonical=True, isomericSmiles=False))
 
 
 class BatchSummaryCompatibilityTests(unittest.TestCase):
@@ -63,6 +72,38 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 0)
         self.assertEqual(buffer.getvalue().strip(), f"cofkit {package_version}")
+
+    def test_cli_loads_dotenv_from_parent_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            (temp_path / ".env").write_text("COFKIT_TEST_SENTINEL=from_dotenv\n", encoding="utf-8")
+            nested_dir = temp_path / "nested" / "child"
+            nested_dir.mkdir(parents=True)
+            previous_cwd = Path.cwd()
+            try:
+                with patch.dict(os.environ, {}, clear=True):
+                    os.chdir(nested_dir)
+                    buffer = io.StringIO()
+                    with contextlib.redirect_stdout(buffer):
+                        cli_main(["build", "list-templates", "--json"])
+                    self.assertEqual(os.environ.get("COFKIT_TEST_SENTINEL"), "from_dotenv")
+            finally:
+                os.chdir(previous_cwd)
+
+    def test_cli_dotenv_does_not_override_existing_environment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            (temp_path / ".env").write_text("COFKIT_TEST_SENTINEL=from_dotenv\n", encoding="utf-8")
+            previous_cwd = Path.cwd()
+            try:
+                with patch.dict(os.environ, {"COFKIT_TEST_SENTINEL": "explicit"}, clear=True):
+                    os.chdir(temp_path)
+                    buffer = io.StringIO()
+                    with contextlib.redirect_stdout(buffer):
+                        cli_main(["build", "list-templates", "--json"])
+                    self.assertEqual(os.environ.get("COFKIT_TEST_SENTINEL"), "explicit")
+            finally:
+                os.chdir(previous_cwd)
 
     def test_list_templates_json_reports_execution_capabilities(self):
         buffer = io.StringIO()
@@ -135,6 +176,45 @@ class CliTests(unittest.TestCase):
             cif_path = Path(summary["results"][0]["cif_path"])
             self.assertTrue(cif_path.exists())
             self.assertEqual(cif_path.suffix, ".cif")
+            cif_lines = cif_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(cif_lines[0], f"# COFid: {summary['results'][0]['metadata']['cofid']}")
+
+    @unittest.skipIf(Chem is None, "RDKit is not available")
+    def test_single_pair_cli_accepts_cofid(self):
+        tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
+        tfb = "C1=C(C=C(C=C1C=O)C=O)C=O"
+        monomers = (
+            (3, "amine", _canonical(tapb)),
+            (3, "aldehyde", _canonical(tfb)),
+        )
+        cofid = ".".join(
+            f"{connectivity}:{reactive_group}:{smiles}"
+            for connectivity, reactive_group, smiles in sorted(
+                monomers,
+                key=lambda item: (-item[0], item[2]),
+            )
+        ) + "&&hcb&&imine"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "single_pair_cofid"
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli_main(
+                    [
+                        "build",
+                        "single-pair",
+                        "--cofid",
+                        cofid,
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["requested_cofid"], cofid)
+            self.assertEqual(summary["template_id"], "imine_bridge")
+            self.assertEqual(summary["successful_structures"], 1)
+            self.assertEqual(summary["results"][0]["metadata"]["cofid"], cofid)
 
     def test_single_pair_cli_rejects_internal_post_build_conversion_flag(self):
         stderr_buffer = io.StringIO()

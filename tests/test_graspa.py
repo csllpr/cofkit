@@ -44,10 +44,12 @@ class GraspaWidomTests(unittest.TestCase):
     def test_run_graspa_widom_workflow_prepares_inputs_and_parses_results(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
             fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
             cif_path = temp_path / "example_framework.cif"
+            cofid = "3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.2:aldehyde:O=Cc1ccc(C=O)cc1&&hcb&&imine"
             cif_path.write_text(
+                f"# COFid: {cofid}\n"
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
@@ -79,6 +81,11 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertFalse((Path(result.eqeq_run_dir) / "data_C.cif").exists())
             self.assertTrue((Path(result.widom_run_dir) / "Xe.def").is_file())
             self.assertTrue((Path(result.widom_run_dir) / "Kr.def").is_file())
+            self.assertEqual(Path(result.eqeq_charged_cif).read_text(encoding="utf-8").splitlines()[0], f"# COFid: {cofid}")
+            self.assertEqual(
+                Path(result.widom_framework_cif).read_text(encoding="utf-8").splitlines()[0],
+                f"# COFid: {cofid}",
+            )
 
             simulation_input = Path(result.simulation_input_path).read_text(encoding="utf-8")
             self.assertIn("UseGPUReduction yes", simulation_input)
@@ -174,10 +181,12 @@ class GraspaWidomTests(unittest.TestCase):
     def test_run_graspa_isotherm_workflow_prepares_inputs_and_parses_results(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
             fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
             cif_path = temp_path / "adsorption_framework.cif"
+            cofid = "3:aldehyde:O=Cc1cc(C=O)cc(C=O)c1.2:hydrazide:CCOc1cc(C(=O)NN)cc(C(=O)NN)c1OCC&&hcb&&hydrazone"
             cif_path.write_text(
+                f"# COFid: {cofid}\n"
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
@@ -207,6 +216,11 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertTrue(Path(result.results_csv_path).is_file())
             self.assertTrue(Path(result.report_path).is_file())
             self.assertTrue(Path(result.isotherm_framework_cif).is_file())
+            self.assertEqual(Path(result.eqeq_charged_cif).read_text(encoding="utf-8").splitlines()[0], f"# COFid: {cofid}")
+            self.assertEqual(
+                Path(result.isotherm_framework_cif).read_text(encoding="utf-8").splitlines()[0],
+                f"# COFid: {cofid}",
+            )
 
             first_point = result.point_results[0]
             second_point = result.point_results[1]
@@ -308,13 +322,15 @@ class GraspaWidomTests(unittest.TestCase):
         self.assertIn("graspa-widom", buffer.getvalue())
         self.assertIn("graspa-isotherm", buffer.getvalue())
 
-    def _write_fake_eqeq_binary(self, path: Path) -> Path:
+    def _write_fake_eqeq_binary(self, path: Path, *, strip_leading_cofid_comment: bool = False) -> Path:
         path.write_text(
             f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
             "import json\n"
             "import sys\n"
             "from pathlib import Path\n"
+            "\n"
+            f"strip_leading_cofid_comment = {strip_leading_cofid_comment!r}\n"
             "\n"
             "args = sys.argv[1:]\n"
             "if len(args) < 8:\n"
@@ -332,6 +348,8 @@ class GraspaWidomTests(unittest.TestCase):
             "\n"
             "stem = f'{input_name}_EQeq_{method}_{lambda_value:.2f}_{h_i0:.2f}'\n"
             "input_text = input_path.read_text(encoding='utf-8')\n"
+            "if strip_leading_cofid_comment and input_text.startswith('# COFid: '):\n"
+            "    _, _, input_text = input_text.partition('\\n')\n"
             "Path(stem + '.cif').write_text(input_text + '\\n# fake charged output\\n', encoding='utf-8')\n"
             "Path(stem + '.json').write_text(json.dumps({'argv': args}, indent=2), encoding='utf-8')\n"
             "Path('eqeq_invocation.json').write_text(json.dumps({'argv': args}, indent=2), encoding='utf-8')\n"

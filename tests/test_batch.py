@@ -408,6 +408,8 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             self.assertIn(f"{Path(temp_dir) / 'valid'}", summary.cif_path)
             cif_text = Path(summary.cif_path).read_text(encoding="utf-8")
 
+        self.assertIn("cofid", summary.metadata)
+        self.assertEqual(cif_text.splitlines()[0], f"# COFid: {summary.metadata['cofid']}")
         self.assertIn("_geom_bond_atom_site_label_1", cif_text)
         self.assertIn("_atom_site_label", cif_text)
 

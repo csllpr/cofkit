@@ -95,6 +95,8 @@ For the current wrappers, use these upstreams instead of ad hoc local builds:
 
 Concrete shell commands for those installs are documented in [README.md](README.md) under `Supported External Tool Installs`.
 
+When you use the `cofkit` CLI, it automatically loads the nearest `.env` file by searching upward from the current working directory. Explicit environment variables already present in the shell still take precedence.
+
 Typical invocation style:
 
 ```bash
@@ -698,7 +700,7 @@ export COFKIT_EQEQ_PATH=/path/to/eqeq
 export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 ```
 
-The gRASPA executable is commonly named `nvc_main.x`. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
+The gRASPA executable is commonly named `nvc_main.x`. The CLI also auto-loads the nearest `.env` file, so these variables can live there instead of being exported in every shell. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
 
 ### CLI usage
 
@@ -781,7 +783,7 @@ export COFKIT_EQEQ_PATH=/path/to/eqeq
 export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 ```
 
-The gRASPA executable is commonly named `nvc_main.x`. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
+The gRASPA executable is commonly named `nvc_main.x`. The CLI also auto-loads the nearest `.env` file, so these variables can live there instead of being exported in every shell. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
 
 ### CLI usage
 
