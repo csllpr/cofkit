@@ -17,9 +17,11 @@ from cofkit.graspa import (
     COFKIT_GRASPA_ENV_VAR,
     EqeqChargeSettings,
     GraspaConfigurationError,
+    GraspaIsothermSettings,
     GraspaWidomSettings,
     resolve_eqeq_binary,
     resolve_graspa_binary,
+    run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
 )
 
@@ -169,12 +171,142 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["component_results"][0]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["component"], "Xe")
 
+    def test_run_graspa_isotherm_workflow_prepares_inputs_and_parses_results(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "adsorption_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_isotherm_workflow(
+                    cif_path,
+                    output_dir=temp_path / "isotherm_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    isotherm_settings=GraspaIsothermSettings(component="CO2", pressures=(10000.0, 500000.0)),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(result.unit_cells, (1, 2, 3))
+            self.assertEqual(len(result.point_results), 2)
+            self.assertTrue(Path(result.eqeq_charged_cif).is_file())
+            self.assertTrue(Path(result.results_csv_path).is_file())
+            self.assertTrue(Path(result.report_path).is_file())
+            self.assertTrue(Path(result.isotherm_framework_cif).is_file())
+
+            first_point = result.point_results[0]
+            second_point = result.point_results[1]
+            self.assertEqual(first_point.component, "CO2")
+            self.assertEqual(first_point.pressure, 10000.0)
+            self.assertAlmostEqual(first_point.loading_mol_per_kg, 0.025)
+            self.assertAlmostEqual(first_point.loading_g_per_l, 0.25)
+            self.assertAlmostEqual(first_point.heat_of_adsorption_kj_per_mol, -20.1)
+            self.assertEqual(second_point.pressure, 500000.0)
+            self.assertAlmostEqual(second_point.loading_mol_per_kg, 1.25)
+            self.assertAlmostEqual(second_point.loading_g_per_l, 12.5)
+            self.assertAlmostEqual(second_point.heat_of_adsorption_kj_per_mol, -25.0)
+
+            simulation_input = Path(first_point.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("NumberOfBlocks 5", simulation_input)
+            self.assertIn("Component 0 MoleculeName             CO2", simulation_input)
+            self.assertIn("Pressure     10000", simulation_input)
+            self.assertIn("TranslationProbability   1", simulation_input)
+            self.assertIn("RotationProbability      1", simulation_input)
+            self.assertIn("ReinsertionProbability   1", simulation_input)
+            self.assertIn("SwapProbability          1", simulation_input)
+            self.assertNotIn("WidomProbability", simulation_input)
+
+            csv_text = Path(result.results_csv_path).read_text(encoding="utf-8")
+            self.assertIn("pressure_pa", csv_text)
+            self.assertIn("loading_mol_per_kg", csv_text)
+            self.assertIn("heat_of_adsorption_kj_per_mol", csv_text)
+
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(report["unit_cells"], [1, 2, 3])
+            self.assertEqual(report["isotherm_settings"]["component"], "CO2")
+            self.assertEqual(report["isotherm_settings"]["pressures"], [10000.0, 500000.0])
+            self.assertEqual(report["point_results"][0]["loading_mol_per_kg"], 0.025)
+            self.assertEqual(report["point_results"][0]["loading_mmol_per_g"], 0.025)
+            self.assertEqual(report["point_results"][1]["loading_mol_per_kg"], 1.25)
+
+    def test_calculate_graspa_isotherm_cli_prints_json_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "cli_adsorption_example.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+            output_dir = temp_path / "cli_isotherm"
+            buffer = io.StringIO()
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                with contextlib.redirect_stdout(buffer):
+                    cli_main(
+                        [
+                            "calculate",
+                            "graspa-isotherm",
+                            str(cif_path),
+                            "--output-dir",
+                            str(output_dir),
+                            "--component",
+                            "Xe",
+                            "--pressure",
+                            "10000",
+                            "--pressure",
+                            "100000",
+                            "--fugacity-coefficient",
+                            "PR-EOS",
+                            "--json",
+                        ]
+                    )
+
+            report = json.loads(buffer.getvalue())
+            self.assertEqual(report["output_dir"], str(output_dir.resolve()))
+            self.assertEqual(report["unit_cells"], [1, 2, 3])
+            self.assertEqual(report["isotherm_settings"]["component"], "Xe")
+            self.assertEqual(report["isotherm_settings"]["fugacity_coefficient"], "PR-EOS")
+            self.assertEqual(len(report["point_results"]), 2)
+            self.assertEqual(report["point_results"][0]["pressure"], 10000.0)
+            self.assertEqual(report["point_results"][1]["pressure"], 100000.0)
+
+            simulation_input = Path(report["point_results"][0]["simulation_input_path"]).read_text(encoding="utf-8")
+            self.assertIn("FugacityCoefficient      PR-EOS", simulation_input)
+            self.assertNotIn("RotationProbability", simulation_input)
+
     def test_calculate_help_lists_graspa_widom(self):
         buffer = io.StringIO()
         with self.assertRaises(SystemExit), contextlib.redirect_stdout(buffer):
             cli_main(["calculate", "--help"])
 
         self.assertIn("graspa-widom", buffer.getvalue())
+        self.assertIn("graspa-isotherm", buffer.getvalue())
 
     def _write_fake_eqeq_binary(self, path: Path) -> Path:
         path.write_text(
@@ -227,12 +359,15 @@ class GraspaWidomTests(unittest.TestCase):
             "text = simulation_input.read_text(encoding='utf-8')\n"
             "framework_match = re.search(r'^FrameworkName\\s+(\\S+)', text, re.MULTILINE)\n"
             "unit_cells_match = re.search(r'^UnitCells\\s+0\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)', text, re.MULTILINE)\n"
+            "pressure_match = re.search(r'^Pressure\\s+(\\S+)', text, re.MULTILINE)\n"
             "components = re.findall(r'^Component\\s+\\d+\\s+MoleculeName\\s+(\\S+)', text, re.MULTILINE)\n"
-            "if framework_match is None or unit_cells_match is None:\n"
+            "if framework_match is None or unit_cells_match is None or pressure_match is None:\n"
             "    sys.stderr.write('missing framework/unitcells config\\n')\n"
             "    sys.exit(3)\n"
             "\n"
             "framework_name = framework_match.group(1)\n"
+            "pressure = float(pressure_match.group(1))\n"
+            "mode = 'widom' if 'WidomProbability' in text else 'isotherm'\n"
             "framework_cif = Path(framework_name + '.cif')\n"
             "if not framework_cif.is_file():\n"
             "    sys.stderr.write('missing framework cif\\n')\n"
@@ -242,8 +377,10 @@ class GraspaWidomTests(unittest.TestCase):
             "Path('graspa_invocation.json').write_text(\n"
             "    json.dumps(\n"
             "        {\n"
+            "            'mode': mode,\n"
             "            'framework_name': framework_name,\n"
             "            'unit_cells': unit_cells,\n"
+            "            'pressure': pressure,\n"
             "            'components': components,\n"
             "        },\n"
             "        indent=2,\n"
@@ -254,19 +391,46 @@ class GraspaWidomTests(unittest.TestCase):
             "output_dir = Path('Output')\n"
             "output_dir.mkdir(exist_ok=True)\n"
             "data_path = output_dir / 'System_0_fake.data'\n"
-            "sections = []\n"
-            "for index, component in enumerate(components):\n"
-            "    energy = -10.0 - index\n"
-            "    energy_err = 0.1 + index * 0.01\n"
-            "    henry = (index + 1) * 1.0e-5\n"
-            "    henry_err = (index + 1) * 1.0e-6\n"
-            "    sections.append(\n"
-            "        '================Rosenbluth Summary For Component '\n"
-            "        f'[{index}] ({component})================\\n'\n"
-            "        f'Averaged Excess Chemical Potential: {energy:.2f} +/- {energy_err:.2f}\\n'\n"
-            "        f'Averaged Henry Coefficient [mol/kg/Pa]: {henry:.8e} +/- {henry_err:.8e}\\n'\n"
+            "if mode == 'widom':\n"
+            "    sections = []\n"
+            "    for index, component in enumerate(components):\n"
+            "        energy = -10.0 - index\n"
+            "        energy_err = 0.1 + index * 0.01\n"
+            "        henry = (index + 1) * 1.0e-5\n"
+            "        henry_err = (index + 1) * 1.0e-6\n"
+            "        sections.append(\n"
+            "            '================Rosenbluth Summary For Component '\n"
+            "            f'[{index}] ({component})================\\n'\n"
+            "            f'Averaged Excess Chemical Potential: {energy:.2f} +/- {energy_err:.2f}\\n'\n"
+            "            f'Averaged Henry Coefficient [mol/kg/Pa]: {henry:.8e} +/- {henry_err:.8e}\\n'\n"
+            "        )\n"
+            "    data_path.write_text('\\n'.join(sections), encoding='utf-8')\n"
+            "else:\n"
+            "    component = components[0]\n"
+            "    loading_mol = pressure / 100000.0 * 0.25\n"
+            "    loading_err = loading_mol * 0.1\n"
+            "    loading_gpl = loading_mol * 10.0\n"
+            "    loading_gpl_err = loading_err * 10.0\n"
+            "    heat = -20.0 - pressure / 100000.0\n"
+            "    heat_err = 0.5\n"
+            "    data_path.write_text(\n"
+            "        '==============================================================\\n'\n"
+            "        '=====================BLOCK AVERAGES (LOADING: mol/kg)=============\\n'\n"
+            "        f'COMPONENT [1] ({component})\\n'\n"
+            "        f'Overall: Average: {loading_mol:.5f}, ErrorBar: {loading_err:.5f}\\n'\n"
+            "        '----------------------------------------------------------\\n'\n"
+            "        '==============================================================\\n'\n"
+            "        '=====================BLOCK AVERAGES (LOADING: g/L)=============\\n'\n"
+            "        f'COMPONENT [1] ({component})\\n'\n"
+            "        f'Overall: Average: {loading_gpl:.5f}, ErrorBar: {loading_gpl_err:.5f}\\n'\n"
+            "        '----------------------------------------------------------\\n'\n"
+            "        '==============================================================\\n'\n"
+            "        '============= BLOCK AVERAGES (HEAT OF ADSORPTION: kJ/mol) =========\\n'\n"
+            "        f'COMPONENT [1] ({component})\\n'\n"
+            "        f'Overall: Average: {heat:.5f}, ErrorBar: {heat_err:.5f}\\n'\n"
+            "        '-----------------------------\\n',\n"
+            "        encoding='utf-8',\n"
             "    )\n"
-            "data_path.write_text('\\n'.join(sections), encoding='utf-8')\n"
             "sys.stdout.write('fake graspa stdout\\n')\n",
             encoding="utf-8",
         )

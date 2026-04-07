@@ -65,8 +65,8 @@ Installed runtime dependencies:
 
 Optional add-ons:
 
-- `EQeq` if you want to use `cofkit calculate graspa-widom` for framework charge assignment
-- `gRASPA` if you want to use `cofkit calculate graspa-widom` for Widom insertion
+- `EQeq` if you want to use `cofkit calculate graspa-widom` or `cofkit calculate graspa-isotherm` for framework charge assignment
+- `gRASPA` if you want to use `cofkit calculate graspa-widom` for Widom insertion or `cofkit calculate graspa-isotherm` for real adsorption simulations
 - `pytest` if you want to run the tests locally
 
 The bundled topology data shipped with the package is enough for normal structure generation. External RCSR archives are optional advanced inputs, not required setup.
@@ -754,6 +754,90 @@ The output directory stores:
 ### Current scope note
 
 This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact.
+
+## Workflow 9: EQeq + gRASPA Single-Component Adsorption Isotherms
+
+The third `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA` adsorption workflow for one CIF and one packaged adsorbate component over one or more pressure points.
+
+### Environment setup
+
+Point `cofkit` at the EQeq and gRASPA executables through environment variables:
+
+```bash
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+```
+
+The gRASPA executable is commonly named `nvc_main.x`. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
+
+### CLI usage
+
+```bash
+cofkit calculate graspa-isotherm \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_isotherm \
+  --component CO2 \
+  --pressure 10000 \
+  --pressure 100000 \
+  --pressure 1000000 \
+  --json
+```
+
+The wrapper runs these stages:
+
+- copy the input CIF into `eqeq/` and run EQeq directly on that CIF
+- take the charged EQeq CIF output and copy it to `isotherm/framework.cif`
+- for each requested pressure point, copy the packaged gRASPA `.def` files plus `framework.cif` into one `isotherm/pressure_*/` run directory
+- render one pressure-specific `simulation.input` per run directory
+- derive one shared `UnitCells` setting from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
+- run one single-component GCMC adsorption simulation per pressure point
+- parse `Output/*.data` into structured pressure/loading/heat results
+
+No Open Babel conversion is part of this workflow. The current public wrapper assumes EQeq accepts ordinary CIF inputs directly.
+
+### Exposed CLI controls
+
+The public `graspa-isotherm` command exposes the main staging and runtime controls directly:
+
+- `--eqeq-path` and `--graspa-path` override `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`
+- `--eqeq-lambda`, `--eqeq-h-i0`, `--eqeq-charge-precision`, `--eqeq-method`, `--eqeq-real-space-cells`, `--eqeq-reciprocal-space-cells`, and `--eqeq-eta` control the EQeq stage
+- `--component NAME` selects one packaged adsorbate definition
+- `--pressure PA` repeats to define one or more pressure points in Pa for the isotherm grid
+- `--fugacity-coefficient VALUE` accepts either a positive float or `PR-EOS`
+- `--temperature`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated gRASPA `simulation.input`
+- `--eqeq-timeout-seconds` and `--graspa-timeout-seconds` cap the subprocess wall-clock runtime
+
+### Available packaged adsorption components
+
+The packaged adsorption template currently ships definitions for:
+
+- `TIP4P`
+- `CO2`
+- `H2`
+- `N2`
+- `SO2`
+- `Xe`
+- `Kr`
+
+Select exactly one component with `--component NAME`. The generated `simulation.input` always uses CIF-backed framework input plus charges read from that charged CIF. `NumberOfBlocks` defaults to `5`, and `--production-cycles` applies per pressure point rather than across the full pressure sweep.
+
+### Output structure
+
+The output directory stores:
+
+- `eqeq/` with the copied input CIF, EQeq stdout/stderr logs, the charged CIF, and the optional EQeq JSON output if the executable writes it
+- `isotherm/framework.cif`
+- one per-pressure run directory under `isotherm/pressure_*/`
+- one `simulation.input` plus gRASPA stdout/stderr logs per pressure-point directory
+- one or more `Output/*.data` files under each pressure-point directory
+- `isotherm/results.csv`
+- `graspa_isotherm_report.json`
+
+`results.csv` records one parsed adsorption point per requested pressure, including absolute loading in `mol/kg` and `g/L` plus heat of adsorption in `kJ/mol`. `graspa_isotherm_report.json` also records the resolved executable paths, the computed `UnitCells`, the effective EQeq and adsorption settings, and any warnings collected during parsing.
+
+### Current scope note
+
+This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement mixture adsorption, restart-chained pressure stepping, excess-loading post-processing, or more advanced gRASPA sampling modes. If gRASPA emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only, not as mixture selectivities.
 
 ### Quantitative rules
 

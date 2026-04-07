@@ -35,8 +35,8 @@ Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
 - `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
-- `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage and the `cofkit calculate graspa-widom` workflow, with the executable path provided through `COFKIT_EQEQ_PATH`
-- `gRASPA` for the initial `cofkit calculate graspa-widom` Widom-insertion stage, with the executable path provided through `COFKIT_GRASPA_PATH`
+- `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage plus the `cofkit calculate graspa-widom` and `cofkit calculate graspa-isotherm` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
+- `gRASPA` for the initial `cofkit calculate graspa-widom` Widom-insertion stage and the `cofkit calculate graspa-isotherm` adsorption stage, with the executable path provided through `COFKIT_GRASPA_PATH`
 - `Open Babel` and `pymatgen` for the currently implemented UFF-backed LAMMPS force-field path; `cofkit` now ships the pinned Open Babel `UFF.prm` reference it uses for export
 - `pytest` to run the test suite
 
@@ -141,6 +141,7 @@ The most useful grouped commands are:
 - `cofkit analyze zeopp`
 - `cofkit calculate lammps-optimize`
 - `cofkit calculate graspa-widom`
+- `cofkit calculate graspa-isotherm`
 - `cofkit build default-library`
 
 Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
@@ -340,6 +341,45 @@ The wrapper writes:
 
 `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH` can both be overridden per run with `--eqeq-path` and `--graspa-path`. On many installations the gRASPA executable is named `nvc_main.x`. If gRASPA emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run.
 
+### Run EQeq + gRASPA single-component adsorption isotherms on one CIF
+
+```bash
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+
+cofkit calculate graspa-isotherm \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_isotherm \
+  --component CO2 \
+  --pressure 10000 \
+  --pressure 100000 \
+  --pressure 1000000 \
+  --json
+```
+
+The `graspa-isotherm` wrapper is the first real-adsorption gRASPA path in `cofkit`. It runs one staged workflow:
+
+- copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
+- copy the charged framework into `isotherm/framework.cif`
+- materialize the packaged gRASPA component definitions into one per-pressure run directory under `isotherm/`
+- compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
+- run one single-component GCMC adsorption simulation per requested pressure point
+- parse absolute loading in `mol/kg` and `g/L`, plus heat of adsorption, from each pressure-point `Output/*.data`
+
+The current public scope is intentionally narrow: one packaged component at a time, one or more user-supplied pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. Packaged components currently match the Widom wrapper: `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`.
+
+The wrapper writes:
+
+- `eqeq/` logs plus the charged CIF emitted by EQeq
+- `isotherm/framework.cif`
+- one staged gRASPA run directory per pressure under `isotherm/pressure_*/`
+- `isotherm/results.csv` with the parsed pressure/loading summary
+- `graspa_isotherm_report.json` with paths, settings, parsed point results, and warnings
+
+`--pressure` repeats to define the isotherm grid. `--production-cycles` applies per pressure point. `--fugacity-coefficient` accepts either a positive float or `PR-EOS`. If gRASPA emits non-finite loading or heat values, `cofkit` keeps the raw data file and records those specific fields as `null` in the JSON report instead of failing the whole run.
+
+This wrapper produces pure-component adsorption points. Ratios such as `Xe/Kr` computed from separate `graspa-isotherm` runs are loading ratios, not mixture selectivities.
+
 ### Rebuild the detector-scanned example library
 
 ```bash
@@ -354,6 +394,7 @@ If you are using Codex inside this repository, load [skills/cofkit-navigator/SKI
 - library-scale binary-bridge screening
 - classification of finished output trees
 - EQeq + gRASPA Widom insertion on an exported CIF
+- EQeq + gRASPA single-component adsorption isotherms on an exported CIF
 - rebuilding the detector-scanned default monomer library
 - choosing between the CLI, `BatchStructureGenerator`, and `COFEngine`
 
@@ -363,6 +404,7 @@ Typical prompts:
 - "Run all supported binary-bridge batches over this library directory."
 - "Classify this finished output tree into validation buckets."
 - "Run the gRASPA Widom wrapper on this optimized CIF."
+- "Run the gRASPA isotherm wrapper on this optimized CIF."
 - "Should I use the CLI, `BatchStructureGenerator`, or `COFEngine` for this task?"
 
 The skill prefers the installed `cofkit` CLI. If the package is not installed in editable mode, it falls back to an equivalent `PYTHONPATH=src ...` launcher.

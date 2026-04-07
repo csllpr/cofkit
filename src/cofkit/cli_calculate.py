@@ -11,8 +11,10 @@ from .graspa import (
     GraspaConfigurationError,
     GraspaError,
     GraspaExecutionError,
+    GraspaIsothermSettings,
     GraspaParseError,
     GraspaWidomSettings,
+    run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
 )
 from .lammps import (
@@ -26,7 +28,7 @@ from .lammps import (
 )
 
 
-_WIDOM_COMPONENT_NAME_MAP = {name.casefold(): name for name in AVAILABLE_WIDOM_COMPONENTS}
+_GRASPA_COMPONENT_NAME_MAP = {name.casefold(): name for name in AVAILABLE_WIDOM_COMPONENTS}
 
 
 def add_calculate_group(subparsers) -> None:
@@ -40,6 +42,7 @@ def add_calculate_group(subparsers) -> None:
     calculate_subparsers = parser.add_subparsers(dest="calculate_command")
     _add_lammps_optimize_parser(calculate_subparsers)
     _add_graspa_widom_parser(calculate_subparsers)
+    _add_graspa_isotherm_parser(calculate_subparsers)
 
 
 def _set_help_default(parser: argparse.ArgumentParser) -> None:
@@ -49,17 +52,34 @@ def _set_help_default(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(func=_show_help)
 
 
-def _parse_widom_component_name(raw_value: str) -> str:
+def _parse_graspa_component_name(raw_value: str) -> str:
     component_name = raw_value.strip()
     if component_name == "":
-        raise argparse.ArgumentTypeError("Widom component names must not be blank.")
-    normalized = _WIDOM_COMPONENT_NAME_MAP.get(component_name.casefold())
+        raise argparse.ArgumentTypeError("gRASPA component names must not be blank.")
+    normalized = _GRASPA_COMPONENT_NAME_MAP.get(component_name.casefold())
     if normalized is None:
         supported = ", ".join(AVAILABLE_WIDOM_COMPONENTS)
         raise argparse.ArgumentTypeError(
-            f"Unsupported Widom component {raw_value!r}. Supported components: {supported}."
+            f"Unsupported gRASPA component {raw_value!r}. Supported components: {supported}."
         )
     return normalized
+
+
+def _parse_graspa_fugacity_coefficient(raw_value: str) -> float | str:
+    value = raw_value.strip()
+    if value == "":
+        raise argparse.ArgumentTypeError("Fugacity coefficient values must not be blank.")
+    if value.casefold() == "pr-eos":
+        return "PR-EOS"
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "Fugacity coefficient must be a float or the literal 'PR-EOS'."
+        ) from exc
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("Fugacity coefficient must be positive.")
+    return parsed
 
 
 def _add_lammps_optimize_parser(subparsers) -> None:
@@ -586,7 +606,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
         "--component",
         dest="components",
         action="append",
-        type=_parse_widom_component_name,
+        type=_parse_graspa_component_name,
         default=None,
         metavar="NAME",
         help=(
@@ -758,6 +778,237 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
     print("widom_framework_cif:", result.widom_framework_cif)
     print("unit_cells:", list(result.unit_cells))
     print("components:", [row.component for row in result.component_results])
+    print("results_csv_path:", result.results_csv_path)
+    print("warnings:", list(result.warnings))
+    print("report_path:", result.report_path)
+
+
+def _add_graspa_isotherm_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "graspa-isotherm",
+        help="Run a single-component EQeq-to-gRASPA GCMC adsorption isotherm workflow for one CIF file.",
+        description=(
+            "Assign framework charges with EQeq, prepare one gRASPA GCMC adsorption run per pressure point, "
+            "execute those runs, and aggregate absolute loading plus heat-of-adsorption summaries into a JSON report."
+        ),
+    )
+    parser.add_argument("cif_path", help="Input CIF file to charge and screen with gRASPA GCMC adsorption.")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for EQeq artifacts, per-pressure gRASPA runs, parsed results, and the JSON report.",
+    )
+    parser.add_argument(
+        "--eqeq-path",
+        default=None,
+        help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
+    )
+    parser.add_argument(
+        "--graspa-path",
+        default=None,
+        help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
+    )
+    parser.add_argument(
+        "--eqeq-lambda",
+        type=float,
+        default=1.2,
+        help="EQeq dielectric screening parameter. Default: 1.2.",
+    )
+    parser.add_argument(
+        "--eqeq-h-i0",
+        type=float,
+        default=-2.0,
+        help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
+    )
+    parser.add_argument(
+        "--eqeq-charge-precision",
+        type=int,
+        default=3,
+        help="Number of digits for EQeq point charges. Default: 3.",
+    )
+    parser.add_argument(
+        "--eqeq-method",
+        choices=("ewald", "nonperiodic"),
+        default="ewald",
+        help="EQeq Coulomb treatment. Default: ewald.",
+    )
+    parser.add_argument(
+        "--eqeq-real-space-cells",
+        type=int,
+        default=2,
+        help="EQeq real-space expansion count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-reciprocal-space-cells",
+        type=int,
+        default=2,
+        help="EQeq reciprocal-space expansion count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-eta",
+        type=float,
+        default=50.0,
+        help="EQeq Ewald splitting parameter. Default: 50.0.",
+    )
+    parser.add_argument(
+        "--component",
+        required=True,
+        type=_parse_graspa_component_name,
+        metavar="NAME",
+        help=f"Select one packaged adsorption component. Supported: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}.",
+    )
+    parser.add_argument(
+        "--pressure",
+        dest="pressures",
+        action="append",
+        type=float,
+        default=None,
+        metavar="PA",
+        help="Add one pressure point in Pa. Repeat for an isotherm sweep.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=298.0,
+        help="gRASPA adsorption temperature in K. Default: 298.0.",
+    )
+    parser.add_argument(
+        "--fugacity-coefficient",
+        type=_parse_graspa_fugacity_coefficient,
+        default=1.0,
+        metavar="VALUE",
+        help="Adsorbate fugacity coefficient as a positive float or PR-EOS. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--initialization-cycles",
+        type=int,
+        default=50000,
+        help="gRASPA NumberOfInitializationCycles. Default: 50000.",
+    )
+    parser.add_argument(
+        "--equilibration-cycles",
+        type=int,
+        default=50000,
+        help="gRASPA NumberOfEquilibrationCycles. Default: 50000.",
+    )
+    parser.add_argument(
+        "--production-cycles",
+        type=int,
+        default=200000,
+        help="gRASPA NumberOfProductionCycles per pressure point. Default: 200000.",
+    )
+    parser.add_argument(
+        "--trial-positions",
+        type=int,
+        default=10,
+        help="gRASPA NumberOfTrialPositions. Default: 10.",
+    )
+    parser.add_argument(
+        "--trial-orientations",
+        type=int,
+        default=10,
+        help="gRASPA NumberOfTrialOrientations. Default: 10.",
+    )
+    parser.add_argument(
+        "--cutoff-vdw",
+        type=float,
+        default=12.8,
+        help="gRASPA CutOffVDW in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--cutoff-coulomb",
+        type=float,
+        default=12.8,
+        help="gRASPA CutOffCoulomb in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--ewald-precision",
+        type=float,
+        default=1.0e-6,
+        help="gRASPA EwaldPrecision. Default: 1e-6.",
+    )
+    parser.add_argument(
+        "--eqeq-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Optional timeout for the EQeq subprocess. Default: 300.",
+    )
+    parser.add_argument(
+        "--graspa-timeout-seconds",
+        type=float,
+        default=None,
+        help="Optional timeout for each gRASPA subprocess. Default: no timeout.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full adsorption-isotherm workflow report as JSON instead of a short human-readable summary.",
+    )
+    parser.set_defaults(func=_run_graspa_isotherm)
+
+
+def _run_graspa_isotherm(args: argparse.Namespace) -> None:
+    if not args.pressures:
+        raise SystemExit("error: supply at least one pressure point with --pressure.")
+
+    eqeq_settings = EqeqChargeSettings(
+        lambda_value=args.eqeq_lambda,
+        hydrogen_electron_affinity=args.eqeq_h_i0,
+        charge_precision=args.eqeq_charge_precision,
+        method=args.eqeq_method,
+        real_space_cells=args.eqeq_real_space_cells,
+        reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
+        eta=args.eqeq_eta,
+    )
+    isotherm_settings = GraspaIsothermSettings(
+        component=args.component,
+        pressures=tuple(args.pressures),
+        fugacity_coefficient=args.fugacity_coefficient,
+        temperature=args.temperature,
+        initialization_cycles=args.initialization_cycles,
+        equilibration_cycles=args.equilibration_cycles,
+        production_cycles=args.production_cycles,
+        number_of_trial_positions=args.trial_positions,
+        number_of_trial_orientations=args.trial_orientations,
+        cutoff_vdw=args.cutoff_vdw,
+        cutoff_coulomb=args.cutoff_coulomb,
+        ewald_precision=args.ewald_precision,
+    )
+    try:
+        result = run_graspa_isotherm_workflow(
+            args.cif_path,
+            output_dir=args.output_dir,
+            eqeq_path=args.eqeq_path,
+            graspa_path=args.graspa_path,
+            eqeq_settings=eqeq_settings,
+            isotherm_settings=isotherm_settings,
+            eqeq_timeout_seconds=args.eqeq_timeout_seconds,
+            graspa_timeout_seconds=args.graspa_timeout_seconds,
+        )
+    except (
+        FileNotFoundError,
+        ValueError,
+        EqeqExecutionError,
+        GraspaConfigurationError,
+        GraspaExecutionError,
+        GraspaParseError,
+        GraspaError,
+    ) as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+        return
+
+    print("input_cif:", result.input_cif)
+    print("eqeq_binary:", result.eqeq_binary)
+    print("graspa_binary:", result.graspa_binary)
+    print("output_dir:", result.output_dir)
+    print("eqeq_charged_cif:", result.eqeq_charged_cif)
+    print("isotherm_framework_cif:", result.isotherm_framework_cif)
+    print("unit_cells:", list(result.unit_cells))
+    print("component:", result.isotherm_settings.component)
+    print("pressures_pa:", [point.pressure for point in result.point_results])
     print("results_csv_path:", result.results_csv_path)
     print("warnings:", list(result.warnings))
     print("report_path:", result.report_path)
