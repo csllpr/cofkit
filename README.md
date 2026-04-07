@@ -31,6 +31,15 @@ cofkit --help
 
 Base `cofkit` requires Python `3.10+` plus the packaged runtime dependencies `gemmi` and `rdkit`. `python3 -m pip install -e .` installs those automatically.
 
+For local development and verification in this repository, prefer `uv` so the lockfile-defined dev environment and the repo virtualenv stay aligned:
+
+```bash
+uv sync --locked --extra dev
+uv run pytest -q
+```
+
+`uv run ...` is the canonical local test path for this repo because it runs tools from the repo-managed `.venv` and ensures helper executables spawned during tests resolve the same interpreter and dependencies.
+
 Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`

@@ -669,7 +669,7 @@ class LammpsTests(unittest.TestCase):
 
     def _write_fake_lammps_binary(self, path: Path) -> Path:
         path.write_text(
-            "#!/usr/bin/env python\n"
+            f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
             "import sys\n"
             "import os\n"
@@ -761,7 +761,7 @@ class LammpsTests(unittest.TestCase):
 
     def _write_fake_eqeq_binary(self, path: Path, *, collapse_labels: bool = False) -> Path:
         path.write_text(
-            "#!/usr/bin/env python\n"
+            f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
             "import json\n"
             "import sys\n"

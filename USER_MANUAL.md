@@ -63,6 +63,15 @@ Installed runtime dependencies:
 - `RDKit` for SMILES-based monomer construction and the practical batch workflows
 - these are installed automatically by `python3 -m pip install -e .`
 
+For local development and verification in this repository, prefer the lockfile-backed `uv` environment:
+
+```bash
+uv sync --locked --extra dev
+uv run pytest -q
+```
+
+That is the canonical local test path for this repo and avoids PATH-sensitive behavior from helper executables spawned during wrapper tests.
+
 Optional add-ons:
 
 - `EQeq` if you want to use `cofkit calculate graspa-widom` or `cofkit calculate graspa-isotherm` for framework charge assignment

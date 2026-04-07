@@ -149,7 +149,7 @@ class ZeoppTests(unittest.TestCase):
 
     def _write_fake_zeopp_binary(self, path: Path) -> Path:
         path.write_text(
-            "#!/usr/bin/env python\n"
+            f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
             "import sys\n"
             "from pathlib import Path\n"
