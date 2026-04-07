@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from cofkit import __version__ as package_version
 from cofkit.batch_models import BatchPairSummary
 from cofkit.cli import main as cli_main
 
@@ -51,6 +52,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("build", help_text)
         self.assertIn("analyze", help_text)
         self.assertIn("calculate", help_text)
+
+    def test_package_version_uses_calver(self):
+        self.assertRegex(package_version, r"^\d{4}\.\d{1,2}\.\d{1,2}(?:\.post\d+)?$")
+
+    def test_root_version_reports_package_version(self):
+        buffer = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stdout(buffer):
+            cli_main(["--version"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(buffer.getvalue().strip(), f"cofkit {package_version}")
 
     def test_list_templates_json_reports_execution_capabilities(self):
         buffer = io.StringIO()

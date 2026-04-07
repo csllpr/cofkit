@@ -15,6 +15,12 @@ Start here based on what you need:
 
 For current capabilities and limits, see [docs/CURRENT_SCOPE.md](docs/CURRENT_SCOPE.md).
 
+## Versioning
+
+`cofkit` uses calendar versioning in `YYYY.M.D` form for normal releases, for example `2026.4.7`.
+
+If a second release is needed on the same day, use a PEP 440 post-release such as `2026.4.7.post1`.
+
 ## Installation and dependencies
 
 Canonical repository install:

@@ -2,7 +2,9 @@
 
 All notable changes to `cofkit` are recorded here.
 
-## 2026-04-07
+Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-04-07` is version `2026.4.7`.
+
+## 2026.4.7 (2026-04-07)
 
 ### Fixed
 

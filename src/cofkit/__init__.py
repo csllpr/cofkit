@@ -1,3 +1,4 @@
+from ._version import __version__
 from .batch import (
     BatchGenerationConfig,
     BatchStructureGenerator,
@@ -135,6 +136,7 @@ from .zeopp import (
 )
 
 __all__ = [
+    "__version__",
     "AssemblyState",
     "AssignmentOutcome",
     "AssignmentPlan",

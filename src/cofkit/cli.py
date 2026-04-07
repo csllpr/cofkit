@@ -4,6 +4,7 @@ import argparse
 import sys
 from typing import Sequence
 
+from ._version import __version__
 from .cli_analyze import add_analyze_group
 from .cli_build import add_build_group
 from .cli_calculate import add_calculate_group
@@ -25,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="CLI for COF building, calculation, screening, analysis, and validation.",
     )
     _set_help_default(parser)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     subparsers = parser.add_subparsers(dest="command")
     add_build_group(subparsers)
