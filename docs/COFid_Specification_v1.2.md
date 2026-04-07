@@ -1,8 +1,8 @@
 # COFid: A Canonical Naming Schema for Covalent Organic Frameworks
 
-**Version:** 1.1.1
+**Version:** 1.2.0
 **Status:** Draft Specification
-**Last Updated:** 2026-01-30
+**Last Updated:** 2026-04-07
 
 ---
 
@@ -396,9 +396,13 @@ Before accepting a COFid as valid:
   - Embedded connectivity and reactive group into namespace
   - Removed interpenetration (out of scope)
   - Clarified scope boundaries
-- **v1.1.1** (Current):
+- **v1.1.1**:
   - Made RDKit canonicalization explicit (`isomericSmiles=False`)
   - Removed the linkage-code controlled terminology section (linkage codes are implementation-defined)
+- **v1.2.0** (Current):
+  - Corrected beta-ketoenamine examples to use the explicit `keto_aldehyde` reactive group
+  - Expanded the reactive-group vocabulary to cover all currently implemented builtin monomer types
+  - Aligned the published examples and quick reference with the current cofkit COFid implementation
 
 ### Planned Extensions
 

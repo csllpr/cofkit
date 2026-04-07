@@ -27,7 +27,7 @@ def _canonical(smiles: str) -> str:
 @unittest.skipIf(Chem is None, "RDKit is not available")
 class COFidTests(unittest.TestCase):
     def test_cofid_spec_reactive_group_table_covers_builtin_motif_kinds(self):
-        spec_path = Path(__file__).resolve().parents[1] / "docs" / "COFid_Specification_v1.1.md"
+        spec_path = Path(__file__).resolve().parents[1] / "docs" / "COFid_Specification_v1.2.md"
         spec_groups = {
             line.split("|")[1].strip().strip("`")
             for line in spec_path.read_text(encoding="utf-8").splitlines()
