@@ -123,6 +123,43 @@ class CIFWriterTests(unittest.TestCase):
         self.assertIn("_ccdc_geom_bond_type", result.text)
         self.assertIn("m1_C1 m1_N2 . . 1.500000 S", result.text)
 
+    def test_export_candidate_appends_stacking_suffix_to_cofid_comment_line(self):
+        monomer = MonomerSpec(
+            id="mono",
+            name="atomistic monomer",
+            motifs=(
+                ReactiveMotif(
+                    id="n1",
+                    kind="amine",
+                    atom_ids=(1,),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                ),
+            ),
+            atom_symbols=("C",),
+            atom_positions=((0.0, 0.0, 0.0),),
+            bonds=(),
+        )
+        candidate = Candidate(
+            id="stacked-comment-demo",
+            score=0.0,
+            state=AssemblyState(
+                cell=((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0)),
+                monomer_poses={"m1": Pose(translation=(0.0, 0.0, 0.0))},
+                stacking_state="AA",
+            ),
+            events=(),
+            metadata={"instance_to_monomer": {"m1": "mono"}},
+        )
+
+        result = CIFWriter().export_candidate(
+            candidate,
+            {"mono": monomer},
+            cofid="demo&&hcb&&imine",
+            cofid_comment_suffix="stacking=AA",
+        )
+
+        self.assertEqual(result.text.splitlines()[0], "# COFid: demo&&hcb&&imine stacking=AA")
+
     def test_atomistic_export_writes_explicit_periodic_bond_symmetry_for_wrapped_bond(self):
         monomer = MonomerSpec(
             id="mono",

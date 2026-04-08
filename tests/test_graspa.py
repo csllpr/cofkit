@@ -130,6 +130,47 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["component_results"][6]["component"], "Kr")
             self.assertEqual(report["component_results"][6]["henry"], 7e-05)
 
+    def test_run_graspa_widom_workflow_preserves_stacking_suffix_in_eqeq_outputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "stacked_framework.cif"
+            cofid = "3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.2:aldehyde:O=Cc1ccc(C=O)cc1&&hcb&&imine"
+            cif_path.write_text(
+                f"# COFid: {cofid} stacking=AA\n"
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_widom_workflow(
+                    cif_path,
+                    output_dir=temp_path / "stacked_widom_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    widom_settings=GraspaWidomSettings(components=("Xe",)),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(
+                Path(result.eqeq_charged_cif).read_text(encoding="utf-8").splitlines()[0],
+                f"# COFid: {cofid} stacking=AA",
+            )
+            self.assertEqual(
+                Path(result.widom_framework_cif).read_text(encoding="utf-8").splitlines()[0],
+                f"# COFid: {cofid} stacking=AA",
+            )
+
     def test_calculate_graspa_widom_cli_prints_json_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

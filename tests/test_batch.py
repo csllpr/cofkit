@@ -200,6 +200,76 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "single-node-bipartite")
         self.assertEqual(candidate.metadata["graph_summary"]["n_reaction_events"], 3)
 
+    def test_three_plus_three_pair_can_enumerate_and_export_stacked_variant(self):
+        base_generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=2,
+                retain_top_results=5,
+                single_node_topology_ids=("hcb",),
+            )
+        )
+        stacked_generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=2,
+                retain_top_results=5,
+                single_node_topology_ids=("hcb",),
+                stacking_ids=("AA",),
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tfb",
+            name="tfb",
+            smiles=TFB,
+            motif_kind="aldehyde",
+            expected_connectivity=3,
+        )
+
+        base_summary, base_candidate = base_generator.generate_pair_candidate(amine, aldehyde)
+        self.assertEqual(base_summary.status, "ok")
+        self.assertIsNotNone(base_candidate)
+        assert base_candidate is not None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summaries, candidates, attempted_structures = stacked_generator.generate_pair_candidates(
+                amine,
+                aldehyde,
+                out_dir=temp_dir,
+                write_cif=True,
+            )
+
+            self.assertEqual(attempted_structures, 1)
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(len(candidates), 1)
+            summary = summaries[0]
+            candidate = candidates[0]
+            self.assertEqual(summary.status, "ok")
+            self.assertEqual(summary.structure_id, "tapb__tfb__hcb__AA")
+            self.assertEqual(candidate.id, "tapb__tfb__hcb__single_node_node_node__AA")
+            self.assertEqual(summary.metadata["stacking"]["id"], "AA")
+            self.assertEqual(summary.metadata["stacking"]["comment_suffix"], "stacking=AA")
+            self.assertEqual(candidate.state.stacking_state, "AA")
+            self.assertTrue(candidate.metadata["embedding"]["stacking_enabled"])
+            self.assertIn("stacked_2d", candidate.flags)
+            self.assertEqual(
+                candidate.metadata["graph_summary"]["n_monomer_instances"],
+                2 * base_candidate.metadata["graph_summary"]["n_monomer_instances"],
+            )
+            self.assertEqual(
+                candidate.metadata["graph_summary"]["n_reaction_events"],
+                2 * base_candidate.metadata["graph_summary"]["n_reaction_events"],
+            )
+            self.assertIsNotNone(summary.cif_path)
+            cif_text = Path(summary.cif_path).read_text(encoding="utf-8")
+
+        self.assertEqual(cif_text.splitlines()[0], f"# COFid: {summary.metadata['cofid']} stacking=AA")
+
     def test_generate_monomer_pair_candidate_accepts_direct_monomer_specs(self):
         amine_record = BatchMonomerRecord(
             id="tapb",

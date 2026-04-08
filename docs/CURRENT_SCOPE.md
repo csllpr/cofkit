@@ -28,6 +28,7 @@ The base package now installs `rdkit`, `gemmi`, `openbabel-wheel`, `pandas`, and
 - shared topology-builder dispatch for the supported one-node families, reused by batch runs and direct single-pair generation
 - indexed-topology layout generation for chemistry-compatible bundled topologies beyond the handcrafted one-node families, available in both batch and explicit single-pair generation
 - compatibility-aware default topology selection that now includes curated indexed topologies such as `sql`, `kgm`, `hxl`, `pts`, `ctn`, `bor`, `kgd`, `tbo`, `dia`, `pcu`, `acs`, `lon`, and `qtz` when the current chemistry metadata and builder support permit them
+- opt-in `2D` bilayer stacking enumeration in batch and direct `single-pair` generation through named registries such as `AA` / `AB`, including stacking-aware `structure_id` suffixes and exported CIF comment lines of the form `# COFid: ... stacking=AA`
 - coarse post-generation validation with `valid` / `warning` / `hard_invalid` / `hard_hard_invalid` triage, categorized CIF output trees, and export blocking for obviously broken structures
 - an initial `cofkit analyze zeopp` wrapper for Zeo++ pore analysis from CIF input, including a point-probe baseline from `-res` / `-resex` / `-chan 0` / `-sa 0 0` / `-vol 0 0` plus optional repeated probe-radius scans with accessibility summaries, with binary discovery through `COFKIT_ZEOPP_PATH`
 - an initial `cofkit calculate lammps-optimize` wrapper for LAMMPS optimization of explicit-bond `P1` CIFs, including env-based binary discovery through `COFKIT_LMP_PATH` with automatic nearest-`.env` loading in the CLI, nearest-image bond-length inference when CIF bond rows omit periodic image hints, required explicit bond-type reuse from CIF `_ccdc_geom_bond_type`, library-backed LAMMPS data-file generation, optional short restrained preruns before minimization, staged minimization support, optional final `fix box/relax`, and updated CIF export
@@ -54,4 +55,4 @@ The base package now installs `rdkit`, `gemmi`, `openbabel-wheel`, `pandas`, and
 - non-`P1` bonded CIF optimization beyond the current conservative local cleanup wrapper
 - chemically faithful atomistic CIF generation for arbitrary monomers without fallback/pseudo-sites
 - semiempirical or quantum-chemistry cleanup beyond the current external-tool wrappers
-- any stacking exploration, registry search, or stacking score terms
+- engine-integrated stacking exploration, generalized multilayer registry search, or stacking-aware score terms beyond the current opt-in named bilayer export variants

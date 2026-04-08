@@ -48,6 +48,12 @@ class COFidBuildRequest:
     template_id: str
 
 
+@dataclass(frozen=True)
+class COFidComment:
+    cofid: str
+    suffix: str | None = None
+
+
 _LINKAGE_CODE_TO_TEMPLATE_ID: Mapping[str, str] = {
     "azine": "azine_bridge",
     "azine_bridge": "azine_bridge",
@@ -262,31 +268,46 @@ def serialize_cofid(
     return f"{monomer_block}&&{topology}&&{linkage}"
 
 
-def cofid_comment_line(cofid: str) -> str:
+def cofid_comment_line(cofid: str, *, suffix: str | None = None) -> str:
     if not cofid:
         raise ValueError("COFid comment value must not be blank.")
     if any(character in cofid for character in ("\r", "\n")):
         raise ValueError("COFid comment value must be a single line.")
-    return f"{COFID_COMMENT_PREFIX}{cofid}"
+    if suffix is None:
+        return f"{COFID_COMMENT_PREFIX}{cofid}"
+    normalized_suffix = str(suffix).strip()
+    if not normalized_suffix:
+        return f"{COFID_COMMENT_PREFIX}{cofid}"
+    if any(character in normalized_suffix for character in ("\r", "\n")):
+        raise ValueError("COFid comment suffix must be a single line.")
+    return f"{COFID_COMMENT_PREFIX}{cofid} {normalized_suffix}"
 
 
-def read_cofid_from_cif(cif_path: str | Path) -> str | None:
+def read_cofid_comment_from_cif(cif_path: str | Path) -> COFidComment | None:
     input_path = Path(cif_path)
     try:
         with input_path.open("r", encoding="utf-8") as handle:
             first_line = handle.readline()
     except FileNotFoundError:
         raise
-    if first_line.startswith(COFID_COMMENT_PREFIX):
-        return first_line[len(COFID_COMMENT_PREFIX) :].rstrip("\r\n")
-    return None
+    return _cofid_comment_from_line(first_line)
 
 
-def ensure_cif_has_cofid_comment(cif_path: str | Path, cofid: str | None) -> None:
+def read_cofid_from_cif(cif_path: str | Path) -> str | None:
+    comment = read_cofid_comment_from_cif(cif_path)
+    return None if comment is None else comment.cofid
+
+
+def ensure_cif_has_cofid_comment(
+    cif_path: str | Path,
+    cofid: str | None,
+    *,
+    suffix: str | None = None,
+) -> None:
     if not cofid:
         return
     path = Path(cif_path)
-    expected_line = cofid_comment_line(cofid)
+    expected_line = cofid_comment_line(cofid, suffix=suffix)
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     if lines and lines[0] == expected_line:
@@ -299,6 +320,18 @@ def ensure_cif_has_cofid_comment(cif_path: str | Path, cofid: str | None) -> Non
     if text.endswith("\n"):
         updated += "\n"
     path.write_text(updated, encoding="utf-8")
+
+
+def _cofid_comment_from_line(line: str) -> COFidComment | None:
+    if not line.startswith(COFID_COMMENT_PREFIX):
+        return None
+    payload = line[len(COFID_COMMENT_PREFIX) :].rstrip("\r\n").strip()
+    if not payload:
+        return None
+    tokens = payload.split(maxsplit=1)
+    cofid = tokens[0]
+    suffix = tokens[1].strip() if len(tokens) > 1 else None
+    return COFidComment(cofid=cofid, suffix=suffix or None)
 
 
 def _template_id_for_linkage(linkage: str) -> str:

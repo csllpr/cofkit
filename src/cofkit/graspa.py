@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from .cofid import ensure_cif_has_cofid_comment, read_cofid_from_cif
+from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
 
 
 COFKIT_EQEQ_ENV_VAR = "COFKIT_EQEQ_PATH"
@@ -662,7 +662,7 @@ def assign_eqeq_charges_to_cif(
     input_path = Path(cif_path).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"CIF file does not exist: {input_path}")
-    input_cofid = read_cofid_from_cif(input_path)
+    input_cofid_comment = read_cofid_comment_from_cif(input_path)
 
     settings = settings or EqeqChargeSettings()
     _validate_eqeq_settings(settings)
@@ -723,7 +723,11 @@ def assign_eqeq_charges_to_cif(
         raise EqeqExecutionError(
             f"EQeq completed without writing the expected charged CIF: {eqeq_charged_cif_path}"
         )
-    ensure_cif_has_cofid_comment(eqeq_charged_cif_path, input_cofid)
+    ensure_cif_has_cofid_comment(
+        eqeq_charged_cif_path,
+        None if input_cofid_comment is None else input_cofid_comment.cofid,
+        suffix=None if input_cofid_comment is None else input_cofid_comment.suffix,
+    )
 
     return EqeqChargeResult(
         input_cif=str(input_path),

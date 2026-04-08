@@ -88,6 +88,7 @@ class CoarseStructureValidator:
 
         metadata = self._mapping(record.get("metadata"))
         score_metadata = self._mapping(metadata.get("score_metadata"))
+        stacking_metadata = self._mapping(metadata.get("stacking"))
         n_unreacted_motifs = self._n_unreacted_motifs(record, score_metadata)
         metrics["n_unreacted_motifs"] = n_unreacted_motifs
         if n_unreacted_motifs > 0:
@@ -153,7 +154,11 @@ class CoarseStructureValidator:
         if cif_path is None or not cif_path.is_file():
             hard_invalid_reasons.append("cif_missing")
         elif not (self.thresholds.skip_cif_checks_when_metadata_invalid and hard_invalid_reasons):
-            cif_metrics, cif_reasons = self._validate_cif(cif_path, topology_id=self._string(record.get("topology_id")))
+            cif_metrics, cif_reasons = self._validate_cif(
+                cif_path,
+                topology_id=self._string(record.get("topology_id")),
+                stacking_metadata=stacking_metadata,
+            )
             metrics.update(cif_metrics)
             hard_invalid_reasons.extend(cif_reasons)
         else:
@@ -189,6 +194,7 @@ class CoarseStructureValidator:
         cif_path: Path,
         *,
         topology_id: str | None,
+        stacking_metadata: Mapping[str, object] | None = None,
     ) -> tuple[dict[str, object], tuple[str, ...]]:
         if gemmi is None:  # pragma: no cover - import guard for incomplete environments
             raise ModuleNotFoundError(
@@ -221,7 +227,13 @@ class CoarseStructureValidator:
         instance_graph = self._instance_graph(small, bonded_pairs)
         metrics.update(instance_graph["metrics"])
         if int(instance_graph["metrics"]["n_instance_components"]) > 1:
-            reasons.append("disconnected_instance_graph")
+            if self._stacked_multilayer_components_are_allowed(
+                stacking_metadata,
+                instance_graph["metrics"],
+            ):
+                metrics["disconnected_instance_graph_allowed"] = True
+            else:
+                reasons.append("disconnected_instance_graph")
 
         clash_distance = self._min_nonbonded_heavy_distance_below_cutoff(small, bonded_pairs)
         metrics["min_nonbonded_heavy_distance"] = clash_distance
@@ -260,6 +272,7 @@ class CoarseStructureValidator:
             adjacency[instance_2].add(instance_1)
 
         components = 0
+        component_sizes: list[int] = []
         seen: set[str] = set()
         for instance_id in instance_ids:
             if instance_id in seen:
@@ -267,19 +280,52 @@ class CoarseStructureValidator:
             components += 1
             stack = [instance_id]
             seen.add(instance_id)
+            component_size = 0
             while stack:
                 current = stack.pop()
+                component_size += 1
                 for other in adjacency.get(current, ()):
                     if other not in seen:
                         seen.add(other)
                         stack.append(other)
+            component_sizes.append(component_size)
         return {
             "metrics": {
                 "n_instance_nodes": len(instance_ids),
                 "n_instance_components": components if instance_ids else 0,
                 "n_inter_instance_edges": inter_instance_edges,
+                "instance_component_sizes": tuple(sorted(component_sizes)),
             }
         }
+
+    def _stacked_multilayer_components_are_allowed(
+        self,
+        stacking_metadata: Mapping[str, object] | None,
+        instance_graph_metrics: Mapping[str, object],
+    ) -> bool:
+        metadata = self._mapping(stacking_metadata)
+        try:
+            layer_count = int(metadata.get("layer_count"))
+        except (TypeError, ValueError):
+            return False
+        if layer_count <= 1:
+            return False
+        try:
+            n_components = int(instance_graph_metrics.get("n_instance_components"))
+        except (TypeError, ValueError):
+            return False
+        if n_components != layer_count:
+            return False
+        raw_sizes = instance_graph_metrics.get("instance_component_sizes", ())
+        if not isinstance(raw_sizes, (list, tuple)):
+            return False
+        try:
+            component_sizes = tuple(int(size) for size in raw_sizes)
+        except (TypeError, ValueError):
+            return False
+        if len(component_sizes) != layer_count:
+            return False
+        return len(set(component_sizes)) == 1
 
     def _min_nonbonded_heavy_distance_below_cutoff(
         self,

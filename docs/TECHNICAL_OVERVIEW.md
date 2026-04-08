@@ -11,7 +11,7 @@ The long-term direction is:
 5. initial embedding followed by a lightweight continuous optimization pass over cell scale, rigid poses, and bridge geometry
 6. ranked candidate ensembles instead of a single structure
 
-For the current phase, stacking exploration is intentionally out of scope. `stacking_mode` must stay `"disabled"`; the engine now rejects other values rather than implying partial support.
+For the current phase, engine-level stacking exploration is still out of scope. `COFProject.stacking_mode` must stay `"disabled"`; the engine still rejects other values rather than implying partial support. Current stacking support lives in the batch/single-pair layer as an opt-in post-build bilayer registry enumerator for eligible `2D` outputs.
 
 ## Topology repository
 
@@ -73,7 +73,7 @@ For the current single-node topology families, `cofkit` expands supported CGD ne
 - `BatchStructureGenerator.generate_monomer_pair_candidate(s)` now exposes the full supported one-node family directly for single-pair imine generation, and `COFEngine.run(...)` reaches the same builders for explicit one-node topology requests plus supported `3D` single-pair defaults such as `dia` / `pcu`
 - chemistry-compatible indexed topologies from the bundled repository can now also be requested explicitly in batch and direct single-pair flows, and the default selector includes a curated subset of those indexed nets when the current chemistry metadata and builder support agree
 
-The optimizer is intentionally modest. It only refines bridge-forming candidates through lateral cell scaling, monomer translation updates, and lightweight orientation cleanup when those steps reduce bridge-geometry residuals. Ring-forming reactions stay coarse, and stacking remains completely out of scope.
+The optimizer is intentionally modest. It only refines bridge-forming candidates through lateral cell scaling, monomer translation updates, and lightweight orientation cleanup when those steps reduce bridge-geometry residuals. Ring-forming reactions stay coarse, and stacking scoring remains out of scope; the current support only enumerates and exports named bilayer registries after the normal build.
 
 For the current imine realization path, two geometry details are now important enough to treat as part of the documented behavior:
 

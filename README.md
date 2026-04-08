@@ -189,6 +189,23 @@ cofkit build single-pair \
   --output-dir out/cli_single_pair_hcb
 ```
 
+For eligible `2D` structures, you can also enumerate named bilayer registries after the normal build:
+
+```bash
+cofkit build single-pair \
+  --template-id imine_bridge \
+  --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
+  --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
+  --first-id tapb \
+  --second-id tfb \
+  --topology hcb \
+  --stacking AA \
+  --stacking AB \
+  --output-dir out/cli_single_pair_stacked
+```
+
+That keeps the supported build pipeline unchanged and writes one exported CIF per requested registry. The first CIF comment line appends the registry tag after the `COFid`, for example `# COFid: ... stacking=AA`.
+
 ### One linkage over a library
 
 Run one binary-bridge linkage over a monomer-library directory:

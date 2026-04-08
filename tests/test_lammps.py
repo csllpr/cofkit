@@ -73,6 +73,24 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(report["n_atom_types"], 2)
             self.assertTrue(report["atom_type_symbols"]["1"])
 
+    def test_optimize_cif_with_lammps_preserves_stacking_suffix_in_optimized_cif_comment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "stacked_example.cif"
+            cofid = "3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.2:aldehyde:O=Cc1ccc(C=O)cc1&&hcb&&imine"
+            cif_path.write_text(f"# COFid: {cofid} stacking=AA\n{self._example_cif_text()}", encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "stacked_lammps_out",
+                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
+                )
+
+            optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
+            self.assertEqual(optimized_text.splitlines()[0], f"# COFid: {cofid} stacking=AA")
+
     def test_optimize_cif_with_lammps_defaults_to_uff(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

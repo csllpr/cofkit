@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
-from .cofid import cofid_comment_line, read_cofid_from_cif
+from .cofid import cofid_comment_line, read_cofid_comment_from_cif
 from .graspa import (
     EqeqChargeResult,
     EqeqChargeSettings,
@@ -350,7 +350,7 @@ def optimize_cif_with_lammps(
     input_path = Path(cif_path).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"CIF file does not exist: {input_path}")
-    input_cofid = read_cofid_from_cif(input_path)
+    input_cofid_comment = read_cofid_comment_from_cif(input_path)
 
     binary = resolve_lammps_binary(lmp_path)
     run_dir = _resolve_output_dir(input_path, output_dir)
@@ -435,7 +435,8 @@ def optimize_cif_with_lammps(
             final_fractional_positions,
             cell_parameters=final_frame.cell_parameters,
             basis=final_frame.lammps_basis,
-            cofid=input_cofid,
+            cofid=None if input_cofid_comment is None else input_cofid_comment.cofid,
+            cofid_comment_suffix=None if input_cofid_comment is None else input_cofid_comment.suffix,
         ),
         encoding="utf-8",
     )
@@ -2303,6 +2304,7 @@ def _render_optimized_cif(
     cell_parameters: tuple[float, float, float, float, float, float] | None = None,
     basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None,
     cofid: str | None = None,
+    cofid_comment_suffix: str | None = None,
 ) -> str:
     active_cell_parameters = cell_parameters or parsed.cell_parameters
     active_basis = basis or parsed.lammps_basis
@@ -2310,7 +2312,7 @@ def _render_optimized_cif(
     has_charges = any(atom.charge is not None for atom in parsed.atoms)
     lines: list[str] = []
     if cofid:
-        lines.append(cofid_comment_line(cofid))
+        lines.append(cofid_comment_line(cofid, suffix=cofid_comment_suffix))
     lines.extend(
         [
             f"data_{_sanitize_data_name(parsed.source_path.stem + '_lammps_optimized')}",

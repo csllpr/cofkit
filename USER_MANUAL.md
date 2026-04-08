@@ -12,7 +12,7 @@ The examples below focus on the repository's current supported generation path:
 
 `cofkit` exposes a generic binary-bridge interface for registered linkage profiles. Imine examples still make the simplest introduction, but the same batch and single-pair path also supports the currently implemented non-imine binary bridges listed above.
 
-`stacking_mode` must remain `"disabled"`.
+`COFEngine` / `COFProject.stacking_mode` must remain `"disabled"`. Current stacking support is opt-in post-build enumeration for eligible `2D` batch and `single-pair` outputs via `BatchGenerationConfig(stacking_ids=...)` or CLI `--stacking ...`.
 
 ## Choose the right interface
 
@@ -27,6 +27,7 @@ Use `BatchStructureGenerator.generate_monomer_pair_candidate(...)` or `generate_
 - you already have `MonomerSpec` objects
 - you want the same topology-family-aware generation used by the batch pipeline
 - you want one best structure or all supported structures for one monomer pair
+- you want opt-in `2D` stacking enumeration on exported candidates
 
 Use `BatchStructureGenerator.run_imine_batch(...)` or [examples/run_batch_imine_generation.py](examples/run_batch_imine_generation.py) when:
 
@@ -437,6 +438,23 @@ The single-pair CLI autodetects motif kinds by default. If you want to force the
 
 - `summary.json`
 - one CIF per written topology under `cifs/valid`, `cifs/warning`, or `cifs/invalid`
+
+For eligible `2D` outputs, you can also request named bilayer registries during export:
+
+```bash
+cofkit build single-pair \
+  --template-id imine_bridge \
+  --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
+  --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
+  --first-id tapb \
+  --second-id tfb \
+  --topology hcb \
+  --stacking AA \
+  --stacking AB \
+  --output-dir out/cli_single_pair_stacked
+```
+
+That path keeps the normal build pipeline unchanged, then emits one exported structure per requested registry. Written CIFs append the registry tag to the `COFid` comment line, for example `# COFid: ... stacking=AA`.
 
 The example scripts in `examples/` are still available, but they now act as thin wrappers over the shared grouped `cofkit` CLI.
 
@@ -988,7 +1006,7 @@ generator.run_binary_bridge_batch(...)
 ## Common pitfalls
 
 - The current practical route is binary-bridge generation with one resolved motif role on each side. The shipped batch-library examples currently cover imine, hydrazone, and keto-enamine workflows; boronate ester and vinylene are demonstrated through the single-pair smoke examples.
-- `stacking_mode` must stay `"disabled"`.
+- `COFEngine` / `COFProject.stacking_mode` must still stay `"disabled"`; the current stacking support is only the post-build `BatchStructureGenerator` / CLI registry enumeration path.
 - If RDKit is unavailable, SMILES-based monomer construction will fail.
 - High-connectivity `4`- and `6`-connected cases are usually better handled in the `3D` route (`dia`, `pcu`) than by forcing `2D` topologies.
 - `COFEngine` without explicit `target_topologies` still follows its own normal planner behavior for `2D`; if you want a full supported-topology sweep for one pair, use `BatchStructureGenerator.generate_monomer_pair_candidates(...)`.

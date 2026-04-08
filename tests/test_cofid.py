@@ -1,11 +1,12 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, default_motif_kind_registry
-from cofkit.cofid import cofid_to_build_request
+from cofkit.cofid import cofid_comment_line, cofid_to_build_request, read_cofid_from_cif
 
 try:
     from rdkit import Chem
@@ -26,6 +27,20 @@ def _canonical(smiles: str) -> str:
 
 @unittest.skipIf(Chem is None, "RDKit is not available")
 class COFidTests(unittest.TestCase):
+    def test_read_cofid_from_cif_ignores_comment_suffix_tokens(self):
+        cofid = f"3:aldehyde:{_canonical(TP)}.2:amine:{_canonical(PPD)}&&hcb&&imine"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cif_path = Path(temp_dir) / "stacked.cif"
+            cif_path.write_text(
+                cofid_comment_line(cofid, suffix="stacking=AA") + "\n" + "data_demo\n",
+                encoding="utf-8",
+            )
+
+            parsed = read_cofid_from_cif(cif_path)
+
+        self.assertEqual(parsed, cofid)
+
     def test_cofid_spec_reactive_group_table_covers_builtin_motif_kinds(self):
         spec_path = Path(__file__).resolve().parents[1] / "docs" / "COFid_Specification_v1.2.md"
         spec_groups = {

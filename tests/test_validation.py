@@ -196,6 +196,36 @@ class CoarseValidationTests(unittest.TestCase):
         self.assertIn("disconnected_instance_graph", report.hard_invalid_reasons)
         self.assertEqual(report.metrics["n_instance_components"], 2)
 
+    def test_validator_allows_disconnected_bilayer_when_stacking_metadata_matches_components(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "stacked_bilayer.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("a1L0_C1", "C", 0.10, 0.10, 0.10),
+                    ("b1L0_C1", "C", 0.25, 0.10, 0.10),
+                    ("a1L1_C1", "C", 0.10, 0.10, 0.60),
+                    ("b1L1_C1", "C", 0.25, 0.10, 0.60),
+                ],
+                bonds=[("a1L0_C1", "b1L0_C1"), ("a1L1_C1", "b1L1_C1")],
+            )
+            record = _summary_record(cif_path, structure_id="stacked_bilayer")
+            record["metadata"]["graph_summary"] = {
+                "n_monomer_instances": 4,
+                "n_reaction_events": 2,
+                "reaction_templates": {"imine_bridge": 2},
+            }
+            record["metadata"]["stacking"] = {"id": "AA", "layer_count": 2}
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertNotIn("disconnected_instance_graph", report.hard_invalid_reasons)
+        self.assertEqual(report.metrics["n_instance_components"], 2)
+        self.assertEqual(tuple(report.metrics["instance_component_sizes"]), (2, 2))
+        self.assertTrue(report.metrics["disconnected_instance_graph_allowed"])
+
     def test_validator_rejects_heavy_atom_clash(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

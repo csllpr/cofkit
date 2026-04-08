@@ -179,6 +179,48 @@ class CliTests(unittest.TestCase):
             cif_lines = cif_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(cif_lines[0], f"# COFid: {summary['results'][0]['metadata']['cofid']}")
 
+    def test_single_pair_cli_writes_stacking_suffix_in_cif_comment(self):
+        tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
+        tfb = "C1=C(C=C(C=C1C=O)C=O)C=O"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "single_pair_stacked"
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli_main(
+                    [
+                        "build",
+                        "single-pair",
+                        "--template-id",
+                        "imine_bridge",
+                        "--first-smiles",
+                        tapb,
+                        "--second-smiles",
+                        tfb,
+                        "--first-id",
+                        "tapb",
+                        "--second-id",
+                        "tfb",
+                        "--first-motif-kind",
+                        "amine",
+                        "--second-motif-kind",
+                        "aldehyde",
+                        "--topology",
+                        "hcb",
+                        "--stacking",
+                        "AA",
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["successful_structures"], 1)
+            self.assertEqual(summary["results"][0]["structure_id"], "tapb__tfb__hcb__AA")
+            self.assertEqual(summary["results"][0]["metadata"]["stacking"]["id"], "AA")
+            cif_path = Path(summary["results"][0]["cif_path"])
+            cif_lines = cif_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(cif_lines[0], f"# COFid: {summary['results'][0]['metadata']['cofid']} stacking=AA")
+
     @unittest.skipIf(Chem is None, "RDKit is not available")
     def test_single_pair_cli_accepts_cofid(self):
         tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"

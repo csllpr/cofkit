@@ -85,6 +85,15 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         help="Augment legacy defaults with indexed two-monomer topology discovery for compatible pairs.",
     )
     parser.add_argument(
+        "--stacking",
+        action="append",
+        default=[],
+        help=(
+            "Enumerate one named stacking registry for eligible 2D outputs. "
+            "Repeat for multiple registries, for example --stacking AA --stacking AB."
+        ),
+    )
+    parser.add_argument(
         "--auto-detect-libraries",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -107,6 +116,7 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             target_dimensionality=args.target_dimensionality,
             topology_ids=tuple(args.topology),
             use_indexed_topology_defaults=args.use_indexed_topology_defaults,
+            stacking_ids=tuple(args.stacking),
             rdkit_num_conformers=args.num_conformers,
             enumerate_all_topologies=args.all_topologies,
             post_build_conversions=tuple(getattr(args, "annotate_post_build_conversion", ())),
@@ -173,6 +183,15 @@ def _add_single_pair_parser(subparsers) -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Augment legacy defaults with indexed two-monomer topology discovery for compatible pairs.",
+    )
+    parser.add_argument(
+        "--stacking",
+        action="append",
+        default=[],
+        help=(
+            "Enumerate one named stacking registry for eligible 2D outputs. "
+            "Repeat for multiple registries, for example --stacking AA --stacking AB."
+        ),
     )
     parser.add_argument(
         "--target-dimensionality",

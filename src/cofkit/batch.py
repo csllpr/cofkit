@@ -57,6 +57,7 @@ from .single_node_topologies_3d import (
     list_supported_3d_single_node_topology_ids,
     resolve_three_d_single_node_topology_layout,
 )
+from .stacking import enumerate_candidate_stackings
 from .topology_builders import PairTopologyBuildRequest, PairTopologyBuilder, PairTopologyBuilderRegistry
 from .topologies import default_topology_repository, get_topology_hint
 from .validation import CoarseStructureValidator, CoarseValidationReport, CoarseValidationThresholds
@@ -98,6 +99,7 @@ class BatchGenerationConfig:
     topology_ids: tuple[str, ...] = ()
     single_node_topology_ids: tuple[str, ...] = ()
     use_indexed_topology_defaults: bool = False
+    stacking_ids: tuple[str, ...] = ()
     rdkit_num_conformers: int = 8
     rdkit_random_seed: int = 0xC0F
     retain_top_results: int = 25
@@ -475,11 +477,10 @@ class BatchStructureGenerator:
 
         if candidates:
             best_candidate = max(candidates, key=lambda candidate: candidate.score)
-            best_topology = best_candidate.metadata["net_plan"]["topology"]
             best_index = next(
                 index
                 for index, candidate in enumerate(candidates)
-                if candidate.metadata["net_plan"]["topology"] == best_topology
+                if candidate.id == best_candidate.id
             )
             summary = summaries[best_index]
             effective_write_cif = self.config.write_cif if write_cif is None else write_cif
@@ -598,11 +599,10 @@ class BatchStructureGenerator:
 
         if candidates:
             best_candidate = max(candidates, key=lambda candidate: candidate.score)
-            best_topology = best_candidate.metadata["net_plan"]["topology"]
             best_index = next(
                 index
                 for index, candidate in enumerate(candidates)
-                if candidate.metadata["net_plan"]["topology"] == best_topology
+                if candidate.id == best_candidate.id
             )
             summary = summaries[best_index]
             effective_write_cif = self.config.write_cif if write_cif is None else write_cif
@@ -3621,6 +3621,11 @@ class BatchStructureGenerator:
                 "reactant_connectivities": dict(reactant_connectivities),
                 "reactant_roles": reactant_roles,
                 "template_id": template_id,
+                **(
+                    {"stacking": dict(candidate.metadata["stacking"])}
+                    if "stacking" in candidate.metadata and isinstance(candidate.metadata["stacking"], Mapping)
+                    else {}
+                ),
                 **({"cofid": cofid} if cofid is not None else {}),
                 **(
                     {
@@ -3713,6 +3718,7 @@ class BatchStructureGenerator:
     ) -> tuple[str | None, dict[str, object] | None]:
         cofid = provisional_summary.metadata.get("cofid")
         cofid_value = cofid if isinstance(cofid, str) and cofid else None
+        cofid_comment_suffix = self._cofid_comment_suffix(provisional_summary)
         if not self.config.separate_cif_outputs_by_validation:
             out_path = Path(out_dir) / f"{structure_id}.cif"
             self.cif_writer.write_candidate(
@@ -3721,6 +3727,7 @@ class BatchStructureGenerator:
                 monomer_specs,
                 data_name=structure_id,
                 cofid=cofid_value,
+                cofid_comment_suffix=cofid_comment_suffix,
             )
             return str(out_path), None
 
@@ -3733,6 +3740,7 @@ class BatchStructureGenerator:
             monomer_specs,
             data_name=structure_id,
             cofid=cofid_value,
+            cofid_comment_suffix=cofid_comment_suffix,
         )
         validation_record = self._summary_to_dict(replace(provisional_summary, cif_path=str(staging_path)))
         try:
@@ -3846,11 +3854,35 @@ class BatchStructureGenerator:
 
         effective_write_cif = self.config.write_cif if write_cif is None else write_cif
         summaries: list[BatchPairSummary] = []
+        finalized_candidates: list[Candidate] = []
         local_cifs_written = 0
-        ordered_candidates = tuple(sorted(evaluation.candidates, key=lambda candidate: candidate.score, reverse=True))
+        expanded_candidates = tuple(
+            stacked_candidate
+            for candidate in sorted(evaluation.candidates, key=lambda candidate: candidate.score, reverse=True)
+            for stacked_candidate in enumerate_candidate_stackings(
+                candidate,
+                registry_ids=self.config.stacking_ids,
+            )
+        )
+        ordered_candidates = tuple(sorted(expanded_candidates, key=lambda candidate: candidate.score, reverse=True))
+        if ordered_candidates:
+            attempted_structures = max(attempted_structures, len(ordered_candidates))
         for topology_rank, candidate in enumerate(ordered_candidates, start=1):
             topology_id = candidate.metadata["net_plan"]["topology"]
             structure_id = f"{pair_id}__{topology_id}" if topology_id is not None else pair_id
+            stacking = candidate.metadata.get("stacking")
+            if isinstance(stacking, Mapping):
+                stacking_id = stacking.get("id")
+                if stacking_id is not None:
+                    structure_id = f"{structure_id}__{stacking_id}"
+            candidate = replace(
+                candidate,
+                metadata={
+                    **dict(candidate.metadata),
+                    "structure_id": structure_id,
+                },
+            )
+            finalized_candidates.append(candidate)
             hard_hard_invalid_reasons, hard_hard_invalid_metrics = self._hard_hard_invalid_reasons(candidate)
             cofid = try_generate_cofid(candidate, (first, second))
             export_index = 0
@@ -3926,7 +3958,17 @@ class BatchStructureGenerator:
                 )
 
             summaries.append(summary)
-        return tuple(summaries), ordered_candidates, attempted_structures
+        return tuple(summaries), tuple(finalized_candidates), attempted_structures
+
+    def _cofid_comment_suffix(self, summary: BatchPairSummary) -> str | None:
+        stacking = summary.metadata.get("stacking")
+        if not isinstance(stacking, Mapping):
+            return None
+        suffix = stacking.get("comment_suffix")
+        if suffix is None:
+            return None
+        text = str(suffix).strip()
+        return text or None
 
     def _hard_hard_invalid_reasons(self, candidate: Candidate) -> tuple[tuple[str, ...], dict[str, object]]:
         bridge_metrics = tuple(self._bridge_event_metrics(candidate))
