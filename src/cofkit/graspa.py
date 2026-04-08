@@ -415,6 +415,224 @@ class GraspaIsothermResult:
         }
 
 
+@dataclass(frozen=True)
+class GraspaMixtureComponentSettings:
+    component: str
+    mol_fraction: float
+    fugacity_coefficient: float | str = 1.0
+    translation_probability: float = 1.0
+    rotation_probability: float = 1.0
+    reinsertion_probability: float = 1.0
+    identity_change_probability: float = 1.0
+    swap_probability: float = 1.0
+    create_number_of_molecules: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "component": self.component,
+            "mol_fraction": self.mol_fraction,
+            "fugacity_coefficient": self.fugacity_coefficient,
+            "translation_probability": self.translation_probability,
+            "rotation_probability": self.rotation_probability,
+            "reinsertion_probability": self.reinsertion_probability,
+            "identity_change_probability": self.identity_change_probability,
+            "swap_probability": self.swap_probability,
+            "create_number_of_molecules": self.create_number_of_molecules,
+        }
+
+
+@dataclass(frozen=True)
+class GraspaMixtureSettings:
+    components: tuple[GraspaMixtureComponentSettings, ...]
+    pressures: tuple[float, ...] = (100_000.0,)
+    use_gpu_reduction: bool = False
+    use_fast_host_rng: bool = True
+    use_flag: bool = True
+    initialization_cycles: int = 50_000
+    equilibration_cycles: int = 50_000
+    production_cycles: int = 200_000
+    use_max_step: bool = True
+    max_step_per_cycle: int = 1
+    use_charges_from_cif_file: bool = True
+    restart_file: bool = False
+    random_seed: int = 0
+    number_of_trial_positions: int = 10
+    number_of_trial_orientations: int = 10
+    number_of_blocks: int = 5
+    adsorbate_allocate_space: int = 10_240
+    number_of_simulations: int = 1
+    single_simulation: bool = True
+    different_frameworks: bool = True
+    input_file_type: str = "cif"
+    framework_name: str = "framework"
+    charge_method: str = "Ewald"
+    temperature: float = 298.0
+    overlap_criteria: float = 1.0e5
+    cutoff_vdw: float = 12.8
+    cutoff_coulomb: float = 12.8
+    ewald_precision: float = 1.0e-6
+    use_dnn_for_host_guest: bool = False
+    save_output_to_file: bool = True
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "components": [component.to_dict() for component in self.components],
+            "pressures": list(self.pressures),
+            "use_gpu_reduction": self.use_gpu_reduction,
+            "use_fast_host_rng": self.use_fast_host_rng,
+            "use_flag": self.use_flag,
+            "initialization_cycles": self.initialization_cycles,
+            "equilibration_cycles": self.equilibration_cycles,
+            "production_cycles": self.production_cycles,
+            "use_max_step": self.use_max_step,
+            "max_step_per_cycle": self.max_step_per_cycle,
+            "use_charges_from_cif_file": self.use_charges_from_cif_file,
+            "restart_file": self.restart_file,
+            "random_seed": self.random_seed,
+            "number_of_trial_positions": self.number_of_trial_positions,
+            "number_of_trial_orientations": self.number_of_trial_orientations,
+            "number_of_blocks": self.number_of_blocks,
+            "adsorbate_allocate_space": self.adsorbate_allocate_space,
+            "number_of_simulations": self.number_of_simulations,
+            "single_simulation": self.single_simulation,
+            "different_frameworks": self.different_frameworks,
+            "input_file_type": self.input_file_type,
+            "framework_name": self.framework_name,
+            "charge_method": self.charge_method,
+            "temperature": self.temperature,
+            "overlap_criteria": self.overlap_criteria,
+            "cutoff_vdw": self.cutoff_vdw,
+            "cutoff_coulomb": self.cutoff_coulomb,
+            "ewald_precision": self.ewald_precision,
+            "use_dnn_for_host_guest": self.use_dnn_for_host_guest,
+            "save_output_to_file": self.save_output_to_file,
+        }
+
+
+@dataclass(frozen=True)
+class GraspaMixturePointComponentResult:
+    component: str
+    feed_mol_fraction: float
+    adsorbed_mol_fraction: float
+    loading_mol_per_kg: float
+    loading_mol_per_kg_errorbar: float
+    loading_g_per_l: float
+    loading_g_per_l_errorbar: float
+    heat_of_adsorption_kj_per_mol: float
+    heat_of_adsorption_kj_per_mol_errorbar: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "component": self.component,
+            "feed_mol_fraction": _json_safe_float(self.feed_mol_fraction),
+            "adsorbed_mol_fraction": _json_safe_float(self.adsorbed_mol_fraction),
+            "loading_mol_per_kg": _json_safe_float(self.loading_mol_per_kg),
+            "loading_mol_per_kg_errorbar": _json_safe_float(self.loading_mol_per_kg_errorbar),
+            "loading_mmol_per_g": _json_safe_float(self.loading_mol_per_kg),
+            "loading_mmol_per_g_errorbar": _json_safe_float(self.loading_mol_per_kg_errorbar),
+            "loading_g_per_l": _json_safe_float(self.loading_g_per_l),
+            "loading_g_per_l_errorbar": _json_safe_float(self.loading_g_per_l_errorbar),
+            "heat_of_adsorption_kj_per_mol": _json_safe_float(self.heat_of_adsorption_kj_per_mol),
+            "heat_of_adsorption_kj_per_mol_errorbar": _json_safe_float(
+                self.heat_of_adsorption_kj_per_mol_errorbar
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class GraspaMixtureSelectivityResult:
+    numerator_component: str
+    denominator_component: str
+    feed_mol_fraction_ratio: float
+    adsorbed_mol_fraction_ratio: float
+    selectivity: float
+    selectivity_errorbar: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "numerator_component": self.numerator_component,
+            "denominator_component": self.denominator_component,
+            "feed_mol_fraction_ratio": _json_safe_float(self.feed_mol_fraction_ratio),
+            "adsorbed_mol_fraction_ratio": _json_safe_float(self.adsorbed_mol_fraction_ratio),
+            "selectivity": _json_safe_float(self.selectivity),
+            "selectivity_errorbar": _json_safe_float(self.selectivity_errorbar),
+        }
+
+
+@dataclass(frozen=True)
+class GraspaMixturePointResult:
+    pressure: float
+    pressure_run_dir: str
+    simulation_input_path: str
+    graspa_stdout_log_path: str
+    graspa_stderr_log_path: str
+    data_file_paths: tuple[str, ...]
+    source_data_file: str
+    component_results: tuple[GraspaMixturePointComponentResult, ...]
+    selectivity_results: tuple[GraspaMixtureSelectivityResult, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "pressure": self.pressure,
+            "pressure_run_dir": self.pressure_run_dir,
+            "simulation_input_path": self.simulation_input_path,
+            "graspa_stdout_log_path": self.graspa_stdout_log_path,
+            "graspa_stderr_log_path": self.graspa_stderr_log_path,
+            "data_file_paths": list(self.data_file_paths),
+            "source_data_file": self.source_data_file,
+            "component_results": [component.to_dict() for component in self.component_results],
+            "selectivity_results": [result.to_dict() for result in self.selectivity_results],
+        }
+
+
+@dataclass(frozen=True)
+class GraspaMixtureResult:
+    input_cif: str
+    output_dir: str
+    eqeq_binary: str
+    graspa_binary: str
+    eqeq_run_dir: str
+    mixture_root_dir: str
+    eqeq_input_cif: str
+    eqeq_charged_cif: str
+    mixture_framework_cif: str
+    eqeq_json_output_path: str | None
+    eqeq_stdout_log_path: str
+    eqeq_stderr_log_path: str
+    component_results_csv_path: str
+    selectivity_results_csv_path: str
+    report_path: str
+    unit_cells: tuple[int, int, int]
+    eqeq_settings: EqeqChargeSettings
+    mixture_settings: GraspaMixtureSettings
+    point_results: tuple[GraspaMixturePointResult, ...]
+    warnings: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "input_cif": self.input_cif,
+            "output_dir": self.output_dir,
+            "eqeq_binary": self.eqeq_binary,
+            "graspa_binary": self.graspa_binary,
+            "eqeq_run_dir": self.eqeq_run_dir,
+            "mixture_root_dir": self.mixture_root_dir,
+            "eqeq_input_cif": self.eqeq_input_cif,
+            "eqeq_charged_cif": self.eqeq_charged_cif,
+            "mixture_framework_cif": self.mixture_framework_cif,
+            "eqeq_json_output_path": self.eqeq_json_output_path,
+            "eqeq_stdout_log_path": self.eqeq_stdout_log_path,
+            "eqeq_stderr_log_path": self.eqeq_stderr_log_path,
+            "component_results_csv_path": self.component_results_csv_path,
+            "selectivity_results_csv_path": self.selectivity_results_csv_path,
+            "report_path": self.report_path,
+            "unit_cells": list(self.unit_cells),
+            "eqeq_settings": self.eqeq_settings.to_dict(),
+            "mixture_settings": self.mixture_settings.to_dict(),
+            "point_results": [point.to_dict() for point in self.point_results],
+            "warnings": list(self.warnings),
+        }
+
+
 def resolve_eqeq_binary(eqeq_path: str | Path | None = None) -> Path:
     return _resolve_binary(
         explicit_path=eqeq_path,
@@ -817,6 +1035,189 @@ def run_graspa_isotherm_workflow(
     return result
 
 
+def run_graspa_mixture_workflow(
+    cif_path: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    eqeq_path: str | Path | None = None,
+    graspa_path: str | Path | None = None,
+    eqeq_settings: EqeqChargeSettings | None = None,
+    mixture_settings: GraspaMixtureSettings | None = None,
+    eqeq_timeout_seconds: float | None = 300.0,
+    graspa_timeout_seconds: float | None = None,
+) -> GraspaMixtureResult:
+    input_path = Path(cif_path).expanduser().resolve()
+    if not input_path.is_file():
+        raise FileNotFoundError(f"CIF file does not exist: {input_path}")
+
+    eqeq_settings = eqeq_settings or EqeqChargeSettings()
+    if mixture_settings is None:
+        raise ValueError("mixture_settings must be provided for the gRASPA mixture workflow.")
+    _validate_mixture_settings(mixture_settings)
+    graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
+
+    graspa_binary = resolve_graspa_binary(graspa_path)
+
+    run_dir = _resolve_output_dir(input_path, output_dir, suffix="_graspa_mixture")
+    eqeq_run_dir = run_dir / "eqeq"
+    mixture_root_dir = run_dir / "mixture"
+    mixture_root_dir.mkdir(parents=True, exist_ok=True)
+    eqeq_result = assign_eqeq_charges_to_cif(
+        input_path,
+        output_dir=eqeq_run_dir,
+        eqeq_path=eqeq_path,
+        settings=eqeq_settings,
+        timeout_seconds=eqeq_timeout_seconds,
+    )
+
+    mixture_framework_cif_path = mixture_root_dir / f"{mixture_settings.framework_name}.cif"
+    shutil.copy2(eqeq_result.eqeq_charged_cif, mixture_framework_cif_path)
+
+    unit_cells = _compute_unit_cells_from_cif(
+        mixture_framework_cif_path,
+        cutoff=max(mixture_settings.cutoff_vdw, mixture_settings.cutoff_coulomb),
+    )
+
+    point_results: list[GraspaMixturePointResult] = []
+    warnings: list[str] = []
+    expected_components = tuple(component.component for component in mixture_settings.components)
+    raw_mol_fraction_total = sum(component.mol_fraction for component in mixture_settings.components)
+    if not math.isclose(raw_mol_fraction_total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+        warnings.append(
+            f"Mixture component mol fractions sum to {raw_mol_fraction_total:g}; gRASPA normalizes them internally and cofkit reports normalized feed fractions."
+        )
+
+    for index, pressure in enumerate(mixture_settings.pressures):
+        pressure_run_dir = mixture_root_dir / _format_pressure_run_dir_name(index, pressure)
+        pressure_run_dir.mkdir(parents=True, exist_ok=True)
+        pressure_framework_cif_path = pressure_run_dir / f"{mixture_settings.framework_name}.cif"
+        shutil.copy2(mixture_framework_cif_path, pressure_framework_cif_path)
+        _copy_widom_template_assets(pressure_run_dir, expected_components)
+
+        simulation_input_path = pressure_run_dir / "simulation.input"
+        simulation_input_path.write_text(
+            _render_mixture_simulation_input(mixture_settings, unit_cells=unit_cells, pressure=pressure),
+            encoding="utf-8",
+        )
+
+        graspa_stdout_log_path = pressure_run_dir / "graspa.stdout.log"
+        graspa_stderr_log_path = pressure_run_dir / "graspa.stderr.log"
+        try:
+            with graspa_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
+                with graspa_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
+                    graspa_completed = subprocess.run(
+                        [str(graspa_binary)],
+                        cwd=pressure_run_dir,
+                        check=False,
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                        text=True,
+                        timeout=graspa_timeout_seconds,
+                    )
+        except subprocess.TimeoutExpired as exc:
+            raise GraspaExecutionError(
+                f"gRASPA timed out after {graspa_timeout_seconds} seconds while running "
+                f"mixture pressure {pressure:g} Pa. See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
+            ) from exc
+
+        if graspa_completed.returncode != 0:
+            raise GraspaExecutionError(
+                f"gRASPA failed with exit code {graspa_completed.returncode} at mixture pressure {pressure:g} Pa. "
+                f"See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
+            )
+
+        data_file_paths = tuple(str(path) for path in sorted((pressure_run_dir / "Output").glob("*.data")))
+        if not data_file_paths:
+            raise GraspaParseError(
+                f"gRASPA completed without producing any Output/*.data files under {pressure_run_dir / 'Output'} "
+                f"for mixture pressure {pressure:g} Pa."
+            )
+
+        point_result = _parse_mixture_result_files(
+            tuple(Path(path) for path in data_file_paths),
+            mixture_settings=mixture_settings,
+            pressure=pressure,
+            pressure_run_dir=pressure_run_dir,
+            simulation_input_path=simulation_input_path,
+            graspa_stdout_log_path=graspa_stdout_log_path,
+            graspa_stderr_log_path=graspa_stderr_log_path,
+        )
+        point_results.append(point_result)
+
+        if len(data_file_paths) > 1:
+            warnings.append(
+                f"Parsed mixture point {pressure:g} Pa from {len(data_file_paths)} data files."
+            )
+        if graspa_stderr_log_path.read_text(encoding="utf-8", errors="replace").strip():
+            warnings.append(
+                f"gRASPA wrote content to stderr for mixture pressure {pressure:g} Pa; inspect the stderr log if needed."
+            )
+        if any(
+            not math.isfinite(value)
+            for component_result in point_result.component_results
+            for value in (
+                component_result.feed_mol_fraction,
+                component_result.adsorbed_mol_fraction,
+                component_result.loading_mol_per_kg,
+                component_result.loading_mol_per_kg_errorbar,
+                component_result.loading_g_per_l,
+                component_result.loading_g_per_l_errorbar,
+                component_result.heat_of_adsorption_kj_per_mol,
+                component_result.heat_of_adsorption_kj_per_mol_errorbar,
+            )
+        ):
+            warnings.append(
+                f"One or more parsed mixture component values are non-finite at pressure {pressure:g} Pa; inspect the raw gRASPA data output."
+            )
+        if any(
+            not math.isfinite(value)
+            for selectivity_result in point_result.selectivity_results
+            for value in (
+                selectivity_result.feed_mol_fraction_ratio,
+                selectivity_result.adsorbed_mol_fraction_ratio,
+                selectivity_result.selectivity,
+                selectivity_result.selectivity_errorbar,
+            )
+        ):
+            warnings.append(
+                f"One or more parsed mixture selectivity values are non-finite at pressure {pressure:g} Pa; inspect the raw gRASPA data output."
+            )
+
+    if eqeq_result.eqeq_json_output_path is None:
+        warnings.append("EQeq did not write the companion JSON output file.")
+
+    component_results_csv_path = mixture_root_dir / "component_results.csv"
+    _write_mixture_component_results_csv(point_results, component_results_csv_path)
+    selectivity_results_csv_path = mixture_root_dir / "selectivity_results.csv"
+    _write_mixture_selectivity_results_csv(point_results, selectivity_results_csv_path)
+
+    report_path = run_dir / "graspa_mixture_report.json"
+    result = GraspaMixtureResult(
+        input_cif=str(input_path),
+        output_dir=str(run_dir),
+        eqeq_binary=eqeq_result.eqeq_binary,
+        graspa_binary=str(graspa_binary),
+        eqeq_run_dir=eqeq_result.output_dir,
+        mixture_root_dir=str(mixture_root_dir),
+        eqeq_input_cif=eqeq_result.eqeq_input_cif,
+        eqeq_charged_cif=eqeq_result.eqeq_charged_cif,
+        mixture_framework_cif=str(mixture_framework_cif_path),
+        eqeq_json_output_path=eqeq_result.eqeq_json_output_path,
+        eqeq_stdout_log_path=eqeq_result.eqeq_stdout_log_path,
+        eqeq_stderr_log_path=eqeq_result.eqeq_stderr_log_path,
+        component_results_csv_path=str(component_results_csv_path),
+        selectivity_results_csv_path=str(selectivity_results_csv_path),
+        report_path=str(report_path),
+        unit_cells=unit_cells,
+        eqeq_settings=eqeq_settings,
+        mixture_settings=mixture_settings,
+        point_results=tuple(point_results),
+        warnings=tuple(warnings),
+    )
+    report_path.write_text(json.dumps(result.to_dict(), indent=2, allow_nan=False), encoding="utf-8")
+    return result
+
+
 def _resolve_binary(
     *,
     explicit_path: str | Path | None,
@@ -947,6 +1348,70 @@ def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
     if not settings.save_output_to_file:
         raise ValueError("save_output_to_file must remain enabled for result parsing in the current workflow.")
     _validate_fugacity_coefficient(settings.fugacity_coefficient)
+
+
+def _validate_mixture_settings(settings: GraspaMixtureSettings) -> None:
+    if len(settings.components) < 2:
+        raise ValueError("At least two adsorbate components must be configured for mixture adsorption.")
+    seen_components: set[str] = set()
+    mol_fraction_total = 0.0
+    for component in settings.components:
+        if component.component not in AVAILABLE_WIDOM_COMPONENTS:
+            supported = ", ".join(AVAILABLE_WIDOM_COMPONENTS)
+            raise ValueError(
+                f"Unsupported gRASPA component {component.component!r}. Supported components: {supported}."
+            )
+        if component.component in seen_components:
+            raise ValueError(f"Duplicate gRASPA mixture component {component.component!r} is not allowed.")
+        seen_components.add(component.component)
+        if component.mol_fraction <= 0.0:
+            raise ValueError("mixture component mol_fraction values must be positive.")
+        mol_fraction_total += component.mol_fraction
+        _validate_fugacity_coefficient(component.fugacity_coefficient)
+        for name, value in (
+            ("translation_probability", component.translation_probability),
+            ("rotation_probability", component.rotation_probability),
+            ("reinsertion_probability", component.reinsertion_probability),
+            ("identity_change_probability", component.identity_change_probability),
+            ("swap_probability", component.swap_probability),
+        ):
+            if value < 0.0:
+                raise ValueError(f"{name} must be non-negative.")
+        if component.create_number_of_molecules < 0:
+            raise ValueError("create_number_of_molecules must be non-negative.")
+
+    if mol_fraction_total <= 0.0:
+        raise ValueError("The total mixture mol_fraction must be positive.")
+    if not settings.pressures:
+        raise ValueError("At least one pressure point must be configured.")
+    if settings.framework_name.strip() == "":
+        raise ValueError("framework_name must not be blank.")
+    if settings.input_file_type.lower() != "cif":
+        raise ValueError("Only CIF gRASPA framework inputs are supported in the current pipeline.")
+    if settings.initialization_cycles < 0:
+        raise ValueError("initialization_cycles must be non-negative.")
+    if settings.equilibration_cycles < 0:
+        raise ValueError("equilibration_cycles must be non-negative.")
+    if settings.production_cycles <= 0:
+        raise ValueError("production_cycles must be positive.")
+    if settings.number_of_trial_positions <= 0 or settings.number_of_trial_orientations <= 0:
+        raise ValueError("number_of_trial_positions and number_of_trial_orientations must be positive.")
+    if settings.number_of_blocks <= 0:
+        raise ValueError("number_of_blocks must be positive.")
+    if settings.adsorbate_allocate_space <= 0:
+        raise ValueError("adsorbate_allocate_space must be positive.")
+    if settings.number_of_simulations <= 0:
+        raise ValueError("number_of_simulations must be positive.")
+    if settings.temperature <= 0.0:
+        raise ValueError("temperature must be positive.")
+    if any(pressure < 0.0 for pressure in settings.pressures):
+        raise ValueError("pressure points must be non-negative.")
+    if settings.cutoff_vdw <= 0.0 or settings.cutoff_coulomb <= 0.0:
+        raise ValueError("cutoff_vdw and cutoff_coulomb must be positive.")
+    if settings.ewald_precision <= 0.0:
+        raise ValueError("ewald_precision must be positive.")
+    if not settings.save_output_to_file:
+        raise ValueError("save_output_to_file must remain enabled for result parsing in the current workflow.")
 
 
 def _resolve_output_dir(input_path: Path, output_dir: str | Path | None, *, suffix: str) -> Path:
@@ -1166,6 +1631,82 @@ def _render_isotherm_simulation_input(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_mixture_simulation_input(
+    settings: GraspaMixtureSettings,
+    *,
+    unit_cells: tuple[int, int, int],
+    pressure: float,
+) -> str:
+    lines = [
+        f"UseGPUReduction {_bool_token(settings.use_gpu_reduction)}",
+        f"UseFastHostRNG {_bool_token(settings.use_fast_host_rng)}",
+        f"Useflag {_bool_token(settings.use_flag)}",
+        "",
+        f"NumberOfInitializationCycles {settings.initialization_cycles}",
+        f"NumberOfEquilibrationCycles  {settings.equilibration_cycles}",
+        f"NumberOfProductionCycles     {settings.production_cycles}",
+        "",
+        f"UseMaxStep  {_bool_token(settings.use_max_step)}",
+        f"MaxStepPerCycle {settings.max_step_per_cycle}",
+        "",
+        f"UseChargesFromCIFFile {_bool_token(settings.use_charges_from_cif_file)}",
+        "",
+        f"RestartFile {_bool_token(settings.restart_file)}",
+        f"RandomSeed  {settings.random_seed}",
+        "",
+        f"NumberOfTrialPositions {settings.number_of_trial_positions}",
+        f"NumberOfTrialOrientations {settings.number_of_trial_orientations}",
+        "",
+        f"NumberOfBlocks {settings.number_of_blocks}",
+        f"AdsorbateAllocateSpace {settings.adsorbate_allocate_space}",
+        f"NumberOfSimulations {settings.number_of_simulations}",
+        f"SingleSimulation {_bool_token(settings.single_simulation)}",
+        "",
+        f"DifferentFrameworks {_bool_token(settings.different_frameworks)}",
+        f"InputFileType {settings.input_file_type}",
+        f"FrameworkName {settings.framework_name}",
+        f"UnitCells 0 {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}",
+        "",
+        f"ChargeMethod {settings.charge_method}",
+        f"Temperature  {_format_simulation_number(settings.temperature)}",
+        f"Pressure     {_format_simulation_number(pressure)}",
+        "",
+        f"OverlapCriteria {_format_simulation_number(settings.overlap_criteria)}",
+        f"CutOffVDW {_format_simulation_number(settings.cutoff_vdw)}",
+        f"CutOffCoulomb {_format_simulation_number(settings.cutoff_coulomb)}",
+        f"EwaldPrecision {_format_simulation_number(settings.ewald_precision)}",
+        "",
+        f"UseDNNforHostGuest {_bool_token(settings.use_dnn_for_host_guest)}",
+        "",
+        f"SaveOutputToFile {_bool_token(settings.save_output_to_file)}",
+        "",
+    ]
+    for index, component in enumerate(settings.components):
+        lines.extend(
+            [
+                f"Component {index} MoleculeName             {component.component}",
+                "            IdealGasRosenbluthWeight 1.0",
+                f"            FugacityCoefficient      {_render_fugacity_coefficient(component.fugacity_coefficient)}",
+                f"            MolFraction              {_format_simulation_number(component.mol_fraction)}",
+                f"            TranslationProbability   {_format_simulation_number(component.translation_probability)}",
+            ]
+        )
+        if component.component not in _NON_ROTATABLE_GCMC_COMPONENTS and component.rotation_probability > 0.0:
+            lines.append(
+                f"            RotationProbability      {_format_simulation_number(component.rotation_probability)}"
+            )
+        lines.extend(
+            [
+                f"            ReinsertionProbability   {_format_simulation_number(component.reinsertion_probability)}",
+                f"            IdentityChangeProbability {_format_simulation_number(component.identity_change_probability)}",
+                f"            SwapProbability          {_format_simulation_number(component.swap_probability)}",
+                f"            CreateNumberOfMolecules  {component.create_number_of_molecules}",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _bool_token(value: bool) -> str:
     return "yes" if value else "no"
 
@@ -1258,12 +1799,132 @@ def _parse_isotherm_result_files(
     )
 
 
+def _parse_mixture_result_files(
+    data_paths: Sequence[Path],
+    *,
+    mixture_settings: GraspaMixtureSettings,
+    pressure: float,
+    pressure_run_dir: Path,
+    simulation_input_path: Path,
+    graspa_stdout_log_path: Path,
+    graspa_stderr_log_path: Path,
+) -> GraspaMixturePointResult:
+    expected_components = tuple(component.component for component in mixture_settings.components)
+    normalized_feed_mol_fractions = _normalized_mixture_mol_fractions(mixture_settings.components)
+    section_titles = {
+        "loading_mol_per_kg": "BLOCK AVERAGES (LOADING: mol/kg)",
+        "loading_g_per_l": "BLOCK AVERAGES (LOADING: g/L)",
+        "heat_of_adsorption_kj_per_mol": "BLOCK AVERAGES (HEAT OF ADSORPTION: kJ/mol)",
+    }
+
+    for path in data_paths:
+        parsed_sections = _parse_component_average_sections(path, section_titles=section_titles)
+        resolved_components: list[tuple[str, dict[str, tuple[float, float]]]] = []
+        for component_name in expected_components:
+            parsed_values = _resolve_component_summary_values(parsed_sections, component=component_name)
+            if parsed_values is None:
+                resolved_components = []
+                break
+            resolved_components.append((component_name, parsed_values))
+        if not resolved_components:
+            continue
+
+        total_loading_mol_per_kg = sum(
+            values["loading_mol_per_kg"][0]
+            for _, values in resolved_components
+            if math.isfinite(values["loading_mol_per_kg"][0])
+        )
+        loading_by_component = {
+            component_name: values["loading_mol_per_kg"][0]
+            for component_name, values in resolved_components
+        }
+        loading_errorbar_by_component = {
+            component_name: values["loading_mol_per_kg"][1]
+            for component_name, values in resolved_components
+        }
+
+        component_results = tuple(
+            GraspaMixturePointComponentResult(
+                component=component_name,
+                feed_mol_fraction=normalized_feed_mol_fractions[component_name],
+                adsorbed_mol_fraction=_compute_adsorbed_mol_fraction(
+                    loading_by_component[component_name],
+                    total_loading_mol_per_kg,
+                ),
+                loading_mol_per_kg=values["loading_mol_per_kg"][0],
+                loading_mol_per_kg_errorbar=values["loading_mol_per_kg"][1],
+                loading_g_per_l=values["loading_g_per_l"][0],
+                loading_g_per_l_errorbar=values["loading_g_per_l"][1],
+                heat_of_adsorption_kj_per_mol=values["heat_of_adsorption_kj_per_mol"][0],
+                heat_of_adsorption_kj_per_mol_errorbar=values["heat_of_adsorption_kj_per_mol"][1],
+            )
+            for component_name, values in resolved_components
+        )
+        selectivity_results = tuple(
+            GraspaMixtureSelectivityResult(
+                numerator_component=numerator_component,
+                denominator_component=denominator_component,
+                feed_mol_fraction_ratio=_safe_ratio(
+                    normalized_feed_mol_fractions[numerator_component],
+                    normalized_feed_mol_fractions[denominator_component],
+                ),
+                adsorbed_mol_fraction_ratio=_safe_ratio(
+                    loading_by_component[numerator_component],
+                    loading_by_component[denominator_component],
+                ),
+                selectivity=_compute_selectivity(
+                    numerator_loading=loading_by_component[numerator_component],
+                    denominator_loading=loading_by_component[denominator_component],
+                    numerator_feed_mol_fraction=normalized_feed_mol_fractions[numerator_component],
+                    denominator_feed_mol_fraction=normalized_feed_mol_fractions[denominator_component],
+                ),
+                selectivity_errorbar=_compute_selectivity_errorbar(
+                    numerator_loading=loading_by_component[numerator_component],
+                    numerator_loading_errorbar=loading_errorbar_by_component[numerator_component],
+                    denominator_loading=loading_by_component[denominator_component],
+                    denominator_loading_errorbar=loading_errorbar_by_component[denominator_component],
+                    numerator_feed_mol_fraction=normalized_feed_mol_fractions[numerator_component],
+                    denominator_feed_mol_fraction=normalized_feed_mol_fractions[denominator_component],
+                ),
+            )
+            for numerator_component in expected_components
+            for denominator_component in expected_components
+            if numerator_component != denominator_component
+        )
+
+        return GraspaMixturePointResult(
+            pressure=pressure,
+            pressure_run_dir=str(pressure_run_dir),
+            simulation_input_path=str(simulation_input_path),
+            graspa_stdout_log_path=str(graspa_stdout_log_path),
+            graspa_stderr_log_path=str(graspa_stderr_log_path),
+            data_file_paths=tuple(str(item) for item in data_paths),
+            source_data_file=str(path),
+            component_results=component_results,
+            selectivity_results=selectivity_results,
+        )
+
+    raise GraspaParseError(
+        f"No mixture adsorption summaries for components {list(expected_components)!r} could be parsed from "
+        f"{len(data_paths)} data file(s) at pressure {pressure:g} Pa."
+    )
+
+
 def _parse_isotherm_result_file(path: Path, *, component: str) -> dict[str, tuple[float, float]] | None:
     section_titles = {
         "loading_mol_per_kg": "BLOCK AVERAGES (LOADING: mol/kg)",
         "loading_g_per_l": "BLOCK AVERAGES (LOADING: g/L)",
         "heat_of_adsorption_kj_per_mol": "BLOCK AVERAGES (HEAT OF ADSORPTION: kJ/mol)",
     }
+    parsed_sections = _parse_component_average_sections(path, section_titles=section_titles)
+    return _resolve_component_summary_values(parsed_sections, component=component)
+
+
+def _parse_component_average_sections(
+    path: Path,
+    *,
+    section_titles: dict[str, str],
+) -> dict[str, dict[str, tuple[float, float]]]:
     component_values: dict[str, dict[str, tuple[float, float]]] = {
         key: {} for key in section_titles
     }
@@ -1309,12 +1970,19 @@ def _parse_isotherm_result_file(path: Path, *, component: str) -> dict[str, tupl
                     _parse_float_token(match.group(2)),
                 )
                 active_component = None
+    return component_values
 
+
+def _resolve_component_summary_values(
+    parsed_sections: dict[str, dict[str, tuple[float, float]]],
+    *,
+    component: str,
+) -> dict[str, tuple[float, float]] | None:
     parsed = {
         section: values.get(component)
-        for section, values in component_values.items()
+        for section, values in parsed_sections.items()
     }
-    if parsed["loading_mol_per_kg"] is None:
+    if parsed.get("loading_mol_per_kg") is None:
         return None
 
     resolved: dict[str, tuple[float, float]] = {}
@@ -1324,6 +1992,79 @@ def _parse_isotherm_result_file(path: Path, *, component: str) -> dict[str, tupl
         else:
             resolved[section] = value
     return resolved
+
+
+def _normalized_mixture_mol_fractions(
+    components: Sequence[GraspaMixtureComponentSettings],
+) -> dict[str, float]:
+    total = sum(component.mol_fraction for component in components)
+    if total <= 0.0:
+        raise ValueError("The total mixture mol_fraction must be positive.")
+    return {
+        component.component: component.mol_fraction / total
+        for component in components
+    }
+
+
+def _compute_adsorbed_mol_fraction(loading: float, total_loading: float) -> float:
+    return _safe_ratio(loading, total_loading)
+
+
+def _compute_selectivity(
+    *,
+    numerator_loading: float,
+    denominator_loading: float,
+    numerator_feed_mol_fraction: float,
+    denominator_feed_mol_fraction: float,
+) -> float:
+    adsorbed_ratio = _safe_ratio(numerator_loading, denominator_loading)
+    feed_ratio = _safe_ratio(numerator_feed_mol_fraction, denominator_feed_mol_fraction)
+    return _safe_ratio(adsorbed_ratio, feed_ratio)
+
+
+def _compute_selectivity_errorbar(
+    *,
+    numerator_loading: float,
+    numerator_loading_errorbar: float,
+    denominator_loading: float,
+    denominator_loading_errorbar: float,
+    numerator_feed_mol_fraction: float,
+    denominator_feed_mol_fraction: float,
+) -> float:
+    selectivity = _compute_selectivity(
+        numerator_loading=numerator_loading,
+        denominator_loading=denominator_loading,
+        numerator_feed_mol_fraction=numerator_feed_mol_fraction,
+        denominator_feed_mol_fraction=denominator_feed_mol_fraction,
+    )
+    if not math.isfinite(selectivity):
+        return math.nan
+    if numerator_loading == 0.0 and numerator_loading_errorbar == 0.0:
+        return 0.0
+    if numerator_loading <= 0.0 or denominator_loading <= 0.0:
+        return math.nan
+    if (
+        not math.isfinite(numerator_loading_errorbar)
+        or not math.isfinite(denominator_loading_errorbar)
+        or numerator_loading_errorbar < 0.0
+        or denominator_loading_errorbar < 0.0
+    ):
+        return math.nan
+    relative_variance = (
+        (numerator_loading_errorbar / numerator_loading) ** 2
+        + (denominator_loading_errorbar / denominator_loading) ** 2
+    )
+    return abs(selectivity) * math.sqrt(relative_variance)
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    if not math.isfinite(numerator) or not math.isfinite(denominator):
+        return math.nan
+    if denominator <= 0.0:
+        return math.nan
+    if numerator < 0.0:
+        return math.nan
+    return numerator / denominator
 
 
 def _parse_float_token(raw_value: str) -> float:
@@ -1405,3 +2146,87 @@ def _write_isotherm_results_csv(
                     "source_data_file": result.source_data_file,
                 }
             )
+
+
+def _write_mixture_component_results_csv(
+    point_results: Sequence[GraspaMixturePointResult],
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "pressure_pa",
+                "component",
+                "feed_mol_fraction",
+                "adsorbed_mol_fraction",
+                "loading_mol_per_kg",
+                "loading_mol_per_kg_errorbar",
+                "loading_mmol_per_g",
+                "loading_mmol_per_g_errorbar",
+                "loading_g_per_l",
+                "loading_g_per_l_errorbar",
+                "heat_of_adsorption_kj_per_mol",
+                "heat_of_adsorption_kj_per_mol_errorbar",
+                "source_data_file",
+            ],
+        )
+        writer.writeheader()
+        for point_result in point_results:
+            for component_result in point_result.component_results:
+                writer.writerow(
+                    {
+                        "pressure_pa": point_result.pressure,
+                        "component": component_result.component,
+                        "feed_mol_fraction": component_result.feed_mol_fraction,
+                        "adsorbed_mol_fraction": component_result.adsorbed_mol_fraction,
+                        "loading_mol_per_kg": component_result.loading_mol_per_kg,
+                        "loading_mol_per_kg_errorbar": component_result.loading_mol_per_kg_errorbar,
+                        "loading_mmol_per_g": component_result.loading_mol_per_kg,
+                        "loading_mmol_per_g_errorbar": component_result.loading_mol_per_kg_errorbar,
+                        "loading_g_per_l": component_result.loading_g_per_l,
+                        "loading_g_per_l_errorbar": component_result.loading_g_per_l_errorbar,
+                        "heat_of_adsorption_kj_per_mol": component_result.heat_of_adsorption_kj_per_mol,
+                        "heat_of_adsorption_kj_per_mol_errorbar": (
+                            component_result.heat_of_adsorption_kj_per_mol_errorbar
+                        ),
+                        "source_data_file": point_result.source_data_file,
+                    }
+                )
+
+
+def _write_mixture_selectivity_results_csv(
+    point_results: Sequence[GraspaMixturePointResult],
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "pressure_pa",
+                "numerator_component",
+                "denominator_component",
+                "feed_mol_fraction_ratio",
+                "adsorbed_mol_fraction_ratio",
+                "selectivity",
+                "selectivity_errorbar",
+                "source_data_file",
+            ],
+        )
+        writer.writeheader()
+        for point_result in point_results:
+            for selectivity_result in point_result.selectivity_results:
+                writer.writerow(
+                    {
+                        "pressure_pa": point_result.pressure,
+                        "numerator_component": selectivity_result.numerator_component,
+                        "denominator_component": selectivity_result.denominator_component,
+                        "feed_mol_fraction_ratio": selectivity_result.feed_mol_fraction_ratio,
+                        "adsorbed_mol_fraction_ratio": selectivity_result.adsorbed_mol_fraction_ratio,
+                        "selectivity": selectivity_result.selectivity,
+                        "selectivity_errorbar": selectivity_result.selectivity_errorbar,
+                        "source_data_file": point_result.source_data_file,
+                    }
+                )

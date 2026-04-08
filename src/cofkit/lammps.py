@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
 import math
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
@@ -42,22 +41,10 @@ except ImportError:  # pragma: no cover - exercised in environments without Open
     ob = None
 
 try:
-    from pymatgen.core import Lattice, Structure
-    from pymatgen.io.lammps.data import ForceField, LammpsBox, LammpsData, Topology
+    from pymatgen.io.lammps.data import LammpsBox, LammpsData
 except ImportError:  # pragma: no cover - exercised in environments without pymatgen
-    ForceField = None
     LammpsBox = None
     LammpsData = None
-    Lattice = None
-    Structure = None
-    Topology = None
-
-try:
-    from rdkit import Chem
-    from rdkit.Chem import rdForceFieldHelpers
-except ImportError:  # pragma: no cover - exercised in environments without RDKit
-    Chem = None
-    rdForceFieldHelpers = None
 
 
 COFKIT_LMP_ENV_VAR = "COFKIT_LMP_PATH"
@@ -137,48 +124,7 @@ class LammpsOptimizationSettings:
     box_relax_max_evaluations: int | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "forcefield": self.forcefield,
-            "charge_model": self.charge_model,
-            "pair_cutoff": self.pair_cutoff,
-            "coulomb_cutoff": self.coulomb_cutoff,
-            "ewald_precision": self.ewald_precision,
-            "position_restraint_force_constant": self.position_restraint_force_constant,
-            "pre_minimization_steps": self.pre_minimization_steps,
-            "pre_minimization_temperature": self.pre_minimization_temperature,
-            "pre_minimization_damping": self.pre_minimization_damping,
-            "pre_minimization_seed": self.pre_minimization_seed,
-            "pre_minimization_displacement_limit": self.pre_minimization_displacement_limit,
-            "two_stage_protocol": self.two_stage_protocol,
-            "stage2_position_restraint_force_constant": self.stage2_position_restraint_force_constant,
-            "energy_tolerance": self.energy_tolerance,
-            "force_tolerance": self.force_tolerance,
-            "max_iterations": self.max_iterations,
-            "max_evaluations": self.max_evaluations,
-            "min_style": self.min_style,
-            "stage2_energy_tolerance": self.stage2_energy_tolerance,
-            "stage2_force_tolerance": self.stage2_force_tolerance,
-            "stage2_max_iterations": self.stage2_max_iterations,
-            "stage2_max_evaluations": self.stage2_max_evaluations,
-            "stage2_min_style": self.stage2_min_style,
-            "timestep": self.timestep,
-            "min_modify_dmax": self.min_modify_dmax,
-            "min_modify_line": self.min_modify_line,
-            "min_modify_norm": self.min_modify_norm,
-            "min_modify_fire_integrator": self.min_modify_fire_integrator,
-            "min_modify_fire_tmax": self.min_modify_fire_tmax,
-            "min_modify_fire_abcfire": self.min_modify_fire_abcfire,
-            "relax_cell": self.relax_cell,
-            "box_relax_mode": self.box_relax_mode,
-            "box_relax_target_pressure": self.box_relax_target_pressure,
-            "box_relax_vmax": self.box_relax_vmax,
-            "box_relax_nreset": self.box_relax_nreset,
-            "box_relax_min_style": self.box_relax_min_style,
-            "box_relax_energy_tolerance": self.box_relax_energy_tolerance,
-            "box_relax_force_tolerance": self.box_relax_force_tolerance,
-            "box_relax_max_iterations": self.box_relax_max_iterations,
-            "box_relax_max_evaluations": self.box_relax_max_evaluations,
-        }
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -221,43 +167,9 @@ class LammpsOptimizationResult:
 
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "input_cif": self.input_cif,
-            "optimized_cif": self.optimized_cif,
-            "output_dir": self.output_dir,
-            "lammps_binary": self.lammps_binary,
-            "lammps_data_path": self.lammps_data_path,
-            "lammps_input_script_path": self.lammps_input_script_path,
-            "lammps_dump_path": self.lammps_dump_path,
-            "lammps_log_path": self.lammps_log_path,
-            "stdout_log_path": self.stdout_log_path,
-            "stderr_log_path": self.stderr_log_path,
-            "report_path": self.report_path,
-            "n_atoms": self.n_atoms,
-            "n_bonds": self.n_bonds,
-            "n_angles": self.n_angles,
-            "n_dihedrals": self.n_dihedrals,
-            "n_impropers": self.n_impropers,
-            "n_atom_types": self.n_atom_types,
-            "n_bond_types": self.n_bond_types,
-            "n_angle_types": self.n_angle_types,
-            "n_dihedral_types": self.n_dihedral_types,
-            "n_improper_types": self.n_improper_types,
-            "atom_type_symbols": dict(self.atom_type_symbols),
-            "settings": self.settings.to_dict(),
-            "forcefield_backend": self.forcefield_backend,
-            "parameter_sources": dict(self.parameter_sources),
-            "charge_model": self.charge_model,
-            "n_charged_atoms": self.n_charged_atoms,
-            "net_charge": self.net_charge,
-            "eqeq_binary": self.eqeq_binary,
-            "eqeq_run_dir": self.eqeq_run_dir,
-            "eqeq_charged_cif": self.eqeq_charged_cif,
-            "eqeq_stdout_log_path": self.eqeq_stdout_log_path,
-            "eqeq_stderr_log_path": self.eqeq_stderr_log_path,
-            "eqeq_json_output_path": self.eqeq_json_output_path,
-            "warnings": list(self.warnings),
-        }
+        data = asdict(self)
+        data["warnings"] = list(self.warnings)
+        return data
 
 
 @dataclass(frozen=True)
@@ -357,13 +269,6 @@ class _PreparedLammpsSystem:
 class _OptimizationModel:
     parsed: _ParsedExplicitBondCif
     boundary: str
-    output_atom_id_by_model_atom_id: dict[int, int]
-    projection_scale: tuple[int, int, int]
-    projection_min_tile: tuple[int, int, int]
-    primitive_parsed: _ParsedExplicitBondCif | None = None
-    primitive_atom_id_by_model_atom_id: dict[int, int] = field(default_factory=dict)
-    tile_by_model_atom_id: dict[int, tuple[int, int, int]] = field(default_factory=dict)
-    primitive_bond_id_by_model_bond_id: dict[int, int] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
 
@@ -466,6 +371,11 @@ def optimize_cif_with_lammps(
             Path(eqeq_result.eqeq_charged_cif),
             expected_labels=[atom.label for atom in parsed.atoms],
         )
+        if extracted_charges.used_atom_order_fallback:
+            warnings.append(
+                "EQeq output atom labels did not match the input CIF labels, so cofkit mapped charges by atom order. "
+                "Verify the EQeq output preserved atom ordering before trusting the assigned charges."
+            )
         parsed = _with_atom_charges(
             parsed,
             extracted_charges.charges_by_label,
@@ -476,10 +386,7 @@ def optimize_cif_with_lammps(
             "If you need post-relaxation charges, rerun EQeq on the optimized CIF."
         )
     optimization_model = _build_optimization_model(parsed, settings=settings)
-    effective_settings, model_execution_warnings = _effective_settings_for_optimization_model(
-        settings,
-        optimization_model=optimization_model,
-    )
+    effective_settings = settings
     prepared = _prepare_lammps_system(optimization_model.parsed, settings=effective_settings)
 
     data_path = run_dir / "lammps_input.data"
@@ -521,11 +428,7 @@ def optimize_cif_with_lammps(
         final_frame.lammps_basis,
         final_frame.cartesian_positions,
     )
-    final_fractional_positions = _project_optimized_fractional_positions(
-        optimization_model,
-        model_cartesian_positions=final_frame.cartesian_positions,
-        model_fractional_positions=model_fractional_positions,
-    )
+    final_fractional_positions = model_fractional_positions
     optimized_cif_path.write_text(
         _render_optimized_cif(
             parsed,
@@ -579,7 +482,7 @@ def optimize_cif_with_lammps(
         eqeq_stdout_log_path=eqeq_result.eqeq_stdout_log_path if eqeq_result is not None else None,
         eqeq_stderr_log_path=eqeq_result.eqeq_stderr_log_path if eqeq_result is not None else None,
         eqeq_json_output_path=eqeq_result.eqeq_json_output_path if eqeq_result is not None else None,
-        warnings=all_warnings + tuple(model_execution_warnings),
+        warnings=all_warnings,
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return result
@@ -679,300 +582,13 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
             "Choose a minimizer such as cg or sd instead."
         )
 
-
-def _effective_settings_for_optimization_model(
-    settings: LammpsOptimizationSettings,
-    *,
-    optimization_model: _OptimizationModel,
-) -> tuple[LammpsOptimizationSettings, tuple[str, ...]]:
-    if settings.pre_minimization_steps <= 0:
-        return settings, ()
-    if not _has_nonperiodic_boundary(optimization_model.boundary):
-        return settings, ()
-    warning = (
-        "Skipped pre-minimization MD because this optimization uses the replicated finite-cover LAMMPS fallback "
-        "with fixed boundaries, and the current LAMMPS prerun path was unstable on that nonperiodic model."
-    )
-    return replace(settings, pre_minimization_steps=0), (warning,)
-
-
 def _build_optimization_model(
     parsed: _ParsedExplicitBondCif,
     *,
     settings: LammpsOptimizationSettings,
 ) -> _OptimizationModel:
     _ = settings
-    return _OptimizationModel(
-        parsed=parsed,
-        boundary="p p p",
-        output_atom_id_by_model_atom_id={atom.atom_id: atom.atom_id for atom in parsed.atoms},
-        projection_scale=(1, 1, 1),
-        projection_min_tile=(0, 0, 0),
-    )
-
-
-def _build_replicated_cluster_model(
-    parsed: _ParsedExplicitBondCif,
-    *,
-    image_conflicts: int,
-) -> _OptimizationModel:
-    shell = []
-    for axis in range(3):
-        axis_extent = max(
-            [0]
-            + [abs(_sub_shift(bond.shift_2, bond.shift_1)[axis]) for bond in parsed.bonds]
-        )
-        shell.append(axis_extent)
-    if not any(shell):
-        raise LammpsInputError(
-            "The CIF bond graph requires a replicated finite-cover LAMMPS model, but cofkit could not infer a "
-            "non-trivial replication window from the atom-image conflicts."
-        )
-
-    min_tile = tuple(-extent for extent in shell)
-    max_tile = tuple(extent for extent in shell)
-    scale = tuple(2 * extent + 1 if extent > 0 else 1 for extent in shell)
-    tile_ranges = tuple(range(min_tile[index], max_tile[index] + 1) for index in range(3))
-
-    a, b, c, alpha, beta, gamma = parsed.cell_parameters
-    supercell_cell_parameters = (
-        a * scale[0],
-        b * scale[1],
-        c * scale[2],
-        alpha,
-        beta,
-        gamma,
-    )
-    supercell_basis = (
-        tuple(component * scale[0] for component in parsed.lammps_basis[0]),
-        tuple(component * scale[1] for component in parsed.lammps_basis[1]),
-        tuple(component * scale[2] for component in parsed.lammps_basis[2]),
-    )
-
-    atoms: list[_CifAtomRecord] = []
-    model_atom_id_by_original_key: dict[tuple[int, tuple[int, int, int]], int] = {}
-    labels_by_model_atom_id: dict[int, str] = {}
-    output_atom_id_by_model_atom_id: dict[int, int] = {}
-    primitive_atom_id_by_model_atom_id: dict[int, int] = {}
-    tile_by_model_atom_id: dict[int, tuple[int, int, int]] = {}
-    for tile in itertools.product(*tile_ranges):
-        for atom in parsed.atoms:
-            model_atom_id = len(atoms) + 1
-            model_label = _replicated_atom_label(atom.label, tile)
-            model_atom_id_by_original_key[(atom.atom_id, tile)] = model_atom_id
-            labels_by_model_atom_id[model_atom_id] = model_label
-            primitive_atom_id_by_model_atom_id[model_atom_id] = atom.atom_id
-            tile_by_model_atom_id[model_atom_id] = tile
-            if tile == (0, 0, 0):
-                output_atom_id_by_model_atom_id[model_atom_id] = atom.atom_id
-            atoms.append(
-                _CifAtomRecord(
-                    atom_id=model_atom_id,
-                    label=model_label,
-                    symbol=atom.symbol,
-                    occupancy=atom.occupancy,
-                    fractional_position=tuple(
-                        (atom.fractional_position[index] + tile[index] - min_tile[index]) / scale[index]
-                        for index in range(3)
-                    ),
-                )
-            )
-
-    bonds: list[_CifBondRecord] = []
-    primitive_bond_id_by_model_bond_id: dict[int, int] = {}
-    for tile in itertools.product(*tile_ranges):
-        for bond in parsed.bonds:
-            delta = _sub_shift(bond.shift_2, bond.shift_1)
-            target_tile = tuple(tile[index] + delta[index] for index in range(3))
-            if not _tile_within_window(target_tile, min_tile, max_tile):
-                continue
-            atom_id_1 = model_atom_id_by_original_key[(bond.atom_id_1, tile)]
-            atom_id_2 = model_atom_id_by_original_key[(bond.atom_id_2, target_tile)]
-            bonds.append(
-                _CifBondRecord(
-                    bond_id=len(bonds) + 1,
-                    atom_id_1=atom_id_1,
-                    atom_id_2=atom_id_2,
-                    label_1=labels_by_model_atom_id[atom_id_1],
-                    label_2=labels_by_model_atom_id[atom_id_2],
-                    symmetry_1=".",
-                    symmetry_2=".",
-                    shift_1=(0, 0, 0),
-                    shift_2=(0, 0, 0),
-                    equilibrium_distance=bond.equilibrium_distance,
-                    bond_order=bond.bond_order,
-                )
-            )
-            primitive_bond_id_by_model_bond_id[bonds[-1].bond_id] = bond.bond_id
-
-    atom_records = tuple(atoms)
-    bond_records = tuple(bonds)
-    angles = _derive_angles(atom_records, bond_records, supercell_basis)
-    dihedrals = _derive_dihedrals(atom_records, bond_records)
-    impropers = _derive_impropers(atom_records, bond_records)
-    replicated_parsed = _ParsedExplicitBondCif(
-        source_path=parsed.source_path,
-        data_name=f"{parsed.data_name}_replicated_cluster",
-        cell_parameters=supercell_cell_parameters,
-        lammps_basis=supercell_basis,
-        atoms=atom_records,
-        bonds=bond_records,
-        angles=angles,
-        dihedrals=dihedrals,
-        impropers=impropers,
-    )
-    warning = (
-        "Primitive CIF bond unwrapping was topologically inconsistent for direct periodic LAMMPS export. "
-        f"cofkit built a replicated finite-cover cluster ({scale[0]}x{scale[1]}x{scale[2]}) with fixed boundaries "
-        "for optimization and refit a translationally consistent primitive cell from the optimized replicated bond "
-        "geometry."
-    )
-    return _OptimizationModel(
-        parsed=replicated_parsed,
-        boundary="f f f",
-        output_atom_id_by_model_atom_id=output_atom_id_by_model_atom_id,
-        projection_scale=scale,
-        projection_min_tile=min_tile,
-        primitive_parsed=parsed,
-        primitive_atom_id_by_model_atom_id=primitive_atom_id_by_model_atom_id,
-        tile_by_model_atom_id=tile_by_model_atom_id,
-        primitive_bond_id_by_model_bond_id=primitive_bond_id_by_model_bond_id,
-        warnings=(warning,),
-    )
-
-
-def _project_optimized_fractional_positions(
-    optimization_model: _OptimizationModel,
-    model_cartesian_positions: dict[int, tuple[float, float, float]],
-    model_fractional_positions: dict[int, tuple[float, float, float]],
-) -> dict[int, tuple[float, float, float]]:
-    direct_projection = _project_model_fractional_positions_direct(optimization_model, model_fractional_positions)
-    if optimization_model.primitive_parsed is None:
-        return direct_projection
-    return _fit_replicated_cluster_projection(
-        optimization_model,
-        model_cartesian_positions=model_cartesian_positions,
-        direct_projection=direct_projection,
-    )
-
-
-def _project_model_fractional_positions_direct(
-    optimization_model: _OptimizationModel,
-    model_fractional_positions: dict[int, tuple[float, float, float]],
-) -> dict[int, tuple[float, float, float]]:
-    projected: dict[int, tuple[float, float, float]] = {}
-    for model_atom_id, output_atom_id in optimization_model.output_atom_id_by_model_atom_id.items():
-        fractional = model_fractional_positions[model_atom_id]
-        projected[output_atom_id] = tuple(
-            _wrap_fraction(
-                fractional[index] * optimization_model.projection_scale[index]
-                + optimization_model.projection_min_tile[index]
-            )
-            for index in range(3)
-        )
-    return projected
-
-
-def _fit_replicated_cluster_projection(
-    optimization_model: _OptimizationModel,
-    *,
-    model_cartesian_positions: dict[int, tuple[float, float, float]],
-    direct_projection: dict[int, tuple[float, float, float]],
-) -> dict[int, tuple[float, float, float]]:
-    import numpy as np
-
-    primitive = optimization_model.primitive_parsed
-    if primitive is None:
-        return direct_projection
-
-    primitive_atom_ids = optimization_model.primitive_atom_id_by_model_atom_id
-    primitive_bond_ids = optimization_model.primitive_bond_id_by_model_bond_id
-    if not primitive_atom_ids or not primitive_bond_ids:
-        return direct_projection
-
-    basis = np.array(primitive.lammps_basis, dtype=float).T
-    inverse_basis = np.linalg.inv(basis)
-
-    rows: list[np.ndarray] = []
-    targets: list[float] = []
-    n_atoms = len(primitive.atoms)
-    for model_bond in optimization_model.parsed.bonds:
-        primitive_bond_id = primitive_bond_ids.get(model_bond.bond_id)
-        if primitive_bond_id is None:
-            continue
-        primitive_bond = primitive.bonds[primitive_bond_id - 1]
-        cartesian_displacement = np.array(model_cartesian_positions[model_bond.atom_id_2], dtype=float) - np.array(
-            model_cartesian_positions[model_bond.atom_id_1],
-            dtype=float,
-        )
-        lattice_shift = basis.dot(np.array(_sub_shift(primitive_bond.shift_2, primitive_bond.shift_1), dtype=float))
-        rhs = cartesian_displacement - lattice_shift
-        primitive_atom_id_1 = primitive_atom_ids[model_bond.atom_id_1]
-        primitive_atom_id_2 = primitive_atom_ids[model_bond.atom_id_2]
-        for axis in range(3):
-            row = np.zeros(3 * n_atoms, dtype=float)
-            row[3 * (primitive_atom_id_2 - 1) + axis] = 1.0
-            row[3 * (primitive_atom_id_1 - 1) + axis] = -1.0
-            rows.append(row)
-            targets.append(float(rhs[axis]))
-
-    for root_atom_id in _primitive_component_roots(primitive):
-        anchor_cartesian = _fractional_to_lammps(direct_projection[root_atom_id], primitive.lammps_basis)
-        for axis in range(3):
-            row = np.zeros(3 * n_atoms, dtype=float)
-            row[3 * (root_atom_id - 1) + axis] = 1.0
-            rows.append(row)
-            targets.append(float(anchor_cartesian[axis]))
-
-    if not rows:
-        return direct_projection
-
-    solution, *_ = np.linalg.lstsq(np.vstack(rows), np.array(targets, dtype=float), rcond=None)
-    projected: dict[int, tuple[float, float, float]] = {}
-    for atom in primitive.atoms:
-        cartesian = solution[3 * (atom.atom_id - 1) : 3 * atom.atom_id]
-        fractional = inverse_basis.dot(cartesian)
-        projected[atom.atom_id] = tuple(_wrap_fraction(float(component)) for component in fractional.tolist())
-    return projected
-
-
-def _primitive_component_roots(parsed: _ParsedExplicitBondCif) -> tuple[int, ...]:
-    neighbors: dict[int, list[int]] = {atom.atom_id: [] for atom in parsed.atoms}
-    for bond in parsed.bonds:
-        neighbors[bond.atom_id_1].append(bond.atom_id_2)
-        neighbors[bond.atom_id_2].append(bond.atom_id_1)
-
-    roots: list[int] = []
-    visited: set[int] = set()
-    for atom in parsed.atoms:
-        if atom.atom_id in visited:
-            continue
-        roots.append(atom.atom_id)
-        stack = [atom.atom_id]
-        visited.add(atom.atom_id)
-        while stack:
-            current = stack.pop()
-            for neighbor in neighbors[current]:
-                if neighbor in visited:
-                    continue
-                visited.add(neighbor)
-                stack.append(neighbor)
-    return tuple(roots)
-
-
-def _replicated_atom_label(label: str, tile: tuple[int, int, int]) -> str:
-    def _component(value: int) -> str:
-        return f"m{abs(value)}" if value < 0 else str(value)
-
-    return f"{label}__tx{_component(tile[0])}_ty{_component(tile[1])}_tz{_component(tile[2])}"
-
-
-def _tile_within_window(
-    tile: tuple[int, int, int],
-    min_tile: tuple[int, int, int],
-    max_tile: tuple[int, int, int],
-) -> bool:
-    return all(min_tile[index] <= tile[index] <= max_tile[index] for index in range(3))
+    return _OptimizationModel(parsed=parsed, boundary="p p p")
 
 
 def _normalize_forcefield_name(forcefield: str) -> str:
@@ -1792,17 +1408,17 @@ def _build_openbabel_molecule(
         ob_atom.SetAtomicNum(atomic_number)
         x, y, z = cartesian_positions[atom.atom_id]
         ob_atom.SetVector(x, y, z)
-    has_complete_explicit_bond_orders = all(bond.bond_order is not None for bond in parsed.bonds)
     aromatic_atom_ids: set[int] = set()
     for bond in parsed.bonds:
+        assert bond.bond_order is not None
         bond_order = 1
-        if bond.bond_order is not None and not is_aromatic_bond_order(bond.bond_order):
+        if not is_aromatic_bond_order(bond.bond_order):
             bond_order = max(1, int(round(normalize_bond_order(bond.bond_order))))
         if not molecule.AddBond(bond.atom_id_1, bond.atom_id_2, bond_order):
             raise LammpsInputError(
                 f"Open Babel rejected explicit bond {bond.label_1}-{bond.label_2} while preparing the UFF model."
             )
-        if bond.bond_order is not None and is_aromatic_bond_order(bond.bond_order):
+        if is_aromatic_bond_order(bond.bond_order):
             ob_bond = molecule.GetBond(bond.atom_id_1, bond.atom_id_2)
             if ob_bond is None:
                 raise LammpsInputError(
@@ -1811,17 +1427,14 @@ def _build_openbabel_molecule(
             ob_bond.SetAromatic(True)
             aromatic_atom_ids.add(bond.atom_id_1)
             aromatic_atom_ids.add(bond.atom_id_2)
-    if has_complete_explicit_bond_orders:
-        for atom_id in aromatic_atom_ids:
-            ob_atom = molecule.GetAtom(atom_id)
-            if ob_atom is not None:
-                ob_atom.SetAromatic(True)
-        if aromatic_atom_ids:
-            molecule.SetAromaticPerceived(True)
-            molecule.FindRingAtomsAndBonds()
-            molecule.SetRingAtomsAndBondsPerceived(True)
-    else:
-        molecule.PerceiveBondOrders()
+    for atom_id in aromatic_atom_ids:
+        ob_atom = molecule.GetAtom(atom_id)
+        if ob_atom is not None:
+            ob_atom.SetAromatic(True)
+    if aromatic_atom_ids:
+        molecule.SetAromaticPerceived(True)
+        molecule.FindRingAtomsAndBonds()
+        molecule.SetRingAtomsAndBondsPerceived(True)
     return molecule
 
 
@@ -1847,59 +1460,6 @@ def _assign_openbabel_uff_atom_types(ob_molecule) -> dict[int, str]:
             )
         atom_types[atom.GetIdx()] = atom_type
     return atom_types
-
-
-def _build_rdkit_molecule(parsed: _ParsedExplicitBondCif, ob_molecule):
-    if all(bond.bond_order is not None for bond in parsed.bonds):
-        return _build_rdkit_molecule_from_explicit_bond_orders(parsed)
-    return _build_rdkit_molecule_from_openbabel(ob_molecule)
-
-
-def _build_rdkit_molecule_from_explicit_bond_orders(parsed: _ParsedExplicitBondCif):
-    molecule = Chem.RWMol()
-    for atom in parsed.atoms:
-        rd_atom = Chem.Atom(atom.symbol)
-        molecule.AddAtom(rd_atom)
-    aromatic_atom_ids: set[int] = set()
-    for bond in parsed.bonds:
-        if bond.bond_order is None:
-            raise LammpsInputError("Explicit-bond RDKit construction encountered a bond without a bond order.")
-        bond_type = _rdkit_bond_type_from_bond_order(bond.bond_order)
-        molecule.AddBond(bond.atom_id_1 - 1, bond.atom_id_2 - 1, bond_type)
-        if is_aromatic_bond_order(bond.bond_order):
-            aromatic_atom_ids.add(bond.atom_id_1 - 1)
-            aromatic_atom_ids.add(bond.atom_id_2 - 1)
-    rdkit_molecule = molecule.GetMol()
-    for atom_id in aromatic_atom_ids:
-        rdkit_molecule.GetAtomWithIdx(atom_id).SetIsAromatic(True)
-    Chem.SanitizeMol(rdkit_molecule)
-    return rdkit_molecule
-
-
-def _build_rdkit_molecule_from_openbabel(ob_molecule):
-    converter = ob.OBConversion()
-    if not converter.SetOutFormat("mol"):
-        raise LammpsConfigurationError("Open Babel does not support MOL export in this environment.")
-    mol_block = converter.WriteString(ob_molecule)
-    rdkit_molecule = Chem.MolFromMolBlock(mol_block, sanitize=True, removeHs=False)
-    if rdkit_molecule is None:
-        raise LammpsInputError(
-            "RDKit could not reconstruct a sanitized molecule from the Open Babel bond-order perception step."
-        )
-    return rdkit_molecule
-
-
-def _rdkit_bond_type_from_bond_order(bond_order: float):
-    normalized = normalize_bond_order(bond_order)
-    if is_aromatic_bond_order(normalized):
-        return Chem.BondType.AROMATIC
-    if abs(normalized - 1.0) <= 1.0e-6:
-        return Chem.BondType.SINGLE
-    if abs(normalized - 2.0) <= 1.0e-6:
-        return Chem.BondType.DOUBLE
-    if abs(normalized - 3.0) <= 1.0e-6:
-        return Chem.BondType.TRIPLE
-    raise LammpsInputError(f"Unsupported explicit bond order for RDKit UFF setup: {bond_order!r}")
 
 
 def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
@@ -1989,7 +1549,6 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
             raw_symmetry_1=symmetry_1,
             raw_symmetry_2=symmetry_2,
             basis=basis,
-            reported_distance=equilibrium_distance,
         )
         bond_order = cif_type_to_bond_order(str(bond_type_loop[bond_id]).strip()) if len(bond_type_loop) > bond_id else None
         bonds.append(
@@ -2276,7 +1835,6 @@ def _resolve_effective_bond_geometry(
     raw_symmetry_1: str,
     raw_symmetry_2: str,
     basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
-    reported_distance: float,
 ) -> tuple[tuple[int, int, int], tuple[int, int, int], float]:
     if raw_symmetry_1 != "." or raw_symmetry_2 != ".":
         equilibrium_distance = _bond_distance(
@@ -2451,7 +2009,6 @@ def _render_lammps_input_script(
     prepared: _PreparedLammpsSystem,
     boundary: str,
 ) -> str:
-    forcefield = _normalize_forcefield_name(settings.forcefield)
     thermo_terms = ["step", "pe", "ebond"]
     minimization_stages = _build_minimization_stages(settings)
     periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
@@ -2566,8 +2123,6 @@ def _render_lammps_input_script(
     if active_restraint_force_constant is not None:
         lines.append("unfix cofkit_hold")
     lines.append("")
-    if forcefield == "uff":
-        return "\n".join(lines)
     return "\n".join(lines)
 
 
@@ -2982,14 +2537,6 @@ def _bond_distance(
         (fractional_2[2] + shift_2[2]) - (fractional_1[2] + shift_1[2]),
     )
     return _norm(_fractional_vector_to_cartesian(vector, basis))
-
-
-def _atomic_mass(symbol: str) -> float:
-    if gemmi is None:  # pragma: no cover - guarded earlier
-        return 12.011
-    mass = float(gemmi.Element(symbol).weight)
-    return mass if mass > 0.0 else 12.011
-
 
 def _add_shift(left: tuple[int, int, int], right: tuple[int, int, int]) -> tuple[int, int, int]:
     return (left[0] + right[0], left[1] + right[1], left[2] + right[2])

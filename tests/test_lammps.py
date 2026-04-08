@@ -427,6 +427,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.100000", optimized_text)
             self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00 0.000000", optimized_text)
             self.assertIn("a3 O 0.300000 0.100000 0.100000 1.00 -0.100000", optimized_text)
+            self.assertIn("mapped charges by atom order", " ".join(result.warnings))
 
     def test_output_cif_writes_inferred_periodic_bond_symmetry_when_needed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -615,9 +616,8 @@ class LammpsTests(unittest.TestCase):
         )
 
         self.assertEqual(model.boundary, "p p p")
-        self.assertIsNone(model.primitive_parsed)
         self.assertEqual(model.parsed, parsed)
-        self.assertEqual(len(model.output_atom_id_by_model_atom_id), len(parsed.atoms))
+        self.assertEqual(model.warnings, ())
 
     def test_lammps_rejects_legacy_cif_without_explicit_bond_type(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -47,8 +47,8 @@ Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
 - `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
-- `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage plus the `cofkit calculate graspa-widom` and `cofkit calculate graspa-isotherm` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
-- `gRASPA` for the initial `cofkit calculate graspa-widom` Widom-insertion stage and the `cofkit calculate graspa-isotherm` adsorption stage, with the executable path provided through `COFKIT_GRASPA_PATH`
+- `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
+- `gRASPA` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_GRASPA_PATH`
 - `pytest` to run the local test suite when you install the `dev` extra
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
@@ -155,6 +155,7 @@ The most useful grouped commands are:
 - `cofkit calculate lammps-optimize`
 - `cofkit calculate graspa-widom`
 - `cofkit calculate graspa-isotherm`
+- `cofkit calculate graspa-mixture`
 - `cofkit build default-library`
 
 Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
@@ -391,7 +392,31 @@ The wrapper writes:
 
 `--pressure` repeats to define the isotherm grid. `--production-cycles` applies per pressure point. `--fugacity-coefficient` accepts either a positive float or `PR-EOS`. If gRASPA emits non-finite loading or heat values, `cofkit` keeps the raw data file and records those specific fields as `null` in the JSON report instead of failing the whole run.
 
-This wrapper produces pure-component adsorption points. Ratios such as `Xe/Kr` computed from separate `graspa-isotherm` runs are loading ratios, not mixture selectivities.
+This wrapper produces pure-component adsorption points. Ratios such as `Xe/Kr` computed from separate `graspa-isotherm` runs are loading ratios, not mixture selectivities. Use `graspa-mixture` when you need a true mixed-feed adsorption/selectivity calculation.
+
+### Run EQeq + gRASPA mixture adsorption/selectivity on one CIF
+
+```bash
+cofkit calculate graspa-mixture \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_mixture \
+  --component Kr:0.1 \
+  --component Xe:0.9 \
+  --pressure 10000 \
+  --pressure 100000 \
+  --fugacity-coefficient PR-EOS \
+  --json
+```
+
+The `graspa-mixture` wrapper stages `EQeq -> gRASPA` exactly once per pressure point, but now writes one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries. It parses component-resolved loading/heat summaries from each `Output/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`.
+
+The wrapper writes:
+
+- `mixture/component_results.csv` with one row per pressure/component
+- `mixture/selectivity_results.csv` with one row per pressure/component pair
+- `graspa_mixture_report.json` with the staged paths, settings, parsed point results, and warnings
+
+In real runs, gRASPA may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and records it as a warning when the simulation otherwise completes successfully.
 
 ### Rebuild the detector-scanned example library
 
@@ -408,6 +433,7 @@ If you are using Codex inside this repository, load [skills/cofkit-navigator/SKI
 - classification of finished output trees
 - EQeq + gRASPA Widom insertion on an exported CIF
 - EQeq + gRASPA single-component adsorption isotherms on an exported CIF
+- EQeq + gRASPA multi-component adsorption/selectivity on an exported CIF
 - rebuilding the detector-scanned default monomer library
 - choosing between the CLI, `BatchStructureGenerator`, and `COFEngine`
 

@@ -17,10 +17,13 @@ from cofkit.graspa import (
     COFKIT_GRASPA_ENV_VAR,
     EqeqChargeSettings,
     GraspaConfigurationError,
+    GraspaMixtureComponentSettings,
+    GraspaMixtureSettings,
     GraspaIsothermSettings,
     GraspaWidomSettings,
     resolve_eqeq_binary,
     resolve_graspa_binary,
+    run_graspa_mixture_workflow,
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
 )
@@ -314,6 +317,153 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("FugacityCoefficient      PR-EOS", simulation_input)
             self.assertNotIn("RotationProbability", simulation_input)
 
+    def test_run_graspa_mixture_workflow_prepares_inputs_and_parses_selectivity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "mixture_framework.cif"
+            cofid = "3:amine:Nc1ccc(-c2ccc(N)cc2)cc1.2:aldehyde:O=Cc1ccc(C=O)cc1&&sql&&imine"
+            cif_path.write_text(
+                f"# COFid: {cofid}\n"
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_mixture_workflow(
+                    cif_path,
+                    output_dir=temp_path / "mixture_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    mixture_settings=GraspaMixtureSettings(
+                        components=(
+                            GraspaMixtureComponentSettings("Kr", 0.1, fugacity_coefficient="PR-EOS"),
+                            GraspaMixtureComponentSettings("Xe", 0.9, fugacity_coefficient="PR-EOS"),
+                        ),
+                        pressures=(10000.0, 100000.0),
+                    ),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(result.unit_cells, (1, 2, 3))
+            self.assertEqual(len(result.point_results), 2)
+            self.assertTrue(Path(result.eqeq_charged_cif).is_file())
+            self.assertTrue(Path(result.component_results_csv_path).is_file())
+            self.assertTrue(Path(result.selectivity_results_csv_path).is_file())
+            self.assertTrue(Path(result.report_path).is_file())
+            self.assertEqual(Path(result.eqeq_charged_cif).read_text(encoding="utf-8").splitlines()[0], f"# COFid: {cofid}")
+            self.assertEqual(
+                Path(result.mixture_framework_cif).read_text(encoding="utf-8").splitlines()[0],
+                f"# COFid: {cofid}",
+            )
+
+            first_point = result.point_results[0]
+            self.assertEqual(first_point.pressure, 10000.0)
+            self.assertEqual(first_point.component_results[0].component, "Kr")
+            self.assertAlmostEqual(first_point.component_results[0].loading_mol_per_kg, 0.01)
+            self.assertAlmostEqual(first_point.component_results[1].loading_mol_per_kg, 0.18)
+            self.assertAlmostEqual(first_point.component_results[0].adsorbed_mol_fraction, 0.01 / 0.19)
+            self.assertAlmostEqual(first_point.component_results[1].adsorbed_mol_fraction, 0.18 / 0.19)
+            self.assertAlmostEqual(first_point.selectivity_results[0].selectivity, 0.5)
+            self.assertAlmostEqual(first_point.selectivity_results[1].selectivity, 2.0)
+            self.assertAlmostEqual(first_point.selectivity_results[1].selectivity_errorbar, 2.0 * (2.0 ** 0.5) * 0.1)
+
+            simulation_input = Path(first_point.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("MolFraction              0.1", simulation_input)
+            self.assertIn("MolFraction              0.9", simulation_input)
+            self.assertIn("IdentityChangeProbability 1", simulation_input)
+            self.assertIn("FugacityCoefficient      PR-EOS", simulation_input)
+            self.assertNotIn("RotationProbability", simulation_input)
+
+            component_csv_text = Path(result.component_results_csv_path).read_text(encoding="utf-8")
+            self.assertIn("adsorbed_mol_fraction", component_csv_text)
+            self.assertIn("Kr", component_csv_text)
+            self.assertIn("Xe", component_csv_text)
+            selectivity_csv_text = Path(result.selectivity_results_csv_path).read_text(encoding="utf-8")
+            self.assertIn("selectivity", selectivity_csv_text)
+            self.assertIn("Kr", selectivity_csv_text)
+            self.assertIn("Xe", selectivity_csv_text)
+
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(report["unit_cells"], [1, 2, 3])
+            self.assertEqual(len(report["point_results"]), 2)
+            self.assertEqual(report["point_results"][0]["component_results"][0]["feed_mol_fraction"], 0.1)
+            self.assertEqual(report["point_results"][0]["selectivity_results"][1]["selectivity"], 2.0)
+
+    def test_calculate_graspa_mixture_cli_prints_json_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "cli_mixture_example.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+            output_dir = temp_path / "cli_mixture"
+            buffer = io.StringIO()
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                with contextlib.redirect_stdout(buffer):
+                    cli_main(
+                        [
+                            "calculate",
+                            "graspa-mixture",
+                            str(cif_path),
+                            "--output-dir",
+                            str(output_dir),
+                            "--component",
+                            "CO2:0.25",
+                            "--component",
+                            "N2:0.75",
+                            "--pressure",
+                            "10000",
+                            "--pressure",
+                            "100000",
+                            "--fugacity-coefficient",
+                            "PR-EOS",
+                            "--json",
+                        ]
+                    )
+
+            report = json.loads(buffer.getvalue())
+            self.assertEqual(report["output_dir"], str(output_dir.resolve()))
+            self.assertEqual(report["unit_cells"], [1, 2, 3])
+            self.assertEqual(len(report["mixture_settings"]["components"]), 2)
+            self.assertEqual(report["mixture_settings"]["components"][0]["component"], "CO2")
+            self.assertEqual(report["mixture_settings"]["components"][1]["component"], "N2")
+            self.assertEqual(len(report["point_results"]), 2)
+            self.assertEqual(len(report["point_results"][0]["component_results"]), 2)
+            self.assertEqual(len(report["point_results"][0]["selectivity_results"]), 2)
+            self.assertAlmostEqual(report["point_results"][0]["selectivity_results"][1]["selectivity"], 2.0)
+
+            simulation_input = Path(report["point_results"][0]["simulation_input_path"]).read_text(encoding="utf-8")
+            self.assertIn("MolFraction              0.25", simulation_input)
+            self.assertIn("MolFraction              0.75", simulation_input)
+            self.assertIn("IdentityChangeProbability 1", simulation_input)
+            self.assertIn("RotationProbability      1", simulation_input)
+            self.assertIn("FugacityCoefficient      PR-EOS", simulation_input)
+
     def test_calculate_help_lists_graspa_widom(self):
         buffer = io.StringIO()
         with self.assertRaises(SystemExit), contextlib.redirect_stdout(buffer):
@@ -321,6 +471,7 @@ class GraspaWidomTests(unittest.TestCase):
 
         self.assertIn("graspa-widom", buffer.getvalue())
         self.assertIn("graspa-isotherm", buffer.getvalue())
+        self.assertIn("graspa-mixture", buffer.getvalue())
 
     def _write_fake_eqeq_binary(self, path: Path, *, strip_leading_cofid_comment: bool = False) -> Path:
         path.write_text(
@@ -379,13 +530,19 @@ class GraspaWidomTests(unittest.TestCase):
             "unit_cells_match = re.search(r'^UnitCells\\s+0\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)', text, re.MULTILINE)\n"
             "pressure_match = re.search(r'^Pressure\\s+(\\S+)', text, re.MULTILINE)\n"
             "components = re.findall(r'^Component\\s+\\d+\\s+MoleculeName\\s+(\\S+)', text, re.MULTILINE)\n"
+            "mol_fractions = [float(value) for value in re.findall(r'^\\s*MolFraction\\s+(\\S+)', text, re.MULTILINE)]\n"
             "if framework_match is None or unit_cells_match is None or pressure_match is None:\n"
             "    sys.stderr.write('missing framework/unitcells config\\n')\n"
             "    sys.exit(3)\n"
             "\n"
             "framework_name = framework_match.group(1)\n"
             "pressure = float(pressure_match.group(1))\n"
-            "mode = 'widom' if 'WidomProbability' in text else 'isotherm'\n"
+            "if 'WidomProbability' in text:\n"
+            "    mode = 'widom'\n"
+            "elif mol_fractions and len(components) > 1:\n"
+            "    mode = 'mixture'\n"
+            "else:\n"
+            "    mode = 'isotherm'\n"
             "framework_cif = Path(framework_name + '.cif')\n"
             "if not framework_cif.is_file():\n"
             "    sys.stderr.write('missing framework cif\\n')\n"
@@ -400,6 +557,7 @@ class GraspaWidomTests(unittest.TestCase):
             "            'unit_cells': unit_cells,\n"
             "            'pressure': pressure,\n"
             "            'components': components,\n"
+            "            'mol_fractions': mol_fractions,\n"
             "        },\n"
             "        indent=2,\n"
             "    ),\n"
@@ -423,6 +581,46 @@ class GraspaWidomTests(unittest.TestCase):
             "            f'Averaged Henry Coefficient [mol/kg/Pa]: {henry:.8e} +/- {henry_err:.8e}\\n'\n"
             "        )\n"
             "    data_path.write_text('\\n'.join(sections), encoding='utf-8')\n"
+            "elif mode == 'mixture':\n"
+            "    sections = [\n"
+            "        '================= MOL FRACTIONS =================',\n"
+            "    ]\n"
+            "    for index, (component, mol_fraction) in enumerate(zip(components, mol_fractions), start=1):\n"
+            "        sections.append(f'Component [{index}] ({component}), Mol Fraction: {mol_fraction:.5f}')\n"
+            "    sections.append('=================================================')\n"
+            "    sections.append('==============================================================')\n"
+            "    sections.append('============= BLOCK AVERAGES (HEAT OF ADSORPTION: kJ/mol) =========')\n"
+            "    for index, (component, mol_fraction) in enumerate(zip(components, mol_fractions), start=1):\n"
+            "        heat = -15.0 - index - pressure / 100000.0\n"
+            "        heat_err = 0.5\n"
+            "        sections.extend([\n"
+            "            f'COMPONENT [{index}] ({component})',\n"
+            "            f'Overall: Average: {heat:.5f}, ErrorBar: {heat_err:.5f}',\n"
+            "            '-----------------------------',\n"
+            "        ])\n"
+            "    sections.append('==============================================================')\n"
+            "    sections.append('=====================BLOCK AVERAGES (LOADING: mol/kg)=============')\n"
+            "    for index, (component, mol_fraction) in enumerate(zip(components, mol_fractions), start=1):\n"
+            "        loading_mol = pressure / 100000.0 * mol_fraction * index\n"
+            "        loading_err = loading_mol * 0.1\n"
+            "        sections.extend([\n"
+            "            f'COMPONENT [{index}] ({component})',\n"
+            "            f'Overall: Average: {loading_mol:.5f}, ErrorBar: {loading_err:.5f}',\n"
+            "            '----------------------------------------------------------',\n"
+            "        ])\n"
+            "    sections.append('==============================================================')\n"
+            "    sections.append('=====================BLOCK AVERAGES (LOADING: g/L)=============')\n"
+            "    for index, (component, mol_fraction) in enumerate(zip(components, mol_fractions), start=1):\n"
+            "        loading_mol = pressure / 100000.0 * mol_fraction * index\n"
+            "        loading_err = loading_mol * 0.1\n"
+            "        loading_gpl = loading_mol * 10.0\n"
+            "        loading_gpl_err = loading_err * 10.0\n"
+            "        sections.extend([\n"
+            "            f'COMPONENT [{index}] ({component})',\n"
+            "            f'Overall: Average: {loading_gpl:.5f}, ErrorBar: {loading_gpl_err:.5f}',\n"
+            "            '----------------------------------------------------------',\n"
+            "        ])\n"
+            "    data_path.write_text('\\n'.join(sections) + '\\n', encoding='utf-8')\n"
             "else:\n"
             "    component = components[0]\n"
             "    loading_mol = pressure / 100000.0 * 0.25\n"

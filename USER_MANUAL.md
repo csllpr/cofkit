@@ -78,8 +78,8 @@ Optional external add-ons:
 
 - `Zeo++` if you want to use `cofkit analyze zeopp`
 - `LAMMPS` if you want to use `cofkit calculate lammps-optimize`
-- `EQeq` if you want to use `cofkit calculate graspa-widom` or `cofkit calculate graspa-isotherm` for framework charge assignment
-- `gRASPA` if you want to use `cofkit calculate graspa-widom` for Widom insertion or `cofkit calculate graspa-isotherm` for real adsorption simulations
+- `EQeq` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture` for framework charge assignment
+- `gRASPA` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture`
 - `pytest` if you want to run the tests locally via the `dev` extra
 
 The bundled topology data shipped with the package is enough for normal structure generation. External RCSR archives are optional advanced inputs, not required setup.
@@ -852,7 +852,61 @@ The output directory stores:
 
 ### Current scope note
 
-This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement mixture adsorption, restart-chained pressure stepping, excess-loading post-processing, or more advanced gRASPA sampling modes. If gRASPA emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only, not as mixture selectivities.
+This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement restart-chained pressure stepping, excess-loading post-processing, or more advanced gRASPA sampling modes. If gRASPA emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only; use `graspa-mixture` for true mixed-feed selectivity.
+
+## Workflow 10: EQeq + gRASPA Mixture Adsorption and Selectivity
+
+The fourth `calculate`-namespace gRASPA wrapper is a staged `EQeq -> gRASPA` mixture adsorption workflow for one CIF, two or more packaged adsorbates, and one or more pressure points.
+
+### CLI usage
+
+```bash
+cofkit calculate graspa-mixture \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_mixture \
+  --component Kr:0.1 \
+  --component Xe:0.9 \
+  --pressure 10000 \
+  --pressure 100000 \
+  --fugacity-coefficient PR-EOS \
+  --json
+```
+
+The wrapper runs these stages:
+
+- copy the input CIF into `eqeq/` and run EQeq directly on that CIF
+- take the charged EQeq CIF output and copy it to `mixture/framework.cif`
+- for each requested pressure point, copy the packaged gRASPA `.def` files plus `framework.cif` into one `mixture/pressure_*/` run directory
+- render one pressure-specific multi-component `simulation.input` per run directory, including `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries for every adsorbate
+- derive one shared `UnitCells` setting from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
+- run one multi-component GCMC adsorption simulation per pressure point
+- parse per-component loading/heat summaries, compute adsorbed mole fractions, and compute pairwise selectivities `(x_i / x_j) / (y_i / y_j)`
+
+### Exposed CLI controls
+
+The public `graspa-mixture` command exposes the same EQeq staging controls as the Widom/isotherm wrappers plus:
+
+- repeated `--component NAME:FRACTION` flags to define the mixed feed
+- repeated `--pressure PA` flags to define the pressure grid
+- `--fugacity-coefficient VALUE` to apply either a positive float or `PR-EOS` to every component
+- `--translation-probability`, `--rotation-probability`, `--reinsertion-probability`, `--identity-change-probability`, `--swap-probability`, and `--create-number-of-molecules` to control the generated per-component GCMC move set
+
+### Output structure
+
+The output directory stores:
+
+- `eqeq/` with the copied input CIF, EQeq stdout/stderr logs, the charged CIF, and the optional EQeq JSON output if the executable writes it
+- `mixture/framework.cif`
+- one per-pressure run directory under `mixture/pressure_*/`
+- one `simulation.input` plus gRASPA stdout/stderr logs per pressure-point directory
+- one or more `Output/*.data` files under each pressure-point directory
+- `mixture/component_results.csv`
+- `mixture/selectivity_results.csv`
+- `graspa_mixture_report.json`
+
+`component_results.csv` records one parsed adsorption row per pressure/component, including feed mole fraction, adsorbed mole fraction, loading in `mol/kg` and `g/L`, and heat of adsorption. `selectivity_results.csv` records ordered pairwise selectivities plus propagated selectivity error bars. `graspa_mixture_report.json` records the staged paths, computed `UnitCells`, effective EQeq and mixture settings, parsed point results, and warnings.
+
+Real gRASPA runs may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and surfaces it as a warning if the simulation otherwise completes and parses successfully.
 
 ### Quantitative rules
 

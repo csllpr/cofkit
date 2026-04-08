@@ -11,9 +11,12 @@ from .graspa import (
     GraspaConfigurationError,
     GraspaError,
     GraspaExecutionError,
+    GraspaMixtureComponentSettings,
+    GraspaMixtureSettings,
     GraspaIsothermSettings,
     GraspaParseError,
     GraspaWidomSettings,
+    run_graspa_mixture_workflow,
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
 )
@@ -43,6 +46,7 @@ def add_calculate_group(subparsers) -> None:
     _add_lammps_optimize_parser(calculate_subparsers)
     _add_graspa_widom_parser(calculate_subparsers)
     _add_graspa_isotherm_parser(calculate_subparsers)
+    _add_graspa_mixture_parser(calculate_subparsers)
 
 
 def _set_help_default(parser: argparse.ArgumentParser) -> None:
@@ -80,6 +84,25 @@ def _parse_graspa_fugacity_coefficient(raw_value: str) -> float | str:
     if parsed <= 0.0:
         raise argparse.ArgumentTypeError("Fugacity coefficient must be positive.")
     return parsed
+
+
+def _parse_graspa_mixture_component_spec(raw_value: str) -> tuple[str, float]:
+    value = raw_value.strip()
+    if value == "":
+        raise argparse.ArgumentTypeError("Mixture component specifications must not be blank.")
+    component_name, separator, raw_fraction = value.partition(":")
+    if separator == "":
+        raise argparse.ArgumentTypeError(
+            "Mixture components must use NAME:FRACTION syntax, for example CO2:0.15."
+        )
+    component = _parse_graspa_component_name(component_name)
+    try:
+        mol_fraction = float(raw_fraction)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Mixture component fractions must be numeric.") from exc
+    if mol_fraction <= 0.0:
+        raise argparse.ArgumentTypeError("Mixture component fractions must be positive.")
+    return component, mol_fraction
 
 
 def _add_lammps_optimize_parser(subparsers) -> None:
@@ -1010,5 +1033,299 @@ def _run_graspa_isotherm(args: argparse.Namespace) -> None:
     print("component:", result.isotherm_settings.component)
     print("pressures_pa:", [point.pressure for point in result.point_results])
     print("results_csv_path:", result.results_csv_path)
+    print("warnings:", list(result.warnings))
+    print("report_path:", result.report_path)
+
+
+def _add_graspa_mixture_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "graspa-mixture",
+        help="Run an EQeq-to-gRASPA multi-component adsorption/selectivity workflow for one CIF file.",
+        description=(
+            "Assign framework charges with EQeq, prepare one gRASPA mixture GCMC adsorption run per pressure point, "
+            "execute those runs, and aggregate component-resolved loadings plus pairwise selectivities into a JSON report."
+        ),
+    )
+    parser.add_argument("cif_path", help="Input CIF file to screen with gRASPA mixture adsorption.")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for EQeq artifacts, per-pressure gRASPA runs, parsed results, and the JSON report.",
+    )
+    parser.add_argument(
+        "--eqeq-path",
+        default=None,
+        help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
+    )
+    parser.add_argument(
+        "--graspa-path",
+        default=None,
+        help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
+    )
+    parser.add_argument(
+        "--eqeq-lambda",
+        type=float,
+        default=1.2,
+        help="EQeq dielectric screening parameter. Default: 1.2.",
+    )
+    parser.add_argument(
+        "--eqeq-h-i0",
+        type=float,
+        default=-2.0,
+        help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
+    )
+    parser.add_argument(
+        "--eqeq-charge-precision",
+        type=int,
+        default=3,
+        help="Number of digits for EQeq point charges. Default: 3.",
+    )
+    parser.add_argument(
+        "--eqeq-method",
+        choices=("ewald", "nonperiodic"),
+        default="ewald",
+        help="EQeq Coulomb treatment. Default: ewald.",
+    )
+    parser.add_argument(
+        "--eqeq-real-space-cells",
+        type=int,
+        default=2,
+        help="EQeq real-space expansion count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-reciprocal-space-cells",
+        type=int,
+        default=2,
+        help="EQeq reciprocal-space expansion count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-eta",
+        type=float,
+        default=50.0,
+        help="EQeq Ewald splitting parameter. Default: 50.0.",
+    )
+    parser.add_argument(
+        "--component",
+        dest="components",
+        action="append",
+        type=_parse_graspa_mixture_component_spec,
+        default=None,
+        metavar="NAME:FRACTION",
+        help=(
+            "Add one mixture component and its feed mol fraction. Repeat for each component. "
+            f"Supported names: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}."
+        ),
+    )
+    parser.add_argument(
+        "--pressure",
+        dest="pressures",
+        action="append",
+        type=float,
+        default=None,
+        metavar="PA",
+        help="Add one pressure point in Pa. Repeat for a mixture isotherm sweep.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=298.0,
+        help="gRASPA adsorption temperature in K. Default: 298.0.",
+    )
+    parser.add_argument(
+        "--fugacity-coefficient",
+        type=_parse_graspa_fugacity_coefficient,
+        default=1.0,
+        metavar="VALUE",
+        help="Component fugacity coefficient as a positive float or PR-EOS. Applied to every component. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--initialization-cycles",
+        type=int,
+        default=50000,
+        help="gRASPA NumberOfInitializationCycles. Default: 50000.",
+    )
+    parser.add_argument(
+        "--equilibration-cycles",
+        type=int,
+        default=50000,
+        help="gRASPA NumberOfEquilibrationCycles. Default: 50000.",
+    )
+    parser.add_argument(
+        "--production-cycles",
+        type=int,
+        default=200000,
+        help="gRASPA NumberOfProductionCycles per pressure point. Default: 200000.",
+    )
+    parser.add_argument(
+        "--trial-positions",
+        type=int,
+        default=10,
+        help="gRASPA NumberOfTrialPositions. Default: 10.",
+    )
+    parser.add_argument(
+        "--trial-orientations",
+        type=int,
+        default=10,
+        help="gRASPA NumberOfTrialOrientations. Default: 10.",
+    )
+    parser.add_argument(
+        "--translation-probability",
+        type=float,
+        default=1.0,
+        help="Per-component TranslationProbability. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--rotation-probability",
+        type=float,
+        default=1.0,
+        help="Per-component RotationProbability for rotatable components. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--reinsertion-probability",
+        type=float,
+        default=1.0,
+        help="Per-component ReinsertionProbability. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--identity-change-probability",
+        type=float,
+        default=1.0,
+        help="Per-component IdentityChangeProbability. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--swap-probability",
+        type=float,
+        default=1.0,
+        help="Per-component SwapProbability. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--create-number-of-molecules",
+        type=int,
+        default=0,
+        help="Per-component CreateNumberOfMolecules. Default: 0.",
+    )
+    parser.add_argument(
+        "--cutoff-vdw",
+        type=float,
+        default=12.8,
+        help="gRASPA CutOffVDW in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--cutoff-coulomb",
+        type=float,
+        default=12.8,
+        help="gRASPA CutOffCoulomb in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--ewald-precision",
+        type=float,
+        default=1.0e-6,
+        help="gRASPA EwaldPrecision. Default: 1e-6.",
+    )
+    parser.add_argument(
+        "--eqeq-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Optional timeout for the EQeq subprocess. Default: 300.",
+    )
+    parser.add_argument(
+        "--graspa-timeout-seconds",
+        type=float,
+        default=None,
+        help="Optional timeout for each gRASPA subprocess. Default: no timeout.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full mixture adsorption/selectivity report as JSON instead of a short human-readable summary.",
+    )
+    parser.set_defaults(func=_run_graspa_mixture)
+
+
+def _run_graspa_mixture(args: argparse.Namespace) -> None:
+    if not args.components or len(args.components) < 2:
+        raise SystemExit("error: supply at least two mixture components with --component NAME:FRACTION.")
+    if not args.pressures:
+        raise SystemExit("error: supply at least one pressure point with --pressure.")
+
+    eqeq_settings = EqeqChargeSettings(
+        lambda_value=args.eqeq_lambda,
+        hydrogen_electron_affinity=args.eqeq_h_i0,
+        charge_precision=args.eqeq_charge_precision,
+        method=args.eqeq_method,
+        real_space_cells=args.eqeq_real_space_cells,
+        reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
+        eta=args.eqeq_eta,
+    )
+    mixture_components = tuple(
+        GraspaMixtureComponentSettings(
+            component=component_name,
+            mol_fraction=mol_fraction,
+            fugacity_coefficient=args.fugacity_coefficient,
+            translation_probability=args.translation_probability,
+            rotation_probability=args.rotation_probability,
+            reinsertion_probability=args.reinsertion_probability,
+            identity_change_probability=args.identity_change_probability,
+            swap_probability=args.swap_probability,
+            create_number_of_molecules=args.create_number_of_molecules,
+        )
+        for component_name, mol_fraction in args.components
+    )
+    mixture_settings = GraspaMixtureSettings(
+        components=mixture_components,
+        pressures=tuple(args.pressures),
+        temperature=args.temperature,
+        initialization_cycles=args.initialization_cycles,
+        equilibration_cycles=args.equilibration_cycles,
+        production_cycles=args.production_cycles,
+        number_of_trial_positions=args.trial_positions,
+        number_of_trial_orientations=args.trial_orientations,
+        cutoff_vdw=args.cutoff_vdw,
+        cutoff_coulomb=args.cutoff_coulomb,
+        ewald_precision=args.ewald_precision,
+    )
+    try:
+        result = run_graspa_mixture_workflow(
+            args.cif_path,
+            output_dir=args.output_dir,
+            eqeq_path=args.eqeq_path,
+            graspa_path=args.graspa_path,
+            eqeq_settings=eqeq_settings,
+            mixture_settings=mixture_settings,
+            eqeq_timeout_seconds=args.eqeq_timeout_seconds,
+            graspa_timeout_seconds=args.graspa_timeout_seconds,
+        )
+    except (
+        FileNotFoundError,
+        ValueError,
+        EqeqExecutionError,
+        GraspaConfigurationError,
+        GraspaExecutionError,
+        GraspaParseError,
+        GraspaError,
+    ) as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+        return
+
+    print("input_cif:", result.input_cif)
+    print("eqeq_binary:", result.eqeq_binary)
+    print("graspa_binary:", result.graspa_binary)
+    print("output_dir:", result.output_dir)
+    print("eqeq_charged_cif:", result.eqeq_charged_cif)
+    print("mixture_framework_cif:", result.mixture_framework_cif)
+    print("unit_cells:", list(result.unit_cells))
+    print(
+        "components:",
+        [
+            f"{component.component}:{component.mol_fraction:g}"
+            for component in result.mixture_settings.components
+        ],
+    )
+    print("pressures_pa:", [point.pressure for point in result.point_results])
+    print("component_results_csv_path:", result.component_results_csv_path)
+    print("selectivity_results_csv_path:", result.selectivity_results_csv_path)
     print("warnings:", list(result.warnings))
     print("report_path:", result.report_path)
