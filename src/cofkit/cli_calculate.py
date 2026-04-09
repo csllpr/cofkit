@@ -108,10 +108,10 @@ def _parse_graspa_mixture_component_spec(raw_value: str) -> tuple[str, float]:
 def _add_lammps_optimize_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "lammps-optimize",
-        help="Run a UFF-backed LAMMPS optimization for an explicit-bond CIF.",
+        help="Run a bonded LAMMPS optimization for an explicit-bond CIF.",
         description=(
             "Convert one explicit-bond P1 CIF into a bonded LAMMPS model, populate the LAMMPS data file with "
-            "the current UFF backend, run a local minimization workflow, and write an updated CIF with the "
+            "the selected UFF or DREIDING backend, run a local minimization workflow, and write an updated CIF with the "
             "same bond topology."
         ),
     )
@@ -129,10 +129,9 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--forcefield",
         default="uff",
-        choices=("uff",),
+        choices=("uff", "dreiding"),
         help=(
-            "Forcefield backend to use for the LAMMPS data file. Default: uff. "
-            "UFF is the only implemented backend in the current public workflow."
+            "Forcefield backend to use for the LAMMPS data file. Default: uff."
         ),
     )
     parser.add_argument(
@@ -572,6 +571,12 @@ def _add_graspa_widom_parser(subparsers) -> None:
         help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
     )
     parser.add_argument(
+        "--forcefield",
+        choices=("dreiding", "uff"),
+        default="dreiding",
+        help="Framework forcefield asset family for gRASPA. Default: dreiding.",
+    )
+    parser.add_argument(
         "--eqeq-lambda",
         type=float,
         default=1.2,
@@ -755,6 +760,7 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
     )
     widom_settings = GraspaWidomSettings(
         components=deduped_components,
+        forcefield=args.forcefield,
         temperature=args.temperature,
         pressure=args.pressure,
         initialization_cycles=args.initialization_cycles,
@@ -830,6 +836,12 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
         "--graspa-path",
         default=None,
         help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
+    )
+    parser.add_argument(
+        "--forcefield",
+        choices=("dreiding", "uff"),
+        default="dreiding",
+        help="Framework forcefield asset family for gRASPA. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -987,6 +999,7 @@ def _run_graspa_isotherm(args: argparse.Namespace) -> None:
         component=args.component,
         pressures=tuple(args.pressures),
         fugacity_coefficient=args.fugacity_coefficient,
+        forcefield=args.forcefield,
         temperature=args.temperature,
         initialization_cycles=args.initialization_cycles,
         equilibration_cycles=args.equilibration_cycles,
@@ -1061,6 +1074,12 @@ def _add_graspa_mixture_parser(subparsers) -> None:
         "--graspa-path",
         default=None,
         help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
+    )
+    parser.add_argument(
+        "--forcefield",
+        choices=("dreiding", "uff"),
+        default="dreiding",
+        help="Framework forcefield asset family for gRASPA. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -1274,6 +1293,7 @@ def _run_graspa_mixture(args: argparse.Namespace) -> None:
     mixture_settings = GraspaMixtureSettings(
         components=mixture_components,
         pressures=tuple(args.pressures),
+        forcefield=args.forcefield,
         temperature=args.temperature,
         initialization_cycles=args.initialization_cycles,
         equilibration_cycles=args.equilibration_cycles,

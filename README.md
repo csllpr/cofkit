@@ -46,9 +46,9 @@ If you explicitly want an editable install inside an existing Python environment
 Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
-- `LAMMPS` for the initial `cofkit calculate lammps-optimize` local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
+- `LAMMPS` for the initial `cofkit calculate lammps-optimize` UFF/DREIDING local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
 - `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
-- `gRASPA` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_GRASPA_PATH`
+- `gRASPA` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows with selectable DREIDING/UFF framework assets, with the executable path provided through `COFKIT_GRASPA_PATH`
 - `pytest` to run the local test suite when you install the `dev` extra
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
@@ -284,7 +284,7 @@ cofkit calculate lammps-optimize \
 
 The `lammps-optimize` CLI already exposes the main runtime and minimization controls:
 
-- `--forcefield {uff}` selects the force-field backend
+- `--forcefield {uff,dreiding}` selects the force-field backend
 - `--pair-cutoff` sets the global LJ cutoff
 - `--position-restraint-force-constant` controls the stage-1 local `spring/self` restraint
 - `--pre-minimization-steps` plus the `--pre-minimization-*` flags tune the default restrained `langevin + nve/limit` prerun; the default is `10000` steps and `--pre-minimization-steps 0` disables it
@@ -329,14 +329,17 @@ This first LAMMPS wrapper is still conservative, but it no longer invents generi
 - explicit CIF bond types in `_ccdc_geom_bond_type` are required, and `cofkit` atomistic exports now write them by default
 - it can run fixed-cell minimization only, or append an optional final `fix box/relax` stage
 - it builds a bonded LAMMPS data file from the explicit CIF bond graph
-- the public force-field backend is `UFF`, using Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled Open Babel `UFF.prm` and the reference `lammps_interface` logic
-- `UFF` is the default and currently only implemented force-field backend in the public workflow
-- the current UFF path writes bond, angle, dihedral, improper, and van der Waals terms, plus optional local position restraints whose energy is explicitly included in minimization through `fix_modify energy yes`
+- `UFF` is the default backend and uses Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled Open Babel `UFF.prm`
+- `DREIDING` is also available and uses Open Babel UFF atom typing mapped onto a pinned `lammps-interface` DREIDING table plus DREIDING-style coefficient formulas
+- both public backends currently write bond, angle, dihedral, improper, and van der Waals terms, plus optional local position restraints whose energy is explicitly included in minimization through `fix_modify energy yes`
+- for real optimization work, prefer `DREIDING`; `UFF` remains available for compatibility and comparison runs, but should currently be treated as experimental support
 - the default LAMMPS path stages EQeq before export, writes charged `atom_style full` data, and enables Coulomb terms in the generated LAMMPS input
 - `--charge-model none` is still available when you explicitly want an uncharged export
 - it writes an updated CIF, the generated LAMMPS data/input files, logs, a trajectory dump, and `lammps_report.json`
 
-This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current UFF path is now explicit-bond-order-driven and includes torsions and impropers. Charges are now assigned through EQeq by default, but the workflow should still be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
+Temporary parameter review note: the current `DREIDING` implementation is pinned to `lammps-interface` commit `255f027cb76142d39c050a6810404debc6a06562`, and that upstream is unmaintained. A few heavier-atom entries there are explicitly heuristic (`Cu`, `Ni`, `Mg`), hydrogen-bond-specific parameters are not part of the current `cofkit` export, and some historical rounded DREIDING/gRASPA tables differ slightly from the current generated values. The current `UFF` gRASPA rows are generated from the bundled Open Babel `UFF.prm`, so they may also differ slightly from rounded example files.
+
+This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current `UFF` and `DREIDING` paths are explicit-bond-order-driven and include torsions and impropers. Charges are now assigned through EQeq by default, but the workflow should still be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
 
 ### Run EQeq + gRASPA Widom insertion on one CIF
 
@@ -347,6 +350,7 @@ export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 cofkit calculate graspa-widom \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_graspa \
+  --forcefield dreiding \
   --component CO2 \
   --component N2 \
   --widom-moves-per-component 300000 \
@@ -357,20 +361,22 @@ The `graspa-widom` wrapper runs one staged workflow:
 
 - copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
 - copy the charged framework into `widom/framework.cif`
-- materialize the packaged gRASPA Widom template files in `widom/`
+- materialize the packaged gRASPA adsorbate/pseudo-atom files in `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run gRASPA and parse the Widom summary values from `widom/Output/*.data`
 
-Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
+Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
+
+For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
 The wrapper writes:
 
 - `eqeq/` logs plus the charged CIF emitted by EQeq
-- `widom/simulation.input`, `widom/framework.cif`, and the packaged `.def` files
+- `widom/simulation.input`, `widom/framework.cif`, the packaged adsorbate `.def` files, and a generated `force_field_mixing_rules.def`
 - `widom/Output/results.csv` with the parsed Widom energy and Henry coefficient summaries
 - `graspa_widom_report.json` with paths, settings, parsed component results, and warnings
 
-`COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH` can both be overridden per run with `--eqeq-path` and `--graspa-path`. On many installations the gRASPA executable is named `nvc_main.x`. If gRASPA emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run.
+`COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH` can both be overridden per run with `--eqeq-path` and `--graspa-path`. On many installations the gRASPA executable is named `nvc_main.x`. If gRASPA emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run. The same temporary parameter review note from the LAMMPS section applies here: `DREIDING` is generated from the pinned `lammps-interface` reference, and `UFF` is generated from the bundled Open Babel `UFF.prm`, so slight differences from older rounded template files are expected for now.
 
 ### Run EQeq + gRASPA single-component adsorption isotherms on one CIF
 
@@ -381,6 +387,7 @@ export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 cofkit calculate graspa-isotherm \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_isotherm \
+  --forcefield dreiding \
   --component CO2 \
   --pressure 10000 \
   --pressure 100000 \
@@ -392,7 +399,7 @@ The `graspa-isotherm` wrapper is the first real-adsorption gRASPA path in `cofki
 
 - copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
 - copy the charged framework into `isotherm/framework.cif`
-- materialize the packaged gRASPA component definitions into one per-pressure run directory under `isotherm/`
+- materialize the packaged gRASPA component definitions plus one generated framework `force_field_mixing_rules.def` into one per-pressure run directory under `isotherm/`
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run one single-component GCMC adsorption simulation per requested pressure point
 - parse absolute loading in `mol/kg` and `g/L`, plus heat of adsorption, from each pressure-point `Output/*.data`
@@ -407,7 +414,9 @@ The wrapper writes:
 - `isotherm/results.csv` with the parsed pressure/loading summary
 - `graspa_isotherm_report.json` with paths, settings, parsed point results, and warnings
 
-`--pressure` repeats to define the isotherm grid. `--production-cycles` applies per pressure point. `--fugacity-coefficient` accepts either a positive float or `PR-EOS`. If gRASPA emits non-finite loading or heat values, `cofkit` keeps the raw data file and records those specific fields as `null` in the JSON report instead of failing the whole run.
+`--pressure` repeats to define the isotherm grid. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--production-cycles` applies per pressure point. `--fugacity-coefficient` accepts either a positive float or `PR-EOS`. If gRASPA emits non-finite loading or heat values, `cofkit` keeps the raw data file and records those specific fields as `null` in the JSON report instead of failing the whole run.
+
+For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
 This wrapper produces pure-component adsorption points. Ratios such as `Xe/Kr` computed from separate `graspa-isotherm` runs are loading ratios, not mixture selectivities. Use `graspa-mixture` when you need a true mixed-feed adsorption/selectivity calculation.
 
@@ -417,6 +426,7 @@ This wrapper produces pure-component adsorption points. Ratios such as `Xe/Kr` c
 cofkit calculate graspa-mixture \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_mixture \
+  --forcefield dreiding \
   --component Kr:0.1 \
   --component Xe:0.9 \
   --pressure 10000 \
@@ -425,7 +435,7 @@ cofkit calculate graspa-mixture \
   --json
 ```
 
-The `graspa-mixture` wrapper stages `EQeq -> gRASPA` exactly once per pressure point, but now writes one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries. It parses component-resolved loading/heat summaries from each `Output/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`.
+The `graspa-mixture` wrapper stages `EQeq -> gRASPA` exactly once per pressure point, writes one generated framework `force_field_mixing_rules.def` plus one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries, parses component-resolved loading/heat summaries from each `Output/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`.
 
 The wrapper writes:
 
@@ -433,7 +443,9 @@ The wrapper writes:
 - `mixture/selectivity_results.csv` with one row per pressure/component pair
 - `graspa_mixture_report.json` with the staged paths, settings, parsed point results, and warnings
 
-In real runs, gRASPA may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and records it as a warning when the simulation otherwise completes successfully.
+`--forcefield {dreiding,uff}` selects the generated framework mixing rules for every pressure point. In real runs, gRASPA may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and records it as a warning when the simulation otherwise completes successfully. The same temporary parameter review note from the Widom/isotherm sections applies here.
+
+For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
 ### Rebuild the detector-scanned example library
 
@@ -464,6 +476,8 @@ Typical prompts:
 - "Should I use the CLI, `BatchStructureGenerator`, or `COFEngine` for this task?"
 
 The skill prefers the installed `cofkit` CLI. If the package is not installed in editable mode, it falls back to an equivalent `PYTHONPATH=src ...` launcher.
+
+For calculator workflows, the skill now prefers `DREIDING` for both LAMMPS optimization and gRASPA calculations unless a user explicitly asks for `UFF` or requests a comparison run. `UFF` remains experimentally supported.
 
 ## Additional documentation
 

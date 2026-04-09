@@ -8,9 +8,15 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
+from ._dreiding_reference import (
+    DREIDING_FRAMEWORK_TYPE_BY_ELEMENT,
+    DREIDING_PARAMETERS,
+    DREIDING_REFERENCE_SOURCE,
+)
 from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
 
 
@@ -19,12 +25,42 @@ COFKIT_GRASPA_ENV_VAR = "COFKIT_GRASPA_PATH"
 DEFAULT_EQEQ_BINARY: Path | None = None
 DEFAULT_GRASPA_BINARY: Path | None = None
 _SUPPORTED_EQEQ_METHODS = {"ewald", "nonperiodic"}
+_SUPPORTED_GRASPA_FORCEFIELDS = ("dreiding", "uff")
 _DEFAULT_WIDOM_COMPONENTS = ("TIP4P", "CO2", "H2", "N2", "SO2", "Xe", "Kr")
 AVAILABLE_WIDOM_COMPONENTS = _DEFAULT_WIDOM_COMPONENTS
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
 _NON_ROTATABLE_GCMC_COMPONENTS = {"Kr", "Xe"}
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 _FLOAT_TOKEN_PATTERN = r"(?:[-+]?(?:nan|inf)|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
+_UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
+_UFF_FRAMEWORK_TYPE_BY_ELEMENT = {
+    "H": "H_",
+    "B": "B_2",
+    "C": "C_3",
+    "N": "N_3",
+    "O": "O_3",
+    "F": "F_",
+    "P": "P_3+3",
+    "S": "S_3+2",
+    "Cl": "Cl",
+    "Br": "Br",
+}
+_GRASPA_FRAMEWORK_ELEMENT_ORDER = ("H", "B", "C", "N", "O", "F", "P", "S", "Cl", "Br")
+_GRASPA_SHARED_MIXING_RULE_LINES = (
+    "Ow_T4          lennard-jones    77.99902   3.1536      // Jorgensen et al. J. Chem. Phys. (1983).",
+    "Hw_T4          lennard-jones    0.0 0.0                                    // Jorgensen et al. J. Chem. Phys. (1983).",
+    "M_T4           lennard-jones    0.0 0.0                                    // Jorgensen et al. J. Chem. Phys. (1983).",
+    "O_co2          lennard-jones    79.0000   3.05000      // Potoff and Siepmann, AIChE J. 47, 1676-1682 (2001).",
+    "C_co2          lennard-jones    27.0000   2.80000      // Potoff and Siepmann, AIChE J. 47, 1676-1682 (2001).",
+    "N_n2           lennard-jones    38.2980   3.30600      // Martin-Calvo et al., PCCP 2011, 13, 11165-11174.",
+    "N_com          lennard-jones    0.0 0.0                                   // Martin-Calvo et al., PCCP 2011, 13, 11165-11174.",
+    "H_h2           lennard-jones    0.0 0.0                                    // Garcia-Holley et al., ACS Energy Lett. 2018, 3, 748-754.",
+    "H2_com         feynman-hibbs-lennard-jones    36.7000   2.95800    1.008  // Garcia-Holley et al., ACS Energy Lett. 2018, 3, 748-754.",
+    "S_so2          lennard-jones    73.8       3.39        // J. Phys. Chem. B 2011, 115, 4949-4954.",
+    "O_so2          lennard-jones    79.0       3.05        // J. Phys. Chem. B 2011, 115, 4949-4954.",
+    "Xe             lennard-jones   221.0000   4.10000      // Local gRASPA XeKr mixture example.",
+    "Kr             lennard-jones   166.4000   3.63600      // Local gRASPA XeKr mixture example.",
+)
 _WIDOM_RESULT_RE = re.compile(
     r"=+Rosenbluth Summary For Component \[\d+\] \((.+?)\)=+.*?"
     r"Averaged Excess Chemical Potential:\s*"
@@ -108,6 +144,7 @@ class EqeqChargeResult:
 @dataclass(frozen=True)
 class GraspaWidomSettings:
     components: tuple[str, ...] = _DEFAULT_WIDOM_COMPONENTS
+    forcefield: str = "dreiding"
     use_gpu_reduction: bool = True
     use_fast_host_rng: bool = True
     use_flag: bool = True
@@ -142,6 +179,7 @@ class GraspaWidomSettings:
     def to_dict(self) -> dict[str, object]:
         return {
             "components": list(self.components),
+            "forcefield": self.forcefield,
             "use_gpu_reduction": self.use_gpu_reduction,
             "use_fast_host_rng": self.use_fast_host_rng,
             "use_flag": self.use_flag,
@@ -256,6 +294,7 @@ class GraspaIsothermSettings:
     component: str = "CO2"
     pressures: tuple[float, ...] = (10_000.0, 100_000.0, 1_000_000.0)
     fugacity_coefficient: float | str = 1.0
+    forcefield: str = "dreiding"
     use_gpu_reduction: bool = False
     use_fast_host_rng: bool = True
     use_flag: bool = True
@@ -295,6 +334,7 @@ class GraspaIsothermSettings:
             "component": self.component,
             "pressures": list(self.pressures),
             "fugacity_coefficient": self.fugacity_coefficient,
+            "forcefield": self.forcefield,
             "use_gpu_reduction": self.use_gpu_reduction,
             "use_fast_host_rng": self.use_fast_host_rng,
             "use_flag": self.use_flag,
@@ -445,6 +485,7 @@ class GraspaMixtureComponentSettings:
 class GraspaMixtureSettings:
     components: tuple[GraspaMixtureComponentSettings, ...]
     pressures: tuple[float, ...] = (100_000.0,)
+    forcefield: str = "dreiding"
     use_gpu_reduction: bool = False
     use_fast_host_rng: bool = True
     use_flag: bool = True
@@ -478,6 +519,7 @@ class GraspaMixtureSettings:
         return {
             "components": [component.to_dict() for component in self.components],
             "pressures": list(self.pressures),
+            "forcefield": self.forcefield,
             "use_gpu_reduction": self.use_gpu_reduction,
             "use_fast_host_rng": self.use_fast_host_rng,
             "use_flag": self.use_flag,
@@ -778,7 +820,7 @@ def run_graspa_widom_workflow(
 
     widom_framework_cif_path = widom_run_dir / f"{widom_settings.framework_name}.cif"
     shutil.copy2(eqeq_result.eqeq_charged_cif, widom_framework_cif_path)
-    _copy_widom_template_assets(widom_run_dir, widom_settings.components)
+    _copy_widom_template_assets(widom_run_dir, widom_settings.components, forcefield=widom_settings.forcefield)
 
     unit_cells = _compute_unit_cells_from_cif(
         widom_framework_cif_path,
@@ -932,7 +974,11 @@ def run_graspa_isotherm_workflow(
         pressure_run_dir.mkdir(parents=True, exist_ok=True)
         pressure_framework_cif_path = pressure_run_dir / f"{isotherm_settings.framework_name}.cif"
         shutil.copy2(isotherm_framework_cif_path, pressure_framework_cif_path)
-        _copy_widom_template_assets(pressure_run_dir, (isotherm_settings.component,))
+        _copy_widom_template_assets(
+            pressure_run_dir,
+            (isotherm_settings.component,),
+            forcefield=isotherm_settings.forcefield,
+        )
 
         simulation_input_path = pressure_run_dir / "simulation.input"
         simulation_input_path.write_text(
@@ -1096,7 +1142,11 @@ def run_graspa_mixture_workflow(
         pressure_run_dir.mkdir(parents=True, exist_ok=True)
         pressure_framework_cif_path = pressure_run_dir / f"{mixture_settings.framework_name}.cif"
         shutil.copy2(mixture_framework_cif_path, pressure_framework_cif_path)
-        _copy_widom_template_assets(pressure_run_dir, expected_components)
+        _copy_widom_template_assets(
+            pressure_run_dir,
+            expected_components,
+            forcefield=mixture_settings.forcefield,
+        )
 
         simulation_input_path = pressure_run_dir / "simulation.input"
         simulation_input_path.write_text(
@@ -1272,7 +1322,17 @@ def _validate_eqeq_settings(settings: EqeqChargeSettings) -> None:
         raise ValueError("eta must be positive.")
 
 
+def _normalize_graspa_forcefield_name(forcefield: str) -> str:
+    return forcefield.strip().lower().replace("-", "_")
+
+
 def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
+    forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
+    if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
+        raise ValueError(
+            f"Unsupported gRASPA forcefield {settings.forcefield!r}. "
+            f"Expected one of: {', '.join(_SUPPORTED_GRASPA_FORCEFIELDS)}."
+        )
     if not settings.components:
         raise ValueError("At least one Widom component must be configured.")
     if settings.framework_name.strip() == "":
@@ -1308,6 +1368,12 @@ def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
 
 
 def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
+    forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
+    if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
+        raise ValueError(
+            f"Unsupported gRASPA forcefield {settings.forcefield!r}. "
+            f"Expected one of: {', '.join(_SUPPORTED_GRASPA_FORCEFIELDS)}."
+        )
     if settings.component not in AVAILABLE_WIDOM_COMPONENTS:
         supported = ", ".join(AVAILABLE_WIDOM_COMPONENTS)
         raise ValueError(f"Unsupported gRASPA component {settings.component!r}. Supported components: {supported}.")
@@ -1355,6 +1421,12 @@ def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
 
 
 def _validate_mixture_settings(settings: GraspaMixtureSettings) -> None:
+    forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
+    if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
+        raise ValueError(
+            f"Unsupported gRASPA forcefield {settings.forcefield!r}. "
+            f"Expected one of: {', '.join(_SUPPORTED_GRASPA_FORCEFIELDS)}."
+        )
     if len(settings.components) < 2:
         raise ValueError("At least two adsorbate components must be configured for mixture adsorption.")
     seen_components: set[str] = set()
@@ -1442,15 +1514,107 @@ def _widom_template_dir() -> Path:
     return template_dir
 
 
-def _copy_widom_template_assets(destination_dir: Path, components: Sequence[str]) -> None:
+def _copy_widom_template_assets(destination_dir: Path, components: Sequence[str], *, forcefield: str) -> None:
     template_dir = _widom_template_dir()
-    common_files = ("force_field.def", "force_field_mixing_rules.def", "pseudo_atoms.def")
+    common_files = ("force_field.def", "pseudo_atoms.def")
     required_names = [*common_files, *(f"{name}.def" for name in components)]
     for filename in required_names:
         source_path = template_dir / filename
         if not source_path.is_file():
             raise GraspaConfigurationError(f"Packaged Widom asset is missing: {source_path}")
         shutil.copy2(source_path, destination_dir / filename)
+    (destination_dir / "force_field_mixing_rules.def").write_text(
+        _render_graspa_force_field_mixing_rules(forcefield),
+        encoding="utf-8",
+    )
+
+
+def _bundled_uff_parameter_file() -> Path:
+    path = Path(__file__).resolve().parent / "data" / "forcefields" / "openbabel" / "3.1.0" / "UFF.prm"
+    if not path.is_file():
+        raise GraspaConfigurationError(f"Packaged UFF.prm is missing from the package data: {path}")
+    return path
+
+
+@dataclass(frozen=True)
+class _UffFrameworkParameters:
+    x1: float
+    d1: float
+
+
+@lru_cache(maxsize=1)
+def _load_uff_framework_parameters() -> dict[str, _UffFrameworkParameters]:
+    parameters: dict[str, _UffFrameworkParameters] = {}
+    for raw_line in _bundled_uff_parameter_file().read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("param "):
+            continue
+        parts = line.split()
+        if len(parts) < 13:
+            continue
+        atom_type = parts[1]
+        if atom_type not in _UFF_FRAMEWORK_TYPE_BY_ELEMENT.values():
+            continue
+        parameters[atom_type] = _UffFrameworkParameters(x1=float(parts[4]), d1=float(parts[5]))
+    missing = [atom_type for atom_type in _UFF_FRAMEWORK_TYPE_BY_ELEMENT.values() if atom_type not in parameters]
+    if missing:
+        raise GraspaConfigurationError(
+            "Packaged UFF.prm is missing one or more framework representative atom types needed for gRASPA: "
+            + ", ".join(sorted(missing))
+        )
+    return parameters
+
+
+def _graspa_framework_rows_for_forcefield(forcefield: str) -> list[str]:
+    normalized = _normalize_graspa_forcefield_name(forcefield)
+    rows: list[str] = []
+    if normalized == "dreiding":
+        for element in _GRASPA_FRAMEWORK_ELEMENT_ORDER:
+            atom_type = DREIDING_FRAMEWORK_TYPE_BY_ELEMENT[element]
+            parameters = DREIDING_PARAMETERS[atom_type]
+            epsilon_kelvin = parameters.d0 * 503.222681
+            sigma = parameters.r0 / _UFF_RMIN_TO_SIGMA_FACTOR
+            rows.append(
+                f"{element:<14} lennard-jones {epsilon_kelvin:10.4f} {sigma:10.5f}      "
+                f"// DREIDING via {DREIDING_REFERENCE_SOURCE}"
+            )
+        return rows
+    if normalized == "uff":
+        uff_parameters = _load_uff_framework_parameters()
+        for element in _GRASPA_FRAMEWORK_ELEMENT_ORDER:
+            atom_type = _UFF_FRAMEWORK_TYPE_BY_ELEMENT[element]
+            parameters = uff_parameters[atom_type]
+            epsilon_kelvin = parameters.d1 * 503.222681
+            sigma = parameters.x1 / _UFF_RMIN_TO_SIGMA_FACTOR
+            rows.append(
+                f"{element:<14} lennard-jones {epsilon_kelvin:10.4f} {sigma:10.5f}      "
+                "// UFF from bundled Open Babel UFF.prm"
+            )
+        return rows
+    raise GraspaConfigurationError(
+        f"Unsupported gRASPA forcefield backend requested: {forcefield!r}"
+    )
+
+
+def _render_graspa_force_field_mixing_rules(forcefield: str) -> str:
+    framework_rows = _graspa_framework_rows_for_forcefield(forcefield)
+    interaction_rows = [*framework_rows, *_GRASPA_SHARED_MIXING_RULE_LINES]
+    return "\n".join(
+        [
+            "# general rule for shifted vs truncated",
+            "truncated",
+            "# general rule tailcorrections",
+            "no",
+            "# number of defined interactions",
+            str(len(interaction_rows)),
+            "# type,        interaction,  epsilon [K],  sigma [A] IMPORTANT: define shortest matches first, so that more specific ones overwrites these",
+            *interaction_rows,
+            "",
+            "# general mixing rule for Lennard-Jones",
+            "Lorentz-Berthelot",
+            "",
+        ]
+    )
 
 
 def _compute_unit_cells_from_cif(cif_path: Path, *, cutoff: float) -> tuple[int, int, int]:

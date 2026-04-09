@@ -63,7 +63,7 @@ Installed mandatory runtime dependencies:
 
 - `gemmi` for CIF-backed coarse validation and the broader topology scan / symmetry-expansion utilities
 - `RDKit` for SMILES-based monomer construction and the practical batch workflows
-- `openbabel-wheel`, `pandas`, and `pymatgen` for the current UFF-backed LAMMPS workflow and related report/data handling
+- `openbabel-wheel`, `pandas`, and `pymatgen` for the current UFF/DREIDING-backed LAMMPS workflow and related report/data handling
 - these are installed automatically by `uv sync --locked`
 
 For local development and verification in this repository, use the lockfile-backed `uv` environment with the `dev` extra:
@@ -642,7 +642,7 @@ cofkit calculate lammps-optimize \
 
 The public `lammps-optimize` command already exposes the main optimization settings directly:
 
-- `--forcefield {uff}` selects the force-field backend
+- `--forcefield {uff,dreiding}` selects the force-field backend
 - `--pair-cutoff` sets the LJ cutoff used by the current backend
 - `--position-restraint-force-constant` controls the stage-1 local `spring/self` restraint
 - `--pre-minimization-steps` plus the `--pre-minimization-*` flags tune the default restrained `langevin + nve/limit` prerun; the default is `10000` steps and `--pre-minimization-steps 0` disables it
@@ -687,12 +687,21 @@ Current behavior:
 - `cofkit` atomistic CIF exports now write `_ccdc_geom_bond_type`, and the LAMMPS wrapper requires that explicit bond-type field for every bond
 - the run can stay fixed-cell or append a final `fix box/relax` stage
 - the explicit CIF bond graph drives the bonded topology written into the LAMMPS data file
-- the implemented backend is `UFF`, using Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled pinned Open Babel `UFF.prm` reference and the `lammps_interface` logic
-- `UFF` is the default and currently only implemented force-field backend in the public workflow
-- the current UFF export writes bond, angle, dihedral, improper, and van der Waals terms
+- `UFF` is the default backend and uses Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled pinned Open Babel `UFF.prm` reference
+- `DREIDING` is also available and uses Open Babel UFF atom typing mapped onto a pinned `lammps-interface` DREIDING table plus DREIDING-style coefficient formulas
+- both public backends currently write bond, angle, dihedral, improper, and van der Waals terms
+- for real optimization work, prefer `DREIDING`; `UFF` remains available for compatibility and comparison runs, but should currently be treated as experimental support
 - the default LAMMPS path runs EQeq before export, writes charged `atom_style full` data, and enables Coulomb terms in the generated LAMMPS input
 - `--charge-model none` remains available when you explicitly want an uncharged export
 - optional `spring/self` restraints keep the optimization local by default, and their energy is included in the minimization objective via `fix_modify energy yes`
+
+Temporary parameter review note:
+
+- the current `DREIDING` implementation is pinned to `lammps-interface` commit `255f027cb76142d39c050a6810404debc6a06562`, and that upstream is unmaintained
+- a few heavier-atom DREIDING entries there are explicitly heuristic (`Cu`, `Ni`, `Mg`)
+- hydrogen-bond-specific DREIDING parameters from that upstream are not part of the current `cofkit` export
+- some historical rounded DREIDING/gRASPA tables differ slightly from the current generated values
+- current `UFF` gRASPA rows are generated from the bundled Open Babel `UFF.prm`, so they may differ slightly from rounded example files
 
 The output directory stores:
 
@@ -703,7 +712,7 @@ The output directory stores:
 - `lammps_report.json`
 - one updated `*_lammps_optimized.cif`
 
-Current scope note: this is a topology-preserving local cleanup step for generated explicit-bond COF CIFs. The current UFF-backed export is now explicit-bond-order-driven and includes torsion and improper terms. EQeq charges are now part of the default LAMMPS export, but even with staged minimization and optional box relaxation it should still be treated as a pre-optimization candidate generator rather than a final optimized structure.
+Current scope note: this is a topology-preserving local cleanup step for generated explicit-bond COF CIFs. The current `UFF` and `DREIDING` exports are explicit-bond-order-driven and include torsion and improper terms. EQeq charges are now part of the default LAMMPS export, but even with staged minimization and optional box relaxation it should still be treated as a pre-optimization candidate generator rather than a final optimized structure.
 
 ## Workflow 8: EQeq + gRASPA Widom Insertion
 
@@ -726,6 +735,7 @@ The gRASPA executable is commonly named `nvc_main.x`. The CLI also auto-loads th
 cofkit calculate graspa-widom \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_graspa \
+  --forcefield dreiding \
   --component CO2 \
   --component N2 \
   --widom-moves-per-component 300000 \
@@ -736,7 +746,7 @@ The wrapper runs these stages:
 
 - copy the input CIF into `eqeq/` and run EQeq directly on that CIF
 - take the charged EQeq CIF output and copy it to `widom/framework.cif`
-- copy the packaged gRASPA `.def` files into `widom/`
+- copy the packaged gRASPA adsorbate/pseudo-atom `.def` files into `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
 - render `widom/simulation.input`
 - derive `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run gRASPA inside `widom/`
@@ -751,6 +761,7 @@ The public `graspa-widom` command exposes the main staging and runtime controls 
 - `--eqeq-path` and `--graspa-path` override `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`
 - `--eqeq-lambda`, `--eqeq-h-i0`, `--eqeq-charge-precision`, `--eqeq-method`, `--eqeq-real-space-cells`, `--eqeq-reciprocal-space-cells`, and `--eqeq-eta` control the EQeq stage
 - `--component NAME` repeats to activate packaged Widom probe molecules on demand, and `--all-components` activates the full packaged set
+- `--forcefield {dreiding,uff}` selects the generated framework mixing rules
 - `--widom-moves-per-component` controls the target Widom sampling per active component; `cofkit` derives `NumberOfProductionCycles` from that target unless `--production-cycles` is explicitly provided
 - `--temperature`, `--pressure`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated gRASPA `simulation.input`
 - `--eqeq-timeout-seconds` and `--graspa-timeout-seconds` cap the subprocess wall-clock runtime
@@ -769,6 +780,8 @@ The packaged Widom template currently ships definitions for:
 
 Activate probes explicitly with repeated `--component NAME` flags or `--all-components`. The generated `simulation.input` always uses CIF-backed framework input plus charges read from that charged CIF. `NumberOfBlocks` now defaults to `5`, and when `--production-cycles` is omitted, `cofkit` sets `NumberOfProductionCycles = (--widom-moves-per-component) * (number of active components)`.
 
+For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
+
 ### Output structure
 
 The output directory stores:
@@ -776,7 +789,7 @@ The output directory stores:
 - `eqeq/` with the copied input CIF, EQeq stdout/stderr logs, the charged CIF, and the optional EQeq JSON output if the executable writes it
 - `widom/framework.cif`
 - `widom/simulation.input`
-- the packaged Widom `.def` files copied into `widom/`
+- the packaged Widom adsorbate `.def` files plus one generated `force_field_mixing_rules.def` copied into `widom/`
 - `widom/graspa.stdout.log` and `widom/graspa.stderr.log`
 - one or more `widom/Output/*.data` files from gRASPA
 - `widom/Output/results.csv`
@@ -786,7 +799,7 @@ The output directory stores:
 
 ### Current scope note
 
-This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact.
+This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact. The temporary parameter review note from the LAMMPS section applies here as well: `DREIDING` is generated from the pinned `lammps-interface` reference and `UFF` is generated from the bundled Open Babel `UFF.prm`.
 
 ## Workflow 9: EQeq + gRASPA Single-Component Adsorption Isotherms
 
@@ -809,6 +822,7 @@ The gRASPA executable is commonly named `nvc_main.x`. The CLI also auto-loads th
 cofkit calculate graspa-isotherm \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_isotherm \
+  --forcefield dreiding \
   --component CO2 \
   --pressure 10000 \
   --pressure 100000 \
@@ -820,7 +834,7 @@ The wrapper runs these stages:
 
 - copy the input CIF into `eqeq/` and run EQeq directly on that CIF
 - take the charged EQeq CIF output and copy it to `isotherm/framework.cif`
-- for each requested pressure point, copy the packaged gRASPA `.def` files plus `framework.cif` into one `isotherm/pressure_*/` run directory
+- for each requested pressure point, copy the packaged gRASPA component `.def` files plus one generated framework `force_field_mixing_rules.def` and `framework.cif` into one `isotherm/pressure_*/` run directory
 - render one pressure-specific `simulation.input` per run directory
 - derive one shared `UnitCells` setting from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run one single-component GCMC adsorption simulation per pressure point
@@ -835,6 +849,7 @@ The public `graspa-isotherm` command exposes the main staging and runtime contro
 - `--eqeq-path` and `--graspa-path` override `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`
 - `--eqeq-lambda`, `--eqeq-h-i0`, `--eqeq-charge-precision`, `--eqeq-method`, `--eqeq-real-space-cells`, `--eqeq-reciprocal-space-cells`, and `--eqeq-eta` control the EQeq stage
 - `--component NAME` selects one packaged adsorbate definition
+- `--forcefield {dreiding,uff}` selects the generated framework mixing rules
 - `--pressure PA` repeats to define one or more pressure points in Pa for the isotherm grid
 - `--fugacity-coefficient VALUE` accepts either a positive float or `PR-EOS`
 - `--temperature`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated gRASPA `simulation.input`
@@ -854,6 +869,8 @@ The packaged adsorption template currently ships definitions for:
 
 Select exactly one component with `--component NAME`. The generated `simulation.input` always uses CIF-backed framework input plus charges read from that charged CIF. `NumberOfBlocks` defaults to `5`, and `--production-cycles` applies per pressure point rather than across the full pressure sweep.
 
+For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
+
 ### Output structure
 
 The output directory stores:
@@ -870,7 +887,7 @@ The output directory stores:
 
 ### Current scope note
 
-This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement restart-chained pressure stepping, excess-loading post-processing, or more advanced gRASPA sampling modes. If gRASPA emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only; use `graspa-mixture` for true mixed-feed selectivity.
+This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement restart-chained pressure stepping, excess-loading post-processing, or more advanced gRASPA sampling modes. If gRASPA emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only; use `graspa-mixture` for true mixed-feed selectivity.
 
 ## Workflow 10: EQeq + gRASPA Mixture Adsorption and Selectivity
 
@@ -882,6 +899,7 @@ The fourth `calculate`-namespace gRASPA wrapper is a staged `EQeq -> gRASPA` mix
 cofkit calculate graspa-mixture \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_mixture \
+  --forcefield dreiding \
   --component Kr:0.1 \
   --component Xe:0.9 \
   --pressure 10000 \
@@ -894,7 +912,7 @@ The wrapper runs these stages:
 
 - copy the input CIF into `eqeq/` and run EQeq directly on that CIF
 - take the charged EQeq CIF output and copy it to `mixture/framework.cif`
-- for each requested pressure point, copy the packaged gRASPA `.def` files plus `framework.cif` into one `mixture/pressure_*/` run directory
+- for each requested pressure point, copy the packaged gRASPA adsorbate `.def` files plus one generated framework `force_field_mixing_rules.def` and `framework.cif` into one `mixture/pressure_*/` run directory
 - render one pressure-specific multi-component `simulation.input` per run directory, including `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries for every adsorbate
 - derive one shared `UnitCells` setting from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run one multi-component GCMC adsorption simulation per pressure point
@@ -905,6 +923,7 @@ The wrapper runs these stages:
 The public `graspa-mixture` command exposes the same EQeq staging controls as the Widom/isotherm wrappers plus:
 
 - repeated `--component NAME:FRACTION` flags to define the mixed feed
+- `--forcefield {dreiding,uff}` to select the generated framework mixing rules
 - repeated `--pressure PA` flags to define the pressure grid
 - `--fugacity-coefficient VALUE` to apply either a positive float or `PR-EOS` to every component
 - `--translation-probability`, `--rotation-probability`, `--reinsertion-probability`, `--identity-change-probability`, `--swap-probability`, and `--create-number-of-molecules` to control the generated per-component GCMC move set
@@ -924,7 +943,9 @@ The output directory stores:
 
 `component_results.csv` records one parsed adsorption row per pressure/component, including feed mole fraction, adsorbed mole fraction, loading in `mol/kg` and `g/L`, and heat of adsorption. `selectivity_results.csv` records ordered pairwise selectivities plus propagated selectivity error bars. `graspa_mixture_report.json` records the staged paths, computed `UnitCells`, effective EQeq and mixture settings, parsed point results, and warnings.
 
-Real gRASPA runs may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and surfaces it as a warning if the simulation otherwise completes and parses successfully.
+Real gRASPA runs may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and surfaces it as a warning if the simulation otherwise completes and parses successfully. The same temporary parameter review note from the Widom/isotherm sections applies here.
+
+For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
 ### Quantitative rules
 

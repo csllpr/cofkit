@@ -363,6 +363,41 @@ class LammpsTests(unittest.TestCase):
             self.assertTrue(report["settings"]["two_stage_protocol"])
             self.assertTrue(report["settings"]["relax_cell"])
 
+    def test_optimize_cif_with_lammps_supports_dreiding_backend(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "dreiding_example.cif"
+            cif_path.write_text(self._multi_term_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "dreiding_out",
+                    settings=LammpsOptimizationSettings(forcefield="dreiding", charge_model="none"),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            self.assertEqual(result.forcefield_backend, "dreiding_openbabel_mapped_lammps_interface_pymatgen")
+            self.assertEqual(result.parameter_sources["forcefield"], "DREIDING")
+            self.assertIn("special_bonds dreiding", script_text)
+            self.assertIn("angle_style hybrid cosine/squared", script_text)
+            self.assertIn("dihedral_style charmm", script_text)
+            self.assertIn("improper_style umbrella", script_text)
+            self.assertIn("Dihedral Coeffs", data_text)
+            self.assertIn("Improper Coeffs", data_text)
+            dihedral_section = data_text.split("Dihedral Coeffs", 1)[1].split("Improper Coeffs", 1)[0]
+            for raw_line in dihedral_section.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                tokens = line.split()
+                if tokens[0].isdigit():
+                    self.assertIn(tokens[3], {"0", "180"})
+            self.assertGreaterEqual(result.n_dihedrals, 1)
+            self.assertGreaterEqual(result.n_impropers, 1)
+
     def test_lammps_eqeq_charge_model_writes_charged_export(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

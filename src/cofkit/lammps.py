@@ -9,9 +9,15 @@ import subprocess
 from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .cofid import cofid_comment_line, read_cofid_comment_from_cif
+from ._dreiding_reference import (
+    DREIDING_FRAMEWORK_TYPE_BY_ELEMENT,
+    DREIDING_PARAMETERS,
+    DREIDING_REFERENCE_SOURCE,
+    DreidingAtomParameters,
+)
 from .graspa import (
     EqeqChargeResult,
     EqeqChargeSettings,
@@ -49,7 +55,7 @@ except ImportError:  # pragma: no cover - exercised in environments without pyma
 
 COFKIT_LMP_ENV_VAR = "COFKIT_LMP_PATH"
 DEFAULT_LAMMPS_BINARY: Path | None = None
-_SUPPORTED_FORCEFIELDS = ("uff",)
+_SUPPORTED_FORCEFIELDS = ("uff", "dreiding")
 _SUPPORTED_CHARGE_MODELS = ("none", "eqeq")
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
 _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic", "spin_none"}
@@ -58,6 +64,55 @@ _MIN_MODIFY_FIRE_INTEGRATOR_OPTIONS = {"eulerimplicit", "verlet", "leapfrog", "e
 _BOX_RELAX_MODE_OPTIONS = {"auto", "iso", "aniso", "tri"}
 _UNSUPPORTED_BOX_RELAX_MIN_STYLES = {"quickmin", "fire", "hftn", "cg/kk"}
 _PINNED_UFF_PARAMETER_SHA256 = "934cb0e2ee1ef2102b2ae8dba74b1e9853b299bd7e26f695fb1fe6e55727bdc5"
+_DREIDING_SUPPORTED_ELEMENT_TYPES = frozenset(DREIDING_FRAMEWORK_TYPE_BY_ELEMENT)
+_DREIDING_TYPE_BY_UFF_TYPE = {
+    "H_": "H_",
+    "H_b": "H__b",
+    "B_3": "B_3",
+    "B_2": "B_2",
+    "C_3": "C_3",
+    "C_R": "C_R",
+    "C_2": "C_2",
+    "C_1": "C_1",
+    "N_3": "N_3",
+    "N_R": "N_R",
+    "N_2": "N_2",
+    "N_1": "N_1",
+    "O_3": "O_3",
+    "O_3_z": "O_3",
+    "O_R": "O_R",
+    "O_2": "O_2",
+    "O_1": "O_1",
+    "F_": "F_",
+    "Al3": "Al3",
+    "Si3": "Si3",
+    "P_3+3": "P_3",
+    "P_3+5": "P_3",
+    "P_3+q": "P_3",
+    "S_3+2": "S_3",
+    "S_3+4": "S_3",
+    "S_3+6": "S_3",
+    "S_R": "S_3",
+    "S_2": "S_3",
+    "Cl": "Cl",
+    "Ga3+3": "Ga3",
+    "Ge3": "Ge3",
+    "As3+3": "As3",
+    "Se3+2": "Se3",
+    "Br": "Br",
+    "In3+3": "In3",
+    "Sn3": "Sn3",
+    "Sb3+3": "Sb3",
+    "Te3+2": "Te3",
+    "I_": "I_",
+    "Na": "Na",
+    "Ca6+2": "Ca",
+    "Fe3+2": "Fe",
+    "Zn3+2": "Zn",
+    "Cu3+1": "Cu",
+    "Ni4+2": "Ni",
+    "Mg3+2": "Mg",
+}
 
 
 class LammpsError(RuntimeError):
@@ -621,6 +676,8 @@ def _prepare_lammps_system(
     forcefield = _normalize_forcefield_name(settings.forcefield)
     if forcefield == "uff":
         return _prepare_uff_lammps_system(parsed)
+    if forcefield == "dreiding":
+        return _prepare_dreiding_lammps_system(parsed)
     raise LammpsConfigurationError(f"Unsupported forcefield backend requested: {settings.forcefield!r}")
 
 
@@ -809,6 +866,181 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
     )
 
 
+def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammpsSystem:
+    _require_dreiding_support()
+    if any(bond.bond_order is None for bond in parsed.bonds):
+        raise LammpsInputError(
+            "DREIDING-backed LAMMPS optimization now requires explicit bond orders for every bond. "
+            "Populate `_ccdc_geom_bond_type` in the CIF bond loop before running `cofkit calculate lammps-optimize`."
+        )
+    has_any_charges = any(atom.charge is not None for atom in parsed.atoms)
+    has_all_charges = all(atom.charge is not None for atom in parsed.atoms)
+    if has_any_charges and not has_all_charges:
+        raise LammpsInputError(
+            "LAMMPS export requires either a complete set of atom charges or no atom charges at all."
+        )
+
+    atom_images, image_conflicts = _compute_unwrapped_atom_images(parsed)
+    typing_cartesian_positions = _unwrapped_cartesian_positions(parsed, atom_images)
+    wrapped_cartesian_positions = {
+        atom.atom_id: _fractional_to_lammps(atom.fractional_position, parsed.lammps_basis) for atom in parsed.atoms
+    }
+    ob_molecule = _build_openbabel_molecule(parsed, typing_cartesian_positions)
+    atom_type_by_atom_id = _assign_dreiding_atom_types(ob_molecule)
+    (
+        ordered_type_labels,
+        atom_type_ids,
+        representative_symbols,
+    ) = _ordered_unique_atom_types(parsed.atoms, atom_type_by_atom_id)
+    pairij_coeff_rows = _build_dreiding_pairij_rows(
+        ordered_type_labels=ordered_type_labels,
+        atom_type_ids=atom_type_ids,
+    )
+    bond_topology_rows, bond_coeff_rows = _build_dreiding_bond_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+    )
+    angle_topology_rows, angle_coeff_rows = _build_dreiding_angle_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+    )
+    dihedral_topology_rows, dihedral_coeff_rows = _build_dreiding_dihedral_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+    )
+    improper_topology_rows, improper_coeff_rows = _build_dreiding_improper_terms(
+        parsed=parsed,
+        atom_type_by_atom_id=atom_type_by_atom_id,
+    )
+
+    a_vec, b_vec, c_vec = parsed.lammps_basis
+    box = LammpsBox(
+        bounds=[
+            [0.0, a_vec[0]],
+            [0.0, b_vec[1]],
+            [0.0, c_vec[2]],
+        ],
+        tilt=[b_vec[0], c_vec[0], c_vec[1]],
+    )
+    masses = pd.DataFrame(
+        {"mass": [gemmi.Element(representative_symbols[label]).weight for label in ordered_type_labels]},
+        index=range(1, len(ordered_type_labels) + 1),
+    )
+    atoms = pd.DataFrame(
+        [
+            (
+                {
+                    "molecule-ID": 1,
+                    "type": atom_type_ids[atom_type_by_atom_id[atom.atom_id]],
+                    "q": float(atom.charge),
+                    "x": wrapped_cartesian_positions[atom.atom_id][0],
+                    "y": wrapped_cartesian_positions[atom.atom_id][1],
+                    "z": wrapped_cartesian_positions[atom.atom_id][2],
+                }
+                if has_all_charges
+                else {
+                    "molecule-ID": 1,
+                    "type": atom_type_ids[atom_type_by_atom_id[atom.atom_id]],
+                    "x": wrapped_cartesian_positions[atom.atom_id][0],
+                    "y": wrapped_cartesian_positions[atom.atom_id][1],
+                    "z": wrapped_cartesian_positions[atom.atom_id][2],
+                }
+            )
+            for atom in parsed.atoms
+        ],
+        index=range(1, len(parsed.atoms) + 1),
+    )
+    force_field: dict[str, pd.DataFrame] = {
+        "PairIJ Coeffs": pd.DataFrame(
+            pairij_coeff_rows,
+            columns=["id1", "id2", "coeff1", "coeff2"],
+        ),
+        "Bond Coeffs": _coeff_rows_to_dataframe(bond_coeff_rows),
+    }
+    if angle_coeff_rows:
+        force_field["Angle Coeffs"] = _coeff_rows_to_dataframe(angle_coeff_rows)
+    if dihedral_coeff_rows:
+        force_field["Dihedral Coeffs"] = _coeff_rows_to_dataframe(dihedral_coeff_rows)
+    if improper_coeff_rows:
+        force_field["Improper Coeffs"] = _coeff_rows_to_dataframe(improper_coeff_rows)
+    topology: dict[str, pd.DataFrame] = {
+        "Bonds": _topology_rows_to_dataframe(bond_topology_rows, ("type", "atom1", "atom2")),
+    }
+    if angle_topology_rows:
+        topology["Angles"] = _topology_rows_to_dataframe(angle_topology_rows, ("type", "atom1", "atom2", "atom3"))
+    if dihedral_topology_rows:
+        topology["Dihedrals"] = _topology_rows_to_dataframe(
+            dihedral_topology_rows,
+            ("type", "atom1", "atom2", "atom3", "atom4"),
+        )
+    if improper_topology_rows:
+        topology["Impropers"] = _topology_rows_to_dataframe(
+            improper_topology_rows,
+            ("type", "atom1", "atom2", "atom3", "atom4"),
+        )
+    lammps_data = LammpsData(
+        box=box,
+        masses=masses,
+        atoms=atoms,
+        force_field=force_field,
+        topology=topology,
+        atom_style="full" if has_all_charges else "molecular",
+    )
+    data_text = lammps_data.get_str(distance=10, charge=4, hybrid=True)
+    data_text = data_text.replace(
+        "Generated by pymatgen.io.lammps.data.LammpsData",
+        "LAMMPS data file written by cofkit via pymatgen/Open Babel/DREIDING",
+        1,
+    )
+    data_text = data_text.replace(
+        "\nAtoms\n\n",
+        "\nAtoms # full\n\n" if has_all_charges else "\nAtoms # molecular\n\n",
+        1,
+    )
+    has_image_flags = image_conflicts == 0
+    if has_image_flags:
+        data_text = _inject_atom_image_flags(data_text, atom_images)
+
+    warnings: list[str] = []
+    if image_conflicts > 0:
+        warnings.append(
+            "Periodic spanning-tree unwrapping for DREIDING atom typing encountered one or more cell-cycle conflicts. "
+            "cofkit kept the wrapped CIF coordinates for the LAMMPS data file and used the spanning tree only for "
+            "local atom typing."
+        )
+    parameter_sources = {
+        "forcefield": "DREIDING",
+        "atom_typing": "Open Babel UFF atom types mapped onto pinned DREIDING atom types from the explicit CIF bond graph",
+        "bonded_parameters": "cofkit DREIDING formulas adapted from pinned lammps-interface logic",
+        "nonbond_parameters": "pinned lammps-interface DREIDING Lennard-Jones parameters",
+        "reference_logic": DREIDING_REFERENCE_SOURCE,
+    }
+    if has_all_charges:
+        parameter_sources["electrostatics"] = "Explicit atom charges carried into the LAMMPS data file"
+        parameter_sources["charge_assignment"] = "Atom charges read from the CIF atom-site charge loop"
+
+    return _PreparedLammpsSystem(
+        data_text=data_text,
+        has_image_flags=has_image_flags,
+        has_charges=has_all_charges,
+        atom_type_symbols={index: label for index, label in enumerate(ordered_type_labels, start=1)},
+        n_bond_types=len(bond_coeff_rows),
+        n_angle_types=len(angle_coeff_rows),
+        n_dihedral_types=len(dihedral_coeff_rows),
+        n_improper_types=len(improper_coeff_rows),
+        n_dihedrals=len(dihedral_topology_rows),
+        n_impropers=len(improper_topology_rows),
+        angle_styles=_ordered_coeff_styles(angle_coeff_rows),
+        dihedral_styles=("charmm",) if dihedral_coeff_rows else (),
+        improper_styles=("umbrella",) if improper_coeff_rows else (),
+        forcefield_backend="dreiding_openbabel_mapped_lammps_interface_pymatgen",
+        parameter_sources=parameter_sources,
+        n_charged_atoms=len(parsed.atoms) if has_all_charges else 0,
+        net_charge=(sum(float(atom.charge) for atom in parsed.atoms) if has_all_charges else None),
+        warnings=tuple(warnings),
+    )
+
+
 def _inject_atom_image_flags(
     data_text: str,
     atom_images: Mapping[int, tuple[int, int, int]],
@@ -875,7 +1107,26 @@ def _require_uff_support() -> None:
         )
 
 
-def _ordered_unique_uff_atom_types(
+def _require_dreiding_support() -> None:
+    missing: list[str] = []
+    if gemmi is None:
+        missing.append("gemmi")
+    if ob is None:
+        missing.append("openbabel")
+    if any(item is None for item in (LammpsBox, LammpsData)):
+        missing.append("pymatgen")
+    if pd is None:
+        missing.append("pandas")
+    if ob is not None and not ob.OBForceField.FindForceField("UFF"):
+        missing.append("Open Babel UFF typing backend")
+    if missing:
+        raise LammpsConfigurationError(
+            "DREIDING-backed LAMMPS optimization requires these Python packages in the current environment: "
+            + ", ".join(missing)
+        )
+
+
+def _ordered_unique_atom_types(
     atoms: tuple[_CifAtomRecord, ...],
     atom_type_by_atom_id: dict[int, str],
 ) -> tuple[list[str], dict[str, int], dict[str, str]]:
@@ -890,6 +1141,13 @@ def _ordered_unique_uff_atom_types(
         atom_type_ids[atom_type] = len(ordered_types)
         representative_symbols[atom_type] = atom.symbol
     return ordered_types, atom_type_ids, representative_symbols
+
+
+def _ordered_unique_uff_atom_types(
+    atoms: tuple[_CifAtomRecord, ...],
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[list[str], dict[str, int], dict[str, str]]:
+    return _ordered_unique_atom_types(atoms, atom_type_by_atom_id)
 
 
 @lru_cache(maxsize=1)
@@ -925,6 +1183,148 @@ def _build_uff_pairij_rows(
             sigma = ((left_params.x1 / _UFF_RMIN_TO_SIGMA_FACTOR) + (right_params.x1 / _UFF_RMIN_TO_SIGMA_FACTOR)) / 2.0
             rows.append([atom_type_ids[left_label], atom_type_ids[right_label], float(epsilon), float(sigma)])
     return rows
+
+
+def _assign_dreiding_atom_types(ob_molecule) -> dict[int, str]:
+    uff_types = _assign_openbabel_uff_atom_types(ob_molecule)
+    atom_types: dict[int, str] = {}
+    for atom_index, uff_type in uff_types.items():
+        dreiding_type = _DREIDING_TYPE_BY_UFF_TYPE.get(uff_type)
+        if dreiding_type is None:
+            raise LammpsInputError(
+                "DREIDING parameterization is unavailable for the Open Babel atom type "
+                f"{uff_type!r} on atom index {atom_index}. "
+                "The current backend supports the organic-core DREIDING subset plus a narrow set of heavier atoms."
+            )
+        atom_types[atom_index] = dreiding_type
+    return atom_types
+
+
+def _dreiding_parameters_for_type(atom_type: str) -> DreidingAtomParameters:
+    try:
+        return DREIDING_PARAMETERS[atom_type]
+    except KeyError as exc:
+        raise LammpsInputError(f"DREIDING parameters are unavailable for atom type {atom_type!r}.") from exc
+
+
+def _build_dreiding_pairij_rows(
+    *,
+    ordered_type_labels: list[str],
+    atom_type_ids: dict[str, int],
+) -> list[list[float]]:
+    rows: list[list[float]] = []
+    for left_index, left_label in enumerate(ordered_type_labels):
+        left_params = _dreiding_parameters_for_type(left_label)
+        for right_label in ordered_type_labels[left_index:]:
+            right_params = _dreiding_parameters_for_type(right_label)
+            epsilon = math.sqrt(left_params.d0 * right_params.d0)
+            sigma = ((left_params.r0 / _UFF_RMIN_TO_SIGMA_FACTOR) + (right_params.r0 / _UFF_RMIN_TO_SIGMA_FACTOR)) / 2.0
+            rows.append([atom_type_ids[left_label], atom_type_ids[right_label], float(epsilon), float(sigma)])
+    return rows
+
+
+def _build_dreiding_bond_terms(
+    *,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[list[list[int]], list[list[float]]]:
+    type_ids: dict[tuple[object, ...], int] = {}
+    coeff_rows: list[list[float]] = []
+    topology_rows: list[list[int]] = []
+    for bond in parsed.bonds:
+        assert bond.bond_order is not None
+        left_type = atom_type_by_atom_id[bond.atom_id_1]
+        right_type = atom_type_by_atom_id[bond.atom_id_2]
+        bond_order = normalize_bond_order(bond.bond_order)
+        coeffs = _compute_dreiding_bond_coefficients(
+            left_type=left_type,
+            right_type=right_type,
+            bond_order=bond_order,
+        )
+        coefficient_key = _freeze_coeff_values(coeffs)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            coeff_rows.append(list(coeffs))
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        topology_rows.append([type_id, bond.atom_id_1, bond.atom_id_2])
+    return topology_rows, coeff_rows
+
+
+def _build_dreiding_angle_terms(
+    *,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[list[list[int]], list[list[object]]]:
+    type_ids: dict[tuple[object, ...], int] = {}
+    coeff_rows: list[list[object]] = []
+    topology_rows: list[list[int]] = []
+    for angle in parsed.angles:
+        coeffs = _compute_dreiding_angle_coefficients(
+            angle=angle,
+            atom_type_by_atom_id=atom_type_by_atom_id,
+        )
+        coefficient_key = _freeze_coeff_values(coeffs)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            coeff_rows.append(list(coeffs))
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        topology_rows.append([type_id, angle.atom_id_1, angle.atom_id_2, angle.atom_id_3])
+    return topology_rows, coeff_rows
+
+
+def _build_dreiding_dihedral_terms(
+    *,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[list[list[int]], list[list[object]]]:
+    type_ids: dict[tuple[object, ...], int] = {}
+    coeff_rows: list[list[object]] = []
+    topology_rows: list[list[int]] = []
+    degrees = _degree_by_atom(parsed)
+    for dihedral in parsed.dihedrals:
+        coeffs = _compute_dreiding_dihedral_coefficients(
+            dihedral=dihedral,
+            parsed=parsed,
+            atom_type_by_atom_id=atom_type_by_atom_id,
+            degrees=degrees,
+        )
+        if coeffs is None:
+            continue
+        coefficient_key = _freeze_coeff_values(coeffs)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            coeff_rows.append(list(coeffs))
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        topology_rows.append([type_id, dihedral.atom_id_1, dihedral.atom_id_2, dihedral.atom_id_3, dihedral.atom_id_4])
+    return topology_rows, coeff_rows
+
+
+def _build_dreiding_improper_terms(
+    *,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[list[list[int]], list[list[object]]]:
+    type_ids: dict[tuple[object, ...], int] = {}
+    coeff_rows: list[list[object]] = []
+    topology_rows: list[list[int]] = []
+    for improper in parsed.impropers:
+        coeffs = _compute_dreiding_improper_coefficients(
+            improper=improper,
+            atom_type_by_atom_id=atom_type_by_atom_id,
+        )
+        if coeffs is None:
+            continue
+        coefficient_key = _freeze_coeff_values(coeffs)
+        type_id = type_ids.get(coefficient_key)
+        if type_id is None:
+            coeff_rows.append(list(coeffs))
+            type_id = len(coeff_rows)
+            type_ids[coefficient_key] = type_id
+        topology_rows.append([type_id, improper.atom_id_1, improper.atom_id_2, improper.atom_id_3, improper.atom_id_4])
+    return topology_rows, coeff_rows
 
 
 def _build_uff_bond_terms(
@@ -1056,6 +1456,145 @@ def _topology_rows_to_dataframe(rows: Sequence[Sequence[int]], columns: Sequence
     dataframe = pd.DataFrame(list(rows), columns=list(columns))
     dataframe.index = range(1, len(dataframe) + 1)
     return dataframe
+
+
+def _compute_dreiding_bond_coefficients(
+    *,
+    left_type: str,
+    right_type: str,
+    bond_order: float,
+) -> tuple[float, float]:
+    left_parameters = _dreiding_parameters_for_type(left_type)
+    right_parameters = _dreiding_parameters_for_type(right_type)
+    force_constant = bond_order * 700.0 / 2.0
+    equilibrium_distance = left_parameters.r1 + right_parameters.r1 - 0.01
+    return float(force_constant), float(equilibrium_distance)
+
+
+def _compute_dreiding_angle_coefficients(
+    *,
+    angle: _CifAngleRecord,
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[object, ...]:
+    center_type = atom_type_by_atom_id[angle.atom_id_2]
+    theta0 = _dreiding_parameters_for_type(center_type).theta0
+    force_constant = 100.0
+    if abs(theta0 - 180.0) <= 1.0e-12:
+        return ("cosine", force_constant / 2.0)
+    if abs(theta0 - 90.0) <= 1.0e-12:
+        return ("cosine/periodic", force_constant, 1, 4)
+    sine = math.sin(math.radians(theta0))
+    if abs(sine) <= 1.0e-12:
+        raise LammpsInputError(
+            f"DREIDING angle coefficient generation became singular for angle {angle.atom_id_1}-{angle.atom_id_2}-{angle.atom_id_3}."
+        )
+    return ("cosine/squared", 0.5 * force_constant / (sine * sine), float(theta0))
+
+
+def _compute_dreiding_dihedral_coefficients(
+    *,
+    dihedral: _CifDihedralRecord,
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+    degrees: dict[int, int],
+) -> tuple[object, ...] | None:
+    left_outer_type = atom_type_by_atom_id[dihedral.atom_id_1]
+    left_center_type = atom_type_by_atom_id[dihedral.atom_id_2]
+    right_center_type = atom_type_by_atom_id[dihedral.atom_id_3]
+    right_outer_type = atom_type_by_atom_id[dihedral.atom_id_4]
+
+    bond_order = _bond_order_for_pair(parsed, dihedral.atom_id_2, dihedral.atom_id_3)
+    left_outer_family = _dreiding_hybridization_family(left_outer_type)
+    left_center_family = _dreiding_hybridization_family(left_center_type)
+    right_center_family = _dreiding_hybridization_family(right_center_type)
+    right_outer_family = _dreiding_hybridization_family(right_outer_type)
+
+    monovalent = {"Na", "F_", "Cl", "Br", "I_"}
+    metals = {"Ca", "Fe", "Zn", "Cu", "Ni", "Mg"}
+    oxygen_sp3 = {"O_3", "S_3", "Se3", "Te3"}
+    non_oxygen_sp2 = {"C_R", "N_R", "B_2", "C_2", "N_2"}
+    sp2_like = {"aromatic", "sp2"}
+
+    if (
+        left_center_family == "sp"
+        or right_center_family == "sp"
+        or left_center_type in monovalent
+        or right_center_type in monovalent
+        or left_center_type in metals
+        or right_center_type in metals
+    ):
+        return None
+    if left_center_family == "sp3" and right_center_family == "sp3":
+        amplitude = 2.0
+        periodicity = 3
+        phase0 = 180.0
+        if left_center_type in oxygen_sp3 and right_center_type in oxygen_sp3:
+            periodicity = 2
+            phase0 = 90.0
+    elif (left_center_family in sp2_like and right_center_family == "sp3") or (
+        left_center_family == "sp3" and right_center_family in sp2_like
+    ):
+        amplitude = 1.0
+        periodicity = 6
+        phase0 = 0.0
+        if (
+            left_center_type in oxygen_sp3 and right_center_type in non_oxygen_sp2
+        ) or (
+            right_center_type in oxygen_sp3 and left_center_type in non_oxygen_sp2
+        ):
+            amplitude = 2.0
+            periodicity = 2
+            phase0 = 180.0
+        if (left_center_family in sp2_like and left_outer_family not in sp2_like) or (
+            right_center_family in sp2_like and right_outer_family not in sp2_like
+        ):
+            amplitude = 2.0
+            periodicity = 3
+            phase0 = 180.0
+    elif left_center_family in sp2_like and right_center_family in sp2_like and abs(bond_order - 2.0) <= 1.0e-8:
+        amplitude = 45.0
+        periodicity = 2
+        phase0 = 180.0
+    elif left_center_family in sp2_like and right_center_family in sp2_like and bond_order >= 1.5:
+        amplitude = 25.0
+        periodicity = 2
+        phase0 = 180.0
+    elif left_center_family in sp2_like and right_center_family in sp2_like:
+        amplitude = 5.0
+        periodicity = 2
+        phase0 = 180.0
+        if left_center_family == "aromatic" and right_center_family == "aromatic":
+            amplitude *= 2.0
+    else:
+        return None
+
+    left_neighbor_count = degrees[dihedral.atom_id_2] - 1
+    right_neighbor_count = degrees[dihedral.atom_id_3] - 1
+    normalization = float(left_neighbor_count * right_neighbor_count)
+    if normalization <= 0.0:
+        return None
+    amplitude /= normalization
+    # LAMMPS dihedral_style charmm expects d as an integer phase in degrees.
+    # The legacy lammps-interface DREIDING logic computes n*phi0 + 180, which
+    # is physically equivalent modulo 360 but modern LAMMPS rejects values like 540.
+    phase = int(round((periodicity * phase0 + 180.0) % 360.0))
+    return (amplitude / 2.0, periodicity, phase, 0.0)
+
+
+def _compute_dreiding_improper_coefficients(
+    *,
+    improper: _CifImproperRecord,
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[object, ...] | None:
+    center_type = atom_type_by_atom_id[improper.atom_id_2]
+    if center_type in {"N_3", "P_3", "As3", "Sb3"}:
+        return None
+    force_constant = 40.0
+    center_family = _dreiding_hybridization_family(center_type)
+    if center_family in {"sp2", "aromatic"}:
+        force_constant /= 3.0
+    omega0 = _dreiding_parameters_for_type(center_type).phi
+    return (force_constant, omega0)
 
 
 def _compute_uff_bond_coefficients(
@@ -1325,6 +1864,18 @@ def _uff_hybridization_family(atom_type: str) -> str:
     if coordination == "2":
         return "sp2"
     if coordination in {"3", "4", "5", "6", "8"}:
+        return "sp3"
+    return "sp3"
+
+
+def _dreiding_hybridization_family(atom_type: str) -> str:
+    if atom_type.endswith("_R"):
+        return "aromatic"
+    if atom_type.endswith("_1") or atom_type in {"H_", "H__HB", "H__b", "F_", "Cl", "Br", "I_"}:
+        return "sp"
+    if atom_type.endswith("_2"):
+        return "sp2"
+    if atom_type.endswith("_3") or atom_type.endswith("3") or atom_type in {"Na", "Ca", "Fe", "Zn", "Cu", "Ni", "Mg"}:
         return "sp3"
     return "sp3"
 
@@ -2001,6 +2552,14 @@ def _has_nonperiodic_boundary(boundary: str) -> bool:
     return any(token.lower() == "f" for token in boundary.split())
 
 
+def _render_special_bonds_line(prepared: _PreparedLammpsSystem) -> str:
+    if prepared.forcefield_backend.startswith("dreiding"):
+        return "special_bonds dreiding"
+    if prepared.has_charges:
+        return "special_bonds lj/coul 0.0 0.0 1.0"
+    return "special_bonds lj 0.0 0.0 1.0"
+
+
 def _render_lammps_input_script(
     *,
     data_path: Path,
@@ -2022,9 +2581,7 @@ def _render_lammps_input_script(
             else f"pair_style lj/cut {settings.pair_cutoff:.6f}"
         )
     )
-    special_bonds_line = (
-        "special_bonds lj/coul 0.0 0.0 1.0" if prepared.has_charges else "special_bonds lj 0.0 0.0 1.0"
-    )
+    special_bonds_line = _render_special_bonds_line(prepared)
     lines = [
         "units real",
         "atom_style full" if prepared.has_charges else "atom_style molecular",

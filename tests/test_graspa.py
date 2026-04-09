@@ -171,6 +171,42 @@ class GraspaWidomTests(unittest.TestCase):
                 f"# COFid: {cofid} stacking=AA",
             )
 
+    def test_run_graspa_widom_workflow_supports_uff_forcefield_assets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "uff_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_widom_workflow(
+                    cif_path,
+                    output_dir=temp_path / "uff_widom_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    widom_settings=GraspaWidomSettings(components=("CO2",), forcefield="uff"),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            mixing_rules_text = (Path(result.widom_run_dir) / "force_field_mixing_rules.def").read_text(encoding="utf-8")
+            self.assertEqual(result.widom_settings.forcefield, "uff")
+            self.assertIn("// UFF from bundled Open Babel UFF.prm", mixing_rules_text)
+            self.assertIn("C              lennard-jones    52.8384", mixing_rules_text)
+            self.assertIn("Br             lennard-jones   126.3089", mixing_rules_text)
+
     def test_calculate_graspa_widom_cli_prints_json_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -203,6 +239,8 @@ class GraspaWidomTests(unittest.TestCase):
                             str(cif_path),
                             "--output-dir",
                             str(output_dir),
+                            "--forcefield",
+                            "uff",
                             "--component",
                             "CO2",
                             "--component",
@@ -218,6 +256,7 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["unit_cells"], [1, 2, 3])
             self.assertEqual(report["widom_settings"]["widom_moves_per_component"], 2500)
             self.assertEqual(report["widom_settings"]["production_cycles"], 5000)
+            self.assertEqual(report["widom_settings"]["forcefield"], "uff")
             self.assertEqual(len(report["component_results"]), 2)
             self.assertEqual(report["component_results"][0]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["component"], "Xe")
