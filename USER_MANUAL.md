@@ -688,7 +688,7 @@ Current behavior:
 - the run can stay fixed-cell or append a final `fix box/relax` stage
 - the explicit CIF bond graph drives the bonded topology written into the LAMMPS data file
 - `UFF` is the default backend and uses Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled pinned Open Babel `UFF.prm` reference
-- `DREIDING` is also available and uses Open Babel UFF atom typing mapped onto a pinned `lammps-interface` DREIDING table plus DREIDING-style coefficient formulas
+- `DREIDING` is also available and uses Open Babel UFF atom typing mapped onto a standard DREIDING parameter table from Mayo et al. (Tables I-II) plus DREIDING-style coefficient formulas
 - both public backends currently write bond, angle, dihedral, improper, and van der Waals terms
 - for real optimization work, prefer `DREIDING`; `UFF` remains available for compatibility and comparison runs, but should currently be treated as experimental support
 - the default LAMMPS path runs EQeq before export, writes charged `atom_style full` data, and enables Coulomb terms in the generated LAMMPS input
@@ -697,10 +697,10 @@ Current behavior:
 
 Temporary parameter review note:
 
-- the current `DREIDING` implementation is pinned to `lammps-interface` commit `255f027cb76142d39c050a6810404debc6a06562`, and that upstream is unmaintained
-- a few heavier-atom DREIDING entries there are explicitly heuristic (`Cu`, `Ni`, `Mg`)
+- the current `DREIDING` runtime path targets standard DREIDING from Mayo et al. (Tables I-II)
+- a few heavier-atom DREIDING entries remain explicitly heuristic carryovers from the old `lammps-interface` seed (`Cu`, `Ni`, `Mg`)
 - hydrogen-bond-specific DREIDING parameters from that upstream are not part of the current `cofkit` export
-- some historical rounded DREIDING/gRASPA tables differ slightly from the current generated values
+- some historical rounded DREIDING/gRASPA template tables differ slightly from the current generated values
 - current `UFF` gRASPA rows are generated from the bundled Open Babel `UFF.prm`, so they may differ slightly from rounded example files
 
 The output directory stores:
@@ -799,7 +799,7 @@ The output directory stores:
 
 ### Current scope note
 
-This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact. The temporary parameter review note from the LAMMPS section applies here as well: `DREIDING` is generated from the pinned `lammps-interface` reference and `UFF` is generated from the bundled Open Babel `UFF.prm`.
+This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact. The temporary parameter review note from the LAMMPS section applies here as well: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, while `UFF` is generated from the bundled Open Babel `UFF.prm`.
 
 ## Workflow 9: EQeq + gRASPA Single-Component Adsorption Isotherms
 

@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -89,6 +90,13 @@ class GraspaWidomTests(unittest.TestCase):
                 Path(result.widom_framework_cif).read_text(encoding="utf-8").splitlines()[0],
                 f"# COFid: {cofid}",
             )
+            mixing_rules_text = (Path(result.widom_run_dir) / "force_field_mixing_rules.def").read_text(encoding="utf-8")
+            self.assertIn("// standard DREIDING Tables I-II (Mayo et al., J. Phys. Chem. 1990)", mixing_rules_text)
+            self.assertRegex(
+                mixing_rules_text,
+                re.compile(r"^Br\s+lennard-jones\s+186\.1924\s+3\.51905\b", re.MULTILINE),
+            )
+            self.assertNotIn("126.2900", mixing_rules_text)
 
             simulation_input = Path(result.simulation_input_path).read_text(encoding="utf-8")
             self.assertIn("UseGPUReduction yes", simulation_input)

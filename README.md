@@ -330,14 +330,14 @@ This first LAMMPS wrapper is still conservative, but it no longer invents generi
 - it can run fixed-cell minimization only, or append an optional final `fix box/relax` stage
 - it builds a bonded LAMMPS data file from the explicit CIF bond graph
 - `UFF` is the default backend and uses Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled Open Babel `UFF.prm`
-- `DREIDING` is also available and uses Open Babel UFF atom typing mapped onto a pinned `lammps-interface` DREIDING table plus DREIDING-style coefficient formulas
+- `DREIDING` is also available and uses Open Babel UFF atom typing mapped onto a standard DREIDING parameter table from Mayo et al. (Tables I-II) plus DREIDING-style coefficient formulas
 - both public backends currently write bond, angle, dihedral, improper, and van der Waals terms, plus optional local position restraints whose energy is explicitly included in minimization through `fix_modify energy yes`
 - for real optimization work, prefer `DREIDING`; `UFF` remains available for compatibility and comparison runs, but should currently be treated as experimental support
 - the default LAMMPS path stages EQeq before export, writes charged `atom_style full` data, and enables Coulomb terms in the generated LAMMPS input
 - `--charge-model none` is still available when you explicitly want an uncharged export
 - it writes an updated CIF, the generated LAMMPS data/input files, logs, a trajectory dump, and `lammps_report.json`
 
-Temporary parameter review note: the current `DREIDING` implementation is pinned to `lammps-interface` commit `255f027cb76142d39c050a6810404debc6a06562`, and that upstream is unmaintained. A few heavier-atom entries there are explicitly heuristic (`Cu`, `Ni`, `Mg`), hydrogen-bond-specific parameters are not part of the current `cofkit` export, and some historical rounded DREIDING/gRASPA tables differ slightly from the current generated values. The current `UFF` gRASPA rows are generated from the bundled Open Babel `UFF.prm`, so they may also differ slightly from rounded example files.
+Temporary parameter review note: the current `DREIDING` runtime path targets standard DREIDING from Mayo et al. (Tables I-II), while retaining a few explicitly heuristic heavier-atom carryovers (`Cu`, `Ni`, `Mg`) from the old `lammps-interface` seed. Hydrogen-bond-specific parameters are not part of the current `cofkit` export, and some historical rounded DREIDING/gRASPA template rows still differ slightly from the current generated values. The current `UFF` gRASPA rows are generated from the bundled Open Babel `UFF.prm`, so they may also differ slightly from rounded example files.
 
 This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current `UFF` and `DREIDING` paths are explicit-bond-order-driven and include torsions and impropers. Charges are now assigned through EQeq by default, but the workflow should still be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
 
@@ -376,7 +376,7 @@ The wrapper writes:
 - `widom/Output/results.csv` with the parsed Widom energy and Henry coefficient summaries
 - `graspa_widom_report.json` with paths, settings, parsed component results, and warnings
 
-`COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH` can both be overridden per run with `--eqeq-path` and `--graspa-path`. On many installations the gRASPA executable is named `nvc_main.x`. If gRASPA emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run. The same temporary parameter review note from the LAMMPS section applies here: `DREIDING` is generated from the pinned `lammps-interface` reference, and `UFF` is generated from the bundled Open Babel `UFF.prm`, so slight differences from older rounded template files are expected for now.
+`COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH` can both be overridden per run with `--eqeq-path` and `--graspa-path`. On many installations the gRASPA executable is named `nvc_main.x`. If gRASPA emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run. The same temporary parameter review note from the LAMMPS section applies here: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, but a few heavier-atom carryovers remain heuristic and some older rounded template/example files still differ slightly. `UFF` is generated from the bundled Open Babel `UFF.prm`.
 
 ### Run EQeq + gRASPA single-component adsorption isotherms on one CIF
 

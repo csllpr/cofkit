@@ -1,3 +1,7 @@
+# Legacy snapshot only: current cofkit runs do not copy these framework rows as-is.
+# The active gRASPA path generates framework rows at runtime from the selected force
+# field family. For DREIDING, the runtime source is standard DREIDING Tables I-II;
+# this file is retained only as a historical template/reference for packaged guests.
 # general rule for shifted vs truncated
 truncated
 # general rule tailcorrections
@@ -14,7 +18,7 @@ F             lennard-jones    36.4834   3.09320      // DREIDING
 P             lennard-jones   161.0303   3.69723      // DREIDING
 S             lennard-jones   173.1075   3.59032      // DREIDING
 Cl            lennard-jones   142.5621   3.51932      // DREIDING
-Br            lennard-jones   126.2900   3.73000      // Adapted from local gRASPA BlockPocket / Simplify_Force_Field_Files examples.
+Br            lennard-jones   126.2900   3.73000      // Legacy rounded template row retained for reference only; runtime framework rows are generated elsewhere.
 Ow_T4          lennard-jones    77.99902   3.1536      // Jorgensen, et al. J. Chem. Phys, (1983).
 Hw_T4          lennard-jones    0.0 0.0                                    // idem
 M_T4          lennard-jones    0.0 0.0                                    // idem

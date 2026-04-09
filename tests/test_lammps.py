@@ -381,6 +381,8 @@ class LammpsTests(unittest.TestCase):
             data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
             self.assertEqual(result.forcefield_backend, "dreiding_openbabel_mapped_lammps_interface_pymatgen")
             self.assertEqual(result.parameter_sources["forcefield"], "DREIDING")
+            self.assertIn("standard DREIDING Tables I-II", result.parameter_sources["nonbond_parameters"])
+            self.assertIn("Cu/Ni/Mg", result.parameter_sources["reference_logic"])
             self.assertIn("special_bonds dreiding", script_text)
             self.assertIn("angle_style hybrid cosine/squared", script_text)
             self.assertIn("dihedral_style charmm", script_text)

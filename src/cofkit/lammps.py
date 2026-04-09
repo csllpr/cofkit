@@ -15,6 +15,7 @@ from .cofid import cofid_comment_line, read_cofid_comment_from_cif
 from ._dreiding_reference import (
     DREIDING_FRAMEWORK_TYPE_BY_ELEMENT,
     DREIDING_PARAMETERS,
+    DREIDING_REFERENCE_NOTES,
     DREIDING_REFERENCE_SOURCE,
     DreidingAtomParameters,
 )
@@ -1010,10 +1011,10 @@ def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _Prepared
         )
     parameter_sources = {
         "forcefield": "DREIDING",
-        "atom_typing": "Open Babel UFF atom types mapped onto pinned DREIDING atom types from the explicit CIF bond graph",
+        "atom_typing": "Open Babel UFF atom types mapped onto standard DREIDING atom types from the explicit CIF bond graph",
         "bonded_parameters": "cofkit DREIDING formulas adapted from pinned lammps-interface logic",
-        "nonbond_parameters": "pinned lammps-interface DREIDING Lennard-Jones parameters",
-        "reference_logic": DREIDING_REFERENCE_SOURCE,
+        "nonbond_parameters": f"{DREIDING_REFERENCE_SOURCE} Lennard-Jones parameters",
+        "reference_logic": DREIDING_REFERENCE_NOTES,
     }
     if has_all_charges:
         parameter_sources["electrostatics"] = "Explicit atom charges carried into the LAMMPS data file"

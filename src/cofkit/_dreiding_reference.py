@@ -13,11 +13,18 @@ class DreidingAtomParameters:
     s: float
 
 
-# Pinned from lammps-interface commit 255f027cb76142d39c050a6810404debc6a06562.
-# Source: lammps_interface/dreiding.py
+# The paper-backed rows below are intended to follow standard DREIDING
+# (Mayo et al., J. Phys. Chem. 1990, 94, 8897-8909, Tables I-II). The
+# original machine-readable seed came from lammps-interface, but the
+# canonical target for the paper-covered entries is standard DREIDING,
+# not the alternate DREIDING/A tables later in the same paper.
 DREIDING_REFERENCE_SOURCE = (
-    "lammps-interface commit 255f027cb76142d39c050a6810404debc6a06562 "
-    "(https://github.com/peteboyd/lammps_interface)"
+    "standard DREIDING Tables I-II (Mayo et al., J. Phys. Chem. 1990)"
+)
+DREIDING_REFERENCE_NOTES = (
+    "Paper-backed entries track standard DREIDING Tables I-II. The Cu/Ni/Mg rows remain "
+    "explicit heuristic carryovers from lammps-interface commit 255f027cb76142d39c050a6810404debc6a06562, "
+    "and hydrogen-bond-specific parameters are not part of the current cofkit export."
 )
 
 
@@ -59,7 +66,8 @@ DREIDING_PARAMETERS: dict[str, DreidingAtomParameters] = {
     "Ca": DreidingAtomParameters(1.940, 90.0, 3.472, 0.05, 0.0, 12.0),
     "Fe": DreidingAtomParameters(1.285, 90.0, 4.54, 0.055, 0.0, 12.0),
     "Zn": DreidingAtomParameters(1.330, 109.471, 4.54, 0.055, 0.0, 12.0),
-    # These three entries are explicitly heuristic in the upstream source.
+    # These three entries are explicitly heuristic carryovers from the
+    # lammps-interface seed rather than paper-backed standard DREIDING rows.
     "Cu": DreidingAtomParameters(1.302, 90.0, 4.54, 0.055, 0.0, 12.0),
     "Ni": DreidingAtomParameters(1.164, 90.0, 4.54, 0.055, 0.0, 12.0),
     "Mg": DreidingAtomParameters(1.421, 90.0, 4.54, 0.055, 0.0, 12.0),
@@ -83,4 +91,3 @@ DREIDING_FRAMEWORK_TYPE_BY_ELEMENT: dict[str, str] = {
     "Cl": "Cl",
     "Br": "Br",
 }
-

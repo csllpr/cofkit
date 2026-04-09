@@ -1576,7 +1576,7 @@ def _graspa_framework_rows_for_forcefield(forcefield: str) -> list[str]:
             sigma = parameters.r0 / _UFF_RMIN_TO_SIGMA_FACTOR
             rows.append(
                 f"{element:<14} lennard-jones {epsilon_kelvin:10.4f} {sigma:10.5f}      "
-                f"// DREIDING via {DREIDING_REFERENCE_SOURCE}"
+                f"// {DREIDING_REFERENCE_SOURCE}"
             )
         return rows
     if normalized == "uff":
