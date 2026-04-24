@@ -30,7 +30,7 @@ Interpretation rules:
 - Focus on templates where `supports_pair_generation` is `true` for practical structure generation.
 - Registered templates with `supports_pair_generation=false` are still part of the reaction library, but they are not on the current topology-guided pair-generation path.
 - `cofkit analyze --help` is where current pore-analysis and output-triage workflows show up.
-- `cofkit calculate --help` is where current external optimization workflows show up.
+- `cofkit calculate --help` is where current external optimization and Monte Carlo workflows show up.
 
 ### Build one COF from two monomers
 
@@ -203,7 +203,7 @@ Requirements:
 
 - input must be an explicit-bond `P1` CIF
 - `_ccdc_geom_bond_type` must be present on every bond row
-- the current public force-field backend is `UFF` only
+- current public force-field backends are `DREIDING` and `UFF`; prefer `--forcefield dreiding` for production work unless the user asks for UFF or legacy reproduction
 
 Primary artifacts:
 
@@ -213,6 +213,137 @@ Primary artifacts:
 - `lammps_minimize.in`
 - `lammps.log`, `lammps.stdout.log`, `lammps.stderr.log`
 - `lammps_trajectory.lammpstrj`
+
+### Run EQeq + gRASPA/RASPA2 Widom insertion on one CIF
+
+Use `calculate graspa-widom`.
+
+```bash
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+
+cofkit calculate graspa-widom \
+  <STRUCTURE_CIF> \
+  --output-dir out/widom \
+  --component CO2 \
+  --component Xe \
+  --json
+```
+
+Useful variants:
+
+- add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate` for CPU-only RASPA2
+- add `--raspa-path ...` as a backend-neutral executable override for the selected backend
+- add `--all-components` to screen every packaged probe
+- tune `--widom-moves-per-component`, `--production-cycles`, `--temperature`, `--pressure`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision`
+
+Requirements:
+
+- input is one CIF file
+- `COFKIT_EQEQ_PATH` or `--eqeq-path` selects EQeq
+- default backend is gRASPA through `COFKIT_GRASPA_PATH` or `--graspa-path`
+- RASPA2 backend uses `COFKIT_RASPA2_PATH`, `--raspa2-path`, or `--raspa-path` with `--backend raspa2`
+- packaged probe names are `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`
+
+Primary artifacts:
+
+- `graspa_widom_report.json`
+- `eqeq/`
+- `widom/simulation.input`
+- `widom/framework.cif`
+- backend logs such as `widom/graspa.stdout.log` or `widom/raspa2.stdout.log`
+- raw `widom/Output/**/*.data`
+- `widom/Output/results.csv`
+
+### Run EQeq + gRASPA/RASPA2 single-component adsorption isotherms
+
+Use `calculate graspa-isotherm`.
+
+```bash
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+
+cofkit calculate graspa-isotherm \
+  <STRUCTURE_CIF> \
+  --output-dir out/isotherm \
+  --component CO2 \
+  --pressure 10000 \
+  --pressure 100000 \
+  --json
+```
+
+Useful variants:
+
+- add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate`
+- set `--fugacity-coefficient PR-EOS` to request backend fugacity handling; for RASPA2, cofkit omits the explicit fugacity line so RASPA2 can use its internal calculation
+- tune `--production-cycles`, `--temperature`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision`
+
+Requirements:
+
+- input is one CIF file
+- exactly one packaged `--component NAME`
+- at least one `--pressure PA`
+- selected backend executable is configured as for Widom
+
+Primary artifacts:
+
+- `graspa_isotherm_report.json`
+- `eqeq/`
+- `isotherm/framework.cif`
+- per-pressure directories under `isotherm/pressure_*/`
+- raw `isotherm/pressure_*/Output/**/*.data`
+- `isotherm/results.csv`
+
+RASPA2 parsing note:
+
+- RASPA2 mol/kg loading and heat-of-adsorption summaries are parsed when present
+- RASPA2 does not provide the same gRASPA `g/L` loading summary in the current parser, so that JSON field is `null`
+
+### Run EQeq + gRASPA/RASPA2 mixture adsorption/selectivity
+
+Use `calculate graspa-mixture`.
+
+```bash
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+
+cofkit calculate graspa-mixture \
+  <STRUCTURE_CIF> \
+  --output-dir out/mixture \
+  --component Xe:0.2 \
+  --component Kr:0.8 \
+  --pressure 100000 \
+  --json
+```
+
+Useful variants:
+
+- add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate`
+- set `--fugacity-coefficient PR-EOS` for backend fugacity handling
+- tune `--translation-probability`, `--rotation-probability`, `--reinsertion-probability`, `--identity-change-probability`, `--swap-probability`, `--production-cycles`, and cutoffs
+
+Requirements:
+
+- input is one CIF file
+- at least two packaged `--component NAME:FRACTION` values
+- component fractions must be positive; cofkit normalizes the feed fractions in reported results if they do not sum to one
+- at least one `--pressure PA`
+- selected backend executable is configured as for Widom
+
+Primary artifacts:
+
+- `graspa_mixture_report.json`
+- `eqeq/`
+- `mixture/framework.cif`
+- per-pressure directories under `mixture/pressure_*/`
+- raw `mixture/pressure_*/Output/**/*.data`
+- `mixture/component_results.csv`
+- `mixture/selectivity_results.csv`
+
+RASPA2 parsing note:
+
+- RASPA2 component mol/kg loading is parsed and cofkit computes adsorbed mole fractions plus pairwise selectivity
+- RASPA2 component `g/L` loading and heat fields are currently reported as `null`
 
 ### Work from Python instead of the CLI
 
@@ -232,6 +363,9 @@ Choose the API by how much the user already knows:
 - For classification outputs, keep the four-way split explicit: `valid`, `warning`, `hard_invalid`, `hard_hard_invalid`.
 - For `zeopp_report.json`, keep the point-probe baseline separate from any requested probe scans. Do not assume `probe_scans_successful` means no useful probe data exists; inspect individual scan status and parsed fields.
 - For `lammps_report.json`, report the optimized CIF path, atom/bond/angle/dihedral/improper counts, the forcefield backend, the key settings used, and any warnings.
+- For `graspa_widom_report.json`, report `raspa_backend`, selected components, `unit_cells`, parsed Widom energies, Henry coefficients, source data files, and warnings.
+- For `graspa_isotherm_report.json`, report `raspa_backend`, component, pressure grid, parsed loadings, heat values when present, source data files, and warnings.
+- For `graspa_mixture_report.json`, report `raspa_backend`, feed components/fractions, pressure grid, component loadings, adsorbed mole fractions, pairwise selectivities, source data files, and warnings.
 
 ## Common Traps
 
@@ -242,5 +376,7 @@ Choose the API by how much the user already knows:
 - Do not claim stacking workflows are supported; `stacking_mode` remains `"disabled"`.
 - Do not route users to the current internal benzothiazole/sulfur-enabled conversion prototype through the public CLI.
 - Do not send legacy atomistic CIFs without `_ccdc_geom_bond_type` into `cofkit calculate lammps-optimize`.
+- Do not treat separate pure-component `graspa-isotherm` loading ratios as mixture selectivity; use `graspa-mixture` for mixed-feed selectivity.
+- Do not expect every gRASPA summary metric to exist for RASPA2. RASPA2 result grabbing works through recursive `Output/**/*.data`, but some backend-specific fields are `null`.
 - Do not answer from docs alone when the command can be run and the artifacts can be inspected directly.
 - Do not default to deprecated flat aliases such as `cofkit batch-imine` when the grouped binary-bridge interface expresses the same task more clearly.

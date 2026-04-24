@@ -80,7 +80,7 @@ Optional external add-ons:
 - `Zeo++` if you want to use `cofkit analyze zeopp`
 - `LAMMPS` if you want to use `cofkit calculate lammps-optimize`
 - `EQeq` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture` for framework charge assignment
-- `gRASPA` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture`
+- `gRASPA` or `RASPA2` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture`
 - `pytest` if you want to run the tests locally via the `dev` extra
 
 The bundled topology data shipped with the package is enough for normal structure generation. External RCSR archives are optional advanced inputs, not required setup.
@@ -93,6 +93,7 @@ For the current wrappers, use these upstreams instead of ad hoc local builds:
 - `LAMMPS`: install from `conda-forge`, then point `COFKIT_LMP_PATH` at `lmp` or `lmp_mpi`
 - `EQeq`: use `https://github.com/csllpr/EQeq`, build the `eqeq` executable, then point `COFKIT_EQEQ_PATH` at it
 - `gRASPA`: prefer `https://github.com/csllpr/gRASPA`, with `https://github.com/snurr-group/gRASPA` as the fallback upstream; build `nvc_main.x` and point `COFKIT_GRASPA_PATH` at that binary
+- `RASPA2`: use `https://github.com/iRASPA/RASPA2`; build `simulate` and point `COFKIT_RASPA2_PATH` at that binary
 
 Concrete shell commands for those installs are documented in [README.md](README.md) under `Supported External Tool Installs`.
 
@@ -716,18 +717,19 @@ Current scope note: this is a topology-preserving local cleanup step for generat
 
 ## Workflow 8: EQeq + gRASPA Widom Insertion
 
-The second `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA` Widom insertion workflow for one CIF.
+The second `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA/RASPA2` Widom insertion workflow for one CIF.
 
 ### Environment setup
 
-Point `cofkit` at the EQeq and gRASPA executables through environment variables:
+Point `cofkit` at the EQeq executable and at the Monte Carlo backend you want to use:
 
 ```bash
 export COFKIT_EQEQ_PATH=/path/to/eqeq
 export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+export COFKIT_RASPA2_PATH=/path/to/simulate
 ```
 
-The gRASPA executable is commonly named `nvc_main.x`. The CLI also auto-loads the nearest `.env` file, so these variables can live there instead of being exported in every shell. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
+The gRASPA executable is commonly named `nvc_main.x`; the RASPA2 executable is commonly named `simulate`. The CLI also auto-loads the nearest `.env` file, so these variables can live there instead of being exported in every shell. The selected Monte Carlo executable can also be overridden per run with `--graspa-path`, `--raspa2-path`, or backend-neutral `--raspa-path`.
 
 ### CLI usage
 
@@ -742,15 +744,17 @@ cofkit calculate graspa-widom \
   --json
 ```
 
+Add `--backend raspa2` to run the same staged workflow with RASPA2 instead of gRASPA. The default is `--backend graspa` for compatibility.
+
 The wrapper runs these stages:
 
 - copy the input CIF into `eqeq/` and run EQeq directly on that CIF
 - take the charged EQeq CIF output and copy it to `widom/framework.cif`
-- copy the packaged gRASPA adsorbate/pseudo-atom `.def` files into `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
+- copy the packaged adsorbate/pseudo-atom `.def` files into `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
 - render `widom/simulation.input`
 - derive `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
-- run gRASPA inside `widom/`
-- parse `widom/Output/*.data` into structured component results
+- run the selected backend inside `widom/`
+- parse `widom/Output/**/*.data` into structured component results
 
 No Open Babel conversion is part of this workflow. The current public wrapper assumes EQeq accepts ordinary CIF inputs directly.
 
@@ -758,12 +762,12 @@ No Open Babel conversion is part of this workflow. The current public wrapper as
 
 The public `graspa-widom` command exposes the main staging and runtime controls directly:
 
-- `--eqeq-path` and `--graspa-path` override `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`
+- `--backend {graspa,raspa2}` selects the Monte Carlo engine; `--eqeq-path`, `--graspa-path`, `--raspa2-path`, and `--raspa-path` override the environment variables
 - `--eqeq-lambda`, `--eqeq-h-i0`, `--eqeq-charge-precision`, `--eqeq-method`, `--eqeq-real-space-cells`, `--eqeq-reciprocal-space-cells`, and `--eqeq-eta` control the EQeq stage
 - `--component NAME` repeats to activate packaged Widom probe molecules on demand, and `--all-components` activates the full packaged set
 - `--forcefield {dreiding,uff}` selects the generated framework mixing rules
 - `--widom-moves-per-component` controls the target Widom sampling per active component; `cofkit` derives `NumberOfProductionCycles` from that target unless `--production-cycles` is explicitly provided
-- `--temperature`, `--pressure`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated gRASPA `simulation.input`
+- `--temperature`, `--pressure`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated backend-specific `simulation.input`
 - `--eqeq-timeout-seconds` and `--graspa-timeout-seconds` cap the subprocess wall-clock runtime
 
 ### Available packaged Widom probes
@@ -790,8 +794,8 @@ The output directory stores:
 - `widom/framework.cif`
 - `widom/simulation.input`
 - the packaged Widom adsorbate `.def` files plus one generated `force_field_mixing_rules.def` copied into `widom/`
-- `widom/graspa.stdout.log` and `widom/graspa.stderr.log`
-- one or more `widom/Output/*.data` files from gRASPA
+- `widom/graspa.stdout.log` / `widom/graspa.stderr.log` or `widom/raspa2.stdout.log` / `widom/raspa2.stderr.log`
+- one or more `widom/Output/**/*.data` files from the selected backend
 - `widom/Output/results.csv`
 - `graspa_widom_report.json`
 
@@ -799,22 +803,23 @@ The output directory stores:
 
 ### Current scope note
 
-This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on Widom energy plus Henry coefficient summaries. If gRASPA emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact. The temporary parameter review note from the LAMMPS section applies here as well: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, while `UFF` is generated from the bundled Open Babel `UFF.prm`.
+This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on Widom energy plus Henry coefficient summaries. If the selected backend emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact. The temporary parameter review note from the LAMMPS section applies here as well: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, while `UFF` is generated from the bundled Open Babel `UFF.prm`.
 
 ## Workflow 9: EQeq + gRASPA Single-Component Adsorption Isotherms
 
-The third `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA` adsorption workflow for one CIF and one packaged adsorbate component over one or more pressure points.
+The third `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA/RASPA2` adsorption workflow for one CIF and one packaged adsorbate component over one or more pressure points.
 
 ### Environment setup
 
-Point `cofkit` at the EQeq and gRASPA executables through environment variables:
+Point `cofkit` at EQeq and at the Monte Carlo backend you want to use:
 
 ```bash
 export COFKIT_EQEQ_PATH=/path/to/eqeq
 export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+export COFKIT_RASPA2_PATH=/path/to/simulate
 ```
 
-The gRASPA executable is commonly named `nvc_main.x`. The CLI also auto-loads the nearest `.env` file, so these variables can live there instead of being exported in every shell. Both executables can also be overridden per run with `--eqeq-path` and `--graspa-path`.
+Use `--backend raspa2` for RASPA2. The selected executable can be overridden per run with `--graspa-path`, `--raspa2-path`, or backend-neutral `--raspa-path`.
 
 ### CLI usage
 
@@ -838,7 +843,7 @@ The wrapper runs these stages:
 - render one pressure-specific `simulation.input` per run directory
 - derive one shared `UnitCells` setting from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run one single-component GCMC adsorption simulation per pressure point
-- parse `Output/*.data` into structured pressure/loading/heat results
+- parse `Output/**/*.data` into structured pressure/loading/heat results
 
 No Open Babel conversion is part of this workflow. The current public wrapper assumes EQeq accepts ordinary CIF inputs directly.
 
@@ -846,13 +851,14 @@ No Open Babel conversion is part of this workflow. The current public wrapper as
 
 The public `graspa-isotherm` command exposes the main staging and runtime controls directly:
 
-- `--eqeq-path` and `--graspa-path` override `COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH`
+- `--eqeq-path`, `--graspa-path`, `--raspa2-path`, and `--raspa-path` override the environment variables
 - `--eqeq-lambda`, `--eqeq-h-i0`, `--eqeq-charge-precision`, `--eqeq-method`, `--eqeq-real-space-cells`, `--eqeq-reciprocal-space-cells`, and `--eqeq-eta` control the EQeq stage
 - `--component NAME` selects one packaged adsorbate definition
+- `--backend {graspa,raspa2}` selects gRASPA or RASPA2
 - `--forcefield {dreiding,uff}` selects the generated framework mixing rules
 - `--pressure PA` repeats to define one or more pressure points in Pa for the isotherm grid
 - `--fugacity-coefficient VALUE` accepts either a positive float or `PR-EOS`
-- `--temperature`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated gRASPA `simulation.input`
+- `--temperature`, `--initialization-cycles`, `--equilibration-cycles`, `--production-cycles`, `--trial-positions`, `--trial-orientations`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision` control the generated backend-specific `simulation.input`
 - `--eqeq-timeout-seconds` and `--graspa-timeout-seconds` cap the subprocess wall-clock runtime
 
 ### Available packaged adsorption components
@@ -878,8 +884,8 @@ The output directory stores:
 - `eqeq/` with the copied input CIF, EQeq stdout/stderr logs, the charged CIF, and the optional EQeq JSON output if the executable writes it
 - `isotherm/framework.cif`
 - one per-pressure run directory under `isotherm/pressure_*/`
-- one `simulation.input` plus gRASPA stdout/stderr logs per pressure-point directory
-- one or more `Output/*.data` files under each pressure-point directory
+- one `simulation.input` plus backend stdout/stderr logs per pressure-point directory
+- one or more `Output/**/*.data` files under each pressure-point directory
 - `isotherm/results.csv`
 - `graspa_isotherm_report.json`
 
@@ -887,11 +893,11 @@ The output directory stores:
 
 ### Current scope note
 
-This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement restart-chained pressure stepping, excess-loading post-processing, or more advanced gRASPA sampling modes. If gRASPA emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only; use `graspa-mixture` for true mixed-feed selectivity.
+This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement restart-chained pressure stepping, excess-loading post-processing, or more advanced sampling modes. If the selected backend emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. RASPA2 does not emit the same `g/L` loading summary as gRASPA, so that field is currently `null` for RASPA2. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only; use `graspa-mixture` for true mixed-feed selectivity.
 
-## Workflow 10: EQeq + gRASPA Mixture Adsorption and Selectivity
+## Workflow 10: EQeq + gRASPA/RASPA2 Mixture Adsorption and Selectivity
 
-The fourth `calculate`-namespace gRASPA wrapper is a staged `EQeq -> gRASPA` mixture adsorption workflow for one CIF, two or more packaged adsorbates, and one or more pressure points.
+The fourth `calculate`-namespace gRASPA/RASPA2 wrapper is a staged `EQeq -> gRASPA/RASPA2` mixture adsorption workflow for one CIF, two or more packaged adsorbates, and one or more pressure points.
 
 ### CLI usage
 
@@ -908,21 +914,24 @@ cofkit calculate graspa-mixture \
   --json
 ```
 
+Add `--backend raspa2` to run the mixture workflow with RASPA2.
+
 The wrapper runs these stages:
 
 - copy the input CIF into `eqeq/` and run EQeq directly on that CIF
 - take the charged EQeq CIF output and copy it to `mixture/framework.cif`
-- for each requested pressure point, copy the packaged gRASPA adsorbate `.def` files plus one generated framework `force_field_mixing_rules.def` and `framework.cif` into one `mixture/pressure_*/` run directory
+- for each requested pressure point, copy the packaged adsorbate `.def` files plus one generated framework `force_field_mixing_rules.def` and `framework.cif` into one `mixture/pressure_*/` run directory
 - render one pressure-specific multi-component `simulation.input` per run directory, including `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries for every adsorbate
 - derive one shared `UnitCells` setting from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run one multi-component GCMC adsorption simulation per pressure point
-- parse per-component loading/heat summaries, compute adsorbed mole fractions, and compute pairwise selectivities `(x_i / x_j) / (y_i / y_j)`
+- parse per-component loading summaries, compute adsorbed mole fractions, and compute pairwise selectivities `(x_i / x_j) / (y_i / y_j)`
 
 ### Exposed CLI controls
 
 The public `graspa-mixture` command exposes the same EQeq staging controls as the Widom/isotherm wrappers plus:
 
 - repeated `--component NAME:FRACTION` flags to define the mixed feed
+- `--backend {graspa,raspa2}` selects gRASPA or RASPA2
 - `--forcefield {dreiding,uff}` to select the generated framework mixing rules
 - repeated `--pressure PA` flags to define the pressure grid
 - `--fugacity-coefficient VALUE` to apply either a positive float or `PR-EOS` to every component
@@ -935,13 +944,13 @@ The output directory stores:
 - `eqeq/` with the copied input CIF, EQeq stdout/stderr logs, the charged CIF, and the optional EQeq JSON output if the executable writes it
 - `mixture/framework.cif`
 - one per-pressure run directory under `mixture/pressure_*/`
-- one `simulation.input` plus gRASPA stdout/stderr logs per pressure-point directory
-- one or more `Output/*.data` files under each pressure-point directory
+- one `simulation.input` plus backend stdout/stderr logs per pressure-point directory
+- one or more `Output/**/*.data` files under each pressure-point directory
 - `mixture/component_results.csv`
 - `mixture/selectivity_results.csv`
 - `graspa_mixture_report.json`
 
-`component_results.csv` records one parsed adsorption row per pressure/component, including feed mole fraction, adsorbed mole fraction, loading in `mol/kg` and `g/L`, and heat of adsorption. `selectivity_results.csv` records ordered pairwise selectivities plus propagated selectivity error bars. `graspa_mixture_report.json` records the staged paths, computed `UnitCells`, effective EQeq and mixture settings, parsed point results, and warnings.
+`component_results.csv` records one parsed adsorption row per pressure/component, including feed mole fraction, adsorbed mole fraction, loading in `mol/kg`, `g/L` when available, and heat of adsorption when available. RASPA2 mixture parsing currently records component loading/selectivity and leaves component-resolved `g/L` and heat fields as `null`. `selectivity_results.csv` records ordered pairwise selectivities plus propagated selectivity error bars. `graspa_mixture_report.json` records the staged paths, computed `UnitCells`, effective EQeq and mixture settings, parsed point results, and warnings.
 
 Real gRASPA runs may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and surfaces it as a warning if the simulation otherwise completes and parses successfully. The same temporary parameter review note from the Widom/isotherm sections applies here.
 

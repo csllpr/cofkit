@@ -5,6 +5,8 @@ import json
 
 from .graspa import (
     AVAILABLE_WIDOM_COMPONENTS,
+    COFKIT_GRASPA_ENV_VAR,
+    COFKIT_RASPA2_ENV_VAR,
     DEFAULT_WIDOM_MOVES_PER_COMPONENT,
     EqeqChargeSettings,
     EqeqExecutionError,
@@ -16,6 +18,7 @@ from .graspa import (
     GraspaIsothermSettings,
     GraspaParseError,
     GraspaWidomSettings,
+    SUPPORTED_RASPA_BACKENDS,
     run_graspa_mixture_workflow,
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
@@ -103,6 +106,33 @@ def _parse_graspa_mixture_component_spec(raw_value: str) -> tuple[str, float]:
     if mol_fraction <= 0.0:
         raise argparse.ArgumentTypeError("Mixture component fractions must be positive.")
     return component, mol_fraction
+
+
+def _add_raspa_backend_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        choices=SUPPORTED_RASPA_BACKENDS,
+        default="graspa",
+        help="Monte Carlo engine backend. Default: graspa.",
+    )
+    parser.add_argument(
+        "--raspa-path",
+        default=None,
+        help=(
+            "Optional explicit path to the selected RASPA-compatible executable. "
+            f"Defaults to {COFKIT_GRASPA_ENV_VAR} for gRASPA or {COFKIT_RASPA2_ENV_VAR} for RASPA2."
+        ),
+    )
+    parser.add_argument(
+        "--graspa-path",
+        default=None,
+        help=f"Optional explicit path to the gRASPA executable for --backend graspa. Defaults to {COFKIT_GRASPA_ENV_VAR}.",
+    )
+    parser.add_argument(
+        "--raspa2-path",
+        default=None,
+        help=f"Optional explicit path to the RASPA2 simulate executable for --backend raspa2. Defaults to {COFKIT_RASPA2_ENV_VAR}.",
+    )
 
 
 def _add_lammps_optimize_parser(subparsers) -> None:
@@ -565,11 +595,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
         default=None,
         help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
     )
-    parser.add_argument(
-        "--graspa-path",
-        default=None,
-        help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
-    )
+    _add_raspa_backend_arguments(parser)
     parser.add_argument(
         "--forcefield",
         choices=("dreiding", "uff"),
@@ -760,6 +786,7 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
     )
     widom_settings = GraspaWidomSettings(
         components=deduped_components,
+        backend=args.backend,
         forcefield=args.forcefield,
         temperature=args.temperature,
         pressure=args.pressure,
@@ -779,6 +806,8 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
             output_dir=args.output_dir,
             eqeq_path=args.eqeq_path,
             graspa_path=args.graspa_path,
+            raspa_path=args.raspa_path,
+            raspa2_path=args.raspa2_path,
             eqeq_settings=eqeq_settings,
             widom_settings=widom_settings,
             eqeq_timeout_seconds=args.eqeq_timeout_seconds,
@@ -801,7 +830,10 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
 
     print("input_cif:", result.input_cif)
     print("eqeq_binary:", result.eqeq_binary)
-    print("graspa_binary:", result.graspa_binary)
+    print("raspa_backend:", result.raspa_backend)
+    print("raspa_binary:", result.graspa_binary)
+    if result.raspa_backend == "graspa":
+        print("graspa_binary:", result.graspa_binary)
     print("output_dir:", result.output_dir)
     print("eqeq_charged_cif:", result.eqeq_charged_cif)
     print("widom_framework_cif:", result.widom_framework_cif)
@@ -832,11 +864,7 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
         default=None,
         help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
     )
-    parser.add_argument(
-        "--graspa-path",
-        default=None,
-        help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
-    )
+    _add_raspa_backend_arguments(parser)
     parser.add_argument(
         "--forcefield",
         choices=("dreiding", "uff"),
@@ -999,6 +1027,7 @@ def _run_graspa_isotherm(args: argparse.Namespace) -> None:
         component=args.component,
         pressures=tuple(args.pressures),
         fugacity_coefficient=args.fugacity_coefficient,
+        backend=args.backend,
         forcefield=args.forcefield,
         temperature=args.temperature,
         initialization_cycles=args.initialization_cycles,
@@ -1016,6 +1045,8 @@ def _run_graspa_isotherm(args: argparse.Namespace) -> None:
             output_dir=args.output_dir,
             eqeq_path=args.eqeq_path,
             graspa_path=args.graspa_path,
+            raspa_path=args.raspa_path,
+            raspa2_path=args.raspa2_path,
             eqeq_settings=eqeq_settings,
             isotherm_settings=isotherm_settings,
             eqeq_timeout_seconds=args.eqeq_timeout_seconds,
@@ -1038,7 +1069,10 @@ def _run_graspa_isotherm(args: argparse.Namespace) -> None:
 
     print("input_cif:", result.input_cif)
     print("eqeq_binary:", result.eqeq_binary)
-    print("graspa_binary:", result.graspa_binary)
+    print("raspa_backend:", result.raspa_backend)
+    print("raspa_binary:", result.graspa_binary)
+    if result.raspa_backend == "graspa":
+        print("graspa_binary:", result.graspa_binary)
     print("output_dir:", result.output_dir)
     print("eqeq_charged_cif:", result.eqeq_charged_cif)
     print("isotherm_framework_cif:", result.isotherm_framework_cif)
@@ -1070,11 +1104,7 @@ def _add_graspa_mixture_parser(subparsers) -> None:
         default=None,
         help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
     )
-    parser.add_argument(
-        "--graspa-path",
-        default=None,
-        help="Optional explicit path to the gRASPA executable. Defaults to COFKIT_GRASPA_PATH.",
-    )
+    _add_raspa_backend_arguments(parser)
     parser.add_argument(
         "--forcefield",
         choices=("dreiding", "uff"),
@@ -1293,6 +1323,7 @@ def _run_graspa_mixture(args: argparse.Namespace) -> None:
     mixture_settings = GraspaMixtureSettings(
         components=mixture_components,
         pressures=tuple(args.pressures),
+        backend=args.backend,
         forcefield=args.forcefield,
         temperature=args.temperature,
         initialization_cycles=args.initialization_cycles,
@@ -1310,6 +1341,8 @@ def _run_graspa_mixture(args: argparse.Namespace) -> None:
             output_dir=args.output_dir,
             eqeq_path=args.eqeq_path,
             graspa_path=args.graspa_path,
+            raspa_path=args.raspa_path,
+            raspa2_path=args.raspa2_path,
             eqeq_settings=eqeq_settings,
             mixture_settings=mixture_settings,
             eqeq_timeout_seconds=args.eqeq_timeout_seconds,
@@ -1332,7 +1365,10 @@ def _run_graspa_mixture(args: argparse.Namespace) -> None:
 
     print("input_cif:", result.input_cif)
     print("eqeq_binary:", result.eqeq_binary)
-    print("graspa_binary:", result.graspa_binary)
+    print("raspa_backend:", result.raspa_backend)
+    print("raspa_binary:", result.graspa_binary)
+    if result.raspa_backend == "graspa":
+        print("graspa_binary:", result.graspa_binary)
     print("output_dir:", result.output_dir)
     print("eqeq_charged_cif:", result.eqeq_charged_cif)
     print("mixture_framework_cif:", result.mixture_framework_cif)

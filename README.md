@@ -48,7 +48,7 @@ Optional external tools you may want in your environment:
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
 - `LAMMPS` for the initial `cofkit calculate lammps-optimize` UFF/DREIDING local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
 - `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
-- `gRASPA` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows with selectable DREIDING/UFF framework assets, with the executable path provided through `COFKIT_GRASPA_PATH`
+- `gRASPA` or `RASPA2` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows with selectable DREIDING/UFF framework assets. gRASPA uses `COFKIT_GRASPA_PATH`; RASPA2 uses `COFKIT_RASPA2_PATH`
 - `pytest` to run the local test suite when you install the `dev` extra
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
@@ -130,6 +130,21 @@ export COFKIT_GRASPA_PATH="$PWD/nvc_main.x"
 ```
 
 If your local build places the binary somewhere else, such as `src_clean/nvc_main.x`, point `COFKIT_GRASPA_PATH` there instead.
+
+#### RASPA2
+
+Use upstream RASPA2 when you need CPU-only Monte Carlo runs:
+
+- source: `https://github.com/iRASPA/RASPA2`
+- expected binary: `simulate`
+
+Build RASPA2 with its upstream instructions, then point `cofkit` at the compiled simulator:
+
+```bash
+export COFKIT_RASPA2_PATH=/path/to/simulate
+```
+
+The existing `graspa-*` command names are retained for compatibility. Select RASPA2 with `--backend raspa2`; the default backend remains `graspa`.
 
 ## CLI
 
@@ -341,11 +356,13 @@ Temporary parameter review note: the current `DREIDING` runtime path targets sta
 
 This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current `UFF` and `DREIDING` paths are explicit-bond-order-driven and include torsions and impropers. Charges are now assigned through EQeq by default, but the workflow should still be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
 
-### Run EQeq + gRASPA Widom insertion on one CIF
+### Run EQeq + gRASPA/RASPA2 Widom insertion on one CIF
 
 ```bash
 export COFKIT_EQEQ_PATH=/path/to/eqeq
 export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+# Optional CPU backend:
+export COFKIT_RASPA2_PATH=/path/to/simulate
 
 cofkit calculate graspa-widom \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
@@ -357,13 +374,13 @@ cofkit calculate graspa-widom \
   --json
 ```
 
-The `graspa-widom` wrapper runs one staged workflow:
+Use `--backend raspa2` to write RASPA2-style `simulation.input` files and execute `COFKIT_RASPA2_PATH` instead of gRASPA. The `graspa-widom` wrapper runs one staged workflow:
 
 - copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
 - copy the charged framework into `widom/framework.cif`
 - materialize the packaged gRASPA adsorbate/pseudo-atom files in `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
-- run gRASPA and parse the Widom summary values from `widom/Output/*.data`
+- run the selected backend and parse the Widom summary values from `widom/Output/**/*.data`
 
 Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
 
@@ -376,13 +393,15 @@ The wrapper writes:
 - `widom/Output/results.csv` with the parsed Widom energy and Henry coefficient summaries
 - `graspa_widom_report.json` with paths, settings, parsed component results, and warnings
 
-`COFKIT_EQEQ_PATH` and `COFKIT_GRASPA_PATH` can both be overridden per run with `--eqeq-path` and `--graspa-path`. On many installations the gRASPA executable is named `nvc_main.x`. If gRASPA emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run. The same temporary parameter review note from the LAMMPS section applies here: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, but a few heavier-atom carryovers remain heuristic and some older rounded template/example files still differ slightly. `UFF` is generated from the bundled Open Babel `UFF.prm`.
+`COFKIT_EQEQ_PATH`, `COFKIT_GRASPA_PATH`, and `COFKIT_RASPA2_PATH` can be overridden per run with `--eqeq-path`, `--graspa-path`, `--raspa2-path`, or backend-neutral `--raspa-path`. On many gRASPA installations the executable is named `nvc_main.x`; RASPA2 is commonly named `simulate`. If the selected backend emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run. The same temporary parameter review note from the LAMMPS section applies here: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, but a few heavier-atom carryovers remain heuristic and some older rounded template/example files still differ slightly. `UFF` is generated from the bundled Open Babel `UFF.prm`.
 
-### Run EQeq + gRASPA single-component adsorption isotherms on one CIF
+### Run EQeq + gRASPA/RASPA2 single-component adsorption isotherms on one CIF
 
 ```bash
 export COFKIT_EQEQ_PATH=/path/to/eqeq
 export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+# Optional CPU backend:
+export COFKIT_RASPA2_PATH=/path/to/simulate
 
 cofkit calculate graspa-isotherm \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
@@ -395,14 +414,14 @@ cofkit calculate graspa-isotherm \
   --json
 ```
 
-The `graspa-isotherm` wrapper is the first real-adsorption gRASPA path in `cofkit`. It runs one staged workflow:
+Add `--backend raspa2` for CPU-only RASPA2 execution. The `graspa-isotherm` wrapper runs one staged workflow:
 
 - copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
 - copy the charged framework into `isotherm/framework.cif`
 - materialize the packaged gRASPA component definitions plus one generated framework `force_field_mixing_rules.def` into one per-pressure run directory under `isotherm/`
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run one single-component GCMC adsorption simulation per requested pressure point
-- parse absolute loading in `mol/kg` and `g/L`, plus heat of adsorption, from each pressure-point `Output/*.data`
+- parse absolute loading and heat summaries from each pressure-point `Output/**/*.data`
 
 The current public scope is intentionally narrow: one packaged component at a time, one or more user-supplied pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. Packaged components currently match the Widom wrapper: `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`.
 
@@ -414,7 +433,7 @@ The wrapper writes:
 - `isotherm/results.csv` with the parsed pressure/loading summary
 - `graspa_isotherm_report.json` with paths, settings, parsed point results, and warnings
 
-`--pressure` repeats to define the isotherm grid. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--production-cycles` applies per pressure point. `--fugacity-coefficient` accepts either a positive float or `PR-EOS`. If gRASPA emits non-finite loading or heat values, `cofkit` keeps the raw data file and records those specific fields as `null` in the JSON report instead of failing the whole run.
+`--pressure` repeats to define the isotherm grid. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--production-cycles` applies per pressure point. `--fugacity-coefficient` accepts either a positive float or `PR-EOS`; for RASPA2, `PR-EOS` is represented by omitting an explicit fugacity coefficient so RASPA2 can use its internal calculation. RASPA2 reports `mol/kg framework` and heat of adsorption, but not the gRASPA `g/L` loading field, so that JSON value is recorded as `null`. If the selected backend emits non-finite loading or heat values, `cofkit` keeps the raw data file and records those specific fields as `null` in the JSON report instead of failing the whole run.
 
 For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
@@ -435,7 +454,7 @@ cofkit calculate graspa-mixture \
   --json
 ```
 
-The `graspa-mixture` wrapper stages `EQeq -> gRASPA` exactly once per pressure point, writes one generated framework `force_field_mixing_rules.def` plus one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries, parses component-resolved loading/heat summaries from each `Output/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`.
+The `graspa-mixture` wrapper stages `EQeq -> gRASPA/RASPA2` exactly once per pressure point, writes one generated framework `force_field_mixing_rules.def` plus one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries, parses component-resolved loading summaries from each `Output/**/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`. RASPA2 mixture runs currently report component loading/selectivity; component-resolved `g/L` and heat fields are recorded as `null`.
 
 The wrapper writes:
 

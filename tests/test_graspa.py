@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import stat
@@ -16,6 +17,7 @@ from cofkit.cli import main as cli_main
 from cofkit.graspa import (
     COFKIT_EQEQ_ENV_VAR,
     COFKIT_GRASPA_ENV_VAR,
+    COFKIT_RASPA2_ENV_VAR,
     EqeqChargeSettings,
     GraspaConfigurationError,
     GraspaMixtureComponentSettings,
@@ -24,6 +26,7 @@ from cofkit.graspa import (
     GraspaWidomSettings,
     resolve_eqeq_binary,
     resolve_graspa_binary,
+    resolve_raspa2_binary,
     run_graspa_mixture_workflow,
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
@@ -44,6 +47,13 @@ class GraspaWidomTests(unittest.TestCase):
                 resolve_graspa_binary()
 
         self.assertIn(COFKIT_GRASPA_ENV_VAR, str(raised.exception))
+
+    def test_resolve_raspa2_binary_requires_configuration(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(GraspaConfigurationError) as raised:
+                resolve_raspa2_binary()
+
+        self.assertIn(COFKIT_RASPA2_ENV_VAR, str(raised.exception))
 
     def test_run_graspa_widom_workflow_prepares_inputs_and_parses_results(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -269,6 +279,58 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["component_results"][0]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["component"], "Xe")
 
+    def test_run_raspa2_widom_workflow_prepares_inputs_and_parses_results(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_raspa2 = self._write_fake_raspa2_binary(temp_path / "simulate")
+            cif_path = temp_path / "raspa2_widom_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_RASPA2_ENV_VAR: str(fake_raspa2),
+                },
+                clear=False,
+            ):
+                result = run_graspa_widom_workflow(
+                    cif_path,
+                    output_dir=temp_path / "raspa2_widom_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    widom_settings=GraspaWidomSettings(components=("CO2", "Xe"), backend="raspa2"),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(result.raspa_backend, "raspa2")
+            self.assertEqual(result.unit_cells, (1, 2, 3))
+            self.assertEqual([row.component for row in result.component_results], ["CO2", "Xe"])
+            self.assertAlmostEqual(result.component_results[0].henry, 1.0e-5)
+            self.assertTrue(Path(result.data_file_paths[0]).parent.name == "System_0")
+
+            simulation_input = Path(result.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("SimulationType                MonteCarlo", simulation_input)
+            self.assertIn("NumberOfCycles                2000000", simulation_input)
+            self.assertIn("Forcefield                    COFKit", simulation_input)
+            self.assertIn("Framework 0", simulation_input)
+            self.assertIn("UnitCells 1 2 3", simulation_input)
+            self.assertIn("ExternalTemperature 300", simulation_input)
+            self.assertIn("MoleculeDefinition        COFKit", simulation_input)
+            self.assertNotIn("UseGPUReduction", simulation_input)
+            self.assertNotIn("UnitCells 0", simulation_input)
+
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(report["raspa_backend"], "raspa2")
+            self.assertEqual(report["widom_settings"]["backend"], "raspa2")
+            self.assertEqual(report["raspa_binary"], str(fake_raspa2.resolve()))
+
     def test_run_graspa_isotherm_workflow_prepares_inputs_and_parses_results(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -404,6 +466,60 @@ class GraspaWidomTests(unittest.TestCase):
             simulation_input = Path(report["point_results"][0]["simulation_input_path"]).read_text(encoding="utf-8")
             self.assertIn("FugacityCoefficient      PR-EOS", simulation_input)
             self.assertNotIn("RotationProbability", simulation_input)
+
+    def test_calculate_graspa_isotherm_cli_supports_raspa2_backend(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_raspa2 = self._write_fake_raspa2_binary(temp_path / "simulate")
+            cif_path = temp_path / "cli_raspa2_adsorption_example.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+            output_dir = temp_path / "cli_raspa2_isotherm"
+            buffer = io.StringIO()
+
+            with patch.dict(
+                os.environ,
+                {COFKIT_EQEQ_ENV_VAR: str(fake_eqeq)},
+                clear=False,
+            ):
+                with contextlib.redirect_stdout(buffer):
+                    cli_main(
+                        [
+                            "calculate",
+                            "graspa-isotherm",
+                            str(cif_path),
+                            "--output-dir",
+                            str(output_dir),
+                            "--backend",
+                            "raspa2",
+                            "--raspa2-path",
+                            str(fake_raspa2),
+                            "--component",
+                            "CO2",
+                            "--pressure",
+                            "100000",
+                            "--json",
+                        ]
+                    )
+
+            report = json.loads(buffer.getvalue())
+            self.assertEqual(report["raspa_backend"], "raspa2")
+            self.assertEqual(report["isotherm_settings"]["backend"], "raspa2")
+            self.assertEqual(report["point_results"][0]["loading_mol_per_kg"], 0.25)
+            self.assertIsNone(report["point_results"][0]["loading_g_per_l"])
+            self.assertEqual(report["point_results"][0]["heat_of_adsorption_kj_per_mol"], -21.0)
+
+            simulation_input = Path(report["point_results"][0]["simulation_input_path"]).read_text(encoding="utf-8")
+            self.assertIn("ExternalPressure 100000", simulation_input)
+            self.assertIn("NumberOfCycles                200000", simulation_input)
+            self.assertIn("MoleculeDefinition       COFKit", simulation_input)
+            self.assertNotIn("Pressure     100000", simulation_input)
 
     def test_run_graspa_mixture_workflow_prepares_inputs_and_parses_selectivity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -552,6 +668,58 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("RotationProbability      1", simulation_input)
             self.assertIn("FugacityCoefficient      PR-EOS", simulation_input)
 
+    def test_run_raspa2_mixture_workflow_prepares_inputs_and_parses_selectivity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_raspa2 = self._write_fake_raspa2_binary(temp_path / "simulate")
+            cif_path = temp_path / "raspa2_mixture_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_RASPA2_ENV_VAR: str(fake_raspa2),
+                },
+                clear=False,
+            ):
+                result = run_graspa_mixture_workflow(
+                    cif_path,
+                    output_dir=temp_path / "raspa2_mixture_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    mixture_settings=GraspaMixtureSettings(
+                        components=(
+                            GraspaMixtureComponentSettings("Kr", 0.1),
+                            GraspaMixtureComponentSettings("Xe", 0.9),
+                        ),
+                        pressures=(100000.0,),
+                        backend="raspa2",
+                    ),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(result.raspa_backend, "raspa2")
+            first_point = result.point_results[0]
+            self.assertAlmostEqual(first_point.component_results[0].loading_mol_per_kg, 0.1)
+            self.assertAlmostEqual(first_point.component_results[1].loading_mol_per_kg, 1.8)
+            self.assertAlmostEqual(first_point.selectivity_results[0].selectivity, 0.5)
+            self.assertTrue(math.isnan(first_point.component_results[0].loading_g_per_l))
+            self.assertTrue(math.isnan(first_point.component_results[0].heat_of_adsorption_kj_per_mol))
+
+            simulation_input = Path(first_point.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("ExternalPressure 100000", simulation_input)
+            self.assertIn("MolFraction              0.1", simulation_input)
+            self.assertIn("MolFraction              0.9", simulation_input)
+            self.assertIn("IdentityChangeProbability 1", simulation_input)
+            self.assertNotIn("UseGPUReduction", simulation_input)
+
     def test_calculate_help_lists_graspa_widom(self):
         buffer = io.StringIO()
         with self.assertRaises(SystemExit), contextlib.redirect_stdout(buffer):
@@ -594,6 +762,109 @@ class GraspaWidomTests(unittest.TestCase):
             "Path('eqeq_invocation.json').write_text(json.dumps({'argv': args}, indent=2), encoding='utf-8')\n"
             "sys.stdout.write('fake eqeq stdout\\n')\n"
             "sys.stderr.write('fake eqeq stderr\\n')\n",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        return path
+
+    def _write_fake_raspa2_binary(self, path: Path) -> Path:
+        path.write_text(
+            f"#!{sys.executable}\n"
+            "from __future__ import annotations\n"
+            "import json\n"
+            "import re\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "\n"
+            "simulation_input = Path('simulation.input')\n"
+            "if not simulation_input.is_file():\n"
+            "    sys.stderr.write('missing simulation.input\\n')\n"
+            "    sys.exit(2)\n"
+            "\n"
+            "text = simulation_input.read_text(encoding='utf-8')\n"
+            "if 'SimulationType                MonteCarlo' not in text:\n"
+            "    sys.stderr.write('missing RASPA2 simulation type\\n')\n"
+            "    sys.exit(3)\n"
+            "framework_match = re.search(r'^FrameworkName\\s+(\\S+)', text, re.MULTILINE)\n"
+            "unit_cells_match = re.search(r'^UnitCells\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)', text, re.MULTILINE)\n"
+            "pressure_match = re.search(r'^ExternalPressure\\s+(\\S+)', text, re.MULTILINE)\n"
+            "components = re.findall(r'^Component\\s+\\d+\\s+MoleculeName\\s+(\\S+)', text, re.MULTILINE)\n"
+            "mol_fractions = [float(value) for value in re.findall(r'^\\s*MolFraction\\s+(\\S+)', text, re.MULTILINE)]\n"
+            "if framework_match is None or unit_cells_match is None or not components:\n"
+            "    sys.stderr.write('missing framework/unitcells/components config\\n')\n"
+            "    sys.exit(4)\n"
+            "framework_name = framework_match.group(1)\n"
+            "pressure = float(pressure_match.group(1)) if pressure_match is not None else 0.0\n"
+            "if 'WidomProbability' in text:\n"
+            "    mode = 'widom'\n"
+            "elif mol_fractions and len(components) > 1:\n"
+            "    mode = 'mixture'\n"
+            "else:\n"
+            "    mode = 'isotherm'\n"
+            "framework_cif = Path(framework_name + '.cif')\n"
+            "if not framework_cif.is_file():\n"
+            "    sys.stderr.write('missing framework cif\\n')\n"
+            "    sys.exit(5)\n"
+            "unit_cells = [int(unit_cells_match.group(1)), int(unit_cells_match.group(2)), int(unit_cells_match.group(3))]\n"
+            "Path('raspa2_invocation.json').write_text(\n"
+            "    json.dumps(\n"
+            "        {\n"
+            "            'mode': mode,\n"
+            "            'framework_name': framework_name,\n"
+            "            'unit_cells': unit_cells,\n"
+            "            'pressure': pressure,\n"
+            "            'components': components,\n"
+            "            'mol_fractions': mol_fractions,\n"
+            "        },\n"
+            "        indent=2,\n"
+            "    ),\n"
+            "    encoding='utf-8',\n"
+            ")\n"
+            "output_dir = Path('Output') / 'System_0'\n"
+            "output_dir.mkdir(parents=True, exist_ok=True)\n"
+            "data_path = output_dir / f'output_{framework_name}_{unit_cells[0]}.{unit_cells[1]}.{unit_cells[2]}_fake.data'\n"
+            "if mode == 'widom':\n"
+            "    sections = ['Average Widom excess contribution:', '==================================']\n"
+            "    for index, component in enumerate(components):\n"
+            "        energy = -10.0 - index\n"
+            "        energy_err = 0.1 + index * 0.01\n"
+            "        sections.append(f'[{component}] Average Widom excess chemical potential:   {energy:.2f} +/- {energy_err:.6f} [-]')\n"
+            "    sections.extend(['', 'Average Henry coefficient:', '=========================='])\n"
+            "    for index, component in enumerate(components):\n"
+            "        henry = (index + 1) * 1.0e-5\n"
+            "        henry_err = (index + 1) * 1.0e-6\n"
+            "        sections.append(f'[{component}] Average Henry coefficient:  {henry:.8e} +/- {henry_err:.8e} [mol/kg/Pa]')\n"
+            "    data_path.write_text('\\n'.join(sections) + '\\n', encoding='utf-8')\n"
+            "elif mode == 'mixture':\n"
+            "    sections = ['Number of molecules:', '====================', '']\n"
+            "    for index, (component, mol_fraction) in enumerate(zip(components, mol_fractions), start=1):\n"
+            "        loading_mol = pressure / 100000.0 * mol_fraction * index\n"
+            "        loading_err = loading_mol * 0.1\n"
+            "        sections.extend([\n"
+            "            f'Component {index - 1} [{component}]',\n"
+            "            '-------------------------------------------------------------',\n"
+            "            f'Average loading absolute [mol/kg framework]       {loading_mol:.10f} +/-       {loading_err:.10f} [-]',\n"
+            "            '',\n"
+            "        ])\n"
+            "    sections.append('Average Widom Rosenbluth factor:')\n"
+            "    data_path.write_text('\\n'.join(sections) + '\\n', encoding='utf-8')\n"
+            "else:\n"
+            "    loading_mol = pressure / 100000.0 * 0.25\n"
+            "    loading_err = loading_mol * 0.1\n"
+            "    heat = -20.0 - pressure / 100000.0\n"
+            "    data_path.write_text(\n"
+            "        'Number of molecules:\\n'\n"
+            "        '====================\\n\\n'\n"
+            "        f'Average loading absolute [mol/kg framework]       {loading_mol:.10f} +/-       {loading_err:.10f} [-]\\n\\n'\n"
+            "        'Enthalpy of adsorption:\\n'\n"
+            "        '=======================\\n\\n'\n"
+            "        '\\tTotal enthalpy of adsorption\\n'\n"
+            "        '\\t----------------------------\\n'\n"
+            "        f'\\tAverage          {-3200.0:.5f} +/-          {52.0:.6f} [K]\\n'\n"
+            "        f'\\t                   {heat:.5f} +/-           {0.5:.6f} [KJ/MOL]\\n',\n"
+            "        encoding='utf-8',\n"
+            "    )\n"
+            "sys.stdout.write('fake raspa2 stdout\\n')\n",
             encoding="utf-8",
         )
         path.chmod(path.stat().st_mode | stat.S_IEXEC)

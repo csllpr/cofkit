@@ -56,7 +56,7 @@
 - `cofkit.validation`
   - coarse post-generation validation / triage into `valid`, `warning`, `hard_invalid`, and `hard_hard_invalid` buckets using bridge metrics plus CIF-backed network and clash checks
 - `cofkit.graspa`
-  - EQeq-backed charge assignment plus packaged gRASPA Widom-run preparation, execution, and result parsing for one CIF
+  - EQeq-backed charge assignment plus packaged gRASPA/RASPA2 Monte Carlo run preparation, execution, and result parsing for one CIF
 - `cofkit.cli`
   - installable top-level command-line router for grouped `build`, `analyze`, and `calculate` namespaces
 - `cofkit.cli_build`

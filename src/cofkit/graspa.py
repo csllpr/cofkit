@@ -22,13 +22,19 @@ from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
 
 COFKIT_EQEQ_ENV_VAR = "COFKIT_EQEQ_PATH"
 COFKIT_GRASPA_ENV_VAR = "COFKIT_GRASPA_PATH"
+COFKIT_RASPA2_ENV_VAR = "COFKIT_RASPA2_PATH"
 DEFAULT_EQEQ_BINARY: Path | None = None
 DEFAULT_GRASPA_BINARY: Path | None = None
+DEFAULT_RASPA2_BINARY: Path | None = None
 _SUPPORTED_EQEQ_METHODS = {"ewald", "nonperiodic"}
 _SUPPORTED_GRASPA_FORCEFIELDS = ("dreiding", "uff")
+SUPPORTED_RASPA_BACKENDS = ("graspa", "raspa2")
+DEFAULT_RASPA_BACKEND = "graspa"
 _DEFAULT_WIDOM_COMPONENTS = ("TIP4P", "CO2", "H2", "N2", "SO2", "Xe", "Kr")
 AVAILABLE_WIDOM_COMPONENTS = _DEFAULT_WIDOM_COMPONENTS
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
+_RASPA2_LOCAL_FORCEFIELD_NAME = "COFKit"
+_RASPA2_LOCAL_MOLECULE_DEFINITION = "COFKit"
 _NON_ROTATABLE_GCMC_COMPONENTS = {"Kr", "Xe"}
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 _FLOAT_TOKEN_PATTERN = r"(?:[-+]?(?:nan|inf)|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
@@ -69,6 +75,29 @@ _WIDOM_RESULT_RE = re.compile(
     r".*?Averaged Henry Coefficient \[mol/kg/Pa\]:\s*"
     rf"({_FLOAT_TOKEN_PATTERN})\s*\+/-\s*"
     rf"({_FLOAT_TOKEN_PATTERN})",
+    re.DOTALL | re.IGNORECASE,
+)
+_RASPA2_WIDOM_EXCESS_RE = re.compile(
+    r"\[(?P<component>[^\]]+)\]\s+Average Widom excess chemical potential:\s*"
+    rf"(?P<value>{_FLOAT_TOKEN_PATTERN})\s*\+/-\s*"
+    rf"(?P<error>{_FLOAT_TOKEN_PATTERN})",
+    re.IGNORECASE,
+)
+_RASPA2_HENRY_RE = re.compile(
+    r"\[(?P<component>[^\]]+)\]\s+Average Henry coefficient:\s*"
+    rf"(?P<value>{_FLOAT_TOKEN_PATTERN})\s*\+/-\s*"
+    rf"(?P<error>{_FLOAT_TOKEN_PATTERN})\s*\[mol/kg/Pa\]",
+    re.IGNORECASE,
+)
+_RASPA2_COMPONENT_HEADER_RE = re.compile(r"Component\s+\d+\s+\[([^\]]+)\]", re.IGNORECASE)
+_RASPA2_AVERAGE_LOADING_MOL_KG_RE = re.compile(
+    r"Average loading absolute \[mol/kg framework\]\s+"
+    rf"({_FLOAT_TOKEN_PATTERN})\s*\+/-\s*({_FLOAT_TOKEN_PATTERN})",
+    re.IGNORECASE,
+)
+_RASPA2_ENTHALPY_KJMOL_RE = re.compile(
+    r"Enthalpy of adsorption:.*?Total enthalpy of adsorption.*?"
+    rf"\n\s*({_FLOAT_TOKEN_PATTERN})\s*\+/-\s*({_FLOAT_TOKEN_PATTERN})\s*\[KJ/MOL\]",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -144,6 +173,7 @@ class EqeqChargeResult:
 @dataclass(frozen=True)
 class GraspaWidomSettings:
     components: tuple[str, ...] = _DEFAULT_WIDOM_COMPONENTS
+    backend: str = DEFAULT_RASPA_BACKEND
     forcefield: str = "dreiding"
     use_gpu_reduction: bool = True
     use_fast_host_rng: bool = True
@@ -179,6 +209,7 @@ class GraspaWidomSettings:
     def to_dict(self) -> dict[str, object]:
         return {
             "components": list(self.components),
+            "backend": self.backend,
             "forcefield": self.forcefield,
             "use_gpu_reduction": self.use_gpu_reduction,
             "use_fast_host_rng": self.use_fast_host_rng,
@@ -239,6 +270,7 @@ class GraspaWidomResult:
     output_dir: str
     eqeq_binary: str
     graspa_binary: str
+    raspa_backend: str
     eqeq_run_dir: str
     widom_run_dir: str
     eqeq_input_cif: str
@@ -266,6 +298,8 @@ class GraspaWidomResult:
             "output_dir": self.output_dir,
             "eqeq_binary": self.eqeq_binary,
             "graspa_binary": self.graspa_binary,
+            "raspa_binary": self.graspa_binary,
+            "raspa_backend": self.raspa_backend,
             "eqeq_run_dir": self.eqeq_run_dir,
             "widom_run_dir": self.widom_run_dir,
             "eqeq_input_cif": self.eqeq_input_cif,
@@ -294,6 +328,7 @@ class GraspaIsothermSettings:
     component: str = "CO2"
     pressures: tuple[float, ...] = (10_000.0, 100_000.0, 1_000_000.0)
     fugacity_coefficient: float | str = 1.0
+    backend: str = DEFAULT_RASPA_BACKEND
     forcefield: str = "dreiding"
     use_gpu_reduction: bool = False
     use_fast_host_rng: bool = True
@@ -334,6 +369,7 @@ class GraspaIsothermSettings:
             "component": self.component,
             "pressures": list(self.pressures),
             "fugacity_coefficient": self.fugacity_coefficient,
+            "backend": self.backend,
             "forcefield": self.forcefield,
             "use_gpu_reduction": self.use_gpu_reduction,
             "use_fast_host_rng": self.use_fast_host_rng,
@@ -415,6 +451,7 @@ class GraspaIsothermResult:
     output_dir: str
     eqeq_binary: str
     graspa_binary: str
+    raspa_backend: str
     eqeq_run_dir: str
     isotherm_root_dir: str
     eqeq_input_cif: str
@@ -437,6 +474,8 @@ class GraspaIsothermResult:
             "output_dir": self.output_dir,
             "eqeq_binary": self.eqeq_binary,
             "graspa_binary": self.graspa_binary,
+            "raspa_binary": self.graspa_binary,
+            "raspa_backend": self.raspa_backend,
             "eqeq_run_dir": self.eqeq_run_dir,
             "isotherm_root_dir": self.isotherm_root_dir,
             "eqeq_input_cif": self.eqeq_input_cif,
@@ -485,6 +524,7 @@ class GraspaMixtureComponentSettings:
 class GraspaMixtureSettings:
     components: tuple[GraspaMixtureComponentSettings, ...]
     pressures: tuple[float, ...] = (100_000.0,)
+    backend: str = DEFAULT_RASPA_BACKEND
     forcefield: str = "dreiding"
     use_gpu_reduction: bool = False
     use_fast_host_rng: bool = True
@@ -519,6 +559,7 @@ class GraspaMixtureSettings:
         return {
             "components": [component.to_dict() for component in self.components],
             "pressures": list(self.pressures),
+            "backend": self.backend,
             "forcefield": self.forcefield,
             "use_gpu_reduction": self.use_gpu_reduction,
             "use_fast_host_rng": self.use_fast_host_rng,
@@ -633,6 +674,7 @@ class GraspaMixtureResult:
     output_dir: str
     eqeq_binary: str
     graspa_binary: str
+    raspa_backend: str
     eqeq_run_dir: str
     mixture_root_dir: str
     eqeq_input_cif: str
@@ -656,6 +698,8 @@ class GraspaMixtureResult:
             "output_dir": self.output_dir,
             "eqeq_binary": self.eqeq_binary,
             "graspa_binary": self.graspa_binary,
+            "raspa_binary": self.graspa_binary,
+            "raspa_backend": self.raspa_backend,
             "eqeq_run_dir": self.eqeq_run_dir,
             "mixture_root_dir": self.mixture_root_dir,
             "eqeq_input_cif": self.eqeq_input_cif,
@@ -690,6 +734,32 @@ def resolve_graspa_binary(graspa_path: str | Path | None = None) -> Path:
         env_var=COFKIT_GRASPA_ENV_VAR,
         default_path=DEFAULT_GRASPA_BINARY,
         display_name="gRASPA",
+    )
+
+
+def resolve_raspa2_binary(raspa2_path: str | Path | None = None) -> Path:
+    return _resolve_binary(
+        explicit_path=raspa2_path,
+        env_var=COFKIT_RASPA2_ENV_VAR,
+        default_path=DEFAULT_RASPA2_BINARY,
+        display_name="RASPA2",
+    )
+
+
+def resolve_raspa_backend_binary(
+    backend: str,
+    *,
+    raspa_path: str | Path | None = None,
+    graspa_path: str | Path | None = None,
+    raspa2_path: str | Path | None = None,
+) -> Path:
+    normalized = _normalize_raspa_backend_name(backend)
+    if normalized == "graspa":
+        return resolve_graspa_binary(raspa_path if raspa_path is not None else graspa_path)
+    if normalized == "raspa2":
+        return resolve_raspa2_binary(raspa_path if raspa_path is not None else raspa2_path)
+    raise ValueError(
+        f"Unsupported RASPA backend {backend!r}. Expected one of: {', '.join(SUPPORTED_RASPA_BACKENDS)}."
     )
 
 
@@ -790,6 +860,8 @@ def run_graspa_widom_workflow(
     output_dir: str | Path | None = None,
     eqeq_path: str | Path | None = None,
     graspa_path: str | Path | None = None,
+    raspa_path: str | Path | None = None,
+    raspa2_path: str | Path | None = None,
     eqeq_settings: EqeqChargeSettings | None = None,
     widom_settings: GraspaWidomSettings | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
@@ -804,9 +876,16 @@ def run_graspa_widom_workflow(
     _validate_widom_settings(widom_settings)
     graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
 
-    graspa_binary = resolve_graspa_binary(graspa_path)
+    raspa_backend = _normalize_raspa_backend_name(widom_settings.backend)
+    raspa_display_name = _raspa_backend_display_name(raspa_backend)
+    graspa_binary = resolve_raspa_backend_binary(
+        raspa_backend,
+        raspa_path=raspa_path,
+        graspa_path=graspa_path,
+        raspa2_path=raspa2_path,
+    )
 
-    run_dir = _resolve_output_dir(input_path, output_dir, suffix="_graspa_widom")
+    run_dir = _resolve_output_dir(input_path, output_dir, suffix=f"_{raspa_backend}_widom")
     eqeq_run_dir = run_dir / "eqeq"
     widom_run_dir = run_dir / "widom"
     widom_run_dir.mkdir(parents=True, exist_ok=True)
@@ -832,8 +911,8 @@ def run_graspa_widom_workflow(
         encoding="utf-8",
     )
 
-    graspa_stdout_log_path = widom_run_dir / "graspa.stdout.log"
-    graspa_stderr_log_path = widom_run_dir / "graspa.stderr.log"
+    graspa_stdout_log_path = widom_run_dir / f"{raspa_backend}.stdout.log"
+    graspa_stderr_log_path = widom_run_dir / f"{raspa_backend}.stderr.log"
     try:
         with graspa_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
             with graspa_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -848,21 +927,21 @@ def run_graspa_widom_workflow(
                 )
     except subprocess.TimeoutExpired as exc:
         raise GraspaExecutionError(
-            f"gRASPA timed out after {graspa_timeout_seconds} seconds. "
+            f"{raspa_display_name} timed out after {graspa_timeout_seconds} seconds. "
             f"See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
         ) from exc
 
     if graspa_completed.returncode != 0:
         raise GraspaExecutionError(
-            f"gRASPA failed with exit code {graspa_completed.returncode}. "
+            f"{raspa_display_name} failed with exit code {graspa_completed.returncode}. "
             f"See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
         )
 
     widom_output_dir = widom_run_dir / "Output"
-    data_file_paths = tuple(str(path) for path in sorted(widom_output_dir.glob("*.data")))
+    data_file_paths = _collect_raspa_data_file_paths(widom_output_dir)
     if not data_file_paths:
         raise GraspaParseError(
-            f"gRASPA completed without producing any Output/*.data files under {widom_output_dir}"
+            f"{raspa_display_name} completed without producing any Output/**/*.data files under {widom_output_dir}"
         )
 
     component_results = _parse_widom_result_files(tuple(Path(path) for path in data_file_paths))
@@ -880,7 +959,7 @@ def run_graspa_widom_workflow(
     if len(data_file_paths) > 1:
         warnings.append(f"Parsed Widom results from {len(data_file_paths)} data files.")
     if graspa_stderr_log_path.read_text(encoding="utf-8", errors="replace").strip():
-        warnings.append("gRASPA wrote content to stderr; inspect the stderr log if needed.")
+        warnings.append(f"{raspa_display_name} wrote content to stderr; inspect the stderr log if needed.")
     if any(
         not math.isfinite(value)
         for component in component_results
@@ -891,7 +970,7 @@ def run_graspa_widom_workflow(
             component.henry_errorbar,
         )
     ):
-        warnings.append("One or more Widom summary values are non-finite; inspect the raw gRASPA data output.")
+        warnings.append(f"One or more Widom summary values are non-finite; inspect the raw {raspa_display_name} data output.")
 
     report_path = run_dir / "graspa_widom_report.json"
     result = GraspaWidomResult(
@@ -899,6 +978,7 @@ def run_graspa_widom_workflow(
         output_dir=str(run_dir),
         eqeq_binary=eqeq_result.eqeq_binary,
         graspa_binary=str(graspa_binary),
+        raspa_backend=raspa_backend,
         eqeq_run_dir=eqeq_result.output_dir,
         widom_run_dir=str(widom_run_dir),
         eqeq_input_cif=eqeq_result.eqeq_input_cif,
@@ -930,6 +1010,8 @@ def run_graspa_isotherm_workflow(
     output_dir: str | Path | None = None,
     eqeq_path: str | Path | None = None,
     graspa_path: str | Path | None = None,
+    raspa_path: str | Path | None = None,
+    raspa2_path: str | Path | None = None,
     eqeq_settings: EqeqChargeSettings | None = None,
     isotherm_settings: GraspaIsothermSettings | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
@@ -944,9 +1026,16 @@ def run_graspa_isotherm_workflow(
     _validate_isotherm_settings(isotherm_settings)
     graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
 
-    graspa_binary = resolve_graspa_binary(graspa_path)
+    raspa_backend = _normalize_raspa_backend_name(isotherm_settings.backend)
+    raspa_display_name = _raspa_backend_display_name(raspa_backend)
+    graspa_binary = resolve_raspa_backend_binary(
+        raspa_backend,
+        raspa_path=raspa_path,
+        graspa_path=graspa_path,
+        raspa2_path=raspa2_path,
+    )
 
-    run_dir = _resolve_output_dir(input_path, output_dir, suffix="_graspa_isotherm")
+    run_dir = _resolve_output_dir(input_path, output_dir, suffix=f"_{raspa_backend}_isotherm")
     eqeq_run_dir = run_dir / "eqeq"
     isotherm_root_dir = run_dir / "isotherm"
     isotherm_root_dir.mkdir(parents=True, exist_ok=True)
@@ -986,8 +1075,8 @@ def run_graspa_isotherm_workflow(
             encoding="utf-8",
         )
 
-        graspa_stdout_log_path = pressure_run_dir / "graspa.stdout.log"
-        graspa_stderr_log_path = pressure_run_dir / "graspa.stderr.log"
+        graspa_stdout_log_path = pressure_run_dir / f"{raspa_backend}.stdout.log"
+        graspa_stderr_log_path = pressure_run_dir / f"{raspa_backend}.stderr.log"
         try:
             with graspa_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
                 with graspa_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -1002,20 +1091,20 @@ def run_graspa_isotherm_workflow(
                     )
         except subprocess.TimeoutExpired as exc:
             raise GraspaExecutionError(
-                f"gRASPA timed out after {graspa_timeout_seconds} seconds while running "
+                f"{raspa_display_name} timed out after {graspa_timeout_seconds} seconds while running "
                 f"pressure {pressure:g} Pa. See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
             ) from exc
 
         if graspa_completed.returncode != 0:
             raise GraspaExecutionError(
-                f"gRASPA failed with exit code {graspa_completed.returncode} at pressure {pressure:g} Pa. "
+                f"{raspa_display_name} failed with exit code {graspa_completed.returncode} at pressure {pressure:g} Pa. "
                 f"See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
             )
 
-        data_file_paths = tuple(str(path) for path in sorted((pressure_run_dir / "Output").glob("*.data")))
+        data_file_paths = _collect_raspa_data_file_paths(pressure_run_dir / "Output")
         if not data_file_paths:
             raise GraspaParseError(
-                f"gRASPA completed without producing any Output/*.data files under {pressure_run_dir / 'Output'} "
+                f"{raspa_display_name} completed without producing any Output/**/*.data files under {pressure_run_dir / 'Output'} "
                 f"for pressure {pressure:g} Pa."
             )
 
@@ -1036,7 +1125,7 @@ def run_graspa_isotherm_workflow(
             )
         if graspa_stderr_log_path.read_text(encoding="utf-8", errors="replace").strip():
             warnings.append(
-                f"gRASPA wrote content to stderr for pressure {pressure:g} Pa; inspect the stderr log if needed."
+                f"{raspa_display_name} wrote content to stderr for pressure {pressure:g} Pa; inspect the stderr log if needed."
             )
         if any(
             not math.isfinite(value)
@@ -1050,7 +1139,7 @@ def run_graspa_isotherm_workflow(
             )
         ):
             warnings.append(
-                f"One or more parsed isotherm values are non-finite at pressure {pressure:g} Pa; inspect the raw gRASPA data output."
+                f"One or more parsed isotherm values are non-finite at pressure {pressure:g} Pa; inspect the raw {raspa_display_name} data output."
             )
 
     if eqeq_result.eqeq_json_output_path is None:
@@ -1065,6 +1154,7 @@ def run_graspa_isotherm_workflow(
         output_dir=str(run_dir),
         eqeq_binary=eqeq_result.eqeq_binary,
         graspa_binary=str(graspa_binary),
+        raspa_backend=raspa_backend,
         eqeq_run_dir=eqeq_result.output_dir,
         isotherm_root_dir=str(isotherm_root_dir),
         eqeq_input_cif=eqeq_result.eqeq_input_cif,
@@ -1091,6 +1181,8 @@ def run_graspa_mixture_workflow(
     output_dir: str | Path | None = None,
     eqeq_path: str | Path | None = None,
     graspa_path: str | Path | None = None,
+    raspa_path: str | Path | None = None,
+    raspa2_path: str | Path | None = None,
     eqeq_settings: EqeqChargeSettings | None = None,
     mixture_settings: GraspaMixtureSettings | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
@@ -1106,9 +1198,16 @@ def run_graspa_mixture_workflow(
     _validate_mixture_settings(mixture_settings)
     graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
 
-    graspa_binary = resolve_graspa_binary(graspa_path)
+    raspa_backend = _normalize_raspa_backend_name(mixture_settings.backend)
+    raspa_display_name = _raspa_backend_display_name(raspa_backend)
+    graspa_binary = resolve_raspa_backend_binary(
+        raspa_backend,
+        raspa_path=raspa_path,
+        graspa_path=graspa_path,
+        raspa2_path=raspa2_path,
+    )
 
-    run_dir = _resolve_output_dir(input_path, output_dir, suffix="_graspa_mixture")
+    run_dir = _resolve_output_dir(input_path, output_dir, suffix=f"_{raspa_backend}_mixture")
     eqeq_run_dir = run_dir / "eqeq"
     mixture_root_dir = run_dir / "mixture"
     mixture_root_dir.mkdir(parents=True, exist_ok=True)
@@ -1154,8 +1253,8 @@ def run_graspa_mixture_workflow(
             encoding="utf-8",
         )
 
-        graspa_stdout_log_path = pressure_run_dir / "graspa.stdout.log"
-        graspa_stderr_log_path = pressure_run_dir / "graspa.stderr.log"
+        graspa_stdout_log_path = pressure_run_dir / f"{raspa_backend}.stdout.log"
+        graspa_stderr_log_path = pressure_run_dir / f"{raspa_backend}.stderr.log"
         try:
             with graspa_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
                 with graspa_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -1170,20 +1269,20 @@ def run_graspa_mixture_workflow(
                     )
         except subprocess.TimeoutExpired as exc:
             raise GraspaExecutionError(
-                f"gRASPA timed out after {graspa_timeout_seconds} seconds while running "
+                f"{raspa_display_name} timed out after {graspa_timeout_seconds} seconds while running "
                 f"mixture pressure {pressure:g} Pa. See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
             ) from exc
 
         if graspa_completed.returncode != 0:
             raise GraspaExecutionError(
-                f"gRASPA failed with exit code {graspa_completed.returncode} at mixture pressure {pressure:g} Pa. "
+                f"{raspa_display_name} failed with exit code {graspa_completed.returncode} at mixture pressure {pressure:g} Pa. "
                 f"See {graspa_stdout_log_path} and {graspa_stderr_log_path}."
             )
 
-        data_file_paths = tuple(str(path) for path in sorted((pressure_run_dir / "Output").glob("*.data")))
+        data_file_paths = _collect_raspa_data_file_paths(pressure_run_dir / "Output")
         if not data_file_paths:
             raise GraspaParseError(
-                f"gRASPA completed without producing any Output/*.data files under {pressure_run_dir / 'Output'} "
+                f"{raspa_display_name} completed without producing any Output/**/*.data files under {pressure_run_dir / 'Output'} "
                 f"for mixture pressure {pressure:g} Pa."
             )
 
@@ -1204,7 +1303,7 @@ def run_graspa_mixture_workflow(
             )
         if graspa_stderr_log_path.read_text(encoding="utf-8", errors="replace").strip():
             warnings.append(
-                f"gRASPA wrote content to stderr for mixture pressure {pressure:g} Pa; inspect the stderr log if needed."
+                f"{raspa_display_name} wrote content to stderr for mixture pressure {pressure:g} Pa; inspect the stderr log if needed."
             )
         if any(
             not math.isfinite(value)
@@ -1221,7 +1320,7 @@ def run_graspa_mixture_workflow(
             )
         ):
             warnings.append(
-                f"One or more parsed mixture component values are non-finite at pressure {pressure:g} Pa; inspect the raw gRASPA data output."
+                f"One or more parsed mixture component values are non-finite at pressure {pressure:g} Pa; inspect the raw {raspa_display_name} data output."
             )
         if any(
             not math.isfinite(value)
@@ -1234,7 +1333,7 @@ def run_graspa_mixture_workflow(
             )
         ):
             warnings.append(
-                f"One or more parsed mixture selectivity values are non-finite at pressure {pressure:g} Pa; inspect the raw gRASPA data output."
+                f"One or more parsed mixture selectivity values are non-finite at pressure {pressure:g} Pa; inspect the raw {raspa_display_name} data output."
             )
 
     if eqeq_result.eqeq_json_output_path is None:
@@ -1251,6 +1350,7 @@ def run_graspa_mixture_workflow(
         output_dir=str(run_dir),
         eqeq_binary=eqeq_result.eqeq_binary,
         graspa_binary=str(graspa_binary),
+        raspa_backend=raspa_backend,
         eqeq_run_dir=eqeq_result.output_dir,
         mixture_root_dir=str(mixture_root_dir),
         eqeq_input_cif=eqeq_result.eqeq_input_cif,
@@ -1326,7 +1426,30 @@ def _normalize_graspa_forcefield_name(forcefield: str) -> str:
     return forcefield.strip().lower().replace("-", "_")
 
 
+def _normalize_raspa_backend_name(backend: str) -> str:
+    return backend.strip().lower().replace("-", "").replace("_", "")
+
+
+def _raspa_backend_display_name(backend: str) -> str:
+    normalized = _normalize_raspa_backend_name(backend)
+    if normalized == "graspa":
+        return "gRASPA"
+    if normalized == "raspa2":
+        return "RASPA2"
+    return backend
+
+
+def _validate_raspa_backend(backend: str) -> str:
+    normalized = _normalize_raspa_backend_name(backend)
+    if normalized not in SUPPORTED_RASPA_BACKENDS:
+        raise ValueError(
+            f"Unsupported RASPA backend {backend!r}. Expected one of: {', '.join(SUPPORTED_RASPA_BACKENDS)}."
+        )
+    return normalized
+
+
 def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
+    _validate_raspa_backend(settings.backend)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
         raise ValueError(
@@ -1368,6 +1491,7 @@ def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
 
 
 def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
+    _validate_raspa_backend(settings.backend)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
         raise ValueError(
@@ -1421,6 +1545,7 @@ def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
 
 
 def _validate_mixture_settings(settings: GraspaMixtureSettings) -> None:
+    _validate_raspa_backend(settings.backend)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
         raise ValueError(
@@ -1673,6 +1798,9 @@ def _render_widom_simulation_input(
     *,
     unit_cells: tuple[int, int, int],
 ) -> str:
+    if _normalize_raspa_backend_name(settings.backend) == "raspa2":
+        return _render_raspa2_widom_simulation_input(settings, unit_cells=unit_cells)
+
     lines = [
         f"UseGPUReduction {_bool_token(settings.use_gpu_reduction)}",
         f"UseFastHostRNG {_bool_token(settings.use_fast_host_rng)}",
@@ -1737,6 +1865,13 @@ def _render_isotherm_simulation_input(
     unit_cells: tuple[int, int, int],
     pressure: float,
 ) -> str:
+    if _normalize_raspa_backend_name(settings.backend) == "raspa2":
+        return _render_raspa2_isotherm_simulation_input(
+            settings,
+            unit_cells=unit_cells,
+            pressure=pressure,
+        )
+
     lines = [
         f"UseGPUReduction {_bool_token(settings.use_gpu_reduction)}",
         f"UseFastHostRNG {_bool_token(settings.use_fast_host_rng)}",
@@ -1805,6 +1940,13 @@ def _render_mixture_simulation_input(
     unit_cells: tuple[int, int, int],
     pressure: float,
 ) -> str:
+    if _normalize_raspa_backend_name(settings.backend) == "raspa2":
+        return _render_raspa2_mixture_simulation_input(
+            settings,
+            unit_cells=unit_cells,
+            pressure=pressure,
+        )
+
     lines = [
         f"UseGPUReduction {_bool_token(settings.use_gpu_reduction)}",
         f"UseFastHostRNG {_bool_token(settings.use_fast_host_rng)}",
@@ -1875,6 +2017,226 @@ def _render_mixture_simulation_input(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_raspa2_widom_simulation_input(
+    settings: GraspaWidomSettings,
+    *,
+    unit_cells: tuple[int, int, int],
+) -> str:
+    lines = _render_raspa2_common_lines(
+        number_of_cycles=settings.production_cycles,
+        initialization_cycles=settings.initialization_cycles,
+        equilibration_cycles=settings.equilibration_cycles,
+        number_of_blocks=settings.number_of_blocks,
+        restart_file=settings.restart_file,
+        use_charges_from_cif_file=settings.use_charges_from_cif_file,
+        framework_name=settings.framework_name,
+        input_file_type=settings.input_file_type,
+        unit_cells=unit_cells,
+        charge_method=settings.charge_method,
+        temperature=settings.temperature,
+        pressure=None,
+        cutoff_vdw=settings.cutoff_vdw,
+        cutoff_coulomb=settings.cutoff_coulomb,
+        ewald_precision=settings.ewald_precision,
+        overlap_criteria=settings.overlap_criteria,
+        number_of_trial_positions=settings.number_of_trial_positions,
+        number_of_trial_orientations=settings.number_of_trial_orientations,
+    )
+    lines.append("")
+    for index, component in enumerate(settings.components):
+        lines.extend(
+            [
+                f"Component {index} MoleculeName              {component}",
+                f"            MoleculeDefinition        {_RASPA2_LOCAL_MOLECULE_DEFINITION}",
+                "            IdealGasRosenbluthWeight  1.0",
+                "            WidomProbability          1.0",
+                "            CreateNumberOfMolecules   0",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_raspa2_isotherm_simulation_input(
+    settings: GraspaIsothermSettings,
+    *,
+    unit_cells: tuple[int, int, int],
+    pressure: float,
+) -> str:
+    lines = _render_raspa2_common_lines(
+        number_of_cycles=settings.production_cycles,
+        initialization_cycles=settings.initialization_cycles,
+        equilibration_cycles=settings.equilibration_cycles,
+        number_of_blocks=settings.number_of_blocks,
+        restart_file=settings.restart_file,
+        use_charges_from_cif_file=settings.use_charges_from_cif_file,
+        framework_name=settings.framework_name,
+        input_file_type=settings.input_file_type,
+        unit_cells=unit_cells,
+        charge_method=settings.charge_method,
+        temperature=settings.temperature,
+        pressure=pressure,
+        cutoff_vdw=settings.cutoff_vdw,
+        cutoff_coulomb=settings.cutoff_coulomb,
+        ewald_precision=settings.ewald_precision,
+        overlap_criteria=settings.overlap_criteria,
+        number_of_trial_positions=settings.number_of_trial_positions,
+        number_of_trial_orientations=settings.number_of_trial_orientations,
+    )
+    lines.append("")
+    lines.extend(
+        [
+            f"Component 0 MoleculeName             {settings.component}",
+            f"            MoleculeDefinition       {_RASPA2_LOCAL_MOLECULE_DEFINITION}",
+        ]
+    )
+    rendered_fugacity = _render_raspa2_fugacity_coefficient(settings.fugacity_coefficient)
+    if rendered_fugacity is not None:
+        lines.append(f"            FugacityCoefficient      {rendered_fugacity}")
+    lines.append(f"            TranslationProbability   {_format_simulation_number(settings.translation_probability)}")
+    if settings.component not in _NON_ROTATABLE_GCMC_COMPONENTS and settings.rotation_probability > 0.0:
+        lines.append(
+            f"            RotationProbability      {_format_simulation_number(settings.rotation_probability)}"
+        )
+    lines.extend(
+        [
+            f"            ReinsertionProbability   {_format_simulation_number(settings.reinsertion_probability)}",
+            f"            SwapProbability          {_format_simulation_number(settings.swap_probability)}",
+            f"            CreateNumberOfMolecules  {settings.create_number_of_molecules}",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_raspa2_mixture_simulation_input(
+    settings: GraspaMixtureSettings,
+    *,
+    unit_cells: tuple[int, int, int],
+    pressure: float,
+) -> str:
+    lines = _render_raspa2_common_lines(
+        number_of_cycles=settings.production_cycles,
+        initialization_cycles=settings.initialization_cycles,
+        equilibration_cycles=settings.equilibration_cycles,
+        number_of_blocks=settings.number_of_blocks,
+        restart_file=settings.restart_file,
+        use_charges_from_cif_file=settings.use_charges_from_cif_file,
+        framework_name=settings.framework_name,
+        input_file_type=settings.input_file_type,
+        unit_cells=unit_cells,
+        charge_method=settings.charge_method,
+        temperature=settings.temperature,
+        pressure=pressure,
+        cutoff_vdw=settings.cutoff_vdw,
+        cutoff_coulomb=settings.cutoff_coulomb,
+        ewald_precision=settings.ewald_precision,
+        overlap_criteria=settings.overlap_criteria,
+        number_of_trial_positions=settings.number_of_trial_positions,
+        number_of_trial_orientations=settings.number_of_trial_orientations,
+    )
+    lines.append("")
+    for index, component in enumerate(settings.components):
+        lines.extend(
+            [
+                f"Component {index} MoleculeName             {component.component}",
+                f"            MoleculeDefinition       {_RASPA2_LOCAL_MOLECULE_DEFINITION}",
+            ]
+        )
+        rendered_fugacity = _render_raspa2_fugacity_coefficient(component.fugacity_coefficient)
+        if rendered_fugacity is not None:
+            lines.append(f"            FugacityCoefficient      {rendered_fugacity}")
+        lines.extend(
+            [
+                f"            MolFraction              {_format_simulation_number(component.mol_fraction)}",
+                f"            TranslationProbability   {_format_simulation_number(component.translation_probability)}",
+            ]
+        )
+        if component.component not in _NON_ROTATABLE_GCMC_COMPONENTS and component.rotation_probability > 0.0:
+            lines.append(
+                f"            RotationProbability      {_format_simulation_number(component.rotation_probability)}"
+            )
+        lines.extend(
+            [
+                f"            ReinsertionProbability   {_format_simulation_number(component.reinsertion_probability)}",
+                f"            IdentityChangeProbability {_format_simulation_number(component.identity_change_probability)}",
+                f"            SwapProbability          {_format_simulation_number(component.swap_probability)}",
+                f"            CreateNumberOfMolecules  {component.create_number_of_molecules}",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_raspa2_common_lines(
+    *,
+    number_of_cycles: int,
+    initialization_cycles: int,
+    equilibration_cycles: int,
+    number_of_blocks: int,
+    restart_file: bool,
+    use_charges_from_cif_file: bool,
+    framework_name: str,
+    input_file_type: str,
+    unit_cells: tuple[int, int, int],
+    charge_method: str,
+    temperature: float,
+    pressure: float | None,
+    cutoff_vdw: float,
+    cutoff_coulomb: float,
+    ewald_precision: float,
+    overlap_criteria: float,
+    number_of_trial_positions: int,
+    number_of_trial_orientations: int,
+) -> list[str]:
+    lines = [
+        "SimulationType                MonteCarlo",
+        f"NumberOfCycles                {number_of_cycles}",
+        f"NumberOfInitializationCycles  {initialization_cycles}",
+    ]
+    if equilibration_cycles > 0:
+        lines.append(f"NumberOfEquilibrationCycles   {equilibration_cycles}")
+    lines.extend(
+        [
+            f"PrintEvery                    {_raspa2_print_every(number_of_cycles, number_of_blocks)}",
+            f"RestartFile                   {_bool_token(restart_file)}",
+            "",
+            f"Forcefield                    {_RASPA2_LOCAL_FORCEFIELD_NAME}",
+            f"UseChargesFromCIFFile         {_bool_token(use_charges_from_cif_file)}",
+            "",
+            "Framework 0",
+            f"FrameworkName {framework_name}",
+            f"InputFileType {input_file_type}",
+            f"UnitCells {unit_cells[0]} {unit_cells[1]} {unit_cells[2]}",
+            f"ExternalTemperature {_format_simulation_number(temperature)}",
+        ]
+    )
+    if pressure is not None:
+        lines.append(f"ExternalPressure {_format_simulation_number(pressure)}")
+    lines.extend(
+        [
+            "",
+            f"ChargeMethod {charge_method}",
+            f"CutOffVDW {_format_simulation_number(cutoff_vdw)}",
+            f"CutOffCoulomb {_format_simulation_number(cutoff_coulomb)}",
+            f"EwaldPrecision {_format_simulation_number(ewald_precision)}",
+            f"EnergyOverlapCriteria {_format_simulation_number(overlap_criteria)}",
+            "",
+            f"NumberOfTrialPositions {number_of_trial_positions}",
+            f"NumberOfTrialPositionsWidom {number_of_trial_positions}",
+            f"NumberOfTrialPositionsSwap {number_of_trial_positions}",
+            f"NumberOfTrialPositionsReinsertion {number_of_trial_positions}",
+            f"NumberOfTrialPositionsForTheFirstBead {number_of_trial_orientations}",
+        ]
+    )
+    return lines
+
+
+def _raspa2_print_every(number_of_cycles: int, number_of_blocks: int) -> int:
+    if number_of_blocks <= 0:
+        return max(number_of_cycles, 1)
+    return max(number_of_cycles // number_of_blocks, 1)
+
+
 def _bool_token(value: bool) -> str:
     return "yes" if value else "no"
 
@@ -1899,12 +2261,23 @@ def _render_fugacity_coefficient(value: float | str) -> str:
     return _format_simulation_number(value)
 
 
+def _render_raspa2_fugacity_coefficient(value: float | str) -> str | None:
+    _validate_fugacity_coefficient(value)
+    if isinstance(value, str):
+        return None
+    return _format_simulation_number(value)
+
+
 def _format_pressure_run_dir_name(index: int, pressure: float) -> str:
     raw = _format_simulation_number(pressure)
     sanitized = re.sub(r"[^0-9A-Za-z]+", "_", raw).strip("_")
     if sanitized == "":
         sanitized = "0"
     return f"pressure_{index + 1:04d}_{sanitized}Pa"
+
+
+def _collect_raspa_data_file_paths(output_dir: Path) -> tuple[str, ...]:
+    return tuple(str(path) for path in sorted(output_dir.rglob("*.data")))
 
 
 def _json_safe_float(value: float) -> float | None:
@@ -1917,8 +2290,9 @@ def _parse_widom_result_files(data_paths: Sequence[Path]) -> tuple[GraspaWidomCo
     results: list[GraspaWidomComponentResult] = []
     for path in data_paths:
         content = path.read_text(encoding="utf-8", errors="replace")
+        path_results: list[GraspaWidomComponentResult] = []
         for match in _WIDOM_RESULT_RE.finditer(content):
-            results.append(
+            path_results.append(
                 GraspaWidomComponentResult(
                     component=match.group(1),
                     widom_energy=float(match.group(2)),
@@ -1928,7 +2302,35 @@ def _parse_widom_result_files(data_paths: Sequence[Path]) -> tuple[GraspaWidomCo
                     source_data_file=str(path),
                 )
             )
+        if not path_results:
+            path_results.extend(_parse_raspa2_widom_result_file(path, content))
+        results.extend(path_results)
     return tuple(results)
+
+
+def _parse_raspa2_widom_result_file(path: Path, content: str) -> list[GraspaWidomComponentResult]:
+    widom_by_component = {
+        match.group("component"): (
+            _parse_float_token(match.group("value")),
+            _parse_float_token(match.group("error")),
+        )
+        for match in _RASPA2_WIDOM_EXCESS_RE.finditer(content)
+    }
+    results: list[GraspaWidomComponentResult] = []
+    for match in _RASPA2_HENRY_RE.finditer(content):
+        component = match.group("component")
+        widom_energy, widom_energy_errorbar = widom_by_component.get(component, (math.nan, math.nan))
+        results.append(
+            GraspaWidomComponentResult(
+                component=component,
+                widom_energy=widom_energy,
+                widom_energy_errorbar=widom_energy_errorbar,
+                henry=_parse_float_token(match.group("value")),
+                henry_errorbar=_parse_float_token(match.group("error")),
+                source_data_file=str(path),
+            )
+        )
+    return results
 
 
 def _parse_isotherm_result_files(
@@ -1995,7 +2397,9 @@ def _parse_mixture_result_files(
                 break
             resolved_components.append((component_name, parsed_values))
         if not resolved_components:
-            continue
+            resolved_components = _parse_raspa2_mixture_component_values(path, expected_components=expected_components)
+            if not resolved_components:
+                continue
 
         total_loading_mol_per_kg = sum(
             values["loading_mol_per_kg"][0]
@@ -2085,7 +2489,92 @@ def _parse_isotherm_result_file(path: Path, *, component: str) -> dict[str, tupl
         "heat_of_adsorption_kj_per_mol": "BLOCK AVERAGES (HEAT OF ADSORPTION: kJ/mol)",
     }
     parsed_sections = _parse_component_average_sections(path, section_titles=section_titles)
-    return _resolve_component_summary_values(parsed_sections, component=component)
+    resolved = _resolve_component_summary_values(parsed_sections, component=component)
+    if resolved is not None:
+        return resolved
+    return _parse_raspa2_single_component_adsorption_result(path, component=component)
+
+
+def _parse_raspa2_single_component_adsorption_result(
+    path: Path,
+    *,
+    component: str,
+) -> dict[str, tuple[float, float]] | None:
+    content = path.read_text(encoding="utf-8", errors="replace")
+    loading_by_component = _parse_raspa2_component_loading_summaries(content, default_component=component)
+    loading = loading_by_component.get(component)
+    if loading is None:
+        return None
+    enthalpy_match = _RASPA2_ENTHALPY_KJMOL_RE.search(content)
+    if enthalpy_match is None:
+        enthalpy = (math.nan, math.nan)
+    else:
+        enthalpy = (
+            _parse_float_token(enthalpy_match.group(1)),
+            _parse_float_token(enthalpy_match.group(2)),
+        )
+    return {
+        "loading_mol_per_kg": loading,
+        "loading_g_per_l": (math.nan, math.nan),
+        "heat_of_adsorption_kj_per_mol": enthalpy,
+    }
+
+
+def _parse_raspa2_mixture_component_values(
+    path: Path,
+    *,
+    expected_components: Sequence[str],
+) -> list[tuple[str, dict[str, tuple[float, float]]]]:
+    content = path.read_text(encoding="utf-8", errors="replace")
+    loading_by_component = _parse_raspa2_component_loading_summaries(content)
+    resolved_components: list[tuple[str, dict[str, tuple[float, float]]]] = []
+    for component_name in expected_components:
+        loading = loading_by_component.get(component_name)
+        if loading is None:
+            return []
+        resolved_components.append(
+            (
+                component_name,
+                {
+                    "loading_mol_per_kg": loading,
+                    "loading_g_per_l": (math.nan, math.nan),
+                    "heat_of_adsorption_kj_per_mol": (math.nan, math.nan),
+                },
+            )
+        )
+    return resolved_components
+
+
+def _parse_raspa2_component_loading_summaries(
+    content: str,
+    *,
+    default_component: str | None = None,
+) -> dict[str, tuple[float, float]]:
+    loading_by_component: dict[str, tuple[float, float]] = {}
+    active_component = default_component
+    in_number_of_molecules = False
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line == "Number of molecules:":
+            in_number_of_molecules = True
+            active_component = default_component
+            continue
+        if not in_number_of_molecules:
+            continue
+        if line.startswith("Average Widom") or line.startswith("Enthalpy of adsorption:"):
+            break
+        component_match = _RASPA2_COMPONENT_HEADER_RE.match(line)
+        if component_match is not None:
+            active_component = component_match.group(1)
+            continue
+        loading_match = _RASPA2_AVERAGE_LOADING_MOL_KG_RE.search(line)
+        if loading_match is None or active_component is None:
+            continue
+        loading_by_component[active_component] = (
+            _parse_float_token(loading_match.group(1)),
+            _parse_float_token(loading_match.group(2)),
+        )
+    return loading_by_component
 
 
 def _parse_component_average_sections(
