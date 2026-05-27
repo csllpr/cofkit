@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
   "gemmi>=0.7",
-  "openbabel-wheel",
+  "openbabel>=3.2.0",
   "pandas",
   "pymatgen",
   "rdkit",
