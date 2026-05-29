@@ -81,3 +81,9 @@ For the current imine realization path, two geometry details are now important e
 - periodic-image bridge events store realized atom overrides back in the base monomer-local frame before CIF export, which avoids pathological retained-hydrogen directions on image-crossing imine events
 
 The CIF exporter is deliberately honest as well: if a `MonomerSpec` carries atom coordinates, it writes atomistic sites; if not, it falls back to a legal coarse CIF built from monomer centers and motif origins so the current assembly can still be inspected.
+
+## CIF Decomposition
+
+`cofkit analyze decompose` is the first reverse path from an exported-style atomistic CIF back to COFid. The current implementation is deliberately narrow: it reads explicit CIF bond loops, identifies imine linkages, cuts those bonds, repairs the two recovered monomer classes back to canonical SMILES, and serializes the caller-supplied topology with the recovered monomer blocks.
+
+The CIF extraction layer is local to `cofkit` and uses `gemmi`; it does not add ASE as a runtime dependency. The decomposition logic was adapted from the deCOFpose project at <https://github.com/r-fedorov/deCOFpose>, then scoped to fit `cofkit`'s explicit-bond CIF exports and COFid serializer.

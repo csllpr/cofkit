@@ -558,6 +558,36 @@ To regenerate the detector-scanned default library from the raw fixture inputs:
 cofkit build default-library
 ```
 
+## Workflow 5: Decompose A Supported CIF To COFid
+
+`cofkit analyze decompose` reads one atomistic CIF, cuts recognized linkage bonds, repairs the recovered fragments back to monomer SMILES, and emits a COFid when the structure is supported.
+
+### CLI usage
+
+```bash
+cofkit analyze decompose \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --topology hcb
+```
+
+By default the command prints only the recovered COFid. Add `--json` to inspect the full result payload, including recovered monomer blocks and diagnostic metadata:
+
+```bash
+cofkit analyze decompose \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --topology hcb \
+  --json
+```
+
+Current scope:
+
+- input must be an atomistic CIF with explicit `_geom_bond_*` connectivity
+- imine decomposition is the only public linkage mode
+- the topology token is supplied by the caller through `--topology`
+- the implementation does not depend on ASE; CIF atom and bond data are extracted with the existing `gemmi` dependency
+
+The decomposition workflow in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
+
 ## Workflow 6: Initial Zeo++ Pore Analysis
 
 The first `analyze`-namespace external-tool wrapper is Zeo++. It now writes a point-probe pore baseline for one CIF at a time and can optionally add repeated accessibility-aware probe scans.

@@ -166,6 +166,7 @@ The most useful grouped commands are:
 - `cofkit build batch-binary-bridge`
 - `cofkit build batch-all-binary-bridges`
 - `cofkit analyze classify-output`
+- `cofkit analyze decompose`
 - `cofkit analyze zeopp`
 - `cofkit calculate lammps-optimize`
 - `cofkit calculate graspa-widom`
@@ -253,6 +254,16 @@ cofkit analyze classify-output \
   out/full_cif_generation_default_selector_20260320 \
   --output-dir out/full_cif_generation_default_selector_20260320_coarse_validation_triage
 ```
+
+### Decompose one supported CIF to COFid
+
+```bash
+cofkit analyze decompose \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --topology hcb
+```
+
+On success, this prints the recovered COFid. Current support is intentionally narrow: the input must be an atomistic CIF with explicit `_geom_bond_*` connectivity and imine bond types, and the topology token is supplied by the caller. The decomposition logic in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
 
 ### Run initial Zeo++ pore analysis on one CIF
 

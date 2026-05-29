@@ -4,6 +4,17 @@ All notable changes to `cofkit` are recorded here.
 
 Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-04-07` is version `2026.4.7`.
 
+## Unreleased
+
+### Added
+
+- initial `cofkit analyze decompose` command for recovering a COFid from supported explicit-bond imine CIFs, with no ASE dependency in the CIF extraction path
+- regression coverage for hcb imine CIF round trips, verifying that decomposition recovers the original monomer inputs for generated `3+3` and `3+2` cases
+
+### Notes
+
+- the decomposition logic in `cofkit` was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`
+
 ## 2026.4.7 (2026-04-07)
 
 ### Fixed

@@ -29,7 +29,7 @@ Interpretation rules:
 - `cofkit build list-templates --json` only describes the build chemistry surface, not every public CLI workflow.
 - Focus on templates where `supports_pair_generation` is `true` for practical structure generation.
 - Registered templates with `supports_pair_generation=false` are still part of the reaction library, but they are not on the current topology-guided pair-generation path.
-- `cofkit analyze --help` is where current pore-analysis and output-triage workflows show up.
+- `cofkit analyze --help` is where current decomposition, pore-analysis, and output-triage workflows show up.
 - `cofkit calculate --help` is where current external optimization and Monte Carlo workflows show up.
 
 ### Build one COF from two monomers
@@ -152,6 +152,34 @@ Primary artifacts:
 - `warning/manifest.jsonl`
 - `hard_invalid/manifest.jsonl`
 - `hard_hard_invalid/manifest.jsonl`
+
+### Recover COFid from one supported CIF
+
+Use `analyze decompose`.
+
+```bash
+cofkit analyze decompose \
+  <STRUCTURE_CIF> \
+  --topology hcb
+```
+
+Useful variants:
+
+- add `--json` when you need recovered monomer details and diagnostic metadata
+- pass `--linkage imine` explicitly only when making the current linkage assumption visible
+
+Requirements:
+
+- input must be one atomistic CIF with explicit `_geom_bond_*` connectivity
+- current public decomposition support is imine-only
+- topology must be supplied by the caller; automatic topology inference is not implemented
+
+Output:
+
+- default mode prints the recovered COFid
+- `--json` prints a result object with `status`, `cofid`, recovered monomer blocks, and metadata
+
+The decomposition logic in `cofkit` was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
 
 ### Run Zeo++ pore analysis on one CIF
 

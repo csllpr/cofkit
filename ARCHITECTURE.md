@@ -49,6 +49,10 @@
   - first-pass candidate ranking from event coverage, topology priors, bridge geometry, and unreacted penalties
 - `cofkit.cif`
   - legal P1 CIF export with atomistic output when monomer coordinates exist and coarse fallback pseudo-sites otherwise
+- `cofkit.decompose_cif`
+  - dependency-light CIF atom and explicit-bond extraction for decomposition workflows, using `gemmi` rather than ASE for the primary path
+- `cofkit.decompose`
+  - explicit-bond imine CIF decomposition into recovered monomer SMILES and a COFid; this logic is adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`
 - `cofkit.engine`
   - orchestration layer that combines planning, assignment, product-graph construction, initial embedding, optimization, and candidate scoring
 - `cofkit.batch`
@@ -62,7 +66,7 @@
 - `cofkit.cli_build`
   - build-facing command registration and handlers for single-pair generation, batch workflows, template discovery, and default-library generation
 - `cofkit.cli_analyze`
-  - analyze-facing command registration and handlers for output classification
+  - analyze-facing command registration and handlers for output classification, CIF-to-COFid decomposition, and Zeo++ pore analysis
 - `cofkit.cli_calculate`
   - calculate-facing command registration and handlers for the current LAMMPS and gRASPA external-tool workflows
 

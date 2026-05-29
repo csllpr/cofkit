@@ -1,3 +1,9 @@
+"""CIF-to-COFid decomposition helpers.
+
+The explicit-bond imine decomposition approach here is adapted from the
+deCOFpose project: https://github.com/r-fedorov/deCOFpose
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

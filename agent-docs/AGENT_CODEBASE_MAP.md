@@ -21,7 +21,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/cli_build.py](../src/cofkit/cli_build.py)
   - Owns build-facing commands such as `cofkit build single-pair` and the batch workflows.
 - [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py)
-  - Owns analysis-facing commands such as `cofkit analyze classify-output`.
+  - Owns analysis-facing commands such as `cofkit analyze classify-output`, `cofkit analyze decompose`, and `cofkit analyze zeopp`.
 - [src/cofkit/engine.py](../src/cofkit/engine.py)
   - Direct project-style API via `COFEngine`.
 - [src/cofkit/batch.py](../src/cofkit/batch.py)
@@ -81,6 +81,11 @@ Then go straight to the module that matches the task.
   - `valid` / `warning` / `hard_invalid` / `hard_hard_invalid` triage.
 - [src/cofkit/cif.py](../src/cofkit/cif.py)
   - CIF export, including realized inter-monomer bonds.
+- [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
+  - CIF atom-site and explicit-bond extraction for decomposition without adding ASE.
+- [src/cofkit/decompose.py](../src/cofkit/decompose.py)
+  - Explicit-bond imine decomposition into recovered monomers and COFid serialization.
+  - This logic was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
 
 ## Typical execution paths
 
@@ -99,6 +104,13 @@ Then go straight to the module that matches the task.
 3. pair enumeration and topology selection in [src/cofkit/batch.py](../src/cofkit/batch.py)
 4. topology-family dispatch via [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
 5. validation-aware CIF writing into `cifs/valid`, `cifs/warning`, or `cifs/invalid`
+
+### CIF decomposition from CLI
+
+1. `cofkit analyze decompose <CIF> --topology <TOKEN>` in [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py)
+2. atom and bond extraction via [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
+3. imine-linkage cutting and monomer repair via [src/cofkit/decompose.py](../src/cofkit/decompose.py)
+4. COFid serialization through [src/cofkit/cofid.py](../src/cofkit/cofid.py)
 
 ## Current architectural constraints
 
@@ -120,6 +132,10 @@ These are important before editing:
   - RDKit motif detection and monomer building.
 - [tests/test_reaction_realization.py](../tests/test_reaction_realization.py)
   - Atomistic reaction realization.
+- [tests/test_decompose_cif.py](../tests/test_decompose_cif.py)
+  - No-ASE CIF extraction and explicit-bond preservation.
+- [tests/test_decompose.py](../tests/test_decompose.py)
+  - CIF-to-COFid decomposition and generated hcb imine round trips.
 - [tests/test_core.py](../tests/test_core.py)
   - End-to-end project / template behavior.
 
