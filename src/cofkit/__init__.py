@@ -6,6 +6,8 @@ from .batch import (
 from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
 from .build_workflows import BuildWorkflowDefinition, BuildWorkflowRegistry, builtin_build_workflow_registry
 from .cif import CIFExportResult, CIFWriter, candidate_to_cif, write_candidate_cif
+from .decompose import CifDecompositionResult, DecomposedMonomer, decompose_cif_to_cofid
+from .decompose_cif import PeriodicCifAtoms, prepare_periodic_cif_atoms, read_periodic_cif_atoms
 from .graspa import (
     AVAILABLE_WIDOM_COMPONENTS,
     COFKIT_EQEQ_ENV_VAR,
@@ -167,6 +169,7 @@ __all__ = [
     "BuiltBatchMonomer",
     "CIFExportResult",
     "CIFWriter",
+    "CifDecompositionResult",
     "COFKIT_LMP_ENV_VAR",
     "CandidateScorer",
     "CandidateEnsemble",
@@ -174,6 +177,7 @@ __all__ = [
     "COFEngineConfig",
     "COFProject",
     "ContinuousOptimizer",
+    "DecomposedMonomer",
     "DEFAULT_LAMMPS_BINARY",
     "BridgeEventMetrics",
     "BatchOutputClassificationSummary",
@@ -231,6 +235,7 @@ __all__ = [
     "NetPlanner",
     "OptimizationResult",
     "OptimizerConfig",
+    "PeriodicCifAtoms",
     "PeriodicEmbedder",
     "PeriodicProductGraph",
     "Pose",
@@ -282,6 +287,7 @@ __all__ = [
     "CoarseValidationThresholds",
     "default_motif_kind_registry",
     "default_topology_repository",
+    "decompose_cif_to_cofid",
     "discover_rcsr_archives",
     "get_topology_hint",
     "imported_topology_data_dir",
@@ -291,6 +297,8 @@ __all__ = [
     "load_topology",
     "motif_pseudo_atom_symbol",
     "optimize_cif_with_lammps",
+    "prepare_periodic_cif_atoms",
+    "read_periodic_cif_atoms",
     "is_imine_cof_aldehyde_monomer",
     "is_imine_cof_amine_monomer",
     "resolve_eqeq_binary",

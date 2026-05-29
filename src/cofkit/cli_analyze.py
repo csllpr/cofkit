@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .decompose import decompose_cif_to_cofid
 from .validation import CoarseValidationThresholds, classify_batch_output
 from .zeopp import ZeoppError, analyze_zeopp_pore_properties
 
@@ -18,6 +19,7 @@ def add_analyze_group(subparsers) -> None:
 
     analyze_subparsers = parser.add_subparsers(dest="analyze_command")
     _add_classify_output_parser(analyze_subparsers)
+    _add_decompose_parser(analyze_subparsers)
     _add_zeopp_parser(analyze_subparsers)
 
 
@@ -95,6 +97,50 @@ def _run_classify_output(args: argparse.Namespace) -> None:
     print("hard_hard_invalid_reason_counts:", dict(summary.hard_hard_invalid_reason_counts))
     print("hard_invalid_reason_counts:", dict(summary.hard_invalid_reason_counts))
     print("classification_manifest:", summary.classification_manifest_path)
+
+
+def _add_decompose_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "decompose",
+        help="Decompose one atomistic CIF and emit a COFid when supported.",
+        description=(
+            "Decompose one atomistic CIF into COFid monomer blocks. Current support is limited "
+            "to explicit-bond imine CIFs; topology must be supplied by the caller."
+        ),
+    )
+    parser.add_argument("cif_path", help="Input CIF file to decompose.")
+    parser.add_argument(
+        "--topology",
+        required=True,
+        help="Topology token to place in the COFid, for example hcb or dia.",
+    )
+    parser.add_argument(
+        "--linkage",
+        default="imine",
+        help="Linkage token to analyze. Current supported value: imine.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full decomposition result as JSON instead of only the COFid.",
+    )
+    parser.set_defaults(func=_run_decompose)
+
+
+def _run_decompose(args: argparse.Namespace) -> None:
+    result = decompose_cif_to_cofid(
+        args.cif_path,
+        topology=args.topology,
+        linkage=args.linkage,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        if not result.ok:
+            raise SystemExit(2)
+        return
+    if not result.ok:
+        raise SystemExit(f"error: {result.reason or 'decomposition did not produce a COFid'}")
+    print(result.cofid)
 
 
 def _add_zeopp_parser(subparsers) -> None:
