@@ -582,7 +582,8 @@ cofkit analyze decompose \
 Current scope:
 
 - input must be an atomistic CIF with explicit `_geom_bond_*` connectivity
-- imine decomposition is the only public linkage mode
+- supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest` for boronate ester, `bken` for beta-ketoenamine, and `vinylene`
+- template-id aliases such as `hydrazone_bridge`, `boronate_ester_bridge`, and `keto_enamine_bridge` are also accepted through `--linkage`
 - the topology token is supplied by the caller through `--topology`
 - the implementation does not depend on ASE; CIF atom and bond data are extracted with the existing `gemmi` dependency
 

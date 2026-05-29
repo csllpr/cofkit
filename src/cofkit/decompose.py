@@ -1,6 +1,6 @@
 """CIF-to-COFid decomposition helpers.
 
-The explicit-bond imine decomposition approach here is adapted from the
+The explicit-bond decomposition approach here is adapted from the
 deCOFpose project: https://github.com/r-fedorov/deCOFpose
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 from .bond_types import cif_type_to_bond_order, is_aromatic_bond_order
 from .cofid import COFidMonomer, canonicalize_smiles, serialize_cofid
@@ -71,6 +71,25 @@ class CifDecompositionResult:
         }
 
 
+FragmentRepairer = Callable[[object], object]
+LinkageMarker = Callable[[object], tuple[int, ...]]
+ConnectivityCounter = Callable[[object, str], int]
+
+
+@dataclass(frozen=True)
+class LinkageDecompositionSpec:
+    linkage_code: str
+    template_id: str
+    roles: tuple[str, ...]
+    marker: LinkageMarker
+    repairers: Mapping[str, FragmentRepairer] = field(default_factory=dict)
+    connectivity_counter: ConnectivityCounter | None = None
+
+    @property
+    def metadata_key(self) -> str:
+        return f"n_{self.linkage_code}_linkage_bonds"
+
+
 def decompose_cif_to_cofid(
     cif_path: str | Path,
     *,
@@ -78,25 +97,29 @@ def decompose_cif_to_cofid(
     linkage: str = "imine",
 ) -> CifDecompositionResult:
     input_path = Path(cif_path)
-    if linkage != "imine":
+    spec = _resolve_linkage_spec(linkage)
+    if spec is None:
         return CifDecompositionResult(
             status="skipped",
             input_cif=str(input_path),
             topology=topology,
             linkage=linkage,
-            reason=f"unsupported linkage {linkage!r}; current CIF decomposition supports 'imine'",
+            reason=(
+                f"unsupported linkage {linkage!r}; current CIF decomposition supports "
+                f"{tuple(sorted(_DECOMPOSITION_LINKAGE_ALIASES))!r}"
+            ),
         )
 
     try:
         atoms = read_periodic_cif_atoms(input_path)
-        monomers, metadata = _decompose_explicit_imine_atoms(atoms)
+        monomers, metadata = _decompose_explicit_linkage_atoms(atoms, spec)
         if not monomers:
             return CifDecompositionResult(
                 status="skipped",
                 input_cif=str(input_path),
                 topology=topology,
-                linkage=linkage,
-                reason="no imine monomers were recovered",
+                linkage=spec.linkage_code,
+                reason=f"no {spec.linkage_code} monomers were recovered",
                 metadata=metadata,
             )
         cofid_monomers = tuple(
@@ -105,12 +128,12 @@ def decompose_cif_to_cofid(
                 key=lambda monomer: (-monomer.connectivity, monomer.canonical_smiles),
             )
         )
-        cofid = serialize_cofid(monomers=cofid_monomers, topology=topology, linkage=linkage)
+        cofid = serialize_cofid(monomers=cofid_monomers, topology=topology, linkage=spec.linkage_code)
         return CifDecompositionResult(
             status="success",
             input_cif=str(input_path),
             topology=topology,
-            linkage=linkage,
+            linkage=spec.linkage_code,
             cofid=cofid,
             monomers=monomers,
             metadata=metadata,
@@ -120,27 +143,28 @@ def decompose_cif_to_cofid(
             status="skipped",
             input_cif=str(input_path),
             topology=topology,
-            linkage=linkage,
+            linkage=spec.linkage_code,
             reason=f"{type(exc).__name__}: {exc}",
         )
 
 
-def _decompose_explicit_imine_atoms(
+def _decompose_explicit_linkage_atoms(
     atoms: PeriodicCifAtoms,
+    spec: LinkageDecompositionSpec,
 ) -> tuple[tuple[DecomposedMonomer, ...], dict[str, object]]:
     if Chem is None:
         raise RuntimeError("RDKit is required for CIF decomposition.")
     mol = _build_explicit_bond_mol(atoms)
-    imine_bond_indices = _mark_imine_linkage_bonds(mol)
-    if not imine_bond_indices:
+    linkage_bond_indices = spec.marker(mol)
+    if not linkage_bond_indices:
         return (), {
             "n_atoms": mol.GetNumAtoms(),
             "n_bonds": mol.GetNumBonds(),
-            "n_imine_linkage_bonds": 0,
+            spec.metadata_key: 0,
         }
 
     editable = Chem.RWMol(mol)
-    for bond_idx in sorted(imine_bond_indices, reverse=True):
+    for bond_idx in sorted(linkage_bond_indices, reverse=True):
         bond = editable.GetBondWithIdx(bond_idx)
         editable.RemoveBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
 
@@ -148,7 +172,7 @@ def _decompose_explicit_imine_atoms(
     monomers_by_key: dict[tuple[str, str, int], tuple[DecomposedMonomer, int]] = {}
     skipped_fragments = 0
     for fragment in fragments:
-        monomer = _repair_imine_fragment_to_monomer(fragment)
+        monomer = _repair_linkage_fragment_to_monomer(fragment, spec)
         if monomer is None:
             skipped_fragments += 1
             continue
@@ -176,7 +200,7 @@ def _decompose_explicit_imine_atoms(
     return monomers, {
         "n_atoms": mol.GetNumAtoms(),
         "n_bonds": mol.GetNumBonds(),
-        "n_imine_linkage_bonds": len(imine_bond_indices),
+        spec.metadata_key: len(linkage_bond_indices),
         "n_fragments_after_cut": len(fragments),
         "n_unique_monomers": len(monomers),
         "n_skipped_fragments": skipped_fragments,
@@ -227,45 +251,173 @@ def _build_explicit_bond_mol(atoms: PeriodicCifAtoms):
     return mol
 
 
-def _mark_imine_linkage_bonds(mol) -> tuple[int, ...]:
-    imine_bond_indices: list[int] = []
+def _mark_carbon_hetero_double_linkage_bonds(
+    mol,
+    *,
+    carbon_role: str,
+    hetero_role: str,
+    hetero_atomic_num: int,
+) -> tuple[int, ...]:
+    bond_indices: list[int] = []
     for bond in mol.GetBonds():
         if abs(float(bond.GetBondTypeAsDouble()) - 2.0) > 1.0e-6:
             continue
         first = bond.GetBeginAtom()
         second = bond.GetEndAtom()
         atomic_nums = {first.GetAtomicNum(), second.GetAtomicNum()}
-        if atomic_nums != {6, 7}:
+        if atomic_nums != {6, hetero_atomic_num}:
             continue
         if first.GetProp("instance_id") == second.GetProp("instance_id"):
             continue
         carbon = first if first.GetAtomicNum() == 6 else second
-        nitrogen = first if first.GetAtomicNum() == 7 else second
-        carbon.SetProp("cofkit_decompose_role", "aldehyde")
-        nitrogen.SetProp("cofkit_decompose_role", "amine")
-        imine_bond_indices.append(bond.GetIdx())
-    return tuple(imine_bond_indices)
+        hetero = first if first.GetAtomicNum() == hetero_atomic_num else second
+        carbon.SetProp("cofkit_decompose_role", carbon_role)
+        hetero.SetProp("cofkit_decompose_role", hetero_role)
+        bond_indices.append(bond.GetIdx())
+    return tuple(bond_indices)
 
 
-def _repair_imine_fragment_to_monomer(fragment) -> DecomposedMonomer | None:
+def _mark_imine_linkage_bonds(mol) -> tuple[int, ...]:
+    return _mark_carbon_hetero_double_linkage_bonds(
+        mol,
+        carbon_role="aldehyde",
+        hetero_role="amine",
+        hetero_atomic_num=7,
+    )
+
+
+def _mark_hydrazone_linkage_bonds(mol) -> tuple[int, ...]:
+    return _mark_carbon_hetero_double_linkage_bonds(
+        mol,
+        carbon_role="aldehyde",
+        hetero_role="hydrazide",
+        hetero_atomic_num=7,
+    )
+
+
+def _mark_azine_linkage_bonds(mol) -> tuple[int, ...]:
+    return _mark_carbon_hetero_double_linkage_bonds(
+        mol,
+        carbon_role="aldehyde",
+        hetero_role="hydrazine",
+        hetero_atomic_num=7,
+    )
+
+
+def _mark_keto_enamine_linkage_bonds(mol) -> tuple[int, ...]:
+    return _mark_carbon_hetero_double_linkage_bonds(
+        mol,
+        carbon_role="keto_aldehyde",
+        hetero_role="amine",
+        hetero_atomic_num=7,
+    )
+
+
+def _mark_vinylene_linkage_bonds(mol) -> tuple[int, ...]:
+    bond_indices: list[int] = []
+    for bond in mol.GetBonds():
+        if abs(float(bond.GetBondTypeAsDouble()) - 2.0) > 1.0e-6:
+            continue
+        first = bond.GetBeginAtom()
+        second = bond.GetEndAtom()
+        if first.GetAtomicNum() != 6 or second.GetAtomicNum() != 6:
+            continue
+        if first.GetProp("instance_id") == second.GetProp("instance_id"):
+            continue
+        aldehyde, activated = _orient_vinylene_atoms(first, second)
+        aldehyde.SetProp("cofkit_decompose_role", "aldehyde")
+        activated.SetProp("cofkit_decompose_role", "activated_methylene")
+        bond_indices.append(bond.GetIdx())
+    return tuple(bond_indices)
+
+
+def _mark_boronate_ester_linkage_bonds(mol) -> tuple[int, ...]:
+    bond_indices: list[int] = []
+    for bond in mol.GetBonds():
+        if abs(float(bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
+            continue
+        first = bond.GetBeginAtom()
+        second = bond.GetEndAtom()
+        atomic_nums = {first.GetAtomicNum(), second.GetAtomicNum()}
+        if atomic_nums != {5, 8}:
+            continue
+        if first.GetProp("instance_id") == second.GetProp("instance_id"):
+            continue
+        boron = first if first.GetAtomicNum() == 5 else second
+        oxygen = first if first.GetAtomicNum() == 8 else second
+        boron.SetProp("cofkit_decompose_role", "boronic_acid")
+        oxygen.SetProp("cofkit_decompose_role", "catechol")
+        bond_indices.append(bond.GetIdx())
+    return tuple(bond_indices)
+
+
+def _repair_linkage_fragment_to_monomer(
+    fragment,
+    spec: LinkageDecompositionSpec,
+) -> DecomposedMonomer | None:
     endpoint_roles = {
         atom.GetProp("cofkit_decompose_role")
         for atom in fragment.GetAtoms()
         if atom.HasProp("cofkit_decompose_role")
     }
-    if endpoint_roles == {"amine"}:
-        return _finalize_repaired_fragment(fragment, "amine")
-    if endpoint_roles == {"aldehyde"}:
-        return _finalize_repaired_fragment(_restore_aldehyde_oxygens(fragment), "aldehyde")
-    return None
+    if len(endpoint_roles) != 1:
+        return None
+    reactive_group = next(iter(endpoint_roles))
+    if reactive_group not in spec.roles:
+        return None
+    repaired = spec.repairers.get(reactive_group, _identity_fragment_repairer)(fragment)
+    return _finalize_repaired_fragment(
+        repaired,
+        reactive_group,
+        connectivity_counter=spec.connectivity_counter,
+    )
+
+
+def _identity_fragment_repairer(fragment):
+    return fragment
 
 
 def _restore_aldehyde_oxygens(fragment):
+    return _restore_double_oxygens(fragment, "aldehyde")
+
+
+def _restore_keto_aldehyde_fragment(fragment):
+    editable = Chem.RWMol(fragment)
+    for bond in tuple(editable.GetBonds()):
+        if bond.GetBondType() != Chem.BondType.DOUBLE:
+            continue
+        first = bond.GetBeginAtom()
+        second = bond.GetEndAtom()
+        if {first.GetAtomicNum(), second.GetAtomicNum()} != {6, 8}:
+            continue
+        carbon = first if first.GetAtomicNum() == 6 else second
+        if carbon.GetIsAromatic():
+            bond.SetBondType(Chem.BondType.SINGLE)
+    return _restore_double_oxygens(editable.GetMol(), "keto_aldehyde")
+
+
+def _restore_boronic_acid_oxygens(fragment):
     editable = Chem.RWMol(fragment)
     endpoint_indices = [
         atom.GetIdx()
         for atom in editable.GetAtoms()
-        if atom.HasProp("cofkit_decompose_role") and atom.GetProp("cofkit_decompose_role") == "aldehyde"
+        if atom.HasProp("cofkit_decompose_role") and atom.GetProp("cofkit_decompose_role") == "boronic_acid"
+    ]
+    for boron_idx in endpoint_indices:
+        boron = editable.GetAtomWithIdx(boron_idx)
+        oxygen_neighbor_count = sum(1 for neighbor in boron.GetNeighbors() if neighbor.GetAtomicNum() == 8)
+        for _ in range(max(0, 2 - oxygen_neighbor_count)):
+            oxygen_idx = editable.AddAtom(Chem.Atom("O"))
+            editable.AddBond(boron_idx, oxygen_idx, Chem.BondType.SINGLE)
+    return editable.GetMol()
+
+
+def _restore_double_oxygens(fragment, role: str):
+    editable = Chem.RWMol(fragment)
+    endpoint_indices = [
+        atom.GetIdx()
+        for atom in editable.GetAtoms()
+        if atom.HasProp("cofkit_decompose_role") and atom.GetProp("cofkit_decompose_role") == role
     ]
     for carbon_idx in endpoint_indices:
         carbon = editable.GetAtomWithIdx(carbon_idx)
@@ -276,11 +428,16 @@ def _restore_aldehyde_oxygens(fragment):
     return editable.GetMol()
 
 
-def _finalize_repaired_fragment(fragment, reactive_group: str) -> DecomposedMonomer | None:
-    endpoint_count = sum(
-        1
-        for atom in fragment.GetAtoms()
-        if atom.HasProp("cofkit_decompose_role") and atom.GetProp("cofkit_decompose_role") == reactive_group
+def _finalize_repaired_fragment(
+    fragment,
+    reactive_group: str,
+    *,
+    connectivity_counter: ConnectivityCounter | None = None,
+) -> DecomposedMonomer | None:
+    endpoint_count = (
+        connectivity_counter(fragment, reactive_group)
+        if connectivity_counter is not None
+        else _default_connectivity_count(fragment, reactive_group)
     )
     if endpoint_count <= 0:
         return None
@@ -305,6 +462,23 @@ def _finalize_repaired_fragment(fragment, reactive_group: str) -> DecomposedMono
     )
 
 
+def _default_connectivity_count(fragment, reactive_group: str) -> int:
+    return sum(
+        1
+        for atom in fragment.GetAtoms()
+        if atom.HasProp("cofkit_decompose_role") and atom.GetProp("cofkit_decompose_role") == reactive_group
+    )
+
+
+def _connectivity_count(fragment, reactive_group: str) -> int:
+    count = _default_connectivity_count(fragment, reactive_group)
+    if reactive_group == "catechol":
+        if count % 2 != 0:
+            raise ValueError("catechol decomposition found an odd number of marked catechol oxygens")
+        return count // 2
+    return count
+
+
 def _has_double_bonded_oxygen(atom) -> bool:
     return any(
         bond.GetBondType() == Chem.BondType.DOUBLE and bond.GetOtherAtom(atom).GetAtomicNum() == 8
@@ -326,6 +500,107 @@ def _instance_id(label: str) -> str:
     if "_" not in label:
         return ""
     return label.split("_", 1)[0]
+
+
+def _orient_vinylene_atoms(first, second):
+    first_score = _vinylene_aldehyde_score(first)
+    second_score = _vinylene_aldehyde_score(second)
+    if first_score > second_score:
+        return first, second
+    if second_score > first_score:
+        return second, first
+    first_instance = first.GetProp("instance_id")
+    second_instance = second.GetProp("instance_id")
+    return (first, second) if first_instance > second_instance else (second, first)
+
+
+def _vinylene_aldehyde_score(atom) -> int:
+    score = 0
+    for neighbor in atom.GetNeighbors():
+        if neighbor.GetAtomicNum() == 8:
+            score += 4
+        elif neighbor.GetAtomicNum() == 6 and neighbor.GetIsAromatic():
+            score += 2
+        elif neighbor.GetAtomicNum() in {7, 8, 15, 16}:
+            score -= 1
+    return score
+
+
+def _resolve_linkage_spec(linkage: str) -> LinkageDecompositionSpec | None:
+    return _DECOMPOSITION_LINKAGE_ALIASES.get(str(linkage).strip().lower())
+
+
+_IMINE_SPEC = LinkageDecompositionSpec(
+    linkage_code="imine",
+    template_id="imine_bridge",
+    roles=("amine", "aldehyde"),
+    marker=_mark_imine_linkage_bonds,
+    repairers={"aldehyde": _restore_aldehyde_oxygens},
+    connectivity_counter=_connectivity_count,
+)
+
+_HYDRAZONE_SPEC = LinkageDecompositionSpec(
+    linkage_code="hydrazone",
+    template_id="hydrazone_bridge",
+    roles=("hydrazide", "aldehyde"),
+    marker=_mark_hydrazone_linkage_bonds,
+    repairers={"aldehyde": _restore_aldehyde_oxygens},
+    connectivity_counter=_connectivity_count,
+)
+
+_AZINE_SPEC = LinkageDecompositionSpec(
+    linkage_code="azine",
+    template_id="azine_bridge",
+    roles=("hydrazine", "aldehyde"),
+    marker=_mark_azine_linkage_bonds,
+    repairers={"aldehyde": _restore_aldehyde_oxygens},
+    connectivity_counter=_connectivity_count,
+)
+
+_BORONATE_ESTER_SPEC = LinkageDecompositionSpec(
+    linkage_code="boest",
+    template_id="boronate_ester_bridge",
+    roles=("boronic_acid", "catechol"),
+    marker=_mark_boronate_ester_linkage_bonds,
+    repairers={"boronic_acid": _restore_boronic_acid_oxygens},
+    connectivity_counter=_connectivity_count,
+)
+
+_KETO_ENAMINE_SPEC = LinkageDecompositionSpec(
+    linkage_code="bken",
+    template_id="keto_enamine_bridge",
+    roles=("amine", "keto_aldehyde"),
+    marker=_mark_keto_enamine_linkage_bonds,
+    repairers={"keto_aldehyde": _restore_keto_aldehyde_fragment},
+    connectivity_counter=_connectivity_count,
+)
+
+_VINYLENE_SPEC = LinkageDecompositionSpec(
+    linkage_code="vinylene",
+    template_id="vinylene_bridge",
+    roles=("activated_methylene", "aldehyde"),
+    marker=_mark_vinylene_linkage_bonds,
+    repairers={"aldehyde": _restore_aldehyde_oxygens},
+    connectivity_counter=_connectivity_count,
+)
+
+_DECOMPOSITION_LINKAGE_ALIASES: Mapping[str, LinkageDecompositionSpec] = {
+    "imine": _IMINE_SPEC,
+    "imine_bridge": _IMINE_SPEC,
+    "hydrazone": _HYDRAZONE_SPEC,
+    "hydrazone_bridge": _HYDRAZONE_SPEC,
+    "azine": _AZINE_SPEC,
+    "azine_bridge": _AZINE_SPEC,
+    "boest": _BORONATE_ESTER_SPEC,
+    "boronate_ester": _BORONATE_ESTER_SPEC,
+    "boronate_ester_bridge": _BORONATE_ESTER_SPEC,
+    "bken": _KETO_ENAMINE_SPEC,
+    "beta-ketoenamine": _KETO_ENAMINE_SPEC,
+    "beta_ketoenamine": _KETO_ENAMINE_SPEC,
+    "keto_enamine_bridge": _KETO_ENAMINE_SPEC,
+    "vinylene": _VINYLENE_SPEC,
+    "vinylene_bridge": _VINYLENE_SPEC,
+}
 
 
 __all__ = [

@@ -8,8 +8,9 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Added
 
-- initial `cofkit analyze decompose` command for recovering a COFid from supported explicit-bond imine CIFs, with no ASE dependency in the CIF extraction path
-- regression coverage for hcb imine CIF round trips, verifying that decomposition recovers the original monomer inputs for generated `3+3` and `3+2` cases
+- initial `cofkit analyze decompose` command for recovering a COFid from supported explicit-bond CIFs, with no ASE dependency in the CIF extraction path
+- decomposition support for all current topology-guided binary-bridge build linkages: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`
+- regression coverage for hcb CIF round trips, verifying that decomposition recovers the original monomer inputs for generated COFs across the buildable binary-bridge linkages
 
 ### Notes
 

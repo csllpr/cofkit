@@ -166,12 +166,13 @@ cofkit analyze decompose \
 Useful variants:
 
 - add `--json` when you need recovered monomer details and diagnostic metadata
-- pass `--linkage imine` explicitly only when making the current linkage assumption visible
+- pass `--linkage hydrazone`, `--linkage azine`, `--linkage boest`, `--linkage bken`, or `--linkage vinylene` for non-imine CIFs
+- template-id aliases such as `--linkage hydrazone_bridge` are accepted and normalize to the canonical COFid linkage code
 
 Requirements:
 
 - input must be one atomistic CIF with explicit `_geom_bond_*` connectivity
-- current public decomposition support is imine-only
+- current public decomposition support covers the buildable binary-bridge linkages: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`
 - topology must be supplied by the caller; automatic topology inference is not implemented
 
 Output:

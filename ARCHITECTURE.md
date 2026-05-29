@@ -52,7 +52,7 @@
 - `cofkit.decompose_cif`
   - dependency-light CIF atom and explicit-bond extraction for decomposition workflows, using `gemmi` rather than ASE for the primary path
 - `cofkit.decompose`
-  - explicit-bond imine CIF decomposition into recovered monomer SMILES and a COFid; this logic is adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`
+  - explicit-bond CIF decomposition into recovered monomer SMILES and a COFid for the buildable binary-bridge linkages; this logic is adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`
 - `cofkit.engine`
   - orchestration layer that combines planning, assignment, product-graph construction, initial embedding, optimization, and candidate scoring
 - `cofkit.batch`

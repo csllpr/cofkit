@@ -84,7 +84,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
   - CIF atom-site and explicit-bond extraction for decomposition without adding ASE.
 - [src/cofkit/decompose.py](../src/cofkit/decompose.py)
-  - Explicit-bond imine decomposition into recovered monomers and COFid serialization.
+  - Explicit-bond binary-bridge decomposition into recovered monomers and COFid serialization.
   - This logic was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
 
 ## Typical execution paths
@@ -109,7 +109,7 @@ Then go straight to the module that matches the task.
 
 1. `cofkit analyze decompose <CIF> --topology <TOKEN>` in [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py)
 2. atom and bond extraction via [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
-3. imine-linkage cutting and monomer repair via [src/cofkit/decompose.py](../src/cofkit/decompose.py)
+3. linkage-specific cutting and monomer repair via [src/cofkit/decompose.py](../src/cofkit/decompose.py)
 4. COFid serialization through [src/cofkit/cofid.py](../src/cofkit/cofid.py)
 
 ## Current architectural constraints
@@ -135,7 +135,7 @@ These are important before editing:
 - [tests/test_decompose_cif.py](../tests/test_decompose_cif.py)
   - No-ASE CIF extraction and explicit-bond preservation.
 - [tests/test_decompose.py](../tests/test_decompose.py)
-  - CIF-to-COFid decomposition and generated hcb imine round trips.
+  - CIF-to-COFid decomposition and generated hcb round trips across buildable binary-bridge linkages.
 - [tests/test_core.py](../tests/test_core.py)
   - End-to-end project / template behavior.
 

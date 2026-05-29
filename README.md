@@ -263,7 +263,7 @@ cofkit analyze decompose \
   --topology hcb
 ```
 
-On success, this prints the recovered COFid. Current support is intentionally narrow: the input must be an atomistic CIF with explicit `_geom_bond_*` connectivity and imine bond types, and the topology token is supplied by the caller. The decomposition logic in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
+On success, this prints the recovered COFid. Current support is intentionally scoped to atomistic CIFs with explicit `_geom_bond_*` connectivity, and the topology token is supplied by the caller. Use `--linkage` for non-imine structures. Supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest` for boronate ester, `bken` for beta-ketoenamine, and `vinylene`; template-id aliases such as `hydrazone_bridge` are also accepted. The decomposition logic in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
 
 ### Run initial Zeo++ pore analysis on one CIF
 

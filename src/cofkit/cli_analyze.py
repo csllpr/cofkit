@@ -104,8 +104,8 @@ def _add_decompose_parser(subparsers) -> None:
         "decompose",
         help="Decompose one atomistic CIF and emit a COFid when supported.",
         description=(
-            "Decompose one atomistic CIF into COFid monomer blocks. Current support is limited "
-            "to explicit-bond imine CIFs; topology must be supplied by the caller."
+            "Decompose one atomistic CIF into COFid monomer blocks. Current support covers "
+            "the buildable binary-bridge linkages with explicit CIF bonds; topology must be supplied by the caller."
         ),
     )
     parser.add_argument("cif_path", help="Input CIF file to decompose.")
@@ -117,7 +117,10 @@ def _add_decompose_parser(subparsers) -> None:
     parser.add_argument(
         "--linkage",
         default="imine",
-        help="Linkage token to analyze. Current supported value: imine.",
+        help=(
+            "Linkage token to analyze. Supported canonical values: imine, hydrazone, azine, "
+            "boest, bken, vinylene. Template-id aliases such as hydrazone_bridge are also accepted."
+        ),
     )
     parser.add_argument(
         "--json",
