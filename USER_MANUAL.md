@@ -581,11 +581,13 @@ cofkit analyze decompose \
 
 Current scope:
 
-- input must be an atomistic CIF with explicit `_geom_bond_*` connectivity
+- input must be an atomistic CIF for one of the supported binary-bridge structures
+- explicit `_geom_bond_*` connectivity is preferred; if the bond loop is absent, `cofkit` falls back to periodic distance-based bond detection
+- if bond labels are present but `_ccdc_geom_bond_type` / `_geom_bond_type` is absent, `cofkit` infers bond orders from local geometry
 - supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest` for boronate ester, `bken` for beta-ketoenamine, and `vinylene`
 - template-id aliases such as `hydrazone_bridge`, `boronate_ester_bridge`, and `keto_enamine_bridge` are also accepted through `--linkage`
 - the topology token is supplied by the caller through `--topology`
-- the implementation does not depend on ASE; CIF atom and bond data are extracted with the existing `gemmi` dependency
+- the implementation does not depend on ASE; CIF atom, bond, and cell data are extracted with the existing `gemmi` dependency
 
 The decomposition workflow in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
 

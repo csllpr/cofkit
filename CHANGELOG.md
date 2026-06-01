@@ -8,8 +8,9 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Added
 
-- initial `cofkit analyze decompose` command for recovering a COFid from supported explicit-bond CIFs, with no ASE dependency in the CIF extraction path
+- initial `cofkit analyze decompose` command for recovering a COFid from supported atomistic CIFs, with no ASE dependency in the CIF extraction path
 - decomposition support for all current topology-guided binary-bridge build linkages: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`
+- decomposition fallback support for atomistic CIFs without explicit bond loops, plus bond-order inference when `_geom_bond_*` labels are present without `_ccdc_geom_bond_type` / `_geom_bond_type`
 - regression coverage for hcb CIF round trips, verifying that decomposition recovers the original monomer inputs for generated COFs across the buildable binary-bridge linkages
 
 ### Notes

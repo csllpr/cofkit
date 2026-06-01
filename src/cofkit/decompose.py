@@ -1,12 +1,14 @@
 """CIF-to-COFid decomposition helpers.
 
-The explicit-bond decomposition approach here is adapted from the
+The decomposition approach here is adapted from the
 deCOFpose project: https://github.com/r-fedorov/deCOFpose
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from math import sqrt
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -74,6 +76,8 @@ class CifDecompositionResult:
 FragmentRepairer = Callable[[object], object]
 LinkageMarker = Callable[[object], tuple[int, ...]]
 ConnectivityCounter = Callable[[object, str], int]
+Vec3 = tuple[float, float, float]
+_CIF_NUMBER_RE = re.compile(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)(?:\(\d+\))?$")
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,20 @@ class LinkageDecompositionSpec:
     @property
     def metadata_key(self) -> str:
         return f"n_{self.linkage_code}_linkage_bonds"
+
+
+@dataclass(frozen=True)
+class BondCandidate:
+    atom_idx_1: int
+    atom_idx_2: int
+    distance: float
+    explicit_order: float | None = None
+
+
+@dataclass(frozen=True)
+class BondedMolBuildResult:
+    mol: object
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
 
 def decompose_cif_to_cofid(
@@ -112,7 +130,7 @@ def decompose_cif_to_cofid(
 
     try:
         atoms = read_periodic_cif_atoms(input_path)
-        monomers, metadata = _decompose_explicit_linkage_atoms(atoms, spec)
+        monomers, metadata = _decompose_linkage_atoms(atoms, spec)
         if not monomers:
             return CifDecompositionResult(
                 status="skipped",
@@ -148,16 +166,18 @@ def decompose_cif_to_cofid(
         )
 
 
-def _decompose_explicit_linkage_atoms(
+def _decompose_linkage_atoms(
     atoms: PeriodicCifAtoms,
     spec: LinkageDecompositionSpec,
 ) -> tuple[tuple[DecomposedMonomer, ...], dict[str, object]]:
     if Chem is None:
         raise RuntimeError("RDKit is required for CIF decomposition.")
-    mol = _build_explicit_bond_mol(atoms)
+    build_result = _build_bonded_mol(atoms)
+    mol = build_result.mol
     linkage_bond_indices = spec.marker(mol)
     if not linkage_bond_indices:
         return (), {
+            **dict(build_result.metadata),
             "n_atoms": mol.GetNumAtoms(),
             "n_bonds": mol.GetNumBonds(),
             spec.metadata_key: 0,
@@ -198,6 +218,7 @@ def _decompose_explicit_linkage_atoms(
         )
     )
     return monomers, {
+        **dict(build_result.metadata),
         "n_atoms": mol.GetNumAtoms(),
         "n_bonds": mol.GetNumBonds(),
         spec.metadata_key: len(linkage_bond_indices),
@@ -207,10 +228,10 @@ def _decompose_explicit_linkage_atoms(
     }
 
 
-def _build_explicit_bond_mol(atoms: PeriodicCifAtoms):
+def _build_bonded_mol(atoms: PeriodicCifAtoms) -> BondedMolBuildResult:
     labels = tuple(atoms.info.get("_atom_site_label", ()))
     if len(labels) != len(atoms):
-        raise ValueError("explicit decomposition requires CIF atom labels aligned with atom sites")
+        raise ValueError("decomposition requires CIF atom labels aligned with atom sites")
 
     rw_mol = Chem.RWMol()
     for label, symbol in zip(labels, atoms.symbols):
@@ -219,12 +240,75 @@ def _build_explicit_bond_mol(atoms: PeriodicCifAtoms):
         atom.SetProp("instance_id", _instance_id(str(label)))
         rw_mol.AddAtom(atom)
 
+    candidates, metadata = _bond_candidates_from_cif_or_geometry(atoms, labels)
+    if not candidates:
+        raise ValueError("decomposition could not infer any covalent bonds from CIF atom positions")
+
+    added_pairs: set[frozenset[int]] = set()
+    for candidate in candidates:
+        key = frozenset((candidate.atom_idx_1, candidate.atom_idx_2))
+        if key in added_pairs:
+            continue
+        rw_mol.AddBond(candidate.atom_idx_1, candidate.atom_idx_2, Chem.BondType.SINGLE)
+        added_pairs.add(key)
+
+    mol = rw_mol.GetMol()
+    ring_bonds = _ring_bond_keys(mol)
+    inferred_order_count = 0
+    for candidate in candidates:
+        bond = mol.GetBondBetweenAtoms(candidate.atom_idx_1, candidate.atom_idx_2)
+        if bond is None:
+            continue
+        order = candidate.explicit_order
+        if order is None:
+            order = _infer_bond_order(mol, candidate, ring_bonds)
+            inferred_order_count += 1
+        _apply_bond_order(mol, bond, order)
+
+    mol.UpdatePropertyCache(strict=False)
+    return BondedMolBuildResult(
+        mol=mol,
+        metadata={
+            **metadata,
+            "n_bond_orders_inferred": inferred_order_count,
+        },
+    )
+
+
+def _bond_candidates_from_cif_or_geometry(
+    atoms: PeriodicCifAtoms,
+    labels: tuple[str, ...],
+) -> tuple[tuple[BondCandidate, ...], dict[str, object]]:
     label_to_idx = {label: index for index, label in enumerate(labels)}
     bond_labels_1 = tuple(atoms.info.get("_geom_bond_atom_site_label_1", ()))
     bond_labels_2 = tuple(atoms.info.get("_geom_bond_atom_site_label_2", ()))
-    if not bond_labels_1 or not bond_labels_2:
-        raise ValueError("explicit decomposition requires _geom_bond_atom_site_label_1/2 loops")
+    if bond_labels_1 and bond_labels_2:
+        candidates, n_missing_orders = _explicit_bond_candidates(atoms, label_to_idx, bond_labels_1, bond_labels_2)
+        return candidates, {
+            "bond_source": "explicit_cif",
+            "n_explicit_cif_bonds": len(candidates),
+            "n_missing_cif_bond_orders": n_missing_orders,
+            "n_distance_inferred_bonds": 0,
+        }
+
+    candidates = _distance_inferred_bond_candidates(atoms)
+    return candidates, {
+        "bond_source": "distance_inferred",
+        "n_explicit_cif_bonds": 0,
+        "n_missing_cif_bond_orders": 0,
+        "n_distance_inferred_bonds": len(candidates),
+    }
+
+
+def _explicit_bond_candidates(
+    atoms: PeriodicCifAtoms,
+    label_to_idx: Mapping[str, int],
+    bond_labels_1: tuple[str, ...],
+    bond_labels_2: tuple[str, ...],
+) -> tuple[tuple[BondCandidate, ...], int]:
     bond_types = tuple(atoms.info.get("_ccdc_geom_bond_type") or atoms.info.get("_geom_bond_type") or ())
+    bond_distances = tuple(atoms.info.get("_geom_bond_distance") or ())
+    candidates: list[BondCandidate] = []
     added_pairs: set[frozenset[int]] = set()
     for row_idx, (label_1, label_2) in enumerate(zip(bond_labels_1, bond_labels_2)):
         if label_1 not in label_to_idx or label_2 not in label_to_idx:
@@ -236,19 +320,92 @@ def _build_explicit_bond_mol(atoms: PeriodicCifAtoms):
         key = frozenset((idx_1, idx_2))
         if key in added_pairs:
             continue
-        order = cif_type_to_bond_order(bond_types[row_idx] if row_idx < len(bond_types) else None) or 1.0
-        bond_type = _rdkit_bond_type(order)
-        rw_mol.AddBond(idx_1, idx_2, bond_type)
-        bond = rw_mol.GetBondBetweenAtoms(idx_1, idx_2)
-        if is_aromatic_bond_order(order):
-            bond.SetIsAromatic(True)
-            rw_mol.GetAtomWithIdx(idx_1).SetIsAromatic(True)
-            rw_mol.GetAtomWithIdx(idx_2).SetIsAromatic(True)
+        order = cif_type_to_bond_order(bond_types[row_idx] if row_idx < len(bond_types) else None)
+        distance = _explicit_bond_distance(atoms, idx_1, idx_2, bond_distances, row_idx)
+        candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=order))
         added_pairs.add(key)
+    return tuple(candidates), sum(1 for candidate in candidates if candidate.explicit_order is None)
 
-    mol = rw_mol.GetMol()
-    mol.UpdatePropertyCache(strict=False)
-    return mol
+
+def _explicit_bond_distance(
+    atoms: PeriodicCifAtoms,
+    idx_1: int,
+    idx_2: int,
+    bond_distances: tuple[str, ...],
+    row_idx: int,
+) -> float:
+    if row_idx < len(bond_distances):
+        try:
+            return _parse_cif_float(bond_distances[row_idx])
+        except ValueError:
+            pass
+    return _minimum_image_distance(atoms, idx_1, idx_2)
+
+
+def _distance_inferred_bond_candidates(atoms: PeriodicCifAtoms) -> tuple[BondCandidate, ...]:
+    candidates: list[BondCandidate] = []
+    for idx_1, symbol_1 in enumerate(atoms.symbols):
+        for idx_2 in range(idx_1 + 1, len(atoms.symbols)):
+            symbol_2 = atoms.symbols[idx_2]
+            distance = _minimum_image_distance(atoms, idx_1, idx_2)
+            if _is_plausible_bond_distance(symbol_1, symbol_2, distance):
+                candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=None))
+    return tuple(candidates)
+
+
+def _ring_bond_keys(mol) -> set[frozenset[int]]:
+    ring_bonds: set[frozenset[int]] = set()
+    Chem.GetSymmSSSR(mol)
+    for bond_ring in mol.GetRingInfo().BondRings():
+        if len(bond_ring) not in {5, 6}:
+            continue
+        for bond_idx in bond_ring:
+            bond = mol.GetBondWithIdx(int(bond_idx))
+            ring_bonds.add(frozenset((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())))
+    return ring_bonds
+
+
+def _infer_bond_order(mol, candidate: BondCandidate, ring_bonds: set[frozenset[int]]) -> float:
+    atom_1 = mol.GetAtomWithIdx(candidate.atom_idx_1)
+    atom_2 = mol.GetAtomWithIdx(candidate.atom_idx_2)
+    z1 = atom_1.GetAtomicNum()
+    z2 = atom_2.GetAtomicNum()
+    pair = frozenset((z1, z2))
+    distance = candidate.distance
+    ring_key = frozenset((candidate.atom_idx_1, candidate.atom_idx_2))
+
+    same_instance = atom_1.GetProp("instance_id") == atom_2.GetProp("instance_id")
+    if same_instance and ring_key in ring_bonds and pair in {frozenset((6, 6)), frozenset((6, 7)), frozenset((6, 16))}:
+        if 1.20 <= distance <= 1.50:
+            return 1.5
+
+    if 1 in pair:
+        return 1.0
+    if 5 in pair:
+        return 1.0
+    if pair == frozenset((6, 8)):
+        return 2.0 if distance <= 1.30 else 1.0
+    if pair == frozenset((6, 7)):
+        if distance <= 1.22:
+            return 3.0
+        if not same_instance and distance <= 1.48:
+            return 2.0
+        return 2.0 if distance <= 1.28 else 1.0
+    if pair == frozenset((6, 6)):
+        if distance <= 1.24:
+            return 3.0
+        if not same_instance and distance <= 1.46:
+            return 2.0
+        return 2.0 if distance <= 1.37 else 1.0
+    return 1.0
+
+
+def _apply_bond_order(mol, bond, order: float) -> None:
+    bond.SetBondType(_rdkit_bond_type(order))
+    if is_aromatic_bond_order(order):
+        bond.SetIsAromatic(True)
+        bond.GetBeginAtom().SetIsAromatic(True)
+        bond.GetEndAtom().SetIsAromatic(True)
 
 
 def _mark_carbon_hetero_double_linkage_bonds(
@@ -484,6 +641,75 @@ def _has_double_bonded_oxygen(atom) -> bool:
         bond.GetBondType() == Chem.BondType.DOUBLE and bond.GetOtherAtom(atom).GetAtomicNum() == 8
         for bond in atom.GetBonds()
     )
+
+
+def _minimum_image_distance(atoms: PeriodicCifAtoms, idx_1: int, idx_2: int) -> float:
+    frac_1 = atoms.fractional_positions[idx_1]
+    frac_2 = atoms.fractional_positions[idx_2]
+    delta = tuple(frac_2[axis] - frac_1[axis] for axis in range(3))
+    minimum_delta = tuple(value - round(value) for value in delta)
+    cartesian = _fractional_delta_to_cartesian(atoms.cell_basis, minimum_delta)  # type: ignore[arg-type]
+    return _norm(cartesian)
+
+
+def _fractional_delta_to_cartesian(cell_basis: tuple[Vec3, Vec3, Vec3], delta: Vec3) -> Vec3:
+    return (
+        cell_basis[0][0] * delta[0] + cell_basis[1][0] * delta[1] + cell_basis[2][0] * delta[2],
+        cell_basis[0][1] * delta[0] + cell_basis[1][1] * delta[1] + cell_basis[2][1] * delta[2],
+        cell_basis[0][2] * delta[0] + cell_basis[1][2] * delta[1] + cell_basis[2][2] * delta[2],
+    )
+
+
+def _norm(vector: Vec3) -> float:
+    return sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
+
+
+def _is_plausible_bond_distance(symbol_1: str, symbol_2: str, distance: float) -> bool:
+    if distance < 0.35:
+        return False
+    z1 = _atomic_number(symbol_1)
+    z2 = _atomic_number(symbol_2)
+    if z1 == 1 and z2 == 1:
+        return False
+    if {z1, z2} == {5, 8}:
+        return distance <= 2.05
+    radius_sum = _covalent_radius(z1) + _covalent_radius(z2)
+    tolerance = 0.30 if 1 in {z1, z2} else 0.45
+    return distance <= radius_sum + tolerance
+
+
+def _atomic_number(symbol: str) -> int:
+    periodic_table = Chem.GetPeriodicTable()
+    atomic_number = int(periodic_table.GetAtomicNumber(str(symbol)))
+    if atomic_number <= 0:
+        raise ValueError(f"cannot infer atomic number for element symbol {symbol!r}")
+    return atomic_number
+
+
+def _covalent_radius(atomic_number: int) -> float:
+    radius = float(Chem.GetPeriodicTable().GetRcovalent(atomic_number))
+    if radius > 0:
+        return radius
+    fallback = {
+        1: 0.31,
+        5: 0.84,
+        6: 0.76,
+        7: 0.71,
+        8: 0.66,
+        9: 0.57,
+        15: 1.07,
+        16: 1.05,
+        17: 1.02,
+    }
+    return fallback.get(atomic_number, 0.75)
+
+
+def _parse_cif_float(value: object) -> float:
+    text = str(value).strip().strip("'\"")
+    match = _CIF_NUMBER_RE.match(text)
+    if match is None:
+        raise ValueError(f"invalid CIF numeric value {value!r}")
+    return float(match.group(1))
 
 
 def _rdkit_bond_type(order: float):

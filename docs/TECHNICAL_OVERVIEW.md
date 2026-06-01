@@ -84,8 +84,8 @@ The CIF exporter is deliberately honest as well: if a `MonomerSpec` carries atom
 
 ## CIF Decomposition
 
-`cofkit analyze decompose` is the first reverse path from an exported-style atomistic CIF back to COFid. The current implementation is deliberately narrow: it reads explicit CIF bond loops, identifies supported buildable binary-bridge linkages, cuts those bonds, repairs the recovered monomer classes back to canonical SMILES, and serializes the caller-supplied topology with the recovered monomer blocks.
+`cofkit analyze decompose` is the first reverse path from an exported-style atomistic CIF back to COFid. The current implementation is deliberately narrow: it prefers explicit CIF bond loops, infers missing bond orders from local geometry when bond labels are present without type fields, falls back to periodic distance-based bond detection when bond loops are absent, identifies supported buildable binary-bridge linkages, cuts those bonds, repairs the recovered monomer classes back to canonical SMILES, and serializes the caller-supplied topology with the recovered monomer blocks.
 
 Supported linkage codes currently match the public binary-bridge build surface: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`. Template-id aliases such as `hydrazone_bridge` and `keto_enamine_bridge` resolve to the canonical COFid linkage code.
 
-The CIF extraction layer is local to `cofkit` and uses `gemmi`; it does not add ASE as a runtime dependency. The decomposition logic was adapted from the deCOFpose project at <https://github.com/r-fedorov/deCOFpose>, then scoped to fit `cofkit`'s explicit-bond CIF exports and COFid serializer.
+The CIF extraction layer is local to `cofkit` and uses `gemmi`; it does not add ASE as a runtime dependency. The decomposition logic was adapted from the deCOFpose project at <https://github.com/r-fedorov/deCOFpose>, then scoped to fit `cofkit`'s generated-style atomistic CIFs and COFid serializer.

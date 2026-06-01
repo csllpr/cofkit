@@ -171,14 +171,15 @@ Useful variants:
 
 Requirements:
 
-- input must be one atomistic CIF with explicit `_geom_bond_*` connectivity
+- input must be one atomistic CIF for a supported binary-bridge structure
+- explicit `_geom_bond_*` connectivity is preferred; if bond labels are present without `_ccdc_geom_bond_type` / `_geom_bond_type`, bond orders are inferred, and if the bond loop is absent, connectivity falls back to periodic distance-based detection
 - current public decomposition support covers the buildable binary-bridge linkages: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`
 - topology must be supplied by the caller; automatic topology inference is not implemented
 
 Output:
 
 - default mode prints the recovered COFid
-- `--json` prints a result object with `status`, `cofid`, recovered monomer blocks, and metadata
+- `--json` prints a result object with `status`, `cofid`, recovered monomer blocks, and metadata such as `bond_source` and inferred bond counts
 
 The decomposition logic in `cofkit` was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
 

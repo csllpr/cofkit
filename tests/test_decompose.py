@@ -90,14 +90,96 @@ ALL_BINARY_LINKAGE_ROUND_TRIP_CASES = (
         6,
     ),
 )
+ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES = (
+    (
+        "imine_bridge",
+        "imine",
+        _record("tapb", TAPB, "amine", 3),
+        _record("tfb", TFB, "aldehyde", 3),
+        3,
+    ),
+) + ALL_BINARY_LINKAGE_ROUND_TRIP_CASES
 
 
-def _without_cofid_comment(source_path: str | Path, target_path: Path) -> Path:
+def _cif_lines_without_cofid(source_path: str | Path) -> list[str]:
     lines = Path(source_path).read_text(encoding="utf-8").splitlines()
     if lines and lines[0].startswith("# COFid: "):
         lines = lines[1:]
+    return lines
+
+
+def _write_cif_lines(lines: list[str], target_path: Path) -> Path:
     target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return target_path
+
+
+def _without_cofid_comment(source_path: str | Path, target_path: Path) -> Path:
+    return _write_cif_lines(_cif_lines_without_cofid(source_path), target_path)
+
+
+def _without_cif_bond_type_column(source_path: str | Path, target_path: Path) -> Path:
+    lines = _cif_lines_without_cofid(source_path)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() == "loop_":
+            next_index = index + 1
+            headers: list[str] = []
+            while next_index < len(lines) and lines[next_index].lstrip().startswith("_"):
+                headers.append(lines[next_index].strip())
+                next_index += 1
+            if "_geom_bond_atom_site_label_1" in headers and "_geom_bond_atom_site_label_2" in headers:
+                remove_indices = {
+                    header_index
+                    for header_index, header in enumerate(headers)
+                    if header in {"_ccdc_geom_bond_type", "_geom_bond_type"}
+                }
+                output.append(lines[index])
+                output.extend(
+                    header for header_index, header in enumerate(headers) if header_index not in remove_indices
+                )
+                while (
+                    next_index < len(lines)
+                    and lines[next_index].strip()
+                    and lines[next_index].strip() != "loop_"
+                    and not lines[next_index].lstrip().startswith("_")
+                ):
+                    row = lines[next_index].split()
+                    output.append(
+                        " ".join(value for value_index, value in enumerate(row) if value_index not in remove_indices)
+                    )
+                    next_index += 1
+                index = next_index
+                continue
+        output.append(lines[index])
+        index += 1
+    return _write_cif_lines(output, target_path)
+
+
+def _without_cif_bond_loop(source_path: str | Path, target_path: Path) -> Path:
+    lines = _cif_lines_without_cofid(source_path)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() == "loop_":
+            next_index = index + 1
+            headers: list[str] = []
+            while next_index < len(lines) and lines[next_index].lstrip().startswith("_"):
+                headers.append(lines[next_index].strip())
+                next_index += 1
+            if "_geom_bond_atom_site_label_1" in headers and "_geom_bond_atom_site_label_2" in headers:
+                while (
+                    next_index < len(lines)
+                    and lines[next_index].strip()
+                    and lines[next_index].strip() != "loop_"
+                    and not lines[next_index].lstrip().startswith("_")
+                ):
+                    next_index += 1
+                index = next_index
+                continue
+        output.append(lines[index])
+        index += 1
+    return _write_cif_lines(output, target_path)
 
 
 class DecomposeRoundTripTests(unittest.TestCase):
@@ -173,6 +255,48 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 self.assertEqual(result.metadata[f"n_{linkage}_linkage_bonds"], expected_linkage_bonds)
                 self.assertEqual(result.metadata["n_unique_monomers"], 2)
 
+    def test_decompose_infers_bond_orders_when_cif_bond_type_column_is_absent(self):
+        for template_id, linkage, first, second, expected_linkage_bonds in ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES:
+            with self.subTest(template_id=template_id), tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                summary, _candidate = _generator(template_id).generate_pair_candidate(
+                    first,
+                    second,
+                    out_dir=temp_path,
+                    write_cif=True,
+                )
+                input_cif = _without_cif_bond_type_column(summary.cif_path, temp_path / "without_bond_type.cif")
+
+                result = decompose_cif_to_cofid(input_cif, topology="hcb", linkage=linkage)
+
+                self.assertTrue(result.ok, result.reason)
+                self.assertEqual(result.cofid, summary.metadata["cofid"])
+                self.assertEqual(result.metadata["bond_source"], "explicit_cif")
+                self.assertGreater(result.metadata["n_missing_cif_bond_orders"], 0)
+                self.assertGreater(result.metadata["n_bond_orders_inferred"], 0)
+                self.assertEqual(result.metadata[f"n_{linkage}_linkage_bonds"], expected_linkage_bonds)
+
+    def test_decompose_infers_bonds_when_cif_bond_loop_is_absent(self):
+        for template_id, linkage, first, second, expected_linkage_bonds in ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES:
+            with self.subTest(template_id=template_id), tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                summary, _candidate = _generator(template_id).generate_pair_candidate(
+                    first,
+                    second,
+                    out_dir=temp_path,
+                    write_cif=True,
+                )
+                input_cif = _without_cif_bond_loop(summary.cif_path, temp_path / "without_bond_loop.cif")
+
+                result = decompose_cif_to_cofid(input_cif, topology="hcb", linkage=linkage)
+
+                self.assertTrue(result.ok, result.reason)
+                self.assertEqual(result.cofid, summary.metadata["cofid"])
+                self.assertEqual(result.metadata["bond_source"], "distance_inferred")
+                self.assertGreater(result.metadata["n_distance_inferred_bonds"], 0)
+                self.assertGreater(result.metadata["n_bond_orders_inferred"], 0)
+                self.assertEqual(result.metadata[f"n_{linkage}_linkage_bonds"], expected_linkage_bonds)
+
     def test_generated_decompose_cases_cover_buildable_binary_linkages(self):
         library = ReactionLibrary.builtin()
         buildable = {
@@ -180,8 +304,9 @@ class DecomposeRoundTripTests(unittest.TestCase):
             for template_id, profile in library.linkage_profiles.items()
             if profile.supports_binary_bridge_pair_generation and profile.supports_atomistic_realization
         }
-        covered = {"imine_bridge"} | {
-            template_id for template_id, _linkage, _first, _second, _expected in ALL_BINARY_LINKAGE_ROUND_TRIP_CASES
+        covered = {
+            template_id
+            for template_id, _linkage, _first, _second, _expected in ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES
         }
 
         self.assertEqual(covered, buildable)
