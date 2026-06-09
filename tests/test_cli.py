@@ -61,6 +61,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("build", help_text)
         self.assertIn("analyze", help_text)
         self.assertIn("calculate", help_text)
+        self.assertIn("validate", help_text)
 
     def test_package_version_uses_calver(self):
         self.assertRegex(package_version, r"^\d{4}\.\d{1,2}\.\d{1,2}(?:\.post\d+)?$")

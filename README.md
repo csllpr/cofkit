@@ -46,8 +46,8 @@ If you explicitly want an editable install inside an existing Python environment
 Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
-- `LAMMPS` for the initial `cofkit calculate lammps-optimize` UFF/DREIDING local optimization wrapper, with the executable path provided through `COFKIT_LMP_PATH`
-- `EQeq` for the default `cofkit calculate lammps-optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
+- `LAMMPS` for the initial `cofkit calculate lammps-optimize` UFF/DREIDING local optimization wrapper and `cofkit validate optimize`, with the executable path provided through `COFKIT_LMP_PATH`
+- `EQeq` for the default `cofkit calculate lammps-optimize` / `cofkit validate optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
 - `gRASPA` or `RASPA2` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows with selectable DREIDING/UFF framework assets. gRASPA uses `COFKIT_GRASPA_PATH`; RASPA2 uses `COFKIT_RASPA2_PATH`
 - `pytest` to run the local test suite when you install the `dev` extra
 
@@ -157,6 +157,7 @@ cofkit --help
 cofkit build --help
 cofkit analyze --help
 cofkit calculate --help
+cofkit validate --help
 cofkit build list-templates
 ```
 
@@ -172,6 +173,8 @@ The most useful grouped commands are:
 - `cofkit calculate graspa-widom`
 - `cofkit calculate graspa-isotherm`
 - `cofkit calculate graspa-mixture`
+- `cofkit validate simple`
+- `cofkit validate optimize`
 - `cofkit build default-library`
 
 Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
@@ -264,6 +267,25 @@ cofkit analyze decompose \
 ```
 
 On success, this prints the recovered COFid. Current support is intentionally scoped to atomistic CIFs for the supported binary-bridge linkages. Explicit `_geom_bond_*` connectivity is preferred; when the bond loop is absent, `cofkit` falls back to periodic distance-based bond detection, and when bond labels exist without `_ccdc_geom_bond_type` / `_geom_bond_type`, it infers bond orders from local geometry. The topology token is supplied by the caller. Use `--linkage` for non-imine structures. Supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest` for boronate ester, `bken` for beta-ketoenamine, and `vinylene`; template-id aliases such as `hydrazone_bridge` are also accepted. The decomposition logic in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
+
+### Validate one CIF against a COFid
+
+```bash
+cofkit validate simple \
+  '3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.3:aldehyde:O=Cc1cc(C=O)cc(C=O)c1&&hcb&&imine' \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif
+```
+
+`validate simple` forces distance-inferred decomposition even when explicit CIF bond rows exist, then compares recovered monomer blocks and linkage to the supplied COFid. Topology is intentionally not compared yet.
+
+```bash
+cofkit validate optimize \
+  '<COFID>' \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_validate_lammps
+```
+
+`validate optimize` first runs the default `cofkit calculate lammps-optimize` pipeline, then distance-decomposes the optimized CIF and performs the same COFid comparison. Use `--json` on either mode for structured diagnostics.
 
 ### Run initial Zeo++ pore analysis on one CIF
 

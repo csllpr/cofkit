@@ -78,8 +78,8 @@ That is the canonical local test path for this repo and avoids PATH-sensitive be
 Optional external add-ons:
 
 - `Zeo++` if you want to use `cofkit analyze zeopp`
-- `LAMMPS` if you want to use `cofkit calculate lammps-optimize`
-- `EQeq` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture` for framework charge assignment
+- `LAMMPS` if you want to use `cofkit calculate lammps-optimize` or `cofkit validate optimize`
+- `EQeq` if you want to use the default charge-assignment stage in `cofkit calculate lammps-optimize` / `cofkit validate optimize`, or `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture` for framework charge assignment
 - `gRASPA` or `RASPA2` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture`
 - `pytest` if you want to run the tests locally via the `dev` extra
 
@@ -395,7 +395,7 @@ python3 examples/build_default_monomers_library.py
 
 ### CLI usage
 
-The installable CLI is grouped under `cofkit build`, `cofkit analyze`, and `cofkit calculate`. Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` still work for now, but they emit deprecation warnings.
+The installable CLI is grouped under `cofkit build`, `cofkit analyze`, `cofkit calculate`, and `cofkit validate`. Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` still work for now, but they emit deprecation warnings.
 
 ```bash
 cofkit build batch-binary-bridge \
@@ -591,7 +591,42 @@ Current scope:
 
 The decomposition workflow in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
 
-## Workflow 6: Initial Zeo++ Pore Analysis
+## Workflow 6: Validate A CIF Against COFid
+
+`cofkit validate` compares a supplied COFid with a supplied CIF. Topology is intentionally ignored for now because topology detection is not implemented; validation compares recovered monomer blocks and linkage.
+
+### Simple mode
+
+```bash
+cofkit validate simple \
+  '<COFID>' \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif
+```
+
+`validate simple` always decomposes with distance-inferred bonds, even if explicit `_geom_bond_*` rows are present. This makes it a geometry-backed round-trip check rather than a check that simply reuses the CIF bond table.
+
+### Optimize mode
+
+```bash
+export COFKIT_LMP_PATH=/path/to/lmp_mpi
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+
+cofkit validate optimize \
+  '<COFID>' \
+  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
+  --output-dir out/tapb_tfb_validate_lammps
+```
+
+`validate optimize` runs the default `lammps-optimize` pipeline, then decomposes the optimized CIF with the same distance-inferred bond mode and compares the result to the supplied COFid. Add `--json` to either mode for structured diagnostics including `bond_source`, inferred bond counts, and the optimized CIF path when applicable.
+
+Current scope:
+
+- input must include one expected COFid and one atomistic CIF path
+- simple mode does not require external executables
+- optimize mode uses the default LAMMPS optimization settings, including the default EQeq charge stage
+- topology is parsed from the input COFid only as a placeholder for decomposition output and is not compared
+
+## Workflow 7: Initial Zeo++ Pore Analysis
 
 The first `analyze`-namespace external-tool wrapper is Zeo++. It now writes a point-probe pore baseline for one CIF at a time and can optionally add repeated accessibility-aware probe scans.
 
@@ -648,7 +683,7 @@ The output directory stores:
 
 Current scope note: the public wrapper currently focuses on basic pore metrics plus surface-area / pore-volume summaries. Richer Zeo++ modes such as PSD histograms, grids, ray analyses, ZeoVis exports, and other hidden commands remain out of the public `cofkit` CLI for now.
 
-## Workflow 7: Initial LAMMPS CIF Cleanup
+## Workflow 8: Initial LAMMPS CIF Cleanup
 
 The first `calculate`-namespace external-tool wrapper is a conservative LAMMPS local cleanup for explicit-bond CIFs.
 
@@ -748,7 +783,7 @@ The output directory stores:
 
 Current scope note: this is a topology-preserving local cleanup step for generated explicit-bond COF CIFs. The current `UFF` and `DREIDING` exports are explicit-bond-order-driven and include torsion and improper terms. EQeq charges are now part of the default LAMMPS export, but even with staged minimization and optional box relaxation it should still be treated as a pre-optimization candidate generator rather than a final optimized structure.
 
-## Workflow 8: EQeq + gRASPA Widom Insertion
+## Workflow 9: EQeq + gRASPA Widom Insertion
 
 The second `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA/RASPA2` Widom insertion workflow for one CIF.
 
@@ -838,7 +873,7 @@ The output directory stores:
 
 This wrapper is intentionally narrow. It currently exposes one packaged Widom-template family, one selectable packaged probe set, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on Widom energy plus Henry coefficient summaries. If the selected backend emits non-finite uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_widom_report.json`, and leaves the rest of the parsed result intact. The temporary parameter review note from the LAMMPS section applies here as well: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, while `UFF` is generated from the bundled Open Babel `UFF.prm`.
 
-## Workflow 9: EQeq + gRASPA Single-Component Adsorption Isotherms
+## Workflow 10: EQeq + gRASPA Single-Component Adsorption Isotherms
 
 The third `calculate`-namespace external-tool wrapper is a staged `EQeq -> gRASPA/RASPA2` adsorption workflow for one CIF and one packaged adsorbate component over one or more pressure points.
 
@@ -928,7 +963,7 @@ The output directory stores:
 
 This wrapper is intentionally narrow. It currently exposes one packaged adsorbate at a time, one or more explicit pressure points, one selectable framework forcefield family (`DREIDING` or `UFF`), and one parser focused on absolute loading plus heat-of-adsorption block averages. It does not yet implement restart-chained pressure stepping, excess-loading post-processing, or more advanced sampling modes. If the selected backend emits non-finite loading or heat uncertainty values, `cofkit` preserves the raw `.data` file, records those specific fields as `null` in `graspa_isotherm_report.json`, and leaves the rest of the parsed result intact. RASPA2 does not emit the same `g/L` loading summary as gRASPA, so that field is currently `null` for RASPA2. Ratios computed from separate pure-component `graspa-isotherm` runs should be treated as loading ratios only; use `graspa-mixture` for true mixed-feed selectivity.
 
-## Workflow 10: EQeq + gRASPA/RASPA2 Mixture Adsorption and Selectivity
+## Workflow 11: EQeq + gRASPA/RASPA2 Mixture Adsorption and Selectivity
 
 The fourth `calculate`-namespace gRASPA/RASPA2 wrapper is a staged `EQeq -> gRASPA/RASPA2` mixture adsorption workflow for one CIF, two or more packaged adsorbates, and one or more pressure points.
 

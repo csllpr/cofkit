@@ -113,6 +113,7 @@ def decompose_cif_to_cofid(
     *,
     topology: str,
     linkage: str = "imine",
+    bond_mode: str = "auto",
 ) -> CifDecompositionResult:
     input_path = Path(cif_path)
     spec = _resolve_linkage_spec(linkage)
@@ -129,8 +130,10 @@ def decompose_cif_to_cofid(
         )
 
     try:
+        if bond_mode not in {"auto", "distance"}:
+            raise ValueError("bond_mode must be 'auto' or 'distance'")
         atoms = read_periodic_cif_atoms(input_path)
-        monomers, metadata = _decompose_linkage_atoms(atoms, spec)
+        monomers, metadata = _decompose_linkage_atoms(atoms, spec, bond_mode=bond_mode)
         if not monomers:
             return CifDecompositionResult(
                 status="skipped",
@@ -169,10 +172,12 @@ def decompose_cif_to_cofid(
 def _decompose_linkage_atoms(
     atoms: PeriodicCifAtoms,
     spec: LinkageDecompositionSpec,
+    *,
+    bond_mode: str,
 ) -> tuple[tuple[DecomposedMonomer, ...], dict[str, object]]:
     if Chem is None:
         raise RuntimeError("RDKit is required for CIF decomposition.")
-    build_result = _build_bonded_mol(atoms)
+    build_result = _build_bonded_mol(atoms, bond_mode=bond_mode)
     mol = build_result.mol
     linkage_bond_indices = spec.marker(mol)
     if not linkage_bond_indices:
@@ -228,7 +233,7 @@ def _decompose_linkage_atoms(
     }
 
 
-def _build_bonded_mol(atoms: PeriodicCifAtoms) -> BondedMolBuildResult:
+def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> BondedMolBuildResult:
     labels = tuple(atoms.info.get("_atom_site_label", ()))
     if len(labels) != len(atoms):
         raise ValueError("decomposition requires CIF atom labels aligned with atom sites")
@@ -240,7 +245,7 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms) -> BondedMolBuildResult:
         atom.SetProp("instance_id", _instance_id(str(label)))
         rw_mol.AddAtom(atom)
 
-    candidates, metadata = _bond_candidates_from_cif_or_geometry(atoms, labels)
+    candidates, metadata = _bond_candidates_from_cif_or_geometry(atoms, labels, bond_mode=bond_mode)
     if not candidates:
         raise ValueError("decomposition could not infer any covalent bonds from CIF atom positions")
 
@@ -278,13 +283,16 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms) -> BondedMolBuildResult:
 def _bond_candidates_from_cif_or_geometry(
     atoms: PeriodicCifAtoms,
     labels: tuple[str, ...],
+    *,
+    bond_mode: str,
 ) -> tuple[tuple[BondCandidate, ...], dict[str, object]]:
     label_to_idx = {label: index for index, label in enumerate(labels)}
     bond_labels_1 = tuple(atoms.info.get("_geom_bond_atom_site_label_1", ()))
     bond_labels_2 = tuple(atoms.info.get("_geom_bond_atom_site_label_2", ()))
-    if bond_labels_1 and bond_labels_2:
+    if bond_mode == "auto" and bond_labels_1 and bond_labels_2:
         candidates, n_missing_orders = _explicit_bond_candidates(atoms, label_to_idx, bond_labels_1, bond_labels_2)
         return candidates, {
+            "bond_mode": bond_mode,
             "bond_source": "explicit_cif",
             "n_explicit_cif_bonds": len(candidates),
             "n_missing_cif_bond_orders": n_missing_orders,
@@ -293,6 +301,7 @@ def _bond_candidates_from_cif_or_geometry(
 
     candidates = _distance_inferred_bond_candidates(atoms)
     return candidates, {
+        "bond_mode": bond_mode,
         "bond_source": "distance_inferred",
         "n_explicit_cif_bonds": 0,
         "n_missing_cif_bond_orders": 0,

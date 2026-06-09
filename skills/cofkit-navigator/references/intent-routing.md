@@ -21,6 +21,7 @@ Use the grouped help plus build-template discovery:
 cofkit --help
 cofkit analyze --help
 cofkit calculate --help
+cofkit validate --help
 cofkit build list-templates --json
 ```
 
@@ -31,6 +32,7 @@ Interpretation rules:
 - Registered templates with `supports_pair_generation=false` are still part of the reaction library, but they are not on the current topology-guided pair-generation path.
 - `cofkit analyze --help` is where current decomposition, pore-analysis, and output-triage workflows show up.
 - `cofkit calculate --help` is where current external optimization and Monte Carlo workflows show up.
+- `cofkit validate --help` is where current COFid-vs-CIF validation workflows show up.
 
 ### Build one COF from two monomers
 
@@ -182,6 +184,37 @@ Output:
 - `--json` prints a result object with `status`, `cofid`, recovered monomer blocks, and metadata such as `bond_source` and inferred bond counts
 
 The decomposition logic in `cofkit` was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
+
+### Validate one CIF against a COFid
+
+Use `validate simple` for a direct geometry-backed check.
+
+```bash
+cofkit validate simple \
+  <COFID> \
+  <STRUCTURE_CIF>
+```
+
+Use `validate optimize` to run the default LAMMPS optimization first.
+
+```bash
+cofkit validate optimize \
+  <COFID> \
+  <STRUCTURE_CIF> \
+  --output-dir <LAMMPS_OUTPUT_DIR>
+```
+
+Requirements:
+
+- input must include one expected COFid and one atomistic CIF path
+- both modes force distance-inferred decomposition, ignoring explicit CIF bonds if present
+- comparison covers recovered monomer blocks and linkage only; topology is intentionally not compared
+- optimize mode requires the same LAMMPS/EQeq configuration as default `cofkit calculate lammps-optimize`
+
+Output:
+
+- default mode prints `status`, the expected and recovered COFids, comparison booleans, and decomposition bond-source metadata
+- `--json` prints the full validation result; optimize mode includes the optimized CIF path and LAMMPS report payload
 
 ### Run Zeo++ pore analysis on one CIF
 

@@ -89,3 +89,9 @@ The CIF exporter is deliberately honest as well: if a `MonomerSpec` carries atom
 Supported linkage codes currently match the public binary-bridge build surface: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`. Template-id aliases such as `hydrazone_bridge` and `keto_enamine_bridge` resolve to the canonical COFid linkage code.
 
 The CIF extraction layer is local to `cofkit` and uses `gemmi`; it does not add ASE as a runtime dependency. The decomposition logic was adapted from the deCOFpose project at <https://github.com/r-fedorov/deCOFpose>, then scoped to fit `cofkit`'s generated-style atomistic CIFs and COFid serializer.
+
+## COFid Validation
+
+`cofkit validate simple` wraps decomposition as a direct CIF-vs-COFid check. It forces distance-inferred bond detection, even when explicit CIF bond rows exist, then compares recovered monomer blocks and linkage against the supplied COFid. The supplied topology is only used as a placeholder for the decomposition result and is intentionally excluded from the comparison.
+
+`cofkit validate optimize` runs the default LAMMPS optimization workflow first, then applies the same forced distance-inferred decomposition to the optimized CIF. This keeps the validation path focused on whether the post-optimization geometry still decomposes to the expected monomer/linkage identity.

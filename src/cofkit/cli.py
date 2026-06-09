@@ -10,6 +10,7 @@ from ._version import __version__
 from .cli_analyze import add_analyze_group
 from .cli_build import add_build_group
 from .cli_calculate import add_calculate_group
+from .cli_validate import add_validate_group
 
 _LEGACY_COMMAND_ALIASES: dict[str, tuple[str, ...]] = {
     "single-pair": ("build", "single-pair"),
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_build_group(subparsers)
     add_analyze_group(subparsers)
     add_calculate_group(subparsers)
+    add_validate_group(subparsers)
     return parser
 
 

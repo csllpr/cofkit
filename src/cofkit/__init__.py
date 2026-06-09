@@ -129,6 +129,11 @@ from .validation import (
     CoarseValidationThresholds,
     classify_batch_output,
 )
+from .validate import (
+    COFidValidationResult,
+    validate_cif_against_cofid,
+    validate_lammps_optimized_cif_against_cofid,
+)
 from .zeopp import (
     COFKIT_ZEOPP_ENV_VAR,
     ZeoppAccessibilitySummary,
@@ -176,6 +181,7 @@ __all__ = [
     "COFEngine",
     "COFEngineConfig",
     "COFProject",
+    "COFidValidationResult",
     "ContinuousOptimizer",
     "DecomposedMonomer",
     "DEFAULT_LAMMPS_BINARY",
@@ -310,5 +316,7 @@ __all__ = [
     "resolve_lammps_binary",
     "resolve_zeopp_binary",
     "run_graspa_widom_workflow",
+    "validate_cif_against_cofid",
+    "validate_lammps_optimized_cif_against_cofid",
     "write_candidate_cif",
 ]
