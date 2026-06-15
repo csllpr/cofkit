@@ -46,9 +46,9 @@ If you explicitly want an editable install inside an existing Python environment
 Optional external tools you may want in your environment:
 
 - `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
-- `LAMMPS` for the initial `cofkit calculate lammps-optimize` UFF/DREIDING local optimization wrapper and `cofkit validate optimize`, with the executable path provided through `COFKIT_LMP_PATH`
-- `EQeq` for the default `cofkit calculate lammps-optimize` / `cofkit validate optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
-- `gRASPA` or `RASPA2` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, and `cofkit calculate graspa-mixture` workflows with selectable DREIDING/UFF framework assets. gRASPA uses `COFKIT_GRASPA_PATH`; RASPA2 uses `COFKIT_RASPA2_PATH`
+- `LAMMPS` for the initial `cofkit calculate lammps-optimize` UFF/DREIDING local optimization wrapper, `cofkit validate optimize`, and the LAMMPS MD segment inside `cofkit calculate hybrid-mdmc`, with the executable path provided through `COFKIT_LMP_PATH`
+- `EQeq` for the default `cofkit calculate lammps-optimize` / `cofkit validate optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, `cofkit calculate graspa-mixture`, and `cofkit calculate hybrid-mdmc` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
+- `gRASPA` or `RASPA2` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, `cofkit calculate graspa-mixture`, and `cofkit calculate hybrid-mdmc` workflows with selectable DREIDING/UFF framework assets. gRASPA uses `COFKIT_GRASPA_PATH`; RASPA2 uses `COFKIT_RASPA2_PATH`
 - `pytest` to run the local test suite when you install the `dev` extra
 
 The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
@@ -173,6 +173,7 @@ The most useful grouped commands are:
 - `cofkit calculate graspa-widom`
 - `cofkit calculate graspa-isotherm`
 - `cofkit calculate graspa-mixture`
+- `cofkit calculate hybrid-mdmc`
 - `cofkit validate simple`
 - `cofkit validate optimize`
 - `cofkit build default-library`
@@ -525,6 +526,28 @@ The wrapper writes:
 
 For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
+### Run cyclic LAMMPS MD + gRASPA/RASPA2 GCMC on one CIF
+
+```bash
+cofkit calculate hybrid-mdmc \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_hybrid_mdmc \
+  --cycles 5 \
+  --component CO2 \
+  --pressure 100000 \
+  --lammps-forcefield dreiding \
+  --raspa-forcefield dreiding \
+  --md-steps 1000 \
+  --gcmc-production-cycles 200000 \
+  --json
+```
+
+`hybrid-mdmc` implements the first actual cycle runner: each cycle runs a LAMMPS MD segment on the current explicit-bond framework CIF, exports the final framework snapshot as a CIF, then runs a single-pressure gRASPA/RASPA2 GCMC segment on that MD-updated framework. The next cycle starts from the MD-updated framework CIF. A single `--component NAME` runs the pure-component isotherm path; repeated `--component NAME:FRACTION` values run the mixture path. Packaged guests and explicit `--guest-bundle` components are accepted by the GCMC segment.
+
+The current exchange mode is `framework`: GCMC guest molecule coordinates are not yet converted back into the next LAMMPS data file, and guest-bundle `lammps` sections are validated/recorded for future reinjection support but are not consumed by this framework-only mode. This is not dynamic GCMC inside LAMMPS; it is an alternating MD/GCMC workflow with framework snapshot exchange and per-cycle EQeq charge staging.
+
+The wrapper writes one `cycle_*/1.lammps_md/` directory, one `cycle_*/2.gcmc/` directory, and a top-level `hybrid_mdmc_report.json` containing per-cycle LAMMPS/GCMC reports plus the final framework CIF path.
+
 ### Rebuild the detector-scanned example library
 
 ```bash
@@ -541,6 +564,7 @@ If you are using Codex inside this repository, load [skills/cofkit-navigator/SKI
 - EQeq + gRASPA/RASPA2 Widom insertion on an exported CIF
 - EQeq + gRASPA/RASPA2 single-component adsorption isotherms on an exported CIF
 - EQeq + gRASPA/RASPA2 multi-component adsorption/selectivity on an exported CIF
+- cyclic LAMMPS MD + gRASPA/RASPA2 GCMC framework-snapshot exchange on an exported CIF
 - rebuilding the detector-scanned default monomer library
 - choosing between the CLI, `BatchStructureGenerator`, and `COFEngine`
 
@@ -551,6 +575,7 @@ Typical prompts:
 - "Classify this finished output tree into validation buckets."
 - "Run the gRASPA/RASPA2 Widom wrapper on this optimized CIF."
 - "Run the gRASPA/RASPA2 isotherm wrapper on this optimized CIF."
+- "Run the hybrid MD/MC cycle on this optimized CIF for CO2."
 - "Should I use the CLI, `BatchStructureGenerator`, or `COFEngine` for this task?"
 
 The skill prefers the installed `cofkit` CLI. If the package is not installed in editable mode, it falls back to an equivalent `PYTHONPATH=src ...` launcher.

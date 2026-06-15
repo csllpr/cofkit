@@ -13,6 +13,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 - decomposition fallback support for atomistic CIFs without explicit bond loops, plus bond-order inference when `_geom_bond_*` labels are present without `_ccdc_geom_bond_type` / `_geom_bond_type`
 - initial `cofkit validate` namespace with `simple` and `optimize` modes for comparing a supplied COFid against distance-inferred decomposition before or after default LAMMPS optimization
 - regression coverage for hcb CIF round trips, verifying that decomposition recovers the original monomer inputs for generated COFs across the buildable binary-bridge linkages
+- initial `cofkit calculate hybrid-mdmc` command for cyclic LAMMPS MD plus gRASPA/RASPA2 GCMC with framework snapshot exchange
+- LAMMPS MD segment support for explicit-bond CIFs, including `lammps_md_report.json`, trajectory dumping, optional pre-MD minimization, and MD-updated framework CIF export
 
 ### Notes
 

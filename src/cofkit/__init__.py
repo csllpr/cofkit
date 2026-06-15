@@ -47,6 +47,12 @@ from .graspa import (
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
 )
+from .hybrid_mdmc import (
+    HybridMdMcCycleResult,
+    HybridMdMcResult,
+    HybridMdMcSettings,
+    run_hybrid_mdmc_workflow,
+)
 from .lammps import (
     COFKIT_LMP_ENV_VAR,
     DEFAULT_LAMMPS_BINARY,
@@ -54,10 +60,13 @@ from .lammps import (
     LammpsError,
     LammpsExecutionError,
     LammpsInputError,
+    LammpsMdResult,
+    LammpsMdSettings,
     LammpsOptimizationResult,
     LammpsOptimizationSettings,
     LammpsParseError,
     optimize_cif_with_lammps,
+    run_lammps_md_on_cif,
     resolve_lammps_binary,
 )
 from .chem import (
@@ -221,10 +230,15 @@ __all__ = [
     "GraspaWidomComponentResult",
     "GraspaWidomResult",
     "GraspaWidomSettings",
+    "HybridMdMcCycleResult",
+    "HybridMdMcResult",
+    "HybridMdMcSettings",
     "LammpsConfigurationError",
     "LammpsError",
     "LammpsExecutionError",
     "LammpsInputError",
+    "LammpsMdResult",
+    "LammpsMdSettings",
     "LammpsOptimizationResult",
     "LammpsOptimizationSettings",
     "LammpsParseError",
@@ -313,6 +327,8 @@ __all__ = [
     "resolve_raspa_backend_binary",
     "run_graspa_mixture_workflow",
     "run_graspa_isotherm_workflow",
+    "run_hybrid_mdmc_workflow",
+    "run_lammps_md_on_cif",
     "resolve_lammps_binary",
     "resolve_zeopp_binary",
     "run_graspa_widom_workflow",

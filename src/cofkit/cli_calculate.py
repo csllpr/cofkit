@@ -23,11 +23,16 @@ from .graspa import (
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
 )
+from .hybrid_mdmc import (
+    HybridMdMcSettings,
+    run_hybrid_mdmc_workflow,
+)
 from .lammps import (
     LammpsConfigurationError,
     LammpsError,
     LammpsExecutionError,
     LammpsInputError,
+    LammpsMdSettings,
     LammpsOptimizationSettings,
     LammpsParseError,
     optimize_cif_with_lammps,
@@ -50,6 +55,7 @@ def add_calculate_group(subparsers) -> None:
     _add_graspa_widom_parser(calculate_subparsers)
     _add_graspa_isotherm_parser(calculate_subparsers)
     _add_graspa_mixture_parser(calculate_subparsers)
+    _add_hybrid_mdmc_parser(calculate_subparsers)
 
 
 def _set_help_default(parser: argparse.ArgumentParser) -> None:
@@ -101,6 +107,15 @@ def _parse_graspa_mixture_component_spec(raw_value: str) -> tuple[str, float]:
     if mol_fraction <= 0.0:
         raise argparse.ArgumentTypeError("Mixture component fractions must be positive.")
     return component, mol_fraction
+
+
+def _parse_hybrid_component_spec(raw_value: str) -> tuple[str, float]:
+    value = raw_value.strip()
+    if value == "":
+        raise argparse.ArgumentTypeError("Hybrid MD/MC component specifications must not be blank.")
+    if ":" in value:
+        return _parse_graspa_mixture_component_spec(value)
+    return _parse_graspa_component_name(value), 1.0
 
 
 def _add_raspa_backend_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1401,5 +1416,363 @@ def _run_graspa_mixture(args: argparse.Namespace) -> None:
     print("pressures_pa:", [point.pressure for point in result.point_results])
     print("component_results_csv_path:", result.component_results_csv_path)
     print("selectivity_results_csv_path:", result.selectivity_results_csv_path)
+    print("warnings:", list(result.warnings))
+    print("report_path:", result.report_path)
+
+
+def _add_hybrid_mdmc_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "hybrid-mdmc",
+        help="Run a cyclic LAMMPS framework-MD plus gRASPA/RASPA2 GCMC workflow for one CIF file.",
+        description=(
+            "Alternate LAMMPS MD updates of an explicit-bond framework CIF with gRASPA/RASPA2 GCMC on the "
+            "updated framework. The supported exchange mode is framework snapshot exchange: GCMC guest "
+            "coordinates are reported but not yet reinjected into the next LAMMPS segment."
+        ),
+    )
+    parser.add_argument("cif_path", help="Input explicit-bond CIF file for the first LAMMPS MD segment.")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for cycle_* run trees and hybrid_mdmc_report.json.",
+    )
+    parser.add_argument(
+        "--cycles",
+        type=int,
+        default=3,
+        help="Number of MD/GCMC cycles. Default: 3.",
+    )
+    parser.add_argument(
+        "--component",
+        dest="components",
+        action="append",
+        type=_parse_hybrid_component_spec,
+        default=None,
+        metavar="NAME[:FRACTION]",
+        help=(
+            "Add one packaged or guest-bundle component. Use NAME for a pure-component run or "
+            "NAME:FRACTION for mixture feeds. Repeat for mixtures."
+        ),
+    )
+    _add_guest_bundle_arguments(parser)
+    _add_raspa_backend_arguments(parser)
+    parser.add_argument(
+        "--lmp-path",
+        default=None,
+        help="Optional explicit path to the LAMMPS executable. Defaults to COFKIT_LMP_PATH.",
+    )
+    parser.add_argument(
+        "--eqeq-path",
+        default=None,
+        help="Optional explicit path to EQeq. Used by both LAMMPS charge staging and GCMC framework charging.",
+    )
+    parser.add_argument(
+        "--lammps-forcefield",
+        choices=("dreiding", "uff"),
+        default="dreiding",
+        help="LAMMPS framework forcefield for each MD segment. Default: dreiding.",
+    )
+    parser.add_argument(
+        "--charge-model",
+        choices=("none", "eqeq"),
+        default="eqeq",
+        help="Charge assignment path for LAMMPS MD data exports. Default: eqeq.",
+    )
+    parser.add_argument(
+        "--raspa-forcefield",
+        choices=("dreiding", "uff"),
+        default="dreiding",
+        help="Framework forcefield asset family for GCMC segments. Default: dreiding.",
+    )
+    parser.add_argument(
+        "--pressure",
+        type=float,
+        default=100000.0,
+        help="GCMC pressure in Pa for every cycle. Default: 100000.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=298.0,
+        help="Shared MD/GCMC temperature in K. Default: 298.",
+    )
+    parser.add_argument(
+        "--md-steps",
+        type=int,
+        default=1000,
+        help="LAMMPS MD timesteps per cycle. Default: 1000.",
+    )
+    parser.add_argument(
+        "--md-timestep",
+        type=float,
+        default=1.0,
+        help="LAMMPS MD timestep in fs. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--md-ensemble",
+        choices=("nvt", "nve-langevin"),
+        default="nvt",
+        help="LAMMPS MD thermostat/integrator. Default: nvt.",
+    )
+    parser.add_argument(
+        "--md-thermostat-damping",
+        type=float,
+        default=100.0,
+        help="LAMMPS thermostat damping in fs. Default: 100.",
+    )
+    parser.add_argument(
+        "--md-seed",
+        type=int,
+        default=246813,
+        help="LAMMPS MD velocity seed. Default: 246813.",
+    )
+    parser.add_argument(
+        "--md-dump-interval",
+        type=int,
+        default=100,
+        help="LAMMPS trajectory dump interval. A final write_dump is always appended. Default: 100.",
+    )
+    parser.add_argument(
+        "--md-position-restraint-force-constant",
+        type=float,
+        default=0.0,
+        help="Optional LAMMPS spring/self restraint in kcal/mol/A^2 during MD. Default: 0.",
+    )
+    parser.add_argument(
+        "--md-minimize-before-md",
+        action="store_true",
+        help="Run a short CG minimization before each MD segment.",
+    )
+    parser.add_argument(
+        "--pair-cutoff",
+        type=float,
+        default=12.0,
+        help="LAMMPS LJ cutoff in angstrom. Default: 12.0.",
+    )
+    parser.add_argument(
+        "--coulomb-cutoff",
+        type=float,
+        default=12.0,
+        help="LAMMPS Coulomb cutoff in angstrom when charges are present. Default: 12.0.",
+    )
+    parser.add_argument(
+        "--ewald-precision",
+        type=float,
+        default=1.0e-6,
+        help="Shared Ewald precision for LAMMPS and GCMC segments. Default: 1e-6.",
+    )
+    parser.add_argument(
+        "--fugacity-coefficient",
+        type=_parse_graspa_fugacity_coefficient,
+        default=1.0,
+        metavar="VALUE",
+        help="Component fugacity coefficient as a positive float or PR-EOS. Applied to every component. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--gcmc-initialization-cycles",
+        type=int,
+        default=50000,
+        help="GCMC NumberOfInitializationCycles per cycle. Default: 50000.",
+    )
+    parser.add_argument(
+        "--gcmc-equilibration-cycles",
+        type=int,
+        default=50000,
+        help="GCMC NumberOfEquilibrationCycles per cycle. Default: 50000.",
+    )
+    parser.add_argument(
+        "--gcmc-production-cycles",
+        type=int,
+        default=200000,
+        help="GCMC NumberOfProductionCycles per cycle. Default: 200000.",
+    )
+    parser.add_argument(
+        "--trial-positions",
+        type=int,
+        default=10,
+        help="GCMC NumberOfTrialPositions. Default: 10.",
+    )
+    parser.add_argument(
+        "--trial-orientations",
+        type=int,
+        default=10,
+        help="GCMC NumberOfTrialOrientations. Default: 10.",
+    )
+    parser.add_argument(
+        "--cutoff-vdw",
+        type=float,
+        default=12.8,
+        help="GCMC CutOffVDW in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--cutoff-coulomb",
+        type=float,
+        default=12.8,
+        help="GCMC CutOffCoulomb in angstrom. Default: 12.8.",
+    )
+    parser.add_argument(
+        "--eqeq-lambda",
+        type=float,
+        default=1.2,
+        help="EQeq lambda parameter for both charge-assignment stages. Default: 1.2.",
+    )
+    parser.add_argument(
+        "--eqeq-h-i0",
+        type=float,
+        default=-2.0,
+        help="EQeq hydrogen electron affinity for both charge-assignment stages. Default: -2.0.",
+    )
+    parser.add_argument(
+        "--eqeq-charge-precision",
+        type=int,
+        default=3,
+        help="Number of digits for EQeq point charges. Default: 3.",
+    )
+    parser.add_argument(
+        "--eqeq-method",
+        choices=("ewald", "nonperiodic"),
+        default="ewald",
+        help="EQeq method for both charge-assignment stages. Default: ewald.",
+    )
+    parser.add_argument(
+        "--eqeq-real-space-cells",
+        type=int,
+        default=2,
+        help="EQeq real-space image count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-reciprocal-space-cells",
+        type=int,
+        default=2,
+        help="EQeq reciprocal-space image count. Default: 2.",
+    )
+    parser.add_argument(
+        "--eqeq-eta",
+        type=float,
+        default=50.0,
+        help="EQeq eta parameter. Default: 50.",
+    )
+    parser.add_argument(
+        "--lammps-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Per-cycle timeout for each LAMMPS MD subprocess. Default: 300.",
+    )
+    parser.add_argument(
+        "--eqeq-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Timeout for each EQeq subprocess. Default: 300.",
+    )
+    parser.add_argument(
+        "--graspa-timeout-seconds",
+        type=float,
+        default=None,
+        help="Optional timeout for each gRASPA/RASPA2 subprocess. Default: no timeout.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print hybrid_mdmc_report.json as JSON instead of a short human-readable summary.",
+    )
+    parser.set_defaults(func=_run_hybrid_mdmc)
+
+
+def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
+    if not args.components:
+        raise SystemExit("error: supply at least one component with --component NAME[:FRACTION].")
+    components = tuple(
+        GraspaMixtureComponentSettings(
+            component=component_name,
+            mol_fraction=mol_fraction,
+            fugacity_coefficient=args.fugacity_coefficient,
+        )
+        for component_name, mol_fraction in args.components
+    )
+    eqeq_settings = EqeqChargeSettings(
+        lambda_value=args.eqeq_lambda,
+        hydrogen_electron_affinity=args.eqeq_h_i0,
+        charge_precision=args.eqeq_charge_precision,
+        method=args.eqeq_method,
+        real_space_cells=args.eqeq_real_space_cells,
+        reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
+        eta=args.eqeq_eta,
+    )
+    lammps_md_settings = LammpsMdSettings(
+        forcefield=args.lammps_forcefield,
+        charge_model=args.charge_model,
+        pair_cutoff=args.pair_cutoff,
+        coulomb_cutoff=args.coulomb_cutoff,
+        ewald_precision=args.ewald_precision,
+        temperature=args.temperature,
+        timestep=args.md_timestep,
+        steps=args.md_steps,
+        thermostat_damping=args.md_thermostat_damping,
+        velocity_seed=args.md_seed,
+        ensemble=args.md_ensemble,
+        dump_interval=args.md_dump_interval,
+        position_restraint_force_constant=args.md_position_restraint_force_constant,
+        minimize_before_md=args.md_minimize_before_md,
+    )
+    hybrid_settings = HybridMdMcSettings(
+        cycles=args.cycles,
+        pressure=args.pressure,
+        components=components,
+        guest_bundles=tuple(args.guest_bundles or ()),
+        raspa_backend=args.backend,
+        raspa_forcefield=args.raspa_forcefield,
+        temperature=args.temperature,
+        initialization_cycles=args.gcmc_initialization_cycles,
+        equilibration_cycles=args.gcmc_equilibration_cycles,
+        production_cycles=args.gcmc_production_cycles,
+        number_of_trial_positions=args.trial_positions,
+        number_of_trial_orientations=args.trial_orientations,
+        cutoff_vdw=args.cutoff_vdw,
+        cutoff_coulomb=args.cutoff_coulomb,
+        ewald_precision=args.ewald_precision,
+    )
+    try:
+        result = run_hybrid_mdmc_workflow(
+            args.cif_path,
+            output_dir=args.output_dir,
+            lmp_path=args.lmp_path,
+            eqeq_path=args.eqeq_path,
+            graspa_path=args.graspa_path,
+            raspa_path=args.raspa_path,
+            raspa2_path=args.raspa2_path,
+            settings=hybrid_settings,
+            lammps_md_settings=lammps_md_settings,
+            lammps_eqeq_settings=eqeq_settings,
+            raspa_eqeq_settings=eqeq_settings,
+            lammps_timeout_seconds=args.lammps_timeout_seconds,
+            eqeq_timeout_seconds=args.eqeq_timeout_seconds,
+            graspa_timeout_seconds=args.graspa_timeout_seconds,
+        )
+    except (
+        FileNotFoundError,
+        ValueError,
+        EqeqExecutionError,
+        GraspaConfigurationError,
+        GraspaExecutionError,
+        GraspaParseError,
+        GraspaError,
+        LammpsConfigurationError,
+        LammpsInputError,
+        LammpsExecutionError,
+        LammpsParseError,
+        LammpsError,
+    ) as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+        return
+
+    print("input_cif:", result.input_cif)
+    print("output_dir:", result.output_dir)
+    print("cycles:", len(result.cycle_results))
+    print("exchange_mode:", result.settings.exchange_mode)
+    print("components:", [component.component for component in result.settings.components])
+    print("final_framework_cif:", result.final_framework_cif)
     print("warnings:", list(result.warnings))
     print("report_path:", result.report_path)

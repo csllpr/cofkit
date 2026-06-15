@@ -19,8 +19,10 @@ from cofkit.lammps import (
     COFKIT_LMP_ENV_VAR,
     LammpsConfigurationError,
     LammpsInputError,
+    LammpsMdSettings,
     LammpsOptimizationSettings,
     optimize_cif_with_lammps,
+    run_lammps_md_on_cif,
     resolve_lammps_binary,
 )
 
@@ -90,6 +92,45 @@ class LammpsTests(unittest.TestCase):
 
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
             self.assertEqual(optimized_text.splitlines()[0], f"# COFid: {cofid} stacking=AA")
+
+    def test_run_lammps_md_on_cif_writes_md_report_and_handoff_cif(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "md_example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = run_lammps_md_on_cif(
+                    cif_path,
+                    output_dir=temp_path / "md_out",
+                    settings=LammpsMdSettings(
+                        forcefield="uff",
+                        charge_model="none",
+                        steps=25,
+                        timestep=0.5,
+                        ensemble="nve-langevin",
+                        dump_interval=7,
+                        position_restraint_force_constant=0.05,
+                        minimize_before_md=True,
+                    ),
+                )
+
+            self.assertTrue(Path(result.output_cif).is_file())
+            self.assertTrue(Path(result.report_path).is_file())
+            self.assertEqual(result.n_atoms, 3)
+            self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
+            self.assertIn("WARNING: fake warning from test binary", result.warnings)
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("timestep 0.5", script_text)
+            self.assertIn("fix cofkit_hold all spring/self 0.050000", script_text)
+            self.assertIn("minimize 1e-06 1e-06 10000 100000", script_text)
+            self.assertIn("fix cofkit_md all nve", script_text)
+            self.assertIn("fix cofkit_langevin all langevin 300 300 100 351542", script_text)
+            self.assertIn("run 25", script_text)
+            self.assertIn("write_dump all custom", script_text)
+            output_text = Path(result.output_cif).read_text(encoding="utf-8")
+            self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00", output_text)
 
     def test_optimize_cif_with_lammps_defaults_to_uff(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -723,6 +764,7 @@ class LammpsTests(unittest.TestCase):
             cli_main(["calculate", "--help"])
 
         self.assertIn("lammps-optimize", buffer.getvalue())
+        self.assertIn("hybrid-mdmc", buffer.getvalue())
 
     def _write_fake_lammps_binary(self, path: Path) -> Path:
         path.write_text(

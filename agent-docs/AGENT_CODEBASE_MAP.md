@@ -23,7 +23,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py)
   - Owns analysis-facing commands such as `cofkit analyze classify-output`, `cofkit analyze decompose`, and `cofkit analyze zeopp`.
 - [src/cofkit/cli_calculate.py](../src/cofkit/cli_calculate.py)
-  - Owns external calculation commands such as `cofkit calculate lammps-optimize`, `graspa-widom`, `graspa-isotherm`, and `graspa-mixture`.
+  - Owns external calculation commands such as `cofkit calculate lammps-optimize`, `graspa-widom`, `graspa-isotherm`, `graspa-mixture`, and `hybrid-mdmc`.
 - [src/cofkit/engine.py](../src/cofkit/engine.py)
   - Direct project-style API via `COFEngine`.
 - [src/cofkit/batch.py](../src/cofkit/batch.py)
@@ -92,11 +92,13 @@ Then go straight to the module that matches the task.
 ## External calculation seams
 
 - [src/cofkit/lammps.py](../src/cofkit/lammps.py)
-  - UFF/DREIDING-backed explicit-bond CIF to LAMMPS data/input generation, EQeq charge staging, local minimization orchestration, and optimized CIF export.
+  - UFF/DREIDING-backed explicit-bond CIF to LAMMPS data/input generation, EQeq charge staging, local minimization/MD orchestration, and optimized or MD-updated CIF export.
 - [src/cofkit/graspa.py](../src/cofkit/graspa.py)
   - EQeq to gRASPA/RASPA2 Widom, single-component isotherm, and mixture workflows; framework mixing-rule generation; simulation.input rendering; result parsing.
+- [src/cofkit/hybrid_mdmc.py](../src/cofkit/hybrid_mdmc.py)
+  - Cyclic LAMMPS MD plus gRASPA/RASPA2 GCMC workflow. The current exchange mode passes the MD-updated framework CIF into each GCMC segment and into the next MD segment; GCMC guest coordinates are not reinjected into LAMMPS yet.
 - [src/cofkit/guest_bundles.py](../src/cofkit/guest_bundles.py)
-  - Shared external guest parameter-bundle contract for gRASPA/RASPA2 workflows. Bundles add RASPA molecule definitions, pseudo-atom rows, mixing-rule rows, aliases, rotatability, and a required non-empty `lammps` section for future synchronized hybrid MD/MC use.
+  - Shared external guest parameter-bundle contract for gRASPA/RASPA2 workflows. Bundles add RASPA molecule definitions, pseudo-atom rows, mixing-rule rows, aliases, rotatability, and a required non-empty `lammps` section for future synchronized hybrid MD/MC guest reinjection.
 
 ## Typical execution paths
 
@@ -131,6 +133,14 @@ Then go straight to the module that matches the task.
 4. backend-specific `simulation.input` and force-field asset materialization in [src/cofkit/graspa.py](../src/cofkit/graspa.py)
 5. parsed JSON/CSV report writing from backend `Output/**/*.data`
 
+### Hybrid MD/MC calculation from CLI
+
+1. `cofkit calculate hybrid-mdmc` in [src/cofkit/cli_calculate.py](../src/cofkit/cli_calculate.py)
+2. cycle orchestration in [src/cofkit/hybrid_mdmc.py](../src/cofkit/hybrid_mdmc.py)
+3. per-cycle LAMMPS MD framework update through [src/cofkit/lammps.py](../src/cofkit/lammps.py)
+4. per-cycle pure-component or mixture GCMC through [src/cofkit/graspa.py](../src/cofkit/graspa.py)
+5. next cycle starts from the LAMMPS MD output CIF, not a GCMC guest-containing LAMMPS data file
+
 ## Current architectural constraints
 
 These are important before editing:
@@ -156,9 +166,11 @@ These are important before editing:
 - [tests/test_decompose.py](../tests/test_decompose.py)
   - CIF-to-COFid decomposition and generated hcb round trips across buildable binary-bridge linkages.
 - [tests/test_lammps.py](../tests/test_lammps.py)
-  - LAMMPS data/input generation, force-field parameter paths, optimization orchestration, and CIF preservation behavior.
+  - LAMMPS data/input generation, force-field parameter paths, optimization/MD orchestration, and CIF preservation behavior.
 - [tests/test_graspa.py](../tests/test_graspa.py)
   - EQeq/gRASPA/RASPA2 workflow staging, CLI parsing, guest bundles, force-field asset generation, and parser behavior.
+- [tests/test_hybrid_mdmc.py](../tests/test_hybrid_mdmc.py)
+  - Hybrid MD/MC cycle orchestration and framework snapshot handoff behavior.
 - [tests/test_core.py](../tests/test_core.py)
   - End-to-end project / template behavior.
 

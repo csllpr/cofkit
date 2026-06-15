@@ -78,9 +78,9 @@ That is the canonical local test path for this repo and avoids PATH-sensitive be
 Optional external add-ons:
 
 - `Zeo++` if you want to use `cofkit analyze zeopp`
-- `LAMMPS` if you want to use `cofkit calculate lammps-optimize` or `cofkit validate optimize`
-- `EQeq` if you want to use the default charge-assignment stage in `cofkit calculate lammps-optimize` / `cofkit validate optimize`, or `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture` for framework charge assignment
-- `gRASPA` or `RASPA2` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, or `cofkit calculate graspa-mixture`
+- `LAMMPS` if you want to use `cofkit calculate lammps-optimize`, `cofkit validate optimize`, or the MD segment inside `cofkit calculate hybrid-mdmc`
+- `EQeq` if you want to use the default charge-assignment stage in `cofkit calculate lammps-optimize` / `cofkit validate optimize`, or `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, `cofkit calculate graspa-mixture`, or `cofkit calculate hybrid-mdmc` for framework charge assignment
+- `gRASPA` or `RASPA2` if you want to use `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, `cofkit calculate graspa-mixture`, or `cofkit calculate hybrid-mdmc`
 - `pytest` if you want to run the tests locally via the `dev` extra
 
 The bundled topology data shipped with the package is enough for normal structure generation. External RCSR archives are optional advanced inputs, not required setup.
@@ -1028,6 +1028,39 @@ The output directory stores:
 Real gRASPA runs may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and surfaces it as a warning if the simulation otherwise completes and parses successfully. The same temporary parameter review note from the Widom/isotherm sections applies here.
 
 For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
+
+## Workflow 12: Cyclic LAMMPS MD + gRASPA/RASPA2 GCMC
+
+`cofkit calculate hybrid-mdmc` runs the first hybrid cycle workflow for one explicit-bond COF CIF. Each cycle runs LAMMPS MD on the current framework, exports the final MD framework snapshot as a CIF, then runs one single-pressure gRASPA/RASPA2 GCMC segment on that updated framework. The next cycle starts from the MD-updated framework CIF.
+
+```bash
+cofkit calculate hybrid-mdmc \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_hybrid_mdmc \
+  --cycles 5 \
+  --component CO2 \
+  --pressure 100000 \
+  --lammps-forcefield dreiding \
+  --raspa-forcefield dreiding \
+  --md-steps 1000 \
+  --gcmc-production-cycles 200000 \
+  --json
+```
+
+Use one `--component NAME` for a pure-component GCMC segment, or repeated `--component NAME:FRACTION` values for a mixture segment. Components can be packaged names or explicit guest-bundle names/aliases loaded with repeated `--guest-bundle path/to/guest.json`.
+
+Current exchange-mode scope:
+
+- the only supported `exchange_mode` is `framework`
+- GCMC guest molecule coordinates are not yet converted into the next LAMMPS data file
+- guest-bundle `lammps` sections are validated and recorded for future reinjection support, but the current framework-only mode does not consume them
+- this is an alternating MD/GCMC workflow with framework snapshot exchange, not dynamic GCMC inside LAMMPS
+
+The output directory stores:
+
+- one `cycle_*/1.lammps_md/` directory with `lammps_md_input.data`, `lammps_md.in`, logs, trajectory dump, `lammps_md_report.json`, and the MD-updated framework CIF
+- one `cycle_*/2.gcmc/` directory with the normal isotherm or mixture GCMC artifacts for that cycle
+- a top-level `hybrid_mdmc_report.json` containing per-cycle LAMMPS/GCMC report payloads and the final framework CIF path
 
 ### Quantitative rules
 

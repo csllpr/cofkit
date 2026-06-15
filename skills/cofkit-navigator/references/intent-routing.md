@@ -411,6 +411,53 @@ RASPA2 parsing note:
 - RASPA2 component mol/kg loading is parsed and cofkit computes adsorbed mole fractions plus pairwise selectivity
 - RASPA2 component `g/L` loading and heat fields are currently reported as `null`
 
+### Run cyclic LAMMPS MD + gRASPA/RASPA2 GCMC
+
+Use `calculate hybrid-mdmc`.
+
+```bash
+export COFKIT_LMP_PATH=/path/to/lmp_mpi
+export COFKIT_EQEQ_PATH=/path/to/eqeq
+export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
+
+cofkit calculate hybrid-mdmc \
+  <STRUCTURE_CIF> \
+  --output-dir out/hybrid_mdmc \
+  --cycles 5 \
+  --component CO2 \
+  --pressure 100000 \
+  --lammps-forcefield dreiding \
+  --raspa-forcefield dreiding \
+  --json
+```
+
+Useful variants:
+
+- add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate`
+- add repeated `--guest-bundle path/to/guest.json` flags for external parameterized guests, then select them with `--component NAME` or `--component NAME:FRACTION`
+- use one `--component NAME` for a pure-component GCMC segment, or repeated `--component NAME:FRACTION` values for a mixture segment
+- tune `--md-steps`, `--md-timestep`, `--md-ensemble`, `--md-dump-interval`, `--gcmc-production-cycles`, cutoffs, and timeouts
+
+Requirements:
+
+- input must be an explicit-bond `P1` CIF compatible with the LAMMPS export path
+- LAMMPS is configured through `COFKIT_LMP_PATH` or `--lmp-path`
+- EQeq is configured through `COFKIT_EQEQ_PATH` or `--eqeq-path` when charge staging is enabled
+- selected gRASPA/RASPA2 backend executable is configured as for the other GCMC commands
+- the only current exchange mode is framework snapshot exchange
+
+Primary artifacts:
+
+- `hybrid_mdmc_report.json`
+- one `cycle_*/1.lammps_md/` directory per cycle with `lammps_md_report.json`, generated LAMMPS input/data files, logs, trajectory dump, and an MD-updated framework CIF
+- one `cycle_*/2.gcmc/` directory per cycle with the normal isotherm or mixture GCMC artifacts
+
+Scope note:
+
+- GCMC guest molecule coordinates are not yet reinjected into the next LAMMPS segment
+- guest-bundle `lammps` sections are validated and recorded for future reinjection support, but this framework-only mode does not consume them
+- do not describe this command as dynamic GCMC inside LAMMPS
+
 ### Work from Python instead of the CLI
 
 Choose the API by how much the user already knows:
@@ -432,6 +479,7 @@ Choose the API by how much the user already knows:
 - For `graspa_widom_report.json`, report `raspa_backend`, selected components, `unit_cells`, parsed Widom energies, Henry coefficients, source data files, and warnings.
 - For `graspa_isotherm_report.json`, report `raspa_backend`, component, pressure grid, parsed loadings, heat values when present, source data files, and warnings.
 - For `graspa_mixture_report.json`, report `raspa_backend`, feed components/fractions, pressure grid, component loadings, adsorbed mole fractions, pairwise selectivities, source data files, and warnings.
+- For `hybrid_mdmc_report.json`, report cycle count, exchange mode, final framework CIF, per-cycle MD and GCMC report paths, components, pressure, and the framework-only exchange warning.
 
 ## Common Traps
 
@@ -444,6 +492,7 @@ Choose the API by how much the user already knows:
 - Do not send legacy atomistic CIFs without `_ccdc_geom_bond_type` into `cofkit calculate lammps-optimize`.
 - Do not treat separate pure-component `graspa-isotherm` loading ratios as mixture selectivity; use `graspa-mixture` for mixed-feed selectivity.
 - Do not invent external guest force-field parameters from SMILES. `--guest-bundle` requires explicit RASPA molecule, pseudo-atom, and mixing-rule data plus a non-empty `lammps` section for the synchronized future hybrid MD/MC contract.
+- Do not claim `hybrid-mdmc` reinjects GCMC guest coordinates into LAMMPS; the current implementation exchanges MD-updated framework CIFs only.
 - Do not expect every gRASPA summary metric to exist for RASPA2. RASPA2 result grabbing works through recursive `Output/**/*.data`, but some backend-specific fields are `null`.
 - Do not answer from docs alone when the command can be run and the artifacts can be inspected directly.
 - Do not default to deprecated flat aliases such as `cofkit batch-imine` when the grouped binary-bridge interface expresses the same task more clearly.

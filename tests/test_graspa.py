@@ -811,6 +811,7 @@ class GraspaWidomTests(unittest.TestCase):
         self.assertIn("graspa-widom", buffer.getvalue())
         self.assertIn("graspa-isotherm", buffer.getvalue())
         self.assertIn("graspa-mixture", buffer.getvalue())
+        self.assertIn("hybrid-mdmc", buffer.getvalue())
 
     def _write_guest_bundle(self, path: Path) -> Path:
         path.write_text(

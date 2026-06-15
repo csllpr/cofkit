@@ -184,6 +184,31 @@ class LammpsOptimizationSettings:
 
 
 @dataclass(frozen=True)
+class LammpsMdSettings:
+    forcefield: str = "dreiding"
+    charge_model: str = "eqeq"
+    pair_cutoff: float = 12.0
+    coulomb_cutoff: float = 12.0
+    ewald_precision: float = 1.0e-6
+    temperature: float = 300.0
+    timestep: float = 1.0
+    steps: int = 1000
+    thermostat_damping: float = 100.0
+    velocity_seed: int = 246813
+    ensemble: str = "nvt"
+    dump_interval: int = 100
+    position_restraint_force_constant: float = 0.0
+    minimize_before_md: bool = False
+    minimization_energy_tolerance: float = 1.0e-6
+    minimization_force_tolerance: float = 1.0e-6
+    minimization_max_iterations: int = 10000
+    minimization_max_evaluations: int = 100000
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class LammpsOptimizationResult:
     input_cif: str
     optimized_cif: str
@@ -221,6 +246,50 @@ class LammpsOptimizationResult:
     eqeq_json_output_path: str | None = None
     warnings: tuple[str, ...] = ()
 
+
+    def to_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["warnings"] = list(self.warnings)
+        return data
+
+
+@dataclass(frozen=True)
+class LammpsMdResult:
+    input_cif: str
+    output_cif: str
+    output_dir: str
+    lammps_binary: str
+    lammps_data_path: str
+    lammps_input_script_path: str
+    lammps_dump_path: str
+    lammps_log_path: str
+    stdout_log_path: str
+    stderr_log_path: str
+    report_path: str
+    n_atoms: int
+    n_bonds: int
+    n_angles: int
+    n_dihedrals: int
+    n_impropers: int
+    n_atom_types: int
+    n_bond_types: int
+    n_angle_types: int
+    n_dihedral_types: int
+    n_improper_types: int
+    atom_type_symbols: dict[int, str]
+    settings: LammpsMdSettings
+    forcefield_backend: str
+    parameter_sources: dict[str, str]
+    charge_model: str
+    n_charged_atoms: int
+    net_charge: float | None
+    eqeq_binary: str | None = None
+    eqeq_run_dir: str | None = None
+    eqeq_charged_cif: str | None = None
+    eqeq_stdout_log_path: str | None = None
+    eqeq_stderr_log_path: str | None = None
+    eqeq_json_output_path: str | None = None
+    warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -409,7 +478,7 @@ def optimize_cif_with_lammps(
     input_cofid_comment = read_cofid_comment_from_cif(input_path)
 
     binary = resolve_lammps_binary(lmp_path)
-    run_dir = _resolve_output_dir(input_path, output_dir)
+    run_dir = _resolve_output_dir(input_path, output_dir, suffix="_lammps")
     run_dir.mkdir(parents=True, exist_ok=True)
 
     parsed = _parse_explicit_bond_cif(input_path)
@@ -543,6 +612,219 @@ def optimize_cif_with_lammps(
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return result
+
+
+def run_lammps_md_on_cif(
+    cif_path: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    lmp_path: str | Path | None = None,
+    eqeq_path: str | Path | None = None,
+    settings: LammpsMdSettings | None = None,
+    timeout_seconds: float = 300.0,
+    eqeq_settings: EqeqChargeSettings | None = None,
+    eqeq_timeout_seconds: float | None = 300.0,
+) -> LammpsMdResult:
+    if timeout_seconds <= 0.0:
+        raise ValueError("timeout_seconds must be positive.")
+    if eqeq_timeout_seconds is not None and eqeq_timeout_seconds <= 0.0:
+        raise ValueError("eqeq_timeout_seconds must be positive when provided.")
+    settings = settings or LammpsMdSettings()
+    _validate_md_settings(settings)
+
+    input_path = Path(cif_path).expanduser().resolve()
+    if not input_path.is_file():
+        raise FileNotFoundError(f"CIF file does not exist: {input_path}")
+    input_cofid_comment = read_cofid_comment_from_cif(input_path)
+
+    binary = resolve_lammps_binary(lmp_path)
+    run_dir = _resolve_output_dir(input_path, output_dir, suffix="_lammps_md")
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    parsed = _parse_explicit_bond_cif(input_path)
+    eqeq_result: EqeqChargeResult | None = None
+    warnings: list[str] = []
+    if _normalize_charge_model_name(settings.charge_model) == "eqeq":
+        eqeq_result = assign_eqeq_charges_to_cif(
+            input_path,
+            output_dir=run_dir / "eqeq",
+            eqeq_path=eqeq_path,
+            settings=eqeq_settings,
+            timeout_seconds=eqeq_timeout_seconds,
+        )
+        extracted_charges = _extract_atom_site_charges_from_cif(
+            Path(eqeq_result.eqeq_charged_cif),
+            expected_labels=[atom.label for atom in parsed.atoms],
+        )
+        if extracted_charges.used_atom_order_fallback:
+            warnings.append(
+                "EQeq output atom labels did not match the input CIF labels, so cofkit mapped charges by atom order. "
+                "Verify the EQeq output preserved atom ordering before trusting the assigned charges."
+            )
+        parsed = _with_atom_charges(
+            parsed,
+            extracted_charges.charges_by_label,
+            source_path=Path(eqeq_result.eqeq_charged_cif),
+        )
+        warnings.append(
+            "EQeq charges were assigned before the LAMMPS MD segment. "
+            "The next hybrid cycle reruns EQeq on the updated framework CIF before GCMC."
+        )
+
+    optimization_settings = _md_settings_to_optimization_settings(settings)
+    model = _build_optimization_model(parsed, settings=optimization_settings)
+    prepared = _prepare_lammps_system(model.parsed, settings=optimization_settings)
+
+    data_path = run_dir / "lammps_md_input.data"
+    input_script_path = run_dir / "lammps_md.in"
+    dump_path = run_dir / "lammps_md_trajectory.lammpstrj"
+    log_path = run_dir / "lammps_md.log"
+    stdout_log_path = run_dir / "lammps_md.stdout.log"
+    stderr_log_path = run_dir / "lammps_md.stderr.log"
+    output_cif_path = run_dir / f"{input_path.stem}_lammps_md.cif"
+    report_path = run_dir / "lammps_md_report.json"
+
+    data_path.write_text(prepared.data_text, encoding="utf-8")
+    input_script_path.write_text(
+        _render_lammps_md_input_script(
+            data_path=data_path,
+            dump_path=dump_path,
+            settings=settings,
+            prepared=prepared,
+            boundary=model.boundary,
+        ),
+        encoding="utf-8",
+    )
+
+    execution_warnings = _run_lammps(
+        binary=binary,
+        input_script_path=input_script_path,
+        log_path=log_path,
+        stdout_log_path=stdout_log_path,
+        stderr_log_path=stderr_log_path,
+        timeout_seconds=timeout_seconds,
+    )
+    final_frame = _parse_lammps_dump_last_frame(dump_path, expected_atoms=len(model.parsed.atoms))
+    final_fractional_positions = _cartesian_positions_to_fractional(
+        final_frame.lammps_origin,
+        final_frame.lammps_basis,
+        final_frame.cartesian_positions,
+    )
+    output_cif_path.write_text(
+        _render_optimized_cif(
+            parsed,
+            final_fractional_positions,
+            cell_parameters=final_frame.cell_parameters,
+            basis=final_frame.lammps_basis,
+            cofid=None if input_cofid_comment is None else input_cofid_comment.cofid,
+            cofid_comment_suffix=None if input_cofid_comment is None else input_cofid_comment.suffix,
+        ),
+        encoding="utf-8",
+    )
+
+    parameter_sources = dict(prepared.parameter_sources)
+    if eqeq_result is not None:
+        parameter_sources["charge_assignment"] = "EQeq charges assigned from the input CIF before LAMMPS MD"
+    resolved_charge_model = (
+        "eqeq" if eqeq_result is not None else ("input_cif" if prepared.has_charges else "none")
+    )
+    all_warnings = tuple(warnings) + tuple(model.warnings) + tuple(prepared.warnings) + tuple(execution_warnings)
+    result = LammpsMdResult(
+        input_cif=str(input_path),
+        output_cif=str(output_cif_path),
+        output_dir=str(run_dir),
+        lammps_binary=str(binary),
+        lammps_data_path=str(data_path),
+        lammps_input_script_path=str(input_script_path),
+        lammps_dump_path=str(dump_path),
+        lammps_log_path=str(log_path),
+        stdout_log_path=str(stdout_log_path),
+        stderr_log_path=str(stderr_log_path),
+        report_path=str(report_path),
+        n_atoms=len(model.parsed.atoms),
+        n_bonds=len(model.parsed.bonds),
+        n_angles=len(model.parsed.angles),
+        n_dihedrals=prepared.n_dihedrals,
+        n_impropers=prepared.n_impropers,
+        n_atom_types=len(prepared.atom_type_symbols),
+        n_bond_types=prepared.n_bond_types,
+        n_angle_types=prepared.n_angle_types,
+        n_dihedral_types=prepared.n_dihedral_types,
+        n_improper_types=prepared.n_improper_types,
+        atom_type_symbols=prepared.atom_type_symbols,
+        settings=settings,
+        forcefield_backend=prepared.forcefield_backend,
+        parameter_sources=parameter_sources,
+        charge_model=resolved_charge_model,
+        n_charged_atoms=prepared.n_charged_atoms,
+        net_charge=prepared.net_charge,
+        eqeq_binary=eqeq_result.eqeq_binary if eqeq_result is not None else None,
+        eqeq_run_dir=eqeq_result.output_dir if eqeq_result is not None else None,
+        eqeq_charged_cif=eqeq_result.eqeq_charged_cif if eqeq_result is not None else None,
+        eqeq_stdout_log_path=eqeq_result.eqeq_stdout_log_path if eqeq_result is not None else None,
+        eqeq_stderr_log_path=eqeq_result.eqeq_stderr_log_path if eqeq_result is not None else None,
+        eqeq_json_output_path=eqeq_result.eqeq_json_output_path if eqeq_result is not None else None,
+        warnings=all_warnings,
+    )
+    report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    return result
+
+
+def _validate_md_settings(settings: LammpsMdSettings) -> None:
+    forcefield = _normalize_forcefield_name(settings.forcefield)
+    if forcefield not in _SUPPORTED_FORCEFIELDS:
+        raise ValueError(
+            f"Unsupported forcefield {settings.forcefield!r}. Expected one of: {', '.join(_SUPPORTED_FORCEFIELDS)}."
+        )
+    charge_model = _normalize_charge_model_name(settings.charge_model)
+    if charge_model not in _SUPPORTED_CHARGE_MODELS:
+        raise ValueError(
+            f"Unsupported charge_model {settings.charge_model!r}. Expected one of: {', '.join(_SUPPORTED_CHARGE_MODELS)}."
+        )
+    if settings.pair_cutoff <= 0.0:
+        raise ValueError("pair_cutoff must be positive.")
+    if settings.coulomb_cutoff <= 0.0:
+        raise ValueError("coulomb_cutoff must be positive.")
+    if settings.ewald_precision <= 0.0:
+        raise ValueError("ewald_precision must be positive.")
+    if settings.temperature <= 0.0:
+        raise ValueError("temperature must be positive.")
+    if settings.timestep <= 0.0:
+        raise ValueError("timestep must be positive.")
+    if settings.steps <= 0:
+        raise ValueError("steps must be positive.")
+    if settings.thermostat_damping <= 0.0:
+        raise ValueError("thermostat_damping must be positive.")
+    if settings.velocity_seed <= 0:
+        raise ValueError("velocity_seed must be positive.")
+    if _normalize_lammps_md_ensemble(settings.ensemble) not in {"nvt", "nve_langevin"}:
+        raise ValueError("ensemble must be one of: nvt, nve-langevin.")
+    if settings.dump_interval <= 0:
+        raise ValueError("dump_interval must be positive.")
+    if settings.position_restraint_force_constant < 0.0:
+        raise ValueError("position_restraint_force_constant must be non-negative.")
+    if settings.minimization_energy_tolerance <= 0.0:
+        raise ValueError("minimization_energy_tolerance must be positive.")
+    if settings.minimization_force_tolerance <= 0.0:
+        raise ValueError("minimization_force_tolerance must be positive.")
+    if settings.minimization_max_iterations <= 0:
+        raise ValueError("minimization_max_iterations must be positive.")
+    if settings.minimization_max_evaluations <= 0:
+        raise ValueError("minimization_max_evaluations must be positive.")
+
+
+def _md_settings_to_optimization_settings(settings: LammpsMdSettings) -> LammpsOptimizationSettings:
+    return LammpsOptimizationSettings(
+        forcefield=settings.forcefield,
+        charge_model=settings.charge_model,
+        pair_cutoff=settings.pair_cutoff,
+        coulomb_cutoff=settings.coulomb_cutoff,
+        ewald_precision=settings.ewald_precision,
+        timestep=settings.timestep,
+        pre_minimization_steps=0,
+        two_stage_protocol=False,
+        relax_cell=False,
+    )
 
 
 def _validate_settings(settings: LammpsOptimizationSettings) -> None:
@@ -2685,6 +2967,108 @@ def _render_lammps_input_script(
     return "\n".join(lines)
 
 
+def _render_lammps_md_input_script(
+    *,
+    data_path: Path,
+    dump_path: Path,
+    settings: LammpsMdSettings,
+    prepared: _PreparedLammpsSystem,
+    boundary: str,
+) -> str:
+    periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
+    pair_style_line = (
+        f"pair_style lj/cut/coul/long {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
+        if periodic_electrostatics
+        else (
+            f"pair_style lj/cut/coul/cut {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
+            if prepared.has_charges
+            else f"pair_style lj/cut {settings.pair_cutoff:.6f}"
+        )
+    )
+    thermo_terms = ["step", "temp", "pe", "ke", "etotal", "press", "evdwl"]
+    if prepared.has_charges:
+        thermo_terms.append("ecoul")
+        if periodic_electrostatics:
+            thermo_terms.append("elong")
+    lines = [
+        "units real",
+        "atom_style full" if prepared.has_charges else "atom_style molecular",
+        f"boundary {boundary}",
+        pair_style_line,
+        "pair_modify shift yes",
+        _render_special_bonds_line(prepared),
+        "bond_style harmonic",
+    ]
+    if prepared.angle_styles:
+        lines.append(_render_style_line("angle_style", prepared.angle_styles, force_hybrid=True))
+    if prepared.dihedral_styles:
+        lines.append(_render_style_line("dihedral_style", prepared.dihedral_styles))
+    if prepared.improper_styles:
+        lines.append(_render_style_line("improper_style", prepared.improper_styles))
+    lines.extend(
+        [
+            f"read_data {data_path}",
+            *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
+            "neighbor 2.0 bin",
+            "neigh_modify every 1 delay 0 check yes",
+            f"timestep {settings.timestep:.8g}",
+            "thermo 100",
+            "thermo_style custom " + " ".join(thermo_terms),
+            f"dump cofkit_dump all custom {settings.dump_interval} {dump_path} id x y z",
+            "dump_modify cofkit_dump sort id",
+        ]
+    )
+    if settings.position_restraint_force_constant > 0.0:
+        lines.append(f"fix cofkit_hold all spring/self {settings.position_restraint_force_constant:.6f}")
+        lines.append("fix_modify cofkit_hold energy yes")
+    if settings.minimize_before_md:
+        lines.extend(
+            [
+                "min_style cg",
+                (
+                    f"minimize {settings.minimization_energy_tolerance:.8g} "
+                    f"{settings.minimization_force_tolerance:.8g} "
+                    f"{settings.minimization_max_iterations} {settings.minimization_max_evaluations}"
+                ),
+            ]
+        )
+    lines.append(
+        f"velocity all create {settings.temperature:.8g} {settings.velocity_seed} mom yes rot yes dist gaussian"
+    )
+    ensemble = _normalize_lammps_md_ensemble(settings.ensemble)
+    if ensemble == "nvt":
+        lines.append(
+            f"fix cofkit_md all nvt temp {settings.temperature:.8g} {settings.temperature:.8g} "
+            f"{settings.thermostat_damping:.8g}"
+        )
+        lines.append(f"run {settings.steps}")
+        lines.append(f"write_dump all custom {dump_path} id x y z modify sort id append yes")
+        lines.append("unfix cofkit_md")
+    else:
+        lines.extend(
+            [
+                "fix cofkit_md all nve",
+                (
+                    f"fix cofkit_langevin all langevin {settings.temperature:.8g} {settings.temperature:.8g} "
+                    f"{settings.thermostat_damping:.8g} {settings.velocity_seed + 104729}"
+                ),
+                f"run {settings.steps}",
+                f"write_dump all custom {dump_path} id x y z modify sort id append yes",
+                "unfix cofkit_langevin",
+                "unfix cofkit_md",
+            ]
+        )
+    if settings.position_restraint_force_constant > 0.0:
+        lines.append("unfix cofkit_hold")
+    lines.append("undump cofkit_dump")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _normalize_lammps_md_ensemble(ensemble: str) -> str:
+    return ensemble.strip().lower().replace("-", "_")
+
+
 def _run_lammps(
     *,
     binary: Path,
@@ -2947,9 +3331,9 @@ def _render_optimized_cif(
     return "\n".join(lines)
 
 
-def _resolve_output_dir(input_path: Path, output_dir: str | Path | None) -> Path:
+def _resolve_output_dir(input_path: Path, output_dir: str | Path | None, *, suffix: str) -> Path:
     if output_dir is None:
-        return input_path.parent / f"{input_path.stem}_lammps"
+        return input_path.parent / f"{input_path.stem}{suffix}"
     return Path(output_dir).expanduser().resolve()
 
 
