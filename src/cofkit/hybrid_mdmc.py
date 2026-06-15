@@ -17,8 +17,11 @@ from .graspa import (
     run_graspa_mixture_workflow,
 )
 from .guest_restart import (
+    GuestRestartError,
     LammpsGuestRestartState,
     build_lammps_guest_restart_state_from_gcmc_result,
+    build_lammps_guest_restart_state_from_lammps_md_result,
+    write_graspa_restart_file,
 )
 from .lammps import LammpsMdResult, LammpsMdSettings, run_lammps_md_on_cif
 
@@ -77,10 +80,14 @@ class HybridMdMcCycleResult:
     gcmc_result: GraspaIsothermResult | GraspaMixtureResult
     output_framework_cif: str
     input_guest_restart_source_path: str | None = None
+    md_output_guest_restart_source_path: str | None = None
+    gcmc_initial_restart_file_path: str | None = None
     output_guest_restart_source_path: str | None = None
     n_input_guest_atoms: int = 0
+    n_md_output_guest_atoms: int = 0
     n_output_guest_atoms: int = 0
     input_guest_components: tuple[str, ...] = ()
+    md_output_guest_components: tuple[str, ...] = ()
     output_guest_components: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -93,10 +100,14 @@ class HybridMdMcCycleResult:
             "gcmc_result": self.gcmc_result.to_dict(),
             "output_framework_cif": self.output_framework_cif,
             "input_guest_restart_source_path": self.input_guest_restart_source_path,
+            "md_output_guest_restart_source_path": self.md_output_guest_restart_source_path,
+            "gcmc_initial_restart_file_path": self.gcmc_initial_restart_file_path,
             "output_guest_restart_source_path": self.output_guest_restart_source_path,
             "n_input_guest_atoms": self.n_input_guest_atoms,
+            "n_md_output_guest_atoms": self.n_md_output_guest_atoms,
             "n_output_guest_atoms": self.n_output_guest_atoms,
             "input_guest_components": list(self.input_guest_components),
+            "md_output_guest_components": list(self.md_output_guest_components),
             "output_guest_components": list(self.output_guest_components),
             "warnings": list(self.warnings),
         }
@@ -183,6 +194,29 @@ def run_hybrid_mdmc_workflow(
             guest_restart_state=input_guest_restart_state,
         )
         md_framework_cif = Path(lammps_result.output_cif)
+        md_output_guest_restart_state: LammpsGuestRestartState | None = None
+        gcmc_initial_restart_file_path: str | None = None
+        cycle_warnings: list[str] = []
+        if settings.exchange_mode == "guest_restart" and input_guest_restart_state is not None:
+            try:
+                md_output_guest_restart_state, restart_cell = build_lammps_guest_restart_state_from_lammps_md_result(
+                    lammps_result,
+                    previous_guest_restart_state=input_guest_restart_state,
+                )
+                restart_file_result = write_graspa_restart_file(
+                    md_output_guest_restart_state,
+                    cycle_dir / "md_to_gcmc_restartfile",
+                    cell=restart_cell,
+                    component_order=tuple(component.component for component in settings.components),
+                )
+            except GuestRestartError as exc:
+                raise GuestRestartError(
+                    f"Failed to convert LAMMPS MD guest coordinates to a gRASPA initial restart file "
+                    f"for hybrid cycle {cycle}: {exc}"
+                ) from exc
+            gcmc_initial_restart_file_path = restart_file_result.restart_file_path
+            cycle_warnings.extend(md_output_guest_restart_state.warnings)
+            cycle_warnings.extend(restart_file_result.warnings)
         gcmc_result_type: str
         if len(settings.components) == 1:
             component = settings.components[0]
@@ -196,6 +230,7 @@ def run_hybrid_mdmc_workflow(
                 raspa2_path=raspa2_path,
                 eqeq_settings=raspa_eqeq_settings,
                 isotherm_settings=_isotherm_settings_from_hybrid(settings, component),
+                initial_restart_file=gcmc_initial_restart_file_path,
                 eqeq_timeout_seconds=eqeq_timeout_seconds,
                 graspa_timeout_seconds=graspa_timeout_seconds,
             )
@@ -210,11 +245,11 @@ def run_hybrid_mdmc_workflow(
                 raspa2_path=raspa2_path,
                 eqeq_settings=raspa_eqeq_settings,
                 mixture_settings=_mixture_settings_from_hybrid(settings),
+                initial_restart_file=gcmc_initial_restart_file_path,
                 eqeq_timeout_seconds=eqeq_timeout_seconds,
                 graspa_timeout_seconds=graspa_timeout_seconds,
             )
         output_guest_restart_state: LammpsGuestRestartState | None = None
-        cycle_warnings: list[str] = []
         if settings.exchange_mode == "guest_restart":
             output_guest_restart_state = build_lammps_guest_restart_state_from_gcmc_result(
                 gcmc_result,
@@ -235,15 +270,27 @@ def run_hybrid_mdmc_workflow(
                     if input_guest_restart_state is not None
                     else None
                 ),
+                md_output_guest_restart_source_path=(
+                    md_output_guest_restart_state.source_snapshot_path
+                    if md_output_guest_restart_state is not None
+                    else None
+                ),
+                gcmc_initial_restart_file_path=gcmc_initial_restart_file_path,
                 output_guest_restart_source_path=(
                     output_guest_restart_state.source_snapshot_path
                     if output_guest_restart_state is not None
                     else None
                 ),
                 n_input_guest_atoms=input_guest_restart_state.n_atoms if input_guest_restart_state is not None else 0,
+                n_md_output_guest_atoms=(
+                    md_output_guest_restart_state.n_atoms if md_output_guest_restart_state is not None else 0
+                ),
                 n_output_guest_atoms=output_guest_restart_state.n_atoms if output_guest_restart_state is not None else 0,
                 input_guest_components=(
                     input_guest_restart_state.components if input_guest_restart_state is not None else ()
+                ),
+                md_output_guest_components=(
+                    md_output_guest_restart_state.components if md_output_guest_restart_state is not None else ()
                 ),
                 output_guest_components=(
                     output_guest_restart_state.components if output_guest_restart_state is not None else ()
@@ -276,6 +323,11 @@ def _validate_hybrid_settings(settings: HybridMdMcSettings) -> None:
         raise ValueError("cycles must be positive.")
     if settings.exchange_mode not in {"framework", "guest_restart"}:
         raise ValueError("hybrid exchange_mode must be one of: framework, guest_restart.")
+    if settings.exchange_mode == "guest_restart" and _normalize_hybrid_raspa_backend(settings.raspa_backend) != "graspa":
+        raise ValueError(
+            "hybrid exchange_mode='guest_restart' requires raspa_backend='graspa' because post-MD guest "
+            "coordinates are staged through gRASPA RestartInitial files; RASPA2 restart staging is not yet supported."
+        )
     if settings.pressure <= 0.0:
         raise ValueError("pressure must be positive.")
     if not settings.components:
@@ -318,10 +370,14 @@ def _hybrid_exchange_warnings(settings: HybridMdMcSettings) -> tuple[str, ...]:
         )
     return (
         "Hybrid exchange_mode='guest_restart' feeds the final GCMC guest restart/movie snapshot into the following "
-        "LAMMPS MD segment. Cycle 1 starts framework-only unless a future API supplies an initial guest restart.",
-        "The current guest restart path carries GCMC guest coordinates into MD; it does not yet generate a "
-        "gRASPA/RASPA2 RestartInitial file from post-MD guest coordinates for the next MC segment.",
+        "LAMMPS MD segment, then writes post-MD guest coordinates to gRASPA RestartInitial/System_0/restartfile "
+        "for the next MC segment. Cycle 1 starts framework-only unless a future API supplies an initial guest restart.",
+        "RASPA2 MD-to-MC guest restart staging is not yet supported; guest_restart currently requires the gRASPA backend.",
     )
+
+
+def _normalize_hybrid_raspa_backend(backend: str) -> str:
+    return backend.strip().lower().replace("-", "").replace("_", "")
 
 
 def _isotherm_settings_from_hybrid(

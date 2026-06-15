@@ -428,6 +428,7 @@ class GraspaIsothermPointResult:
     loading_g_per_l_errorbar: float
     heat_of_adsorption_kj_per_mol: float
     heat_of_adsorption_kj_per_mol_errorbar: float
+    initial_restart_file_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -439,6 +440,7 @@ class GraspaIsothermPointResult:
             "graspa_stderr_log_path": self.graspa_stderr_log_path,
             "data_file_paths": list(self.data_file_paths),
             "source_data_file": self.source_data_file,
+            "initial_restart_file_path": self.initial_restart_file_path,
             "loading_mol_per_kg": _json_safe_float(self.loading_mol_per_kg),
             "loading_mol_per_kg_errorbar": _json_safe_float(self.loading_mol_per_kg_errorbar),
             "loading_mmol_per_g": _json_safe_float(self.loading_mol_per_kg),
@@ -660,6 +662,7 @@ class GraspaMixturePointResult:
     source_data_file: str
     component_results: tuple[GraspaMixturePointComponentResult, ...]
     selectivity_results: tuple[GraspaMixtureSelectivityResult, ...]
+    initial_restart_file_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -670,6 +673,7 @@ class GraspaMixturePointResult:
             "graspa_stderr_log_path": self.graspa_stderr_log_path,
             "data_file_paths": list(self.data_file_paths),
             "source_data_file": self.source_data_file,
+            "initial_restart_file_path": self.initial_restart_file_path,
             "component_results": [component.to_dict() for component in self.component_results],
             "selectivity_results": [result.to_dict() for result in self.selectivity_results],
         }
@@ -1028,6 +1032,7 @@ def run_graspa_isotherm_workflow(
     raspa2_path: str | Path | None = None,
     eqeq_settings: EqeqChargeSettings | None = None,
     isotherm_settings: GraspaIsothermSettings | None = None,
+    initial_restart_file: str | Path | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
     graspa_timeout_seconds: float | None = None,
 ) -> GraspaIsothermResult:
@@ -1044,6 +1049,11 @@ def run_graspa_isotherm_workflow(
 
     raspa_backend = _normalize_raspa_backend_name(isotherm_settings.backend)
     raspa_display_name = _raspa_backend_display_name(raspa_backend)
+    if initial_restart_file is not None and raspa_backend != "graspa":
+        raise GraspaConfigurationError(
+            "Initial guest restart files are currently supported only for the gRASPA backend; "
+            "RASPA2 restart-file staging has not been validated."
+        )
     graspa_binary = resolve_raspa_backend_binary(
         raspa_backend,
         raspa_path=raspa_path,
@@ -1084,6 +1094,11 @@ def run_graspa_isotherm_workflow(
             (isotherm_settings.component,),
             forcefield=isotherm_settings.forcefield,
             guest_bundles=guest_bundles,
+        )
+        staged_initial_restart_file = (
+            _stage_graspa_initial_restart_file(pressure_run_dir, initial_restart_file)
+            if initial_restart_file is not None
+            else None
         )
 
         simulation_input_path = pressure_run_dir / "simulation.input"
@@ -1139,6 +1154,11 @@ def run_graspa_isotherm_workflow(
             graspa_stdout_log_path=graspa_stdout_log_path,
             graspa_stderr_log_path=graspa_stderr_log_path,
         )
+        if staged_initial_restart_file is not None:
+            point_result = replace(
+                point_result,
+                initial_restart_file_path=str(staged_initial_restart_file),
+            )
         point_results.append(point_result)
 
         if len(data_file_paths) > 1:
@@ -1207,6 +1227,7 @@ def run_graspa_mixture_workflow(
     raspa2_path: str | Path | None = None,
     eqeq_settings: EqeqChargeSettings | None = None,
     mixture_settings: GraspaMixtureSettings | None = None,
+    initial_restart_file: str | Path | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
     graspa_timeout_seconds: float | None = None,
 ) -> GraspaMixtureResult:
@@ -1224,6 +1245,11 @@ def run_graspa_mixture_workflow(
 
     raspa_backend = _normalize_raspa_backend_name(mixture_settings.backend)
     raspa_display_name = _raspa_backend_display_name(raspa_backend)
+    if initial_restart_file is not None and raspa_backend != "graspa":
+        raise GraspaConfigurationError(
+            "Initial guest restart files are currently supported only for the gRASPA backend; "
+            "RASPA2 restart-file staging has not been validated."
+        )
     graspa_binary = resolve_raspa_backend_binary(
         raspa_backend,
         raspa_path=raspa_path,
@@ -1270,6 +1296,11 @@ def run_graspa_mixture_workflow(
             expected_components,
             forcefield=mixture_settings.forcefield,
             guest_bundles=guest_bundles,
+        )
+        staged_initial_restart_file = (
+            _stage_graspa_initial_restart_file(pressure_run_dir, initial_restart_file)
+            if initial_restart_file is not None
+            else None
         )
 
         simulation_input_path = pressure_run_dir / "simulation.input"
@@ -1325,6 +1356,11 @@ def run_graspa_mixture_workflow(
             graspa_stdout_log_path=graspa_stdout_log_path,
             graspa_stderr_log_path=graspa_stderr_log_path,
         )
+        if staged_initial_restart_file is not None:
+            point_result = replace(
+                point_result,
+                initial_restart_file_path=str(staged_initial_restart_file),
+            )
         point_results.append(point_result)
 
         if len(data_file_paths) > 1:
@@ -1745,6 +1781,19 @@ def _resolve_output_dir(input_path: Path, output_dir: str | Path | None, *, suff
     if output_dir is not None:
         return Path(output_dir).expanduser().resolve()
     return input_path.parent / f"{input_path.stem}{suffix}"
+
+
+def _stage_graspa_initial_restart_file(
+    pressure_run_dir: Path,
+    initial_restart_file: str | Path,
+) -> Path:
+    source_path = Path(initial_restart_file).expanduser().resolve()
+    if not source_path.is_file():
+        raise GraspaConfigurationError(f"Initial gRASPA restart file does not exist: {source_path}")
+    staged_path = pressure_run_dir / "RestartInitial" / "System_0" / "restartfile"
+    staged_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, staged_path)
+    return staged_path
 
 
 def _expected_eqeq_output_stem(input_filename: str, settings: EqeqChargeSettings) -> str:

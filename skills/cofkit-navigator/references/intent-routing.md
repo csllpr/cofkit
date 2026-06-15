@@ -436,7 +436,7 @@ Useful variants:
 - add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate`
 - add repeated `--guest-bundle path/to/guest.json` flags for external parameterized guests, then select them with `--component NAME` or `--component NAME:FRACTION`
 - use one `--component NAME` for a pure-component GCMC segment, or repeated `--component NAME:FRACTION` values for a mixture segment
-- add `--exchange-mode guest-restart` when the user wants GCMC guest coordinates injected into the following LAMMPS MD segment; binary guests use repeated mixture components, for example `--component Xe:0.5 --component Kr:0.5`
+- add `--exchange-mode guest-restart` with the gRASPA backend when the user wants GCMC guest coordinates injected into the following LAMMPS MD segment and MD-evolved guest coordinates written back to the next MC segment; binary guests use repeated mixture components, for example `--component Xe:0.5 --component Kr:0.5`
 - tune `--md-steps`, `--md-timestep`, `--md-ensemble`, `--md-dump-interval`, `--gcmc-production-cycles`, cutoffs, and timeouts
 
 Requirements:
@@ -445,21 +445,22 @@ Requirements:
 - LAMMPS is configured through `COFKIT_LMP_PATH` or `--lmp-path`
 - EQeq is configured through `COFKIT_EQEQ_PATH` or `--eqeq-path` when charge staging is enabled
 - selected gRASPA/RASPA2 backend executable is configured as for the other GCMC commands
-- `--exchange-mode framework` is the default; `--exchange-mode guest-restart` requires selected guests with massive LAMMPS sites and a parsable final GCMC `Movies/System_0/result_*.data` snapshot
+- `--exchange-mode framework` is the default; `--exchange-mode guest-restart` currently requires `--backend graspa`, selected guests with massive LAMMPS sites, and a parsable final GCMC `Movies/System_0/result_*.data` snapshot
 
 Primary artifacts:
 
 - `hybrid_mdmc_report.json`
 - one `cycle_*/1.lammps_md/` directory per cycle with `lammps_md_report.json`, generated LAMMPS input/data files, logs, trajectory dump, and an MD-updated framework CIF
 - one `cycle_*/2.gcmc/` directory per cycle with the normal isotherm or mixture GCMC artifacts
-- in `guest-restart` mode, GCMC `RestartFile` is enabled and the report records per-cycle guest restart source paths, guest atom counts, and guest components consumed by each MD segment
+- in gRASPA `guest-restart` mode, GCMC `RestartFile` is enabled and the report records per-cycle GCMC-to-MD guest restart source paths, MD-to-MC restartfile paths, guest atom counts, and guest components consumed by each MD and MC segment
 
 Scope note:
 
-- `guest-restart` reinjects GCMC guest coordinates into the following LAMMPS segment, but cycle 1 starts framework-only unless an initial restart is supplied by a future API
-- post-MD guest coordinates are not yet written back as a gRASPA/RASPA2 `RestartInitial` file for the next MC segment
+- `guest-restart` reinjects GCMC guest coordinates into the following LAMMPS segment, then writes post-MD guest coordinates to gRASPA `RestartInitial/System_0/restartfile` for the next MC segment
+- cycle 1 starts framework-only unless an initial restart is supplied by a future API
+- RASPA2 MD-to-MC restartfile staging is not yet supported
 - massless/dummy pseudo-sites are rejected for LAMMPS guest restart
-- do not describe this command as dynamic GCMC inside LAMMPS or as full bidirectional MD-to-MC guest restart
+- do not describe this command as dynamic GCMC inside LAMMPS
 
 ### Work from Python instead of the CLI
 
@@ -495,7 +496,7 @@ Choose the API by how much the user already knows:
 - Do not send legacy atomistic CIFs without `_ccdc_geom_bond_type` into `cofkit calculate lammps-optimize`.
 - Do not treat separate pure-component `graspa-isotherm` loading ratios as mixture selectivity; use `graspa-mixture` for mixed-feed selectivity.
 - Do not invent external guest force-field parameters from SMILES. `--guest-bundle` requires explicit RASPA molecule, pseudo-atom, and mixing-rule data plus a non-empty `lammps` section for synchronized hybrid MD/MC guest restart.
-- Do not claim `hybrid-mdmc --exchange-mode guest-restart` is full dynamic GCMC: it carries GCMC guests into the next MD segment, but does not yet carry post-MD guest coordinates back into the next MC segment.
+- Do not claim `hybrid-mdmc --exchange-mode guest-restart` is dynamic GCMC inside LAMMPS. It is an alternating gRASPA-backed guest restart loop; RASPA2 MD-to-MC restartfile staging is not supported yet.
 - Do not expect every gRASPA summary metric to exist for RASPA2. RASPA2 result grabbing works through recursive `Output/**/*.data`, but some backend-specific fields are `null`.
 - Do not answer from docs alone when the command can be run and the artifacts can be inspected directly.
 - Do not default to deprecated flat aliases such as `cofkit batch-imine` when the grouped binary-bridge interface expresses the same task more clearly.

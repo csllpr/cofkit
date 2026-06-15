@@ -429,6 +429,8 @@ class GraspaWidomTests(unittest.TestCase):
                 "_cell_length_c 9.0\n",
                 encoding="utf-8",
             )
+            initial_restart_file = temp_path / "restartfile"
+            initial_restart_file.write_text("initial restart sentinel\n", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -443,6 +445,7 @@ class GraspaWidomTests(unittest.TestCase):
                     output_dir=temp_path / "isotherm_out",
                     eqeq_settings=EqeqChargeSettings(),
                     isotherm_settings=GraspaIsothermSettings(component="CO2", pressures=(10000.0, 500000.0)),
+                    initial_restart_file=initial_restart_file,
                     graspa_timeout_seconds=30.0,
                 )
 
@@ -469,6 +472,13 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertAlmostEqual(second_point.loading_mol_per_kg, 1.25)
             self.assertAlmostEqual(second_point.loading_g_per_l, 12.5)
             self.assertAlmostEqual(second_point.heat_of_adsorption_kj_per_mol, -25.0)
+            self.assertIsNotNone(first_point.initial_restart_file_path)
+            self.assertEqual(
+                Path(first_point.initial_restart_file_path).read_text(encoding="utf-8"),
+                "initial restart sentinel\n",
+            )
+            self.assertEqual(Path(first_point.initial_restart_file_path).name, "restartfile")
+            self.assertEqual(Path(first_point.initial_restart_file_path).parent.parts[-2:], ("RestartInitial", "System_0"))
 
             simulation_input = Path(first_point.simulation_input_path).read_text(encoding="utf-8")
             self.assertIn("NumberOfBlocks 5", simulation_input)
@@ -492,6 +502,7 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["point_results"][0]["loading_mol_per_kg"], 0.025)
             self.assertEqual(report["point_results"][0]["loading_mmol_per_g"], 0.025)
             self.assertEqual(report["point_results"][1]["loading_mol_per_kg"], 1.25)
+            self.assertTrue(Path(report["point_results"][0]["initial_restart_file_path"]).is_file())
 
     def test_calculate_graspa_isotherm_cli_prints_json_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:

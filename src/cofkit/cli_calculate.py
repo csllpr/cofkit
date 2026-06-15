@@ -1428,7 +1428,8 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
         description=(
             "Alternate LAMMPS MD updates of an explicit-bond framework CIF with gRASPA/RASPA2 GCMC on the "
             "updated framework. The default exchange mode passes only framework snapshots; guest-restart mode "
-            "feeds the final GCMC guest restart/movie snapshot into the following LAMMPS MD segment."
+            "feeds the final GCMC guest restart/movie snapshot into the following LAMMPS MD segment and, for "
+            "gRASPA, writes post-MD guest coordinates back to the next MC segment."
         ),
     )
     parser.add_argument("cif_path", help="Input explicit-bond CIF file for the first LAMMPS MD segment.")
@@ -1449,7 +1450,8 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
         default="framework",
         help=(
             "Hybrid handoff mode. framework keeps MD and GCMC coupled by framework CIF only; guest-restart "
-            "also injects the final GCMC guest snapshot into the next LAMMPS MD segment. Default: framework."
+            "also injects the final GCMC guest snapshot into the next LAMMPS MD segment and writes post-MD "
+            "guest coordinates back to gRASPA. Default: framework."
         ),
     )
     parser.add_argument(

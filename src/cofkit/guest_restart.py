@@ -117,6 +117,40 @@ class LammpsGuestRestartState:
         }
 
 
+@dataclass(frozen=True)
+class LammpsGuestRestartCell:
+    unit_cells: tuple[int, int, int]
+    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+    lengths: tuple[float, float, float]
+    angles: tuple[float, float, float]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "unit_cells": list(self.unit_cells),
+            "basis": [list(vector) for vector in self.basis],
+            "lengths": list(self.lengths),
+            "angles": list(self.angles),
+        }
+
+
+@dataclass(frozen=True)
+class GraspaRestartFileResult:
+    restart_file_path: str
+    n_adsorbate_atoms: int
+    n_adsorbate_molecules: int
+    components: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "restart_file_path": self.restart_file_path,
+            "n_adsorbate_atoms": self.n_adsorbate_atoms,
+            "n_adsorbate_molecules": self.n_adsorbate_molecules,
+            "components": list(self.components),
+            "warnings": list(self.warnings),
+        }
+
+
 def build_lammps_guest_restart_state_from_gcmc_result(
     gcmc_result: object,
     *,
@@ -131,6 +165,245 @@ def build_lammps_guest_restart_state_from_gcmc_result(
         )
     templates, sites = load_lammps_guest_force_field_assets(components, guest_bundles=guest_bundles)
     return parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+
+def build_lammps_guest_restart_state_from_lammps_md_result(
+    lammps_md_result: object,
+    *,
+    previous_guest_restart_state: LammpsGuestRestartState,
+) -> tuple[LammpsGuestRestartState, LammpsGuestRestartCell]:
+    data_path = Path(getattr(lammps_md_result, "lammps_data_path")).expanduser().resolve()
+    dump_path = Path(getattr(lammps_md_result, "lammps_dump_path")).expanduser().resolve()
+    if not data_path.is_file():
+        raise GuestRestartError(f"LAMMPS MD data file does not exist: {data_path}")
+    positions_by_atom_id, cell = parse_lammps_md_dump_guest_positions(dump_path)
+    identities = _parse_lammps_guest_atom_identities_from_data(
+        data_path.read_text(encoding="utf-8", errors="replace"),
+        previous_guest_restart_state=previous_guest_restart_state,
+    )
+    atoms: list[LammpsGuestSnapshotAtom] = []
+    warnings: list[str] = []
+    for identity in identities:
+        position = positions_by_atom_id.get(identity["atom_id"])
+        if position is None:
+            warnings.append(
+                f"LAMMPS dump did not contain final coordinates for guest atom id {identity['atom_id']}; skipped."
+            )
+            continue
+        x, y, z = position
+        atoms.append(
+            LammpsGuestSnapshotAtom(
+                component=identity["component"],
+                molecule_key=identity["molecule_key"],
+                site_index=identity["site_index"],
+                site_label=identity["site_label"],
+                x=x,
+                y=y,
+                z=z,
+            )
+        )
+    if not atoms:
+        raise GuestRestartError(
+            f"No guest atoms from the previous restart state were recovered from LAMMPS MD dump {dump_path}."
+        )
+    state = LammpsGuestRestartState(
+        source_snapshot_path=str(dump_path),
+        atoms=tuple(atoms),
+        sites=previous_guest_restart_state.sites,
+        templates=previous_guest_restart_state.templates,
+        warnings=tuple(dict.fromkeys((*previous_guest_restart_state.warnings, *warnings))),
+    )
+    return state, cell
+
+
+def parse_lammps_md_dump_guest_positions(
+    dump_path: str | Path,
+) -> tuple[dict[int, tuple[float, float, float]], LammpsGuestRestartCell]:
+    path = Path(dump_path).expanduser().resolve()
+    if not path.is_file():
+        raise GuestRestartError(f"LAMMPS MD dump file does not exist: {path}")
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    index = 0
+    last_positions: dict[int, tuple[float, float, float]] | None = None
+    last_cell: LammpsGuestRestartCell | None = None
+    while index < len(lines):
+        if lines[index].strip() != "ITEM: TIMESTEP":
+            raise GuestRestartError(f"Unexpected LAMMPS dump format in {path}: missing ITEM: TIMESTEP")
+        index += 2
+        if index >= len(lines) or lines[index].strip() != "ITEM: NUMBER OF ATOMS":
+            raise GuestRestartError(f"Unexpected LAMMPS dump format in {path}: missing atom count header")
+        index += 1
+        try:
+            n_atoms = int(lines[index].strip())
+        except (IndexError, ValueError) as exc:
+            raise GuestRestartError(f"Invalid atom count in LAMMPS dump {path}.") from exc
+        index += 1
+        if index >= len(lines) or not lines[index].startswith("ITEM: BOX BOUNDS"):
+            raise GuestRestartError(f"Unexpected LAMMPS dump format in {path}: missing box-bounds header")
+        last_cell = _parse_lammps_dump_cell(lines[index : index + 4], dump_path=path)
+        index += 4
+        if index >= len(lines) or not lines[index].startswith("ITEM: ATOMS"):
+            raise GuestRestartError(f"Unexpected LAMMPS dump format in {path}: missing atom header")
+        header = lines[index].split()[2:]
+        index += 1
+        column_by_name = {name: column_index for column_index, name in enumerate(header)}
+        required = ("id", "x", "y", "z")
+        if any(name not in column_by_name for name in required):
+            raise GuestRestartError(
+                f"Unexpected LAMMPS dump atom columns in {path}: expected at least {required}, got {header}."
+            )
+        positions: dict[int, tuple[float, float, float]] = {}
+        for _ in range(n_atoms):
+            if index >= len(lines):
+                raise GuestRestartError(f"Unexpected end of LAMMPS dump in {path}")
+            parts = lines[index].split()
+            index += 1
+            try:
+                atom_id = int(parts[column_by_name["id"]])
+                positions[atom_id] = (
+                    float(parts[column_by_name["x"]]),
+                    float(parts[column_by_name["y"]]),
+                    float(parts[column_by_name["z"]]),
+                )
+            except (IndexError, ValueError) as exc:
+                raise GuestRestartError(f"Unexpected LAMMPS dump atom row in {path}: {lines[index - 1]!r}") from exc
+        last_positions = positions
+    if last_positions is None or last_cell is None:
+        raise GuestRestartError(f"LAMMPS dump file did not contain any frames: {path}")
+    return last_positions, last_cell
+
+
+def write_graspa_restart_file(
+    restart_state: LammpsGuestRestartState,
+    output_path: str | Path,
+    *,
+    cell: LammpsGuestRestartCell,
+    component_order: Sequence[str],
+) -> GraspaRestartFileResult:
+    path = Path(output_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    site_by_label = restart_state.site_by_label()
+    template_by_component = restart_state.template_by_component()
+    grouped = _group_guest_restart_atoms_by_component_and_molecule(restart_state)
+    ordered_components = tuple(
+        dict.fromkeys(
+            [
+                *(component for component in component_order if component in template_by_component),
+                *(component for component in grouped if component not in component_order),
+            ]
+        )
+    )
+    n_molecules = sum(len(grouped.get(component, ())) for component in ordered_components)
+    warnings: list[str] = []
+    if n_molecules == 0:
+        raise GuestRestartError("Cannot write a gRASPA restart file without adsorbate molecules.")
+
+    lines: list[str] = []
+    a_vec, b_vec, c_vec = cell.basis
+    a_len, b_len, c_len = cell.lengths
+    alpha, beta, gamma = cell.angles
+    lines.extend(
+        [
+            "Cell info:",
+            "========================================================================",
+            f"number-of-unit-cells: {cell.unit_cells[0]} {cell.unit_cells[1]} {cell.unit_cells[2]}",
+            "unit-cell-vector-a: " + " ".join(_format_restart_float(value) for value in a_vec),
+            "unit-cell-vector-b: " + " ".join(_format_restart_float(value) for value in b_vec),
+            "unit-cell-vector-c: " + " ".join(_format_restart_float(value) for value in c_vec),
+            "",
+            "cell-vector-a: " + " ".join(_format_restart_float(value) for value in a_vec),
+            "cell-vector-b: " + " ".join(_format_restart_float(value) for value in b_vec),
+            "cell-vector-c: " + " ".join(_format_restart_float(value) for value in c_vec),
+            "",
+            "cell-lengths: "
+            + " ".join(_format_restart_float(value) for value in (a_len, b_len, c_len)),
+            "cell-angles: "
+            + " ".join(_format_restart_float(value) for value in (alpha, beta, gamma)),
+            "",
+            "",
+            "Maximum changes for MC-moves:",
+            "========================================================================",
+            "Maximum-volume-change: 0.006250",
+            "Maximum-Gibbs-volume-change: 0.025000",
+            (
+                "Maximum-box-shape-change: 0.100000 0.100000 0.100000, "
+                "0.100000 0.100000 0.100000, 0.100000 0.100000 0.100000"
+            ),
+            "",
+            "Acceptance targets for MC-moves:",
+            "========================================================================",
+            "Target-volume-change: 0.500000",
+            "Target-box-shape-change: 0.500000",
+            "Target-Gibbs-volume-change: 0.500000",
+            "",
+            f"Components: {len(ordered_components)} (Adsorbates {n_molecules}, Cations 0)",
+            "========================================================================",
+        ]
+    )
+    for component_index, component in enumerate(ordered_components):
+        lines.extend(
+            [
+                f"Components {component_index} ({component})",
+                "",
+                (
+                    f"Maximum-translation-change component {component_index}: "
+                    f"{a_len / 10.0:.6f} {b_len / 10.0:.6f} {c_len / 10.0:.6f}"
+                ),
+                f"Maximum-translation-in-plane-change component {component_index}: 0.000000,0.000000,0.000000",
+                f"Maximum-rotation-change component {component_index}: 0.523583 0.523583 0.523583",
+                "",
+            ]
+        )
+    lines.extend(["Reactions: 0", ""])
+    for component_index, component in enumerate(ordered_components):
+        molecules = grouped.get(component, ())
+        template = template_by_component[component]
+        lines.extend(
+            [
+                f"Component: {component_index}   Adsorbate {len(molecules)} molecules of {component}",
+                "------------------------------------------------------------------------",
+            ]
+        )
+        for molecule_index, molecule_atoms in enumerate(molecules):
+            if len(molecule_atoms) != len(template.site_labels):
+                warnings.append(
+                    f"Component {component} molecule {molecule_index} has {len(molecule_atoms)} sites, "
+                    f"expected {len(template.site_labels)}."
+                )
+            for atom in molecule_atoms:
+                lines.append(
+                    (
+                        f"Adsorbate-atom-position: {molecule_index} {atom.site_index} "
+                        f"{_format_restart_float(atom.x)} {_format_restart_float(atom.y)} {_format_restart_float(atom.z)}"
+                    )
+                )
+        for molecule_index, molecule_atoms in enumerate(molecules):
+            for atom in molecule_atoms:
+                lines.append(f"Adsorbate-atom-velocity: {molecule_index} {atom.site_index} 0  0  0")
+        for molecule_index, molecule_atoms in enumerate(molecules):
+            for atom in molecule_atoms:
+                lines.append(f"Adsorbate-atom-force: {molecule_index} {atom.site_index} 0  0  0")
+        for molecule_index, molecule_atoms in enumerate(molecules):
+            for atom in molecule_atoms:
+                charge = site_by_label[atom.site_label].charge
+                lines.append(
+                    f"Adsorbate-atom-charge: {molecule_index} {atom.site_index} {_format_restart_float(charge)}"
+                )
+        for molecule_index, molecule_atoms in enumerate(molecules):
+            for atom in molecule_atoms:
+                lines.append(f"Adsorbate-atom-scaling: {molecule_index} {atom.site_index} 1")
+        for molecule_index, molecule_atoms in enumerate(molecules):
+            for atom in molecule_atoms:
+                lines.append(f"Adsorbate-atom-fixed: {molecule_index} {atom.site_index} 0  0  0")
+        lines.append("")
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return GraspaRestartFileResult(
+        restart_file_path=str(path),
+        n_adsorbate_atoms=restart_state.n_atoms,
+        n_adsorbate_molecules=n_molecules,
+        components=ordered_components,
+        warnings=tuple(dict.fromkeys(warnings)),
+    )
 
 
 def find_latest_gcmc_movie_snapshot(gcmc_result: object) -> Path | None:
@@ -501,9 +774,12 @@ def _parse_lammps_data_atom_rows(text: str, *, type_labels: Mapping[int, str]) -
         except ValueError:
             continue
         label = None
+        component = None
         comment_parts = after.split()
         if comment_parts:
             label = comment_parts[0]
+            if len(comment_parts) > 1:
+                component = comment_parts[1]
         if label is None and type_id is not None:
             label = type_labels.get(type_id)
         if label is None:
@@ -518,12 +794,70 @@ def _parse_lammps_data_atom_rows(text: str, *, type_labels: Mapping[int, str]) -
                 "molecule_id": parts[1],
                 "type_id": type_id,
                 "label": label,
+                "component": component,
                 "x": x,
                 "y": y,
                 "z": z,
             }
         )
     return parsed
+
+
+def _parse_lammps_guest_atom_identities_from_data(
+    text: str,
+    *,
+    previous_guest_restart_state: LammpsGuestRestartState,
+) -> tuple[dict[str, object], ...]:
+    known_sites = {site.label for site in previous_guest_restart_state.sites}
+    type_labels = _parse_lammps_mass_type_labels(text)
+    raw_atoms = _parse_lammps_data_atom_rows(text, type_labels=type_labels)
+    template_by_component = previous_guest_restart_state.template_by_component()
+    site_to_components: dict[str, list[str]] = {}
+    for template in previous_guest_restart_state.templates:
+        for site_label in template.site_labels:
+            site_to_components.setdefault(site_label, []).append(template.component)
+
+    grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for row in raw_atoms:
+        site_label = str(row["label"])
+        if site_label not in known_sites:
+            continue
+        component = row.get("component")
+        if isinstance(component, str) and component in template_by_component:
+            resolved_component = component
+        else:
+            candidates = site_to_components.get(site_label, [])
+            if len(candidates) != 1:
+                continue
+            resolved_component = candidates[0]
+        molecule_id = str(row["molecule_id"])
+        grouped.setdefault((resolved_component, molecule_id), []).append(row)
+
+    identities: list[dict[str, object]] = []
+    for (component, molecule_id), rows in grouped.items():
+        template = template_by_component[component]
+        ordered_rows = sorted(rows, key=lambda row: int(row["atom_id"]))
+        if len(ordered_rows) != len(template.site_labels):
+            continue
+        for site_index, row in enumerate(ordered_rows):
+            expected_label = template.site_labels[site_index]
+            if str(row["label"]) != expected_label:
+                raise GuestRestartError(
+                    f"LAMMPS MD data guest atom order for component {component!r}, molecule {molecule_id!r} "
+                    f"does not match the molecule definition: expected {expected_label!r}, got {row['label']!r}."
+                )
+            identities.append(
+                {
+                    "atom_id": int(row["atom_id"]),
+                    "component": component,
+                    "molecule_key": f"{component}:md:{molecule_id}",
+                    "site_index": site_index,
+                    "site_label": expected_label,
+                }
+            )
+    if not identities:
+        raise GuestRestartError("No guest atom identities were recovered from the LAMMPS MD data file.")
+    return tuple(identities)
 
 
 def _atom_section_rows(text: str) -> tuple[str, list[str]]:
@@ -562,6 +896,74 @@ def _section_rows(text: str, section_name: str) -> list[str]:
                 cursor += 1
             return rows
     return []
+
+
+def _parse_lammps_dump_cell(lines: Sequence[str], *, dump_path: Path) -> LammpsGuestRestartCell:
+    if len(lines) != 4:
+        raise GuestRestartError(f"Unexpected LAMMPS dump box block in {dump_path}: expected 4 lines, got {len(lines)}")
+    header = lines[0].split()
+    if header[:3] != ["ITEM:", "BOX", "BOUNDS"]:
+        raise GuestRestartError(f"Unexpected LAMMPS dump box header in {dump_path}: {lines[0]!r}")
+    try:
+        bounds = [tuple(float(value) for value in line.split()) for line in lines[1:4]]
+    except ValueError as exc:
+        raise GuestRestartError(f"Invalid numeric box-bounds line in {dump_path}") from exc
+    triclinic = "xy" in header and "xz" in header and "yz" in header
+    if triclinic:
+        if any(len(row) != 3 for row in bounds):
+            raise GuestRestartError(f"Unexpected triclinic box-bounds format in {dump_path}")
+        (xlo_bound, xhi_bound, xy), (ylo_bound, yhi_bound, xz), (zlo_bound, zhi_bound, yz) = bounds
+        xlo = xlo_bound - min(0.0, xy, xz, xy + xz)
+        xhi = xhi_bound - max(0.0, xy, xz, xy + xz)
+        ylo = ylo_bound - min(0.0, yz)
+        yhi = yhi_bound - max(0.0, yz)
+        zlo = zlo_bound
+        zhi = zhi_bound
+        _ = (xlo, ylo, zlo)
+        basis = (
+            (xhi - xlo, 0.0, 0.0),
+            (xy, yhi - ylo, 0.0),
+            (xz, yz, zhi - zlo),
+        )
+    else:
+        if any(len(row) != 2 for row in bounds):
+            raise GuestRestartError(f"Unexpected orthogonal box-bounds format in {dump_path}")
+        (xlo, xhi), (ylo, yhi), (zlo, zhi) = bounds
+        _ = (xlo, ylo, zlo)
+        basis = (
+            (xhi - xlo, 0.0, 0.0),
+            (0.0, yhi - ylo, 0.0),
+            (0.0, 0.0, zhi - zlo),
+        )
+    lengths = tuple(_vector_norm(vector) for vector in basis)
+    if any(length <= 1.0e-12 for length in lengths):
+        raise GuestRestartError(f"LAMMPS dump box in {dump_path} is singular.")
+    angles = (
+        _angle_degrees(basis[1], basis[2]),
+        _angle_degrees(basis[0], basis[2]),
+        _angle_degrees(basis[0], basis[1]),
+    )
+    return LammpsGuestRestartCell(
+        unit_cells=(1, 1, 1),
+        basis=basis,
+        lengths=(float(lengths[0]), float(lengths[1]), float(lengths[2])),
+        angles=angles,
+    )
+
+
+def _group_guest_restart_atoms_by_component_and_molecule(
+    restart_state: LammpsGuestRestartState,
+) -> dict[str, tuple[tuple[LammpsGuestSnapshotAtom, ...], ...]]:
+    grouped: dict[str, dict[str, list[LammpsGuestSnapshotAtom]]] = {}
+    for atom in restart_state.atoms:
+        grouped.setdefault(atom.component, {}).setdefault(atom.molecule_key, []).append(atom)
+    result: dict[str, tuple[tuple[LammpsGuestSnapshotAtom, ...], ...]] = {}
+    for component, molecule_map in grouped.items():
+        result[component] = tuple(
+            tuple(sorted(atoms, key=lambda atom: atom.site_index))
+            for _molecule_key, atoms in sorted(molecule_map.items())
+        )
+    return result
 
 
 _LAMMPS_SECTION_NAMES = {
@@ -621,6 +1023,27 @@ def _movie_sort_key(path: Path) -> tuple[int, str]:
     return (int(match.group(1)) if match else -1, str(path))
 
 
+def _format_restart_float(value: float) -> str:
+    return f"{float(value):.6f}"
+
+
+def _vector_norm(vector: tuple[float, float, float]) -> float:
+    return math.sqrt(sum(value * value for value in vector))
+
+
+def _dot(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
+    return sum(left[index] * right[index] for index in range(3))
+
+
+def _angle_degrees(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
+    left_norm = _vector_norm(left)
+    right_norm = _vector_norm(right)
+    if left_norm <= 1.0e-12 or right_norm <= 1.0e-12:
+        return 0.0
+    cosine = max(-1.0, min(1.0, _dot(left, right) / (left_norm * right_norm)))
+    return math.degrees(math.acos(cosine))
+
+
 def _is_int_token(value: str) -> bool:
     try:
         int(value)
@@ -639,13 +1062,18 @@ def _is_float_token(value: str) -> bool:
 
 __all__ = [
     "GuestRestartError",
+    "GraspaRestartFileResult",
     "KCAL_PER_MOL_PER_K",
+    "LammpsGuestRestartCell",
     "LammpsGuestRestartState",
     "LammpsGuestSite",
     "LammpsGuestSnapshotAtom",
     "LammpsGuestTemplate",
+    "build_lammps_guest_restart_state_from_lammps_md_result",
     "build_lammps_guest_restart_state_from_gcmc_result",
     "find_latest_gcmc_movie_snapshot",
     "load_lammps_guest_force_field_assets",
+    "parse_lammps_md_dump_guest_positions",
     "parse_lammps_guest_restart_snapshot",
+    "write_graspa_restart_file",
 ]

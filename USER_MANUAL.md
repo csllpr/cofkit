@@ -1065,13 +1065,13 @@ cofkit calculate hybrid-mdmc \
   --json
 ```
 
-In `guest-restart` mode, cofkit sets the GCMC `RestartFile` option, reads the latest `Movies/System_0/result_*.data` snapshot after each GCMC segment, and merges the requested guest molecules into the next LAMMPS MD data file. Packaged and guest-bundle force-field rows are synchronized across the two engines: guest masses and charges come from pseudo-atom rows unless overridden by the bundle `lammps` section, guest epsilon values are converted from kelvin to kcal/mol for LAMMPS `real` units, and PairIJ host-guest / guest-guest rows use Lorentz-Berthelot mixing. Binary guests are supported through the mixture path when every component has a massive-site LAMMPS representation.
+In `guest-restart` mode, cofkit sets the GCMC `RestartFile` option, reads the latest `Movies/System_0/result_*.data` snapshot after each GCMC segment, merges the requested guest molecules into the next LAMMPS MD data file, and writes post-MD guest coordinates back to gRASPA as `RestartInitial/System_0/restartfile` for the next MC segment. Packaged and guest-bundle force-field rows are synchronized across the two engines: guest masses and charges come from pseudo-atom rows unless overridden by the bundle `lammps` section, guest epsilon values are converted from kelvin to kcal/mol for LAMMPS `real` units, and PairIJ host-guest / guest-guest rows use Lorentz-Berthelot mixing. Binary guests are supported through the mixture path when every component has a massive-site LAMMPS representation. The bidirectional guest loop currently requires the gRASPA backend; RASPA2 restartfile staging is not yet supported.
 
 Current exchange-mode scope:
 
 - `framework` remains the default mode and carries only the MD-updated framework CIF between cycles
-- `guest_restart` carries GCMC guest coordinates into the next LAMMPS MD segment, but cycle 1 still starts without guests unless a future API supplies an initial restart
-- post-MD guest coordinates are not yet converted into a gRASPA/RASPA2 `RestartInitial` file for the next MC segment
+- `guest_restart` carries GCMC guest coordinates into the next LAMMPS MD segment, then carries MD-evolved guest coordinates back into the next gRASPA MC segment; cycle 1 still starts without guests unless a future API supplies an initial restart
+- RASPA2 MD-to-MC restartfile staging is not yet supported
 - multi-site RASPA rigid guests are represented during MD with harmonic bond/angle terms inferred from the molecule definition
 - massless or dummy pseudo-sites are rejected for LAMMPS guest restart rather than converted into mobile atoms
 - this is an alternating MD/GCMC workflow, not dynamic GCMC inside LAMMPS

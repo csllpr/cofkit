@@ -54,15 +54,20 @@ from .hybrid_mdmc import (
     run_hybrid_mdmc_workflow,
 )
 from .guest_restart import (
+    GraspaRestartFileResult,
     GuestRestartError,
+    LammpsGuestRestartCell,
     LammpsGuestRestartState,
     LammpsGuestSite,
     LammpsGuestSnapshotAtom,
     LammpsGuestTemplate,
     build_lammps_guest_restart_state_from_gcmc_result,
+    build_lammps_guest_restart_state_from_lammps_md_result,
     find_latest_gcmc_movie_snapshot,
     load_lammps_guest_force_field_assets,
+    parse_lammps_md_dump_guest_positions,
     parse_lammps_guest_restart_snapshot,
+    write_graspa_restart_file,
 )
 from .lammps import (
     COFKIT_LMP_ENV_VAR,
@@ -241,6 +246,7 @@ __all__ = [
     "GraspaWidomComponentResult",
     "GraspaWidomResult",
     "GraspaWidomSettings",
+    "GraspaRestartFileResult",
     "GuestRestartError",
     "HybridMdMcCycleResult",
     "HybridMdMcResult",
@@ -248,6 +254,7 @@ __all__ = [
     "LammpsConfigurationError",
     "LammpsError",
     "LammpsExecutionError",
+    "LammpsGuestRestartCell",
     "LammpsGuestRestartState",
     "LammpsGuestSite",
     "LammpsGuestSnapshotAtom",
@@ -316,6 +323,7 @@ __all__ = [
     "assess_imine_cof_aldehyde_monomer",
     "assess_imine_cof_amine_monomer",
     "build_lammps_guest_restart_state_from_gcmc_result",
+    "build_lammps_guest_restart_state_from_lammps_md_result",
     "candidate_to_cif",
     "configured_rcsr_archives",
     "classify_batch_output",
@@ -337,6 +345,7 @@ __all__ = [
     "motif_pseudo_atom_symbol",
     "optimize_cif_with_lammps",
     "prepare_periodic_cif_atoms",
+    "parse_lammps_md_dump_guest_positions",
     "parse_lammps_guest_restart_snapshot",
     "read_periodic_cif_atoms",
     "is_imine_cof_aldehyde_monomer",
@@ -355,4 +364,5 @@ __all__ = [
     "validate_cif_against_cofid",
     "validate_lammps_optimized_cif_against_cofid",
     "write_candidate_cif",
+    "write_graspa_restart_file",
 ]

@@ -86,6 +86,8 @@ class HybridMdMcTests(unittest.TestCase):
             input_cif = temp_path / "framework.cif"
             input_cif.write_text("data_framework\n", encoding="utf-8")
             lammps_guest_states = []
+            gcmc_initial_restart_files = []
+            restart_text = ""
 
             def fake_lammps(cif_path, *, output_dir, settings, guest_restart_state=None, **kwargs):
                 input_path = Path(cif_path)
@@ -102,7 +104,8 @@ class HybridMdMcTests(unittest.TestCase):
                     guest_restart_state=guest_restart_state,
                 )
 
-            def fake_mixture(cif_path, *, output_dir, mixture_settings, **kwargs):
+            def fake_mixture(cif_path, *, output_dir, mixture_settings, initial_restart_file=None, **kwargs):
+                gcmc_initial_restart_files.append(initial_restart_file)
                 run_dir = Path(output_dir)
                 pressure_run_dir = run_dir / "mixture" / "pressure_100000"
                 movie_dir = pressure_run_dir / "Movies" / "System_0"
@@ -157,6 +160,7 @@ class HybridMdMcTests(unittest.TestCase):
                         raspa_eqeq_settings=EqeqChargeSettings(),
                     )
                     report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+                    restart_text = Path(gcmc_initial_restart_files[1]).read_text(encoding="utf-8")
 
         self.assertIsNone(lammps_guest_states[0])
         self.assertEqual(lammps_guest_states[1].n_atoms, 2)
@@ -165,10 +169,43 @@ class HybridMdMcTests(unittest.TestCase):
         self.assertEqual(result.cycle_results[1].n_input_guest_atoms, 2)
         self.assertEqual(result.cycle_results[1].lammps_md_result.n_guest_atoms, 2)
         self.assertEqual(result.cycle_results[1].input_guest_components, ("Xe", "Kr"))
+        self.assertIsNone(gcmc_initial_restart_files[0])
+        self.assertIsNotNone(gcmc_initial_restart_files[1])
+        self.assertEqual(result.cycle_results[0].gcmc_initial_restart_file_path, None)
+        self.assertEqual(result.cycle_results[1].n_md_output_guest_atoms, 2)
+        self.assertEqual(result.cycle_results[1].md_output_guest_components, ("Xe", "Kr"))
+        self.assertEqual(result.cycle_results[1].gcmc_initial_restart_file_path, gcmc_initial_restart_files[1])
+        self.assertIn("Components: 2 (Adsorbates 2, Cations 0)", restart_text)
+        self.assertIn("Adsorbate-atom-position: 0 0 1.250000 2.500000 3.750000", restart_text)
+        self.assertIn("Adsorbate-atom-position: 0 0 4.250000 5.500000 6.750000", restart_text)
         self.assertIn("exchange_mode='guest_restart'", result.warnings[0])
         self.assertEqual(report["settings"]["exchange_mode"], "guest_restart")
         self.assertEqual(report["cycle_results"][0]["n_output_guest_atoms"], 2)
         self.assertEqual(report["cycle_results"][1]["n_input_guest_atoms"], 2)
+        self.assertEqual(report["cycle_results"][1]["n_md_output_guest_atoms"], 2)
+        self.assertEqual(report["cycle_results"][1]["gcmc_initial_restart_file_path"], gcmc_initial_restart_files[1])
+
+    def test_hybrid_mdmc_guest_restart_rejects_raspa2_backend(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_cif = temp_path / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError) as raised:
+                run_hybrid_mdmc_workflow(
+                    input_cif,
+                    output_dir=temp_path / "hybrid_guest_out",
+                    settings=HybridMdMcSettings(
+                        exchange_mode="guest_restart",
+                        raspa_backend="raspa2",
+                        components=(GraspaMixtureComponentSettings(component="Xe", mol_fraction=1.0),),
+                    ),
+                    lammps_md_settings=LammpsMdSettings(forcefield="uff", charge_model="none", steps=5),
+                    lammps_eqeq_settings=EqeqChargeSettings(),
+                    raspa_eqeq_settings=EqeqChargeSettings(),
+                )
+
+        self.assertIn("RASPA2 restart staging is not yet supported", str(raised.exception))
 
 
 def _fake_lammps_result(
@@ -179,6 +216,7 @@ def _fake_lammps_result(
     *,
     guest_restart_state=None,
 ) -> LammpsMdResult:
+    _write_fake_lammps_md_files(run_dir, guest_restart_state=guest_restart_state)
     report_path = run_dir / "lammps_md_report.json"
     result = LammpsMdResult(
         input_cif=str(input_path),
@@ -218,6 +256,95 @@ def _fake_lammps_result(
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return result
+
+
+def _write_fake_lammps_md_files(run_dir: Path, *, guest_restart_state=None) -> None:
+    data_path = run_dir / "lammps_md_input.data"
+    dump_path = run_dir / "lammps_md_trajectory.lammpstrj"
+    n_guest_atoms = guest_restart_state.n_atoms if guest_restart_state is not None else 0
+    site_by_label = guest_restart_state.site_by_label() if guest_restart_state is not None else {}
+    guest_sites = tuple(dict.fromkeys(atom.site_label for atom in guest_restart_state.atoms)) if guest_restart_state else ()
+    guest_type_by_site = {site_label: index for index, site_label in enumerate(guest_sites, start=3)}
+    mass_rows = [
+        "1 12.011 # C_3",
+        "2 15.999 # O_3",
+        *(
+            f"{type_id} {site_by_label[site_label].mass:.8g} # {site_label}"
+            for site_label, type_id in guest_type_by_site.items()
+        ),
+    ]
+    atom_rows = [
+        "1 1 1 0.0 0.0 0.0 0.0 0 0 0 # C_3",
+        "2 1 2 0.0 1.0 0.0 0.0 0 0 0 # O_3",
+        "3 1 2 0.0 0.0 1.0 0.0 0 0 0 # O_3",
+    ]
+    dump_rows = [
+        "1 1 0.0 0.0 0.0",
+        "2 2 1.0 0.0 0.0",
+        "3 2 0.0 1.0 0.0",
+    ]
+    if guest_restart_state is not None:
+        molecule_atoms_by_key = {}
+        for atom in guest_restart_state.atoms:
+            molecule_atoms_by_key.setdefault(atom.molecule_key, []).append(atom)
+        next_atom_id = 4
+        next_molecule_id = 2
+        for molecule_key, molecule_atoms in molecule_atoms_by_key.items():
+            del molecule_key
+            molecule_id = next_molecule_id
+            next_molecule_id += 1
+            for atom in sorted(molecule_atoms, key=lambda item: item.site_index):
+                site = site_by_label[atom.site_label]
+                atom_type = guest_type_by_site[atom.site_label]
+                x = atom.x + 0.25
+                y = atom.y + 0.50
+                z = atom.z + 0.75
+                atom_rows.append(
+                    (
+                        f"{next_atom_id} {molecule_id} {atom_type} {site.charge:.8g} "
+                        f"{x:.10g} {y:.10g} {z:.10g} 0 0 0 # {atom.site_label} {atom.component}"
+                    )
+                )
+                dump_rows.append(f"{next_atom_id} {atom_type} {x:.10g} {y:.10g} {z:.10g}")
+                next_atom_id += 1
+    data_path.write_text(
+        "\n".join(
+            [
+                "LAMMPS data",
+                "",
+                f"{3 + n_guest_atoms} atoms",
+                f"{2 + len(guest_sites)} atom types",
+                "",
+                "Masses",
+                "",
+                *mass_rows,
+                "",
+                "Atoms # full",
+                "",
+                *atom_rows,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    dump_path.write_text(
+        "\n".join(
+            [
+                "ITEM: TIMESTEP",
+                "5",
+                "ITEM: NUMBER OF ATOMS",
+                str(3 + n_guest_atoms),
+                "ITEM: BOX BOUNDS pp pp pp",
+                "0 20",
+                "0 21",
+                "0 22",
+                "ITEM: ATOMS id type x y z",
+                *dump_rows,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 class _FakeMixtureResult:
