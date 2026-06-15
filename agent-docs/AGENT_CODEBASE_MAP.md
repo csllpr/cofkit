@@ -17,11 +17,13 @@ Then go straight to the module that matches the task.
 
 - [src/cofkit/cli.py](../src/cofkit/cli.py)
   - Installed `cofkit` CLI.
-  - Routes the top-level `build`, `analyze`, and future `calculate` namespaces.
+  - Routes the top-level `build`, `analyze`, `calculate`, and `validate` namespaces.
 - [src/cofkit/cli_build.py](../src/cofkit/cli_build.py)
   - Owns build-facing commands such as `cofkit build single-pair` and the batch workflows.
 - [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py)
   - Owns analysis-facing commands such as `cofkit analyze classify-output`, `cofkit analyze decompose`, and `cofkit analyze zeopp`.
+- [src/cofkit/cli_calculate.py](../src/cofkit/cli_calculate.py)
+  - Owns external calculation commands such as `cofkit calculate lammps-optimize`, `graspa-widom`, `graspa-isotherm`, and `graspa-mixture`.
 - [src/cofkit/engine.py](../src/cofkit/engine.py)
   - Direct project-style API via `COFEngine`.
 - [src/cofkit/batch.py](../src/cofkit/batch.py)
@@ -87,6 +89,15 @@ Then go straight to the module that matches the task.
   - Explicit-bond binary-bridge decomposition into recovered monomers and COFid serialization.
   - This logic was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
 
+## External calculation seams
+
+- [src/cofkit/lammps.py](../src/cofkit/lammps.py)
+  - UFF/DREIDING-backed explicit-bond CIF to LAMMPS data/input generation, EQeq charge staging, local minimization orchestration, and optimized CIF export.
+- [src/cofkit/graspa.py](../src/cofkit/graspa.py)
+  - EQeq to gRASPA/RASPA2 Widom, single-component isotherm, and mixture workflows; framework mixing-rule generation; simulation.input rendering; result parsing.
+- [src/cofkit/guest_bundles.py](../src/cofkit/guest_bundles.py)
+  - Shared external guest parameter-bundle contract for gRASPA/RASPA2 workflows. Bundles add RASPA molecule definitions, pseudo-atom rows, mixing-rule rows, aliases, rotatability, and a required non-empty `lammps` section for future synchronized hybrid MD/MC use.
+
 ## Typical execution paths
 
 ### Single pair from CLI
@@ -112,6 +123,14 @@ Then go straight to the module that matches the task.
 3. linkage-specific cutting and monomer repair via [src/cofkit/decompose.py](../src/cofkit/decompose.py)
 4. COFid serialization through [src/cofkit/cofid.py](../src/cofkit/cofid.py)
 
+### gRASPA/RASPA2 calculation from CLI
+
+1. `cofkit calculate graspa-widom`, `graspa-isotherm`, or `graspa-mixture` in [src/cofkit/cli_calculate.py](../src/cofkit/cli_calculate.py)
+2. optional external guest loading and alias canonicalization via [src/cofkit/guest_bundles.py](../src/cofkit/guest_bundles.py) and [src/cofkit/graspa.py](../src/cofkit/graspa.py)
+3. EQeq framework charge staging in [src/cofkit/graspa.py](../src/cofkit/graspa.py)
+4. backend-specific `simulation.input` and force-field asset materialization in [src/cofkit/graspa.py](../src/cofkit/graspa.py)
+5. parsed JSON/CSV report writing from backend `Output/**/*.data`
+
 ## Current architectural constraints
 
 These are important before editing:
@@ -136,6 +155,10 @@ These are important before editing:
   - No-ASE CIF extraction and explicit-bond preservation.
 - [tests/test_decompose.py](../tests/test_decompose.py)
   - CIF-to-COFid decomposition and generated hcb round trips across buildable binary-bridge linkages.
+- [tests/test_lammps.py](../tests/test_lammps.py)
+  - LAMMPS data/input generation, force-field parameter paths, optimization orchestration, and CIF preservation behavior.
+- [tests/test_graspa.py](../tests/test_graspa.py)
+  - EQeq/gRASPA/RASPA2 workflow staging, CLI parsing, guest bundles, force-field asset generation, and parser behavior.
 - [tests/test_core.py](../tests/test_core.py)
   - End-to-end project / template behavior.
 

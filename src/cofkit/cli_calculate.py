@@ -64,12 +64,7 @@ def _parse_graspa_component_name(raw_value: str) -> str:
     if component_name == "":
         raise argparse.ArgumentTypeError("gRASPA component names must not be blank.")
     normalized = _GRASPA_COMPONENT_NAME_MAP.get(component_name.casefold())
-    if normalized is None:
-        supported = ", ".join(AVAILABLE_WIDOM_COMPONENTS)
-        raise argparse.ArgumentTypeError(
-            f"Unsupported gRASPA component {raw_value!r}. Supported components: {supported}."
-        )
-    return normalized
+    return normalized if normalized is not None else component_name
 
 
 def _parse_graspa_fugacity_coefficient(raw_value: str) -> float | str:
@@ -132,6 +127,20 @@ def _add_raspa_backend_arguments(parser: argparse.ArgumentParser) -> None:
         "--raspa2-path",
         default=None,
         help=f"Optional explicit path to the RASPA2 simulate executable for --backend raspa2. Defaults to {COFKIT_RASPA2_ENV_VAR}.",
+    )
+
+
+def _add_guest_bundle_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--guest-bundle",
+        dest="guest_bundles",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Add one external parameterized guest bundle JSON. Repeat for multiple bundles. "
+            "Bundled components remain available without this flag."
+        ),
     )
 
 
@@ -596,6 +605,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
         help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
     )
     _add_raspa_backend_arguments(parser)
+    _add_guest_bundle_arguments(parser)
     parser.add_argument(
         "--forcefield",
         choices=("dreiding", "uff"),
@@ -664,8 +674,8 @@ def _add_graspa_widom_parser(subparsers) -> None:
         default=None,
         metavar="NAME",
         help=(
-            "Activate one packaged Widom probe component. Repeat for multiple components. "
-            f"Supported: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}."
+            "Activate one packaged or guest-bundle Widom probe component. Repeat for multiple components. "
+            f"Packaged: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}."
         ),
     )
     parser.add_argument(
@@ -786,6 +796,7 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
     )
     widom_settings = GraspaWidomSettings(
         components=deduped_components,
+        guest_bundles=tuple(args.guest_bundles or ()),
         backend=args.backend,
         forcefield=args.forcefield,
         temperature=args.temperature,
@@ -865,6 +876,7 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
         help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
     )
     _add_raspa_backend_arguments(parser)
+    _add_guest_bundle_arguments(parser)
     parser.add_argument(
         "--forcefield",
         choices=("dreiding", "uff"),
@@ -918,7 +930,10 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
         required=True,
         type=_parse_graspa_component_name,
         metavar="NAME",
-        help=f"Select one packaged adsorption component. Supported: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}.",
+        help=(
+            "Select one packaged or guest-bundle adsorption component. "
+            f"Packaged: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}."
+        ),
     )
     parser.add_argument(
         "--pressure",
@@ -1025,6 +1040,7 @@ def _run_graspa_isotherm(args: argparse.Namespace) -> None:
     )
     isotherm_settings = GraspaIsothermSettings(
         component=args.component,
+        guest_bundles=tuple(args.guest_bundles or ()),
         pressures=tuple(args.pressures),
         fugacity_coefficient=args.fugacity_coefficient,
         backend=args.backend,
@@ -1105,6 +1121,7 @@ def _add_graspa_mixture_parser(subparsers) -> None:
         help="Optional explicit path to the EQeq executable. Defaults to COFKIT_EQEQ_PATH.",
     )
     _add_raspa_backend_arguments(parser)
+    _add_guest_bundle_arguments(parser)
     parser.add_argument(
         "--forcefield",
         choices=("dreiding", "uff"),
@@ -1162,7 +1179,7 @@ def _add_graspa_mixture_parser(subparsers) -> None:
         metavar="NAME:FRACTION",
         help=(
             "Add one mixture component and its feed mol fraction. Repeat for each component. "
-            f"Supported names: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}."
+            f"Packaged names: {', '.join(AVAILABLE_WIDOM_COMPONENTS)}."
         ),
     )
     parser.add_argument(
@@ -1322,6 +1339,7 @@ def _run_graspa_mixture(args: argparse.Namespace) -> None:
     )
     mixture_settings = GraspaMixtureSettings(
         components=mixture_components,
+        guest_bundles=tuple(args.guest_bundles or ()),
         pressures=tuple(args.pressures),
         backend=args.backend,
         forcefield=args.forcefield,

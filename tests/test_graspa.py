@@ -31,9 +31,38 @@ from cofkit.graspa import (
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
 )
+from cofkit.guest_bundles import GuestBundleError, load_guest_bundle
 
 
 class GraspaWidomTests(unittest.TestCase):
+    def test_load_guest_bundle_requires_synchronized_lammps_section(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bundle_path = temp_path / "bad_guest.json"
+            bundle_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "name": "CH4",
+                        "raspa": {
+                            "molecule_definition": "# methane\n",
+                            "pseudo_atom_rows": [
+                                "C_ch4 yes C C 0 12.01070 0.0 0.0 1.0 0.720 0 0 relative 0",
+                            ],
+                            "mixing_rule_rows": [
+                                "C_ch4 lennard-jones 148.0 3.73",
+                            ],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(GuestBundleError) as raised:
+                load_guest_bundle(bundle_path)
+
+            self.assertIn("lammps", str(raised.exception))
+
     def test_resolve_eqeq_binary_requires_configuration(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(GraspaConfigurationError) as raised:
@@ -147,6 +176,60 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["component_results"][5]["henry"], 6e-05)
             self.assertEqual(report["component_results"][6]["component"], "Kr")
             self.assertEqual(report["component_results"][6]["henry"], 7e-05)
+
+    def test_run_graspa_isotherm_workflow_accepts_external_guest_bundle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            bundle_path = self._write_guest_bundle(temp_path / "ch4_bundle.json")
+            cif_path = temp_path / "external_guest_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_isotherm_workflow(
+                    cif_path,
+                    output_dir=temp_path / "external_guest_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    isotherm_settings=GraspaIsothermSettings(
+                        component="methane",
+                        guest_bundles=(str(bundle_path),),
+                        pressures=(100000.0,),
+                    ),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(result.isotherm_settings.component, "CH4")
+            point = result.point_results[0]
+            run_dir = Path(point.pressure_run_dir)
+            self.assertTrue((run_dir / "CH4.def").is_file())
+            simulation_input = Path(point.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("Component 0 MoleculeName             CH4", simulation_input)
+            self.assertNotIn("RotationProbability", simulation_input)
+            self.assertAlmostEqual(point.loading_mol_per_kg, 0.25)
+
+            pseudo_atoms_text = (run_dir / "pseudo_atoms.def").read_text(encoding="utf-8")
+            self.assertIn("#number of pseudo atoms\n24", pseudo_atoms_text)
+            self.assertIn("C_ch4", pseudo_atoms_text)
+            mixing_rules_text = (run_dir / "force_field_mixing_rules.def").read_text(encoding="utf-8")
+            self.assertIn("C_ch4          lennard-jones   148.0000   3.73000", mixing_rules_text)
+
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(report["isotherm_settings"]["component"], "CH4")
+            self.assertEqual(report["isotherm_settings"]["guest_bundles"], [str(bundle_path)])
 
     def test_run_graspa_widom_workflow_preserves_stacking_suffix_in_eqeq_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -728,6 +811,58 @@ class GraspaWidomTests(unittest.TestCase):
         self.assertIn("graspa-widom", buffer.getvalue())
         self.assertIn("graspa-isotherm", buffer.getvalue())
         self.assertIn("graspa-mixture", buffer.getvalue())
+
+    def _write_guest_bundle(self, path: Path) -> Path:
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "name": "CH4",
+                    "aliases": ["methane"],
+                    "rotatable": False,
+                    "raspa": {
+                        "molecule_definition": (
+                            "# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]\n"
+                            "190.564\n"
+                            "4599000.0\n"
+                            "0.011\n"
+                            "#Number Of Atoms\n"
+                            " 1\n"
+                            "# Number of groups\n"
+                            "1\n"
+                            "# methane-group\n"
+                            "rigid\n"
+                            "# number of atoms\n"
+                            "1\n"
+                            "# atomic positions\n"
+                            "0 C_ch4     0.0 0.0 0.0\n"
+                            "# Chiral centers Bond  BondDipoles Bend  UrayBradley InvBend  Torsion Imp. Torsion Bond/Bond Stretch/Bend Bend/Bend Stretch/Torsion Bend/Torsion IntraVDW IntraCoulomb\n"
+                            "               0    0            0    0            0       0        0            0         0            0         0               0            0        0            0\n"
+                            "# Number of config moves\n"
+                            "0\n"
+                        ),
+                        "pseudo_atom_rows": [
+                            "C_ch4      yes     C     C     0          16.04300    0.0      0.0          1.0      0.720  0            0           relative           0",
+                        ],
+                        "mixing_rule_rows": [
+                            "C_ch4          lennard-jones   148.0000   3.73000      // test methane guest bundle",
+                        ],
+                    },
+                    "lammps": {
+                        "units": "real",
+                        "atom_style": "full",
+                        "site_order": ["C_ch4"],
+                        "pair_style": "lj/cut/coul/long",
+                        "pair_coeff_rows": [
+                            "C_ch4 lennard-jones 148.0000 3.73000",
+                        ],
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return path
 
     def _write_fake_eqeq_binary(self, path: Path, *, strip_leading_cofid_comment: bool = False) -> Path:
         path.write_text(

@@ -30,7 +30,7 @@ uv sync --locked
 uv run cofkit --help
 ```
 
-`uv` is the canonical install method for this repository. The base environment installs the mandatory Python runtime dependencies `gemmi`, `rdkit`, `openbabel-wheel`, `pandas`, and `pymatgen`.
+`uv` is the canonical install method for this repository. The base environment installs the mandatory Python runtime dependencies `gemmi`, `rdkit`, `openbabel`, `pandas`, and `pymatgen`.
 
 For local development and verification, add the `dev` extra:
 
@@ -411,18 +411,44 @@ Use `--backend raspa2` to write RASPA2-style `simulation.input` files and execut
 
 - copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
 - copy the charged framework into `widom/framework.cif`
-- materialize the packaged gRASPA adsorbate/pseudo-atom files in `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
+- materialize the packaged and selected guest-bundle adsorbate/pseudo-atom files in `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run the selected backend and parse the Widom summary values from `widom/Output/**/*.data`
 
-Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
+Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. External parameterized guests can be added to the Widom, isotherm, and mixture wrappers with repeated `--guest-bundle path/to/guest.json` flags, then selected by bundle `name` or alias. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
+
+Guest bundles are parameter bundles, not SMILES parameterizers. Each bundle must carry one canonical component name, a RASPA molecule definition plus pseudo-atom and mixing-rule rows, and a non-empty `lammps` section so future hybrid MD/MC runs have one synchronized guest force-field source:
+
+```json
+{
+  "version": 1,
+  "name": "CH4",
+  "aliases": ["methane"],
+  "rotatable": false,
+  "raspa": {
+    "molecule_definition_path": "CH4.def",
+    "pseudo_atom_rows": [
+      "C_ch4 yes C C 0 16.04300 0.0 0.0 1.0 0.720 0 0 relative 0"
+    ],
+    "mixing_rule_rows": [
+      "C_ch4 lennard-jones 148.0000 3.73000"
+    ]
+  },
+  "lammps": {
+    "units": "real",
+    "atom_style": "full",
+    "site_order": ["C_ch4"],
+    "pair_style": "lj/cut/coul/long"
+  }
+}
+```
 
 For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
 The wrapper writes:
 
 - `eqeq/` logs plus the charged CIF emitted by EQeq
-- `widom/simulation.input`, `widom/framework.cif`, the packaged adsorbate `.def` files, and a generated `force_field_mixing_rules.def`
+- `widom/simulation.input`, `widom/framework.cif`, the packaged and selected guest-bundle adsorbate `.def` files, and a generated `force_field_mixing_rules.def`
 - `widom/Output/results.csv` with the parsed Widom energy and Henry coefficient summaries
 - `graspa_widom_report.json` with paths, settings, parsed component results, and warnings
 
@@ -451,18 +477,18 @@ Add `--backend raspa2` for CPU-only RASPA2 execution. The `graspa-isotherm` wrap
 
 - copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
 - copy the charged framework into `isotherm/framework.cif`
-- materialize the packaged gRASPA component definitions plus one generated framework `force_field_mixing_rules.def` into one per-pressure run directory under `isotherm/`
+- materialize the packaged or selected guest-bundle component definitions plus one generated framework `force_field_mixing_rules.def` into one per-pressure run directory under `isotherm/`
 - compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
 - run one single-component GCMC adsorption simulation per requested pressure point
 - parse absolute loading and heat summaries from each pressure-point `Output/**/*.data`
 
-The current public scope is intentionally narrow: one packaged component at a time, one or more user-supplied pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. Packaged components currently match the Widom wrapper: `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`.
+The current public scope is intentionally narrow: one packaged or guest-bundle component at a time, one or more user-supplied pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. Packaged components currently match the Widom wrapper: `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`.
 
 The wrapper writes:
 
 - `eqeq/` logs plus the charged CIF emitted by EQeq
 - `isotherm/framework.cif`
-- one staged gRASPA run directory per pressure under `isotherm/pressure_*/`
+- one staged backend run directory per pressure under `isotherm/pressure_*/`
 - `isotherm/results.csv` with the parsed pressure/loading summary
 - `graspa_isotherm_report.json` with paths, settings, parsed point results, and warnings
 
@@ -472,7 +498,7 @@ For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is avail
 
 This wrapper produces pure-component adsorption points. Ratios such as `Xe/Kr` computed from separate `graspa-isotherm` runs are loading ratios, not mixture selectivities. Use `graspa-mixture` when you need a true mixed-feed adsorption/selectivity calculation.
 
-### Run EQeq + gRASPA mixture adsorption/selectivity on one CIF
+### Run EQeq + gRASPA/RASPA2 mixture adsorption/selectivity on one CIF
 
 ```bash
 cofkit calculate graspa-mixture \
@@ -487,7 +513,7 @@ cofkit calculate graspa-mixture \
   --json
 ```
 
-The `graspa-mixture` wrapper stages `EQeq -> gRASPA/RASPA2` exactly once per pressure point, writes one generated framework `force_field_mixing_rules.def` plus one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries, parses component-resolved loading summaries from each `Output/**/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`. RASPA2 mixture runs currently report component loading/selectivity; component-resolved `g/L` and heat fields are recorded as `null`.
+The `graspa-mixture` wrapper stages `EQeq -> gRASPA/RASPA2` exactly once per pressure point, writes one generated framework `force_field_mixing_rules.def` plus one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries, parses component-resolved loading summaries from each `Output/**/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`. Components may come from the packaged set or from repeated `--guest-bundle path/to/guest.json` inputs selected by bundle name or alias. RASPA2 mixture runs currently report component loading/selectivity; component-resolved `g/L` and heat fields are recorded as `null`.
 
 The wrapper writes:
 
@@ -512,9 +538,9 @@ If you are using Codex inside this repository, load [skills/cofkit-navigator/SKI
 - single-pair generation from two SMILES strings
 - library-scale binary-bridge screening
 - classification of finished output trees
-- EQeq + gRASPA Widom insertion on an exported CIF
-- EQeq + gRASPA single-component adsorption isotherms on an exported CIF
-- EQeq + gRASPA multi-component adsorption/selectivity on an exported CIF
+- EQeq + gRASPA/RASPA2 Widom insertion on an exported CIF
+- EQeq + gRASPA/RASPA2 single-component adsorption isotherms on an exported CIF
+- EQeq + gRASPA/RASPA2 multi-component adsorption/selectivity on an exported CIF
 - rebuilding the detector-scanned default monomer library
 - choosing between the CLI, `BatchStructureGenerator`, and `COFEngine`
 
@@ -523,13 +549,13 @@ Typical prompts:
 - "Build a single-pair imine COF from these two SMILES."
 - "Run all supported binary-bridge batches over this library directory."
 - "Classify this finished output tree into validation buckets."
-- "Run the gRASPA Widom wrapper on this optimized CIF."
-- "Run the gRASPA isotherm wrapper on this optimized CIF."
+- "Run the gRASPA/RASPA2 Widom wrapper on this optimized CIF."
+- "Run the gRASPA/RASPA2 isotherm wrapper on this optimized CIF."
 - "Should I use the CLI, `BatchStructureGenerator`, or `COFEngine` for this task?"
 
 The skill prefers the installed `cofkit` CLI. If the package is not installed in editable mode, it falls back to an equivalent `PYTHONPATH=src ...` launcher.
 
-For calculator workflows, the skill now prefers `DREIDING` for both LAMMPS optimization and gRASPA calculations unless a user explicitly asks for `UFF` or requests a comparison run. `UFF` remains experimentally supported.
+For calculator workflows, the skill now prefers `DREIDING` for both LAMMPS optimization and gRASPA/RASPA2 calculations unless a user explicitly asks for `UFF` or requests a comparison run. `UFF` remains experimentally supported.
 
 ## Additional documentation
 

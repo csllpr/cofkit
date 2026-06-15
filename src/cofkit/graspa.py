@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
@@ -18,6 +18,7 @@ from ._dreiding_reference import (
     DREIDING_REFERENCE_SOURCE,
 )
 from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
+from .guest_bundles import GuestBundle, GuestBundleError, load_guest_bundles
 
 
 COFKIT_EQEQ_ENV_VAR = "COFKIT_EQEQ_PATH"
@@ -173,6 +174,7 @@ class EqeqChargeResult:
 @dataclass(frozen=True)
 class GraspaWidomSettings:
     components: tuple[str, ...] = _DEFAULT_WIDOM_COMPONENTS
+    guest_bundles: tuple[str, ...] = ()
     backend: str = DEFAULT_RASPA_BACKEND
     forcefield: str = "dreiding"
     use_gpu_reduction: bool = True
@@ -209,6 +211,7 @@ class GraspaWidomSettings:
     def to_dict(self) -> dict[str, object]:
         return {
             "components": list(self.components),
+            "guest_bundles": list(self.guest_bundles),
             "backend": self.backend,
             "forcefield": self.forcefield,
             "use_gpu_reduction": self.use_gpu_reduction,
@@ -326,6 +329,7 @@ class GraspaWidomResult:
 @dataclass(frozen=True)
 class GraspaIsothermSettings:
     component: str = "CO2"
+    guest_bundles: tuple[str, ...] = ()
     pressures: tuple[float, ...] = (10_000.0, 100_000.0, 1_000_000.0)
     fugacity_coefficient: float | str = 1.0
     backend: str = DEFAULT_RASPA_BACKEND
@@ -367,6 +371,7 @@ class GraspaIsothermSettings:
     def to_dict(self) -> dict[str, object]:
         return {
             "component": self.component,
+            "guest_bundles": list(self.guest_bundles),
             "pressures": list(self.pressures),
             "fugacity_coefficient": self.fugacity_coefficient,
             "backend": self.backend,
@@ -523,6 +528,7 @@ class GraspaMixtureComponentSettings:
 @dataclass(frozen=True)
 class GraspaMixtureSettings:
     components: tuple[GraspaMixtureComponentSettings, ...]
+    guest_bundles: tuple[str, ...] = ()
     pressures: tuple[float, ...] = (100_000.0,)
     backend: str = DEFAULT_RASPA_BACKEND
     forcefield: str = "dreiding"
@@ -558,6 +564,7 @@ class GraspaMixtureSettings:
     def to_dict(self) -> dict[str, object]:
         return {
             "components": [component.to_dict() for component in self.components],
+            "guest_bundles": list(self.guest_bundles),
             "pressures": list(self.pressures),
             "backend": self.backend,
             "forcefield": self.forcefield,
@@ -873,7 +880,9 @@ def run_graspa_widom_workflow(
 
     eqeq_settings = eqeq_settings or EqeqChargeSettings()
     widom_settings = widom_settings or GraspaWidomSettings()
-    _validate_widom_settings(widom_settings)
+    guest_bundles = _load_graspa_guest_bundles(widom_settings.guest_bundles)
+    widom_settings = _canonicalize_widom_settings(widom_settings, guest_bundles)
+    _validate_widom_settings(widom_settings, guest_bundles=guest_bundles)
     graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
 
     raspa_backend = _normalize_raspa_backend_name(widom_settings.backend)
@@ -899,7 +908,12 @@ def run_graspa_widom_workflow(
 
     widom_framework_cif_path = widom_run_dir / f"{widom_settings.framework_name}.cif"
     shutil.copy2(eqeq_result.eqeq_charged_cif, widom_framework_cif_path)
-    _copy_widom_template_assets(widom_run_dir, widom_settings.components, forcefield=widom_settings.forcefield)
+    _copy_widom_template_assets(
+        widom_run_dir,
+        widom_settings.components,
+        forcefield=widom_settings.forcefield,
+        guest_bundles=guest_bundles,
+    )
 
     unit_cells = _compute_unit_cells_from_cif(
         widom_framework_cif_path,
@@ -907,7 +921,7 @@ def run_graspa_widom_workflow(
     )
     simulation_input_path = widom_run_dir / "simulation.input"
     simulation_input_path.write_text(
-        _render_widom_simulation_input(widom_settings, unit_cells=unit_cells),
+        _render_widom_simulation_input(widom_settings, unit_cells=unit_cells, guest_bundles=guest_bundles),
         encoding="utf-8",
     )
 
@@ -1023,7 +1037,9 @@ def run_graspa_isotherm_workflow(
 
     eqeq_settings = eqeq_settings or EqeqChargeSettings()
     isotherm_settings = isotherm_settings or GraspaIsothermSettings()
-    _validate_isotherm_settings(isotherm_settings)
+    guest_bundles = _load_graspa_guest_bundles(isotherm_settings.guest_bundles)
+    isotherm_settings = _canonicalize_isotherm_settings(isotherm_settings, guest_bundles)
+    _validate_isotherm_settings(isotherm_settings, guest_bundles=guest_bundles)
     graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
 
     raspa_backend = _normalize_raspa_backend_name(isotherm_settings.backend)
@@ -1067,11 +1083,17 @@ def run_graspa_isotherm_workflow(
             pressure_run_dir,
             (isotherm_settings.component,),
             forcefield=isotherm_settings.forcefield,
+            guest_bundles=guest_bundles,
         )
 
         simulation_input_path = pressure_run_dir / "simulation.input"
         simulation_input_path.write_text(
-            _render_isotherm_simulation_input(isotherm_settings, unit_cells=unit_cells, pressure=pressure),
+            _render_isotherm_simulation_input(
+                isotherm_settings,
+                unit_cells=unit_cells,
+                pressure=pressure,
+                guest_bundles=guest_bundles,
+            ),
             encoding="utf-8",
         )
 
@@ -1195,7 +1217,9 @@ def run_graspa_mixture_workflow(
     eqeq_settings = eqeq_settings or EqeqChargeSettings()
     if mixture_settings is None:
         raise ValueError("mixture_settings must be provided for the gRASPA mixture workflow.")
-    _validate_mixture_settings(mixture_settings)
+    guest_bundles = _load_graspa_guest_bundles(mixture_settings.guest_bundles)
+    mixture_settings = _canonicalize_mixture_settings(mixture_settings, guest_bundles)
+    _validate_mixture_settings(mixture_settings, guest_bundles=guest_bundles)
     graspa_timeout_seconds = _normalize_timeout(graspa_timeout_seconds, "graspa_timeout_seconds")
 
     raspa_backend = _normalize_raspa_backend_name(mixture_settings.backend)
@@ -1245,11 +1269,17 @@ def run_graspa_mixture_workflow(
             pressure_run_dir,
             expected_components,
             forcefield=mixture_settings.forcefield,
+            guest_bundles=guest_bundles,
         )
 
         simulation_input_path = pressure_run_dir / "simulation.input"
         simulation_input_path.write_text(
-            _render_mixture_simulation_input(mixture_settings, unit_cells=unit_cells, pressure=pressure),
+            _render_mixture_simulation_input(
+                mixture_settings,
+                unit_cells=unit_cells,
+                pressure=pressure,
+                guest_bundles=guest_bundles,
+            ),
             encoding="utf-8",
         )
 
@@ -1448,7 +1478,91 @@ def _validate_raspa_backend(backend: str) -> str:
     return normalized
 
 
-def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
+def _load_graspa_guest_bundles(paths: Sequence[str]) -> tuple[GuestBundle, ...]:
+    try:
+        bundles = load_guest_bundles(paths)
+    except GuestBundleError as exc:
+        raise GraspaConfigurationError(str(exc)) from exc
+    reserved = {component.casefold(): component for component in AVAILABLE_WIDOM_COMPONENTS}
+    for bundle in bundles:
+        for name in bundle.names():
+            reserved_name = reserved.get(name.casefold())
+            if reserved_name is not None:
+                raise GraspaConfigurationError(
+                    f"Guest bundle component name or alias {name!r} conflicts with packaged component {reserved_name!r}."
+                )
+    return bundles
+
+
+def _canonicalize_widom_settings(
+    settings: GraspaWidomSettings,
+    guest_bundles: Sequence[GuestBundle],
+) -> GraspaWidomSettings:
+    return replace(
+        settings,
+        components=tuple(_canonical_component_name(component, guest_bundles) for component in settings.components),
+    )
+
+
+def _canonicalize_isotherm_settings(
+    settings: GraspaIsothermSettings,
+    guest_bundles: Sequence[GuestBundle],
+) -> GraspaIsothermSettings:
+    return replace(settings, component=_canonical_component_name(settings.component, guest_bundles))
+
+
+def _canonicalize_mixture_settings(
+    settings: GraspaMixtureSettings,
+    guest_bundles: Sequence[GuestBundle],
+) -> GraspaMixtureSettings:
+    return replace(
+        settings,
+        components=tuple(
+            replace(component, component=_canonical_component_name(component.component, guest_bundles))
+            for component in settings.components
+        ),
+    )
+
+
+def _canonical_component_name(component: str, guest_bundles: Sequence[GuestBundle]) -> str:
+    candidate = component.strip()
+    packaged = {name.casefold(): name for name in AVAILABLE_WIDOM_COMPONENTS}.get(candidate.casefold())
+    if packaged is not None:
+        return packaged
+    bundle = _guest_bundle_catalog(guest_bundles).get(candidate.casefold())
+    if bundle is not None:
+        return bundle.name
+    return candidate
+
+
+def _guest_bundle_catalog(guest_bundles: Sequence[GuestBundle]) -> dict[str, GuestBundle]:
+    catalog: dict[str, GuestBundle] = {}
+    for bundle in guest_bundles:
+        for name in bundle.names():
+            catalog[name.casefold()] = bundle
+    return catalog
+
+
+def _supported_graspa_component_names(guest_bundles: Sequence[GuestBundle]) -> tuple[str, ...]:
+    return (*AVAILABLE_WIDOM_COMPONENTS, *(bundle.name for bundle in guest_bundles))
+
+
+def _is_supported_graspa_component(component: str, guest_bundles: Sequence[GuestBundle]) -> bool:
+    return component in AVAILABLE_WIDOM_COMPONENTS or any(component == bundle.name for bundle in guest_bundles)
+
+
+def _component_is_rotatable(component: str, guest_bundles: Sequence[GuestBundle]) -> bool:
+    for bundle in guest_bundles:
+        if component == bundle.name:
+            return bundle.rotatable
+    return component not in _NON_ROTATABLE_GCMC_COMPONENTS
+
+
+def _validate_widom_settings(
+    settings: GraspaWidomSettings,
+    *,
+    guest_bundles: Sequence[GuestBundle] = (),
+) -> None:
     _validate_raspa_backend(settings.backend)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
@@ -1458,6 +1572,10 @@ def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
         )
     if not settings.components:
         raise ValueError("At least one Widom component must be configured.")
+    for component in settings.components:
+        if not _is_supported_graspa_component(component, guest_bundles):
+            supported = ", ".join(_supported_graspa_component_names(guest_bundles))
+            raise ValueError(f"Unsupported gRASPA component {component!r}. Supported components: {supported}.")
     if settings.framework_name.strip() == "":
         raise ValueError("framework_name must not be blank.")
     if settings.input_file_type.lower() != "cif":
@@ -1490,7 +1608,11 @@ def _validate_widom_settings(settings: GraspaWidomSettings) -> None:
         raise ValueError("save_output_to_file must remain enabled for result parsing in the current workflow.")
 
 
-def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
+def _validate_isotherm_settings(
+    settings: GraspaIsothermSettings,
+    *,
+    guest_bundles: Sequence[GuestBundle] = (),
+) -> None:
     _validate_raspa_backend(settings.backend)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
@@ -1498,8 +1620,8 @@ def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
             f"Unsupported gRASPA forcefield {settings.forcefield!r}. "
             f"Expected one of: {', '.join(_SUPPORTED_GRASPA_FORCEFIELDS)}."
         )
-    if settings.component not in AVAILABLE_WIDOM_COMPONENTS:
-        supported = ", ".join(AVAILABLE_WIDOM_COMPONENTS)
+    if not _is_supported_graspa_component(settings.component, guest_bundles):
+        supported = ", ".join(_supported_graspa_component_names(guest_bundles))
         raise ValueError(f"Unsupported gRASPA component {settings.component!r}. Supported components: {supported}.")
     if not settings.pressures:
         raise ValueError("At least one pressure point must be configured.")
@@ -1544,7 +1666,11 @@ def _validate_isotherm_settings(settings: GraspaIsothermSettings) -> None:
     _validate_fugacity_coefficient(settings.fugacity_coefficient)
 
 
-def _validate_mixture_settings(settings: GraspaMixtureSettings) -> None:
+def _validate_mixture_settings(
+    settings: GraspaMixtureSettings,
+    *,
+    guest_bundles: Sequence[GuestBundle] = (),
+) -> None:
     _validate_raspa_backend(settings.backend)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
@@ -1557,8 +1683,8 @@ def _validate_mixture_settings(settings: GraspaMixtureSettings) -> None:
     seen_components: set[str] = set()
     mol_fraction_total = 0.0
     for component in settings.components:
-        if component.component not in AVAILABLE_WIDOM_COMPONENTS:
-            supported = ", ".join(AVAILABLE_WIDOM_COMPONENTS)
+        if not _is_supported_graspa_component(component.component, guest_bundles):
+            supported = ", ".join(_supported_graspa_component_names(guest_bundles))
             raise ValueError(
                 f"Unsupported gRASPA component {component.component!r}. Supported components: {supported}."
             )
@@ -1639,19 +1765,133 @@ def _widom_template_dir() -> Path:
     return template_dir
 
 
-def _copy_widom_template_assets(destination_dir: Path, components: Sequence[str], *, forcefield: str) -> None:
+def _copy_widom_template_assets(
+    destination_dir: Path,
+    components: Sequence[str],
+    *,
+    forcefield: str,
+    guest_bundles: Sequence[GuestBundle] = (),
+) -> None:
     template_dir = _widom_template_dir()
-    common_files = ("force_field.def", "pseudo_atoms.def")
-    required_names = [*common_files, *(f"{name}.def" for name in components)]
-    for filename in required_names:
-        source_path = template_dir / filename
+    force_field_source_path = template_dir / "force_field.def"
+    if not force_field_source_path.is_file():
+        raise GraspaConfigurationError(f"Packaged Widom asset is missing: {force_field_source_path}")
+    shutil.copy2(force_field_source_path, destination_dir / "force_field.def")
+
+    selected_bundles = _guest_bundles_for_components(components, guest_bundles)
+    selected_bundle_names = {bundle.name for bundle in selected_bundles}
+    for component in components:
+        if component in selected_bundle_names:
+            continue
+        source_path = template_dir / f"{component}.def"
         if not source_path.is_file():
             raise GraspaConfigurationError(f"Packaged Widom asset is missing: {source_path}")
-        shutil.copy2(source_path, destination_dir / filename)
-    (destination_dir / "force_field_mixing_rules.def").write_text(
-        _render_graspa_force_field_mixing_rules(forcefield),
+        shutil.copy2(source_path, destination_dir / f"{component}.def")
+    for bundle in selected_bundles:
+        (destination_dir / f"{bundle.name}.def").write_text(
+            bundle.raspa.molecule_definition_text.rstrip() + "\n",
+            encoding="utf-8",
+        )
+
+    pseudo_atoms_source_path = template_dir / "pseudo_atoms.def"
+    if not pseudo_atoms_source_path.is_file():
+        raise GraspaConfigurationError(f"Packaged Widom asset is missing: {pseudo_atoms_source_path}")
+    pseudo_atom_rows = tuple(
+        row
+        for bundle in selected_bundles
+        for row in bundle.raspa.pseudo_atom_rows
+    )
+    (destination_dir / "pseudo_atoms.def").write_text(
+        _append_pseudo_atom_rows(
+            pseudo_atoms_source_path.read_text(encoding="utf-8"),
+            pseudo_atom_rows,
+        ),
         encoding="utf-8",
     )
+    guest_mixing_rule_rows = tuple(
+        row
+        for bundle in selected_bundles
+        for row in bundle.raspa.mixing_rule_rows
+    )
+    (destination_dir / "force_field_mixing_rules.def").write_text(
+        _render_graspa_force_field_mixing_rules(forcefield, guest_mixing_rule_rows=guest_mixing_rule_rows),
+        encoding="utf-8",
+    )
+
+
+def _guest_bundles_for_components(
+    components: Sequence[str],
+    guest_bundles: Sequence[GuestBundle],
+) -> tuple[GuestBundle, ...]:
+    selected: list[GuestBundle] = []
+    seen: set[str] = set()
+    for component in components:
+        for bundle in guest_bundles:
+            if component == bundle.name and bundle.name not in seen:
+                selected.append(bundle)
+                seen.add(bundle.name)
+                break
+    return tuple(selected)
+
+
+def _append_pseudo_atom_rows(base_text: str, rows: Sequence[str]) -> str:
+    if not rows:
+        return base_text.rstrip() + "\n"
+    lines = base_text.splitlines()
+    count_index = _first_integer_line_index(lines)
+    if count_index is None:
+        raise GraspaConfigurationError("Packaged pseudo_atoms.def is missing the pseudo-atom count line.")
+    try:
+        base_count = int(lines[count_index].strip())
+    except ValueError as exc:
+        raise GraspaConfigurationError("Packaged pseudo_atoms.def has an invalid pseudo-atom count line.") from exc
+
+    existing_types = {
+        row_type
+        for line in lines
+        if (row_type := _row_type_token(line)) is not None
+    }
+    appended_types: set[str] = set()
+    for row in rows:
+        row_type = _row_type_token(row)
+        if row_type is None:
+            raise GraspaConfigurationError(f"Invalid guest pseudo-atom row: {row!r}")
+        if row_type in existing_types or row_type in appended_types:
+            raise GraspaConfigurationError(f"Duplicate gRASPA pseudo-atom type in guest bundles: {row_type}")
+        appended_types.add(row_type)
+
+    lines[count_index] = str(base_count + len(rows))
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend(row.strip() for row in rows)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _first_integer_line_index(lines: Sequence[str]) -> int | None:
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            int(stripped)
+        except ValueError:
+            continue
+        return index
+    return None
+
+
+def _row_type_token(row: str) -> str | None:
+    stripped = row.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if len(stripped.split()) == 1:
+        try:
+            int(stripped)
+        except ValueError:
+            pass
+        else:
+            return None
+    return stripped.split()[0]
 
 
 def _bundled_uff_parameter_file() -> Path:
@@ -1721,9 +1961,15 @@ def _graspa_framework_rows_for_forcefield(forcefield: str) -> list[str]:
     )
 
 
-def _render_graspa_force_field_mixing_rules(forcefield: str) -> str:
+def _render_graspa_force_field_mixing_rules(
+    forcefield: str,
+    *,
+    guest_mixing_rule_rows: Sequence[str] = (),
+) -> str:
     framework_rows = _graspa_framework_rows_for_forcefield(forcefield)
-    interaction_rows = [*framework_rows, *_GRASPA_SHARED_MIXING_RULE_LINES]
+    base_rows = [*framework_rows, *_GRASPA_SHARED_MIXING_RULE_LINES]
+    _validate_guest_mixing_rule_rows(base_rows, guest_mixing_rule_rows)
+    interaction_rows = [*base_rows, *(row.strip() for row in guest_mixing_rule_rows)]
     return "\n".join(
         [
             "# general rule for shifted vs truncated",
@@ -1740,6 +1986,22 @@ def _render_graspa_force_field_mixing_rules(forcefield: str) -> str:
             "",
         ]
     )
+
+
+def _validate_guest_mixing_rule_rows(base_rows: Sequence[str], guest_rows: Sequence[str]) -> None:
+    existing_types = {
+        row_type
+        for row in base_rows
+        if (row_type := _row_type_token(row)) is not None
+    }
+    appended_types: set[str] = set()
+    for row in guest_rows:
+        row_type = _row_type_token(row)
+        if row_type is None:
+            raise GraspaConfigurationError(f"Invalid guest force-field mixing-rule row: {row!r}")
+        if row_type in existing_types or row_type in appended_types:
+            raise GraspaConfigurationError(f"Duplicate gRASPA mixing-rule type in guest bundles: {row_type}")
+        appended_types.add(row_type)
 
 
 def _compute_unit_cells_from_cif(cif_path: Path, *, cutoff: float) -> tuple[int, int, int]:
@@ -1797,9 +2059,14 @@ def _render_widom_simulation_input(
     settings: GraspaWidomSettings,
     *,
     unit_cells: tuple[int, int, int],
+    guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     if _normalize_raspa_backend_name(settings.backend) == "raspa2":
-        return _render_raspa2_widom_simulation_input(settings, unit_cells=unit_cells)
+        return _render_raspa2_widom_simulation_input(
+            settings,
+            unit_cells=unit_cells,
+            guest_bundles=guest_bundles,
+        )
 
     lines = [
         f"UseGPUReduction {_bool_token(settings.use_gpu_reduction)}",
@@ -1864,12 +2131,14 @@ def _render_isotherm_simulation_input(
     *,
     unit_cells: tuple[int, int, int],
     pressure: float,
+    guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     if _normalize_raspa_backend_name(settings.backend) == "raspa2":
         return _render_raspa2_isotherm_simulation_input(
             settings,
             unit_cells=unit_cells,
             pressure=pressure,
+            guest_bundles=guest_bundles,
         )
 
     lines = [
@@ -1920,7 +2189,7 @@ def _render_isotherm_simulation_input(
         f"            FugacityCoefficient      {_render_fugacity_coefficient(settings.fugacity_coefficient)}",
         f"            TranslationProbability   {_format_simulation_number(settings.translation_probability)}",
     ]
-    if settings.component not in _NON_ROTATABLE_GCMC_COMPONENTS and settings.rotation_probability > 0.0:
+    if _component_is_rotatable(settings.component, guest_bundles) and settings.rotation_probability > 0.0:
         lines.append(
             f"            RotationProbability      {_format_simulation_number(settings.rotation_probability)}"
         )
@@ -1939,12 +2208,14 @@ def _render_mixture_simulation_input(
     *,
     unit_cells: tuple[int, int, int],
     pressure: float,
+    guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     if _normalize_raspa_backend_name(settings.backend) == "raspa2":
         return _render_raspa2_mixture_simulation_input(
             settings,
             unit_cells=unit_cells,
             pressure=pressure,
+            guest_bundles=guest_bundles,
         )
 
     lines = [
@@ -2001,7 +2272,7 @@ def _render_mixture_simulation_input(
                 f"            TranslationProbability   {_format_simulation_number(component.translation_probability)}",
             ]
         )
-        if component.component not in _NON_ROTATABLE_GCMC_COMPONENTS and component.rotation_probability > 0.0:
+        if _component_is_rotatable(component.component, guest_bundles) and component.rotation_probability > 0.0:
             lines.append(
                 f"            RotationProbability      {_format_simulation_number(component.rotation_probability)}"
             )
@@ -2021,6 +2292,7 @@ def _render_raspa2_widom_simulation_input(
     settings: GraspaWidomSettings,
     *,
     unit_cells: tuple[int, int, int],
+    guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     lines = _render_raspa2_common_lines(
         number_of_cycles=settings.production_cycles,
@@ -2062,6 +2334,7 @@ def _render_raspa2_isotherm_simulation_input(
     *,
     unit_cells: tuple[int, int, int],
     pressure: float,
+    guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     lines = _render_raspa2_common_lines(
         number_of_cycles=settings.production_cycles,
@@ -2094,7 +2367,7 @@ def _render_raspa2_isotherm_simulation_input(
     if rendered_fugacity is not None:
         lines.append(f"            FugacityCoefficient      {rendered_fugacity}")
     lines.append(f"            TranslationProbability   {_format_simulation_number(settings.translation_probability)}")
-    if settings.component not in _NON_ROTATABLE_GCMC_COMPONENTS and settings.rotation_probability > 0.0:
+    if _component_is_rotatable(settings.component, guest_bundles) and settings.rotation_probability > 0.0:
         lines.append(
             f"            RotationProbability      {_format_simulation_number(settings.rotation_probability)}"
         )
@@ -2113,6 +2386,7 @@ def _render_raspa2_mixture_simulation_input(
     *,
     unit_cells: tuple[int, int, int],
     pressure: float,
+    guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     lines = _render_raspa2_common_lines(
         number_of_cycles=settings.production_cycles,
@@ -2151,7 +2425,7 @@ def _render_raspa2_mixture_simulation_input(
                 f"            TranslationProbability   {_format_simulation_number(component.translation_probability)}",
             ]
         )
-        if component.component not in _NON_ROTATABLE_GCMC_COMPONENTS and component.rotation_probability > 0.0:
+        if _component_is_rotatable(component.component, guest_bundles) and component.rotation_probability > 0.0:
             lines.append(
                 f"            RotationProbability      {_format_simulation_number(component.rotation_probability)}"
             )

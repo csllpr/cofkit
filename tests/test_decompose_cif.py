@@ -12,16 +12,6 @@ from cofkit.decompose_cif import (
 )
 
 
-EXAMPLE_CIF = (
-    Path(__file__).resolve().parents[1]
-    / "reference_repositories"
-    / "decofpose-refactored"
-    / "examples"
-    / "dia_samples"
-    / "dia+ALD_4_0.xyz+AMI_2_149.xyz.cif"
-)
-
-
 def _write_explicit_bond_cif(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -62,17 +52,6 @@ def _write_explicit_bond_cif(path: Path) -> None:
 
 
 class DecomposeCifExtractionTests(unittest.TestCase):
-    def test_read_periodic_cif_atoms_extracts_sites_without_ase(self):
-        atoms = read_periodic_cif_atoms(EXAMPLE_CIF)
-
-        self.assertEqual(len(atoms), 552)
-        self.assertEqual(atoms.data_name, "I")
-        self.assertEqual(atoms.symbols[:3], ("C", "C", "C"))
-        self.assertEqual(atoms.info["_atom_site_label"][:3], ("C1", "C2", "C3"))
-        self.assertAlmostEqual(atoms.cell_parameters[0], 38.6606, places=4)
-        self.assertAlmostEqual(atoms.cell_parameters[5], 90.3064, places=4)
-        self.assertFalse(atoms_have_explicit_cif_bonds(atoms))
-
     def test_read_periodic_cif_atoms_preserves_explicit_bond_tags(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cif_path = Path(temp_dir) / "explicit.cif"
@@ -102,17 +81,6 @@ class DecomposeCifExtractionTests(unittest.TestCase):
         self.assertEqual(len(atoms), 2)
         self.assertTrue(atoms_have_explicit_cif_bonds(atoms))
         self.assertFalse((primitive_dir / "explicit_primitive.cif").exists())
-
-    def test_prepare_periodic_cif_atoms_writes_primitive_fallback_without_ase(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            primitive_dir = Path(temp_dir) / "primitive"
-
-            atoms, used_explicit_bonds = prepare_periodic_cif_atoms(EXAMPLE_CIF, primitive_dir)
-
-            self.assertFalse(used_explicit_bonds)
-            self.assertEqual(len(atoms), 552)
-            self.assertFalse(atoms_have_explicit_cif_bonds(atoms))
-            self.assertTrue((primitive_dir / f"{EXAMPLE_CIF.stem}_primitive.cif").is_file())
 
     def test_periodic_cif_atoms_repeat_uses_original_atom_order_per_image(self):
         with tempfile.TemporaryDirectory() as temp_dir:

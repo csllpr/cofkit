@@ -298,6 +298,7 @@ Useful variants:
 - add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate` for CPU-only RASPA2
 - add `--raspa-path ...` as a backend-neutral executable override for the selected backend
 - add `--all-components` to screen every packaged probe
+- add repeated `--guest-bundle path/to/guest.json` flags to load external parameterized guests, then select them with `--component NAME` by bundle name or alias
 - tune `--widom-moves-per-component`, `--production-cycles`, `--temperature`, `--pressure`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision`
 
 Requirements:
@@ -306,7 +307,7 @@ Requirements:
 - `COFKIT_EQEQ_PATH` or `--eqeq-path` selects EQeq
 - default backend is gRASPA through `COFKIT_GRASPA_PATH` or `--graspa-path`
 - RASPA2 backend uses `COFKIT_RASPA2_PATH`, `--raspa2-path`, or `--raspa-path` with `--backend raspa2`
-- packaged probe names are `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`
+- packaged probe names are `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`; guest-bundle component names and aliases become available only after `--guest-bundle`
 
 Primary artifacts:
 
@@ -338,13 +339,14 @@ cofkit calculate graspa-isotherm \
 Useful variants:
 
 - add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate`
+- add `--guest-bundle path/to/guest.json` when the requested component is not packaged, then pass the bundle `name` or alias to `--component`
 - set `--fugacity-coefficient PR-EOS` to request backend fugacity handling; for RASPA2, cofkit omits the explicit fugacity line so RASPA2 can use its internal calculation
 - tune `--production-cycles`, `--temperature`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision`
 
 Requirements:
 
 - input is one CIF file
-- exactly one packaged `--component NAME`
+- exactly one packaged or guest-bundle `--component NAME`
 - at least one `--pressure PA`
 - selected backend executable is configured as for Widom
 
@@ -382,13 +384,14 @@ cofkit calculate graspa-mixture \
 Useful variants:
 
 - add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate`
+- add repeated `--guest-bundle path/to/guest.json` flags when any mixture component is external, then use bundle names or aliases in `--component NAME:FRACTION`
 - set `--fugacity-coefficient PR-EOS` for backend fugacity handling
 - tune `--translation-probability`, `--rotation-probability`, `--reinsertion-probability`, `--identity-change-probability`, `--swap-probability`, `--production-cycles`, and cutoffs
 
 Requirements:
 
 - input is one CIF file
-- at least two packaged `--component NAME:FRACTION` values
+- at least two packaged or guest-bundle `--component NAME:FRACTION` values
 - component fractions must be positive; cofkit normalizes the feed fractions in reported results if they do not sum to one
 - at least one `--pressure PA`
 - selected backend executable is configured as for Widom
@@ -436,10 +439,11 @@ Choose the API by how much the user already knows:
 - Do not treat every template returned by `cofkit build list-templates` as immediately runnable for structure generation.
 - Do not assume an unspecified topology means one implicit default topology; the current `single-pair` and `batch-binary-bridge` CLIs enumerate all applicable topologies unless the user passes `--no-all-topologies` or explicit `--topology` values.
 - Do not use `--auto-detect-libraries` on `examples/default_monomers_library`.
-- Do not claim stacking workflows are supported; `stacking_mode` remains `"disabled"`.
+- Do not claim engine-level stacking exploration is supported; `COFProject.stacking_mode` remains `"disabled"`. The supported stacking surface is opt-in post-build `2D` registry enumeration through CLI `--stacking` or `BatchGenerationConfig(stacking_ids=...)`.
 - Do not route users to the current internal benzothiazole/sulfur-enabled conversion prototype through the public CLI.
 - Do not send legacy atomistic CIFs without `_ccdc_geom_bond_type` into `cofkit calculate lammps-optimize`.
 - Do not treat separate pure-component `graspa-isotherm` loading ratios as mixture selectivity; use `graspa-mixture` for mixed-feed selectivity.
+- Do not invent external guest force-field parameters from SMILES. `--guest-bundle` requires explicit RASPA molecule, pseudo-atom, and mixing-rule data plus a non-empty `lammps` section for the synchronized future hybrid MD/MC contract.
 - Do not expect every gRASPA summary metric to exist for RASPA2. RASPA2 result grabbing works through recursive `Output/**/*.data`, but some backend-specific fields are `null`.
 - Do not answer from docs alone when the command can be run and the artifacts can be inspected directly.
 - Do not default to deprecated flat aliases such as `cofkit batch-imine` when the grouped binary-bridge interface expresses the same task more clearly.
