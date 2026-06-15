@@ -418,7 +418,7 @@ Use `--backend raspa2` to write RASPA2-style `simulation.input` files and execut
 
 Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. External parameterized guests can be added to the Widom, isotherm, and mixture wrappers with repeated `--guest-bundle path/to/guest.json` flags, then selected by bundle `name` or alias. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
 
-Guest bundles are parameter bundles, not SMILES parameterizers. Each bundle must carry one canonical component name, a RASPA molecule definition plus pseudo-atom and mixing-rule rows, and a non-empty `lammps` section so future hybrid MD/MC runs have one synchronized guest force-field source:
+Guest bundles are parameter bundles, not SMILES parameterizers. Each bundle must carry one canonical component name, a RASPA molecule definition plus pseudo-atom and mixing-rule rows, and a non-empty `lammps` section so hybrid MD/MC guest-restart runs have one synchronized guest force-field source:
 
 ```json
 {
@@ -443,6 +443,8 @@ Guest bundles are parameter bundles, not SMILES parameterizers. Each bundle must
   }
 }
 ```
+
+For `hybrid-mdmc --exchange-mode guest-restart`, cofkit derives LAMMPS guest masses, charges, and Lennard-Jones terms from the same RASPA pseudo-atom and mixing-rule rows used by gRASPA/RASPA2. The `lammps` section may override `site_order`, `masses`, `charges`, `pair_coeff_rows`, `bond_force_constant`, or `angle_force_constant` when the RASPA rows are not the desired MD representation. Packaged or bundle guests with zero-mass pseudo-sites are rejected for LAMMPS guest restart instead of being silently converted into mobile atoms.
 
 For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
 
@@ -544,9 +546,13 @@ cofkit calculate hybrid-mdmc \
 
 `hybrid-mdmc` implements the first actual cycle runner: each cycle runs a LAMMPS MD segment on the current explicit-bond framework CIF, exports the final framework snapshot as a CIF, then runs a single-pressure gRASPA/RASPA2 GCMC segment on that MD-updated framework. The next cycle starts from the MD-updated framework CIF. A single `--component NAME` runs the pure-component isotherm path; repeated `--component NAME:FRACTION` values run the mixture path. Packaged guests and explicit `--guest-bundle` components are accepted by the GCMC segment.
 
-The current exchange mode is `framework`: GCMC guest molecule coordinates are not yet converted back into the next LAMMPS data file, and guest-bundle `lammps` sections are validated/recorded for future reinjection support but are not consumed by this framework-only mode. This is not dynamic GCMC inside LAMMPS; it is an alternating MD/GCMC workflow with framework snapshot exchange and per-cycle EQeq charge staging.
+The default exchange mode is `framework`: GCMC guest molecule coordinates are not converted back into the next LAMMPS data file. Add `--exchange-mode guest-restart` to enable the guest-containing restart loop. In that mode, cofkit sets the GCMC `RestartFile` option, parses the latest `Movies/System_0/result_*.data` snapshot after each GCMC segment, and injects the parsed guest atoms into the following LAMMPS MD data file. Binary guests are supported through repeated mixture components such as `--component Xe:0.5 --component Kr:0.5`, provided every selected guest has synchronized RASPA/LAMMPS parameters.
 
-The wrapper writes one `cycle_*/1.lammps_md/` directory, one `cycle_*/2.gcmc/` directory, and a top-level `hybrid_mdmc_report.json` containing per-cycle LAMMPS/GCMC reports plus the final framework CIF path.
+Guest restart uses the same guest pseudo-atom/mixing-rule rows for gRASPA/RASPA2 and LAMMPS, converts guest epsilon values from kelvin to kcal/mol for LAMMPS `real` units, and generates host-guest plus guest-guest PairIJ rows by Lorentz-Berthelot mixing. Multi-site RASPA rigid guests are represented in the MD segment with harmonic intramolecular bond/angle terms inferred from the molecule definition, so validate the force constants before production use.
+
+Current limitations are explicit: cycle 1 starts framework-only unless a future API supplies an initial guest restart; post-MD guest coordinates are not yet converted into a gRASPA/RASPA2 `RestartInitial` file for the next MC segment; zero-mass pseudo-sites such as massless COM or dummy charge sites are rejected; and this is still an alternating MD/GCMC workflow, not dynamic GCMC inside LAMMPS.
+
+The wrapper writes one `cycle_*/1.lammps_md/` directory, one `cycle_*/2.gcmc/` directory, and a top-level `hybrid_mdmc_report.json` containing per-cycle LAMMPS/GCMC reports, guest restart source paths and atom counts when enabled, plus the final framework CIF path.
 
 ### Rebuild the detector-scanned example library
 
@@ -564,7 +570,7 @@ If you are using Codex inside this repository, load [skills/cofkit-navigator/SKI
 - EQeq + gRASPA/RASPA2 Widom insertion on an exported CIF
 - EQeq + gRASPA/RASPA2 single-component adsorption isotherms on an exported CIF
 - EQeq + gRASPA/RASPA2 multi-component adsorption/selectivity on an exported CIF
-- cyclic LAMMPS MD + gRASPA/RASPA2 GCMC framework-snapshot exchange on an exported CIF
+- cyclic LAMMPS MD + gRASPA/RASPA2 GCMC framework exchange or opt-in guest-restart exchange on an exported CIF
 - rebuilding the detector-scanned default monomer library
 - choosing between the CLI, `BatchStructureGenerator`, and `COFEngine`
 

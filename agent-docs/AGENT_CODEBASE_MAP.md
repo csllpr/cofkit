@@ -92,13 +92,15 @@ Then go straight to the module that matches the task.
 ## External calculation seams
 
 - [src/cofkit/lammps.py](../src/cofkit/lammps.py)
-  - UFF/DREIDING-backed explicit-bond CIF to LAMMPS data/input generation, EQeq charge staging, local minimization/MD orchestration, and optimized or MD-updated CIF export.
+  - UFF/DREIDING-backed explicit-bond CIF to LAMMPS data/input generation, EQeq charge staging, local minimization/MD orchestration, optional guest-restart atom/force-field merging for MD, and optimized or MD-updated CIF export.
 - [src/cofkit/graspa.py](../src/cofkit/graspa.py)
   - EQeq to gRASPA/RASPA2 Widom, single-component isotherm, and mixture workflows; framework mixing-rule generation; simulation.input rendering; result parsing.
 - [src/cofkit/hybrid_mdmc.py](../src/cofkit/hybrid_mdmc.py)
-  - Cyclic LAMMPS MD plus gRASPA/RASPA2 GCMC workflow. The current exchange mode passes the MD-updated framework CIF into each GCMC segment and into the next MD segment; GCMC guest coordinates are not reinjected into LAMMPS yet.
+  - Cyclic LAMMPS MD plus gRASPA/RASPA2 GCMC workflow. Default framework exchange passes the MD-updated framework CIF between segments; opt-in guest-restart exchange parses final GCMC guest snapshots and passes massive guest atoms into the following LAMMPS MD segment.
+- [src/cofkit/guest_restart.py](../src/cofkit/guest_restart.py)
+  - GCMC movie/restart snapshot discovery, guest force-field asset synchronization from packaged/bundle RASPA rows into LAMMPS-ready guest sites/templates, binary guest parsing, and zero-mass pseudo-site rejection.
 - [src/cofkit/guest_bundles.py](../src/cofkit/guest_bundles.py)
-  - Shared external guest parameter-bundle contract for gRASPA/RASPA2 workflows. Bundles add RASPA molecule definitions, pseudo-atom rows, mixing-rule rows, aliases, rotatability, and a required non-empty `lammps` section for future synchronized hybrid MD/MC guest reinjection.
+  - Shared external guest parameter-bundle contract for gRASPA/RASPA2 workflows. Bundles add RASPA molecule definitions, pseudo-atom rows, mixing-rule rows, aliases, rotatability, and a required non-empty `lammps` section for synchronized hybrid MD/MC guest restart.
 
 ## Typical execution paths
 
@@ -139,7 +141,8 @@ Then go straight to the module that matches the task.
 2. cycle orchestration in [src/cofkit/hybrid_mdmc.py](../src/cofkit/hybrid_mdmc.py)
 3. per-cycle LAMMPS MD framework update through [src/cofkit/lammps.py](../src/cofkit/lammps.py)
 4. per-cycle pure-component or mixture GCMC through [src/cofkit/graspa.py](../src/cofkit/graspa.py)
-5. next cycle starts from the LAMMPS MD output CIF, not a GCMC guest-containing LAMMPS data file
+5. in `framework` mode, the next cycle starts from the LAMMPS MD output CIF only
+6. in `guest_restart` mode, [src/cofkit/guest_restart.py](../src/cofkit/guest_restart.py) parses the final GCMC `Movies/System_0/result_*.data` snapshot and [src/cofkit/lammps.py](../src/cofkit/lammps.py) injects those guests into the next MD data file
 
 ## Current architectural constraints
 
@@ -170,7 +173,9 @@ These are important before editing:
 - [tests/test_graspa.py](../tests/test_graspa.py)
   - EQeq/gRASPA/RASPA2 workflow staging, CLI parsing, guest bundles, force-field asset generation, and parser behavior.
 - [tests/test_hybrid_mdmc.py](../tests/test_hybrid_mdmc.py)
-  - Hybrid MD/MC cycle orchestration and framework snapshot handoff behavior.
+  - Hybrid MD/MC cycle orchestration, framework snapshot handoff behavior, and binary guest-restart propagation.
+- [tests/test_guest_restart.py](../tests/test_guest_restart.py)
+  - Guest restart force-field synchronization, GCMC movie snapshot parsing, and unsupported massless pseudo-site handling.
 - [tests/test_core.py](../tests/test_core.py)
   - End-to-end project / template behavior.
 

@@ -27,6 +27,7 @@ from .hybrid_mdmc import (
     HybridMdMcSettings,
     run_hybrid_mdmc_workflow,
 )
+from .guest_restart import GuestRestartError
 from .lammps import (
     LammpsConfigurationError,
     LammpsError,
@@ -1426,8 +1427,8 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
         help="Run a cyclic LAMMPS framework-MD plus gRASPA/RASPA2 GCMC workflow for one CIF file.",
         description=(
             "Alternate LAMMPS MD updates of an explicit-bond framework CIF with gRASPA/RASPA2 GCMC on the "
-            "updated framework. The supported exchange mode is framework snapshot exchange: GCMC guest "
-            "coordinates are reported but not yet reinjected into the next LAMMPS segment."
+            "updated framework. The default exchange mode passes only framework snapshots; guest-restart mode "
+            "feeds the final GCMC guest restart/movie snapshot into the following LAMMPS MD segment."
         ),
     )
     parser.add_argument("cif_path", help="Input explicit-bond CIF file for the first LAMMPS MD segment.")
@@ -1441,6 +1442,15 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
         type=int,
         default=3,
         help="Number of MD/GCMC cycles. Default: 3.",
+    )
+    parser.add_argument(
+        "--exchange-mode",
+        choices=("framework", "guest-restart"),
+        default="framework",
+        help=(
+            "Hybrid handoff mode. framework keeps MD and GCMC coupled by framework CIF only; guest-restart "
+            "also injects the final GCMC guest snapshot into the next LAMMPS MD segment. Default: framework."
+        ),
     )
     parser.add_argument(
         "--component",
@@ -1716,6 +1726,7 @@ def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
     )
     hybrid_settings = HybridMdMcSettings(
         cycles=args.cycles,
+        exchange_mode=args.exchange_mode.replace("-", "_"),
         pressure=args.pressure,
         components=components,
         guest_bundles=tuple(args.guest_bundles or ()),
@@ -1756,6 +1767,7 @@ def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
         GraspaExecutionError,
         GraspaParseError,
         GraspaError,
+        GuestRestartError,
         LammpsConfigurationError,
         LammpsInputError,
         LammpsExecutionError,

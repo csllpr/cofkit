@@ -24,6 +24,7 @@ from .graspa import (
     EqeqChargeSettings,
     assign_eqeq_charges_to_cif,
 )
+from .guest_restart import LammpsGuestRestartState, LammpsGuestSite, LammpsGuestSnapshotAtom
 
 try:
     import pandas as pd
@@ -290,10 +291,15 @@ class LammpsMdResult:
     eqeq_stderr_log_path: str | None = None
     eqeq_json_output_path: str | None = None
     warnings: tuple[str, ...] = ()
+    n_guest_atoms: int = 0
+    n_total_atoms: int = 0
+    guest_components: tuple[str, ...] = ()
+    guest_restart_source_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["warnings"] = list(self.warnings)
+        data["guest_components"] = list(self.guest_components)
         return data
 
 
@@ -624,6 +630,7 @@ def run_lammps_md_on_cif(
     timeout_seconds: float = 300.0,
     eqeq_settings: EqeqChargeSettings | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
+    guest_restart_state: LammpsGuestRestartState | None = None,
 ) -> LammpsMdResult:
     if timeout_seconds <= 0.0:
         raise ValueError("timeout_seconds must be positive.")
@@ -674,6 +681,12 @@ def run_lammps_md_on_cif(
     optimization_settings = _md_settings_to_optimization_settings(settings)
     model = _build_optimization_model(parsed, settings=optimization_settings)
     prepared = _prepare_lammps_system(model.parsed, settings=optimization_settings)
+    if guest_restart_state is not None:
+        prepared = _merge_guest_restart_state_into_lammps_data(
+            prepared=prepared,
+            parsed=model.parsed,
+            guest_restart_state=guest_restart_state,
+        )
 
     data_path = run_dir / "lammps_md_input.data"
     input_script_path = run_dir / "lammps_md.in"
@@ -704,7 +717,8 @@ def run_lammps_md_on_cif(
         stderr_log_path=stderr_log_path,
         timeout_seconds=timeout_seconds,
     )
-    final_frame = _parse_lammps_dump_last_frame(dump_path, expected_atoms=len(model.parsed.atoms))
+    expected_atoms = len(model.parsed.atoms) + (guest_restart_state.n_atoms if guest_restart_state is not None else 0)
+    final_frame = _parse_lammps_dump_last_frame(dump_path, expected_atoms=expected_atoms)
     final_fractional_positions = _cartesian_positions_to_fractional(
         final_frame.lammps_origin,
         final_frame.lammps_basis,
@@ -726,7 +740,13 @@ def run_lammps_md_on_cif(
     if eqeq_result is not None:
         parameter_sources["charge_assignment"] = "EQeq charges assigned from the input CIF before LAMMPS MD"
     resolved_charge_model = (
-        "eqeq" if eqeq_result is not None else ("input_cif" if prepared.has_charges else "none")
+        "eqeq"
+        if eqeq_result is not None
+        else (
+            "guest_restart"
+            if guest_restart_state is not None
+            else ("input_cif" if prepared.has_charges else "none")
+        )
     )
     all_warnings = tuple(warnings) + tuple(model.warnings) + tuple(prepared.warnings) + tuple(execution_warnings)
     result = LammpsMdResult(
@@ -765,6 +785,12 @@ def run_lammps_md_on_cif(
         eqeq_stderr_log_path=eqeq_result.eqeq_stderr_log_path if eqeq_result is not None else None,
         eqeq_json_output_path=eqeq_result.eqeq_json_output_path if eqeq_result is not None else None,
         warnings=all_warnings,
+        n_guest_atoms=guest_restart_state.n_atoms if guest_restart_state is not None else 0,
+        n_total_atoms=expected_atoms,
+        guest_components=guest_restart_state.components if guest_restart_state is not None else (),
+        guest_restart_source_path=(
+            guest_restart_state.source_snapshot_path if guest_restart_state is not None else None
+        ),
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return result
@@ -1349,6 +1375,520 @@ def _inject_atom_image_flags(
         lines[atom_line_index] = f"{line} {image[0]} {image[1]} {image[2]}"
         atom_line_index += 1
     return "\n".join(lines) + ("\n" if data_text.endswith("\n") else "")
+
+
+@dataclass(frozen=True)
+class _LammpsDataSection:
+    header: str
+    rows: tuple[str, ...]
+
+
+_LAMMPS_DATA_SECTION_NAMES = (
+    "PairIJ Coeffs",
+    "Pair Coeffs",
+    "Bond Coeffs",
+    "Angle Coeffs",
+    "Dihedral Coeffs",
+    "Improper Coeffs",
+    "Masses",
+    "Atoms",
+    "Bonds",
+    "Angles",
+    "Dihedrals",
+    "Impropers",
+    "Velocities",
+)
+_LAMMPS_HEADER_COUNT_ORDER = (
+    "atoms",
+    "bonds",
+    "angles",
+    "dihedrals",
+    "impropers",
+    "atom types",
+    "bond types",
+    "angle types",
+    "dihedral types",
+    "improper types",
+)
+
+
+def _merge_guest_restart_state_into_lammps_data(
+    *,
+    prepared: _PreparedLammpsSystem,
+    parsed: _ParsedExplicitBondCif,
+    guest_restart_state: LammpsGuestRestartState,
+) -> _PreparedLammpsSystem:
+    if guest_restart_state.n_atoms <= 0:
+        return prepared
+
+    header_lines, sections = _split_lammps_data_text(prepared.data_text)
+    old_atom_count = _lammps_header_count(header_lines, "atoms") or len(parsed.atoms)
+    old_bond_count = _lammps_header_count(header_lines, "bonds")
+    old_angle_count = _lammps_header_count(header_lines, "angles")
+    old_atom_type_count = _lammps_header_count(header_lines, "atom types") or len(prepared.atom_type_symbols)
+    old_bond_type_count = _lammps_header_count(header_lines, "bond types") or prepared.n_bond_types
+    old_angle_type_count = _lammps_header_count(header_lines, "angle types") or prepared.n_angle_types
+
+    masses_rows = list(_lammps_section_rows(sections, "Masses"))
+    pairij_rows = list(_lammps_section_rows(sections, "PairIJ Coeffs"))
+    bond_coeff_rows = list(_lammps_section_rows(sections, "Bond Coeffs"))
+    angle_coeff_rows = list(_lammps_section_rows(sections, "Angle Coeffs"))
+    atom_header, atom_rows = _lammps_atoms_section(sections)
+    atom_rows_full = [
+        _format_lammps_atom_row_as_full(
+            row,
+            source_atom_style="full" if "full" in atom_header.casefold() else "molecular",
+        )
+        for row in atom_rows
+    ]
+    max_molecule_id = _max_lammps_molecule_id(atom_rows)
+    bonds_rows = list(_lammps_section_rows(sections, "Bonds"))
+    angles_rows = list(_lammps_section_rows(sections, "Angles"))
+
+    site_by_label = guest_restart_state.site_by_label()
+    template_by_component = guest_restart_state.template_by_component()
+    guest_sites = tuple(dict.fromkeys(atom.site_label for atom in guest_restart_state.atoms))
+    guest_type_by_site: dict[str, int] = {
+        label: old_atom_type_count + index
+        for index, label in enumerate(guest_sites, start=1)
+    }
+    atom_type_symbols = dict(prepared.atom_type_symbols)
+    for label, type_id in guest_type_by_site.items():
+        atom_type_symbols[type_id] = label
+        site = site_by_label[label]
+        masses_rows.append(f"{type_id} {site.mass:.8g} # {site.label}")
+
+    pair_rows = _build_guest_pairij_rows(
+        pairij_rows=pairij_rows,
+        old_atom_type_count=old_atom_type_count,
+        guest_type_by_site=guest_type_by_site,
+        site_by_label=site_by_label,
+    )
+    pairij_rows.extend(pair_rows)
+
+    molecule_atoms_by_key: dict[str, list[LammpsGuestSnapshotAtom]] = {}
+    for atom in guest_restart_state.atoms:
+        molecule_atoms_by_key.setdefault(atom.molecule_key, []).append(atom)
+
+    guest_atom_rows: list[str] = []
+    atom_id_by_molecule_site: dict[tuple[str, int], int] = {}
+    next_atom_id = old_atom_count + 1
+    next_molecule_id = max_molecule_id + 1
+    guest_charge_sum = 0.0
+    for molecule_key, molecule_atoms in molecule_atoms_by_key.items():
+        ordered_atoms = sorted(molecule_atoms, key=lambda atom: atom.site_index)
+        molecule_id = next_molecule_id
+        next_molecule_id += 1
+        for atom in ordered_atoms:
+            site = site_by_label[atom.site_label]
+            atom_type = guest_type_by_site[atom.site_label]
+            atom_id_by_molecule_site[(molecule_key, atom.site_index)] = next_atom_id
+            guest_charge_sum += site.charge
+            guest_atom_rows.append(
+                (
+                    f"{next_atom_id} {molecule_id} {atom_type} {site.charge:.8g} "
+                    f"{atom.x:.10g} {atom.y:.10g} {atom.z:.10g} 0 0 0 # {atom.site_label} {atom.component}"
+                )
+            )
+            next_atom_id += 1
+
+    guest_bond_coeff_rows: list[str] = []
+    guest_angle_coeff_rows: list[str] = []
+    guest_bond_rows: list[str] = []
+    guest_angle_rows: list[str] = []
+    bond_type_by_key: dict[tuple[str, int, int], int] = {}
+    angle_type_by_key: dict[tuple[str, int, int, int], int] = {}
+    next_bond_type = old_bond_type_count + 1
+    next_angle_type = old_angle_type_count + 1
+    next_bond_id = old_bond_count + 1
+    next_angle_id = old_angle_count + 1
+
+    for molecule_key, molecule_atoms in molecule_atoms_by_key.items():
+        ordered_atoms = sorted(molecule_atoms, key=lambda atom: atom.site_index)
+        if not ordered_atoms:
+            continue
+        component = ordered_atoms[0].component
+        template = template_by_component[component]
+        for left_index, right_index in template.bonds:
+            _validate_guest_template_index(template, left_index)
+            _validate_guest_template_index(template, right_index)
+            bond_key = (component, min(left_index, right_index), max(left_index, right_index))
+            bond_type = bond_type_by_key.get(bond_key)
+            if bond_type is None:
+                bond_type = next_bond_type
+                next_bond_type += 1
+                bond_type_by_key[bond_key] = bond_type
+                equilibrium_distance = _guest_template_distance(template, left_index, right_index)
+                left_label = template.site_labels[left_index]
+                right_label = template.site_labels[right_index]
+                guest_bond_coeff_rows.append(
+                    (
+                        f"{bond_type} {template.bond_force_constant:.8g} {equilibrium_distance:.8g} "
+                        f"# {component} {left_label}-{right_label}"
+                    )
+                )
+            guest_bond_rows.append(
+                (
+                    f"{next_bond_id} {bond_type} "
+                    f"{atom_id_by_molecule_site[(molecule_key, left_index)]} "
+                    f"{atom_id_by_molecule_site[(molecule_key, right_index)]}"
+                )
+            )
+            next_bond_id += 1
+
+        for left_index, center_index, right_index in _guest_template_angles(template):
+            angle_key = (component, left_index, center_index, right_index)
+            angle_type = angle_type_by_key.get(angle_key)
+            if angle_type is None:
+                angle_type = next_angle_type
+                next_angle_type += 1
+                angle_type_by_key[angle_key] = angle_type
+                theta = _guest_template_angle_degrees(template, left_index, center_index, right_index)
+                guest_angle_coeff_rows.append(
+                    (
+                        f"{angle_type} harmonic {template.angle_force_constant:.8g} {theta:.8g} "
+                        f"# {component} {template.site_labels[left_index]}-"
+                        f"{template.site_labels[center_index]}-{template.site_labels[right_index]}"
+                    )
+                )
+            guest_angle_rows.append(
+                (
+                    f"{next_angle_id} {angle_type} "
+                    f"{atom_id_by_molecule_site[(molecule_key, left_index)]} "
+                    f"{atom_id_by_molecule_site[(molecule_key, center_index)]} "
+                    f"{atom_id_by_molecule_site[(molecule_key, right_index)]}"
+                )
+            )
+            next_angle_id += 1
+
+    bond_coeff_rows.extend(guest_bond_coeff_rows)
+    angle_coeff_rows.extend(guest_angle_coeff_rows)
+    atom_rows_full.extend(guest_atom_rows)
+    bonds_rows.extend(guest_bond_rows)
+    angles_rows.extend(guest_angle_rows)
+
+    sections = _replace_or_append_lammps_section(sections, _LammpsDataSection("Masses", tuple(masses_rows)))
+    sections = _replace_or_append_lammps_section(sections, _LammpsDataSection("PairIJ Coeffs", tuple(pairij_rows)))
+    sections = _replace_or_append_lammps_section(
+        sections,
+        _LammpsDataSection("Bond Coeffs", tuple(bond_coeff_rows)),
+        after="PairIJ Coeffs",
+    )
+    if angle_coeff_rows:
+        sections = _replace_or_append_lammps_section(
+            sections,
+            _LammpsDataSection("Angle Coeffs", tuple(angle_coeff_rows)),
+            after="Bond Coeffs",
+        )
+    sections = _replace_or_append_lammps_section(sections, _LammpsDataSection("Atoms # full", tuple(atom_rows_full)))
+    sections = _replace_or_append_lammps_section(
+        sections,
+        _LammpsDataSection("Bonds", tuple(bonds_rows)),
+        after="Atoms",
+    )
+    if angles_rows:
+        sections = _replace_or_append_lammps_section(
+            sections,
+            _LammpsDataSection("Angles", tuple(angles_rows)),
+            after="Bonds",
+        )
+
+    header_lines = _update_lammps_header_counts(
+        header_lines,
+        {
+            "atoms": old_atom_count + guest_restart_state.n_atoms,
+            "bonds": old_bond_count + len(guest_bond_rows),
+            "angles": old_angle_count + len(guest_angle_rows),
+            "atom types": len(atom_type_symbols),
+            "bond types": old_bond_type_count + len(bond_type_by_key),
+            "angle types": old_angle_type_count + len(angle_type_by_key),
+        },
+    )
+    data_text = _join_lammps_data_text(header_lines, sections)
+    warnings = list(prepared.warnings) + list(guest_restart_state.warnings)
+    if guest_bond_rows:
+        warnings.append(
+            "Guest restart represents RASPA rigid intramolecular geometry with harmonic bond/angle terms "
+            "during LAMMPS MD; validate the guest bond and angle force constants before production use."
+        )
+    parameter_sources = dict(prepared.parameter_sources)
+    parameter_sources["guest_restart_snapshot"] = guest_restart_state.source_snapshot_path
+    parameter_sources["guest_nonbond_parameters"] = (
+        "gRASPA/RASPA2 guest pseudo-atom and mixing-rule rows converted to LAMMPS real-unit PairIJ Coeffs"
+    )
+    if guest_bond_rows:
+        parameter_sources["guest_bonded_parameters"] = (
+            "RASPA rigid guest bonds represented by harmonic LAMMPS bond/angle coefficients"
+        )
+    framework_net_charge = prepared.net_charge if prepared.net_charge is not None else 0.0
+    angle_styles = prepared.angle_styles
+    if guest_angle_rows and "harmonic" not in angle_styles:
+        angle_styles = (*angle_styles, "harmonic")
+
+    return replace(
+        prepared,
+        data_text=data_text,
+        has_charges=True,
+        atom_type_symbols=atom_type_symbols,
+        n_bond_types=old_bond_type_count + len(bond_type_by_key),
+        n_angle_types=old_angle_type_count + len(angle_type_by_key),
+        angle_styles=angle_styles,
+        parameter_sources=parameter_sources,
+        n_charged_atoms=old_atom_count + guest_restart_state.n_atoms,
+        net_charge=framework_net_charge + guest_charge_sum,
+        warnings=tuple(dict.fromkeys(warnings)),
+    )
+
+
+def _split_lammps_data_text(data_text: str) -> tuple[list[str], tuple[_LammpsDataSection, ...]]:
+    header_lines: list[str] = []
+    sections: list[_LammpsDataSection] = []
+    current_header: str | None = None
+    current_rows: list[str] = []
+    for raw_line in data_text.splitlines():
+        line = raw_line.rstrip()
+        if _is_lammps_data_section_header(line):
+            if current_header is not None:
+                sections.append(_LammpsDataSection(current_header, tuple(current_rows)))
+            current_header = line.strip()
+            current_rows = []
+            continue
+        if current_header is None:
+            header_lines.append(line)
+        elif line.strip():
+            current_rows.append(line)
+    if current_header is not None:
+        sections.append(_LammpsDataSection(current_header, tuple(current_rows)))
+    if not sections:
+        raise LammpsInputError("LAMMPS guest restart merge could not find any sections in the generated data file.")
+    return header_lines, tuple(sections)
+
+
+def _join_lammps_data_text(header_lines: Sequence[str], sections: Sequence[_LammpsDataSection]) -> str:
+    lines = list(header_lines)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    lines.append("")
+    for section in sections:
+        if not section.rows and _lammps_section_base_name(section.header) not in {"Angles", "Angle Coeffs"}:
+            continue
+        lines.extend([section.header, ""])
+        lines.extend(section.rows)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _is_lammps_data_section_header(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    return any(stripped == name or stripped.startswith(name + " #") for name in _LAMMPS_DATA_SECTION_NAMES)
+
+
+def _lammps_section_base_name(header: str) -> str:
+    stripped = header.strip()
+    for name in _LAMMPS_DATA_SECTION_NAMES:
+        if stripped == name or stripped.startswith(name + " #"):
+            return name
+    return stripped.split("#", 1)[0].strip()
+
+
+def _lammps_section_rows(sections: Sequence[_LammpsDataSection], section_name: str) -> tuple[str, ...]:
+    for section in sections:
+        if _lammps_section_base_name(section.header) == section_name:
+            return section.rows
+    return ()
+
+
+def _lammps_atoms_section(sections: Sequence[_LammpsDataSection]) -> tuple[str, tuple[str, ...]]:
+    for section in sections:
+        if _lammps_section_base_name(section.header) == "Atoms":
+            return section.header, section.rows
+    raise LammpsInputError("LAMMPS guest restart merge could not find an Atoms section in the generated data file.")
+
+
+def _replace_or_append_lammps_section(
+    sections: Sequence[_LammpsDataSection],
+    replacement: _LammpsDataSection,
+    *,
+    after: str | None = None,
+) -> tuple[_LammpsDataSection, ...]:
+    replacement_base = _lammps_section_base_name(replacement.header)
+    updated: list[_LammpsDataSection] = []
+    replaced = False
+    for section in sections:
+        if _lammps_section_base_name(section.header) == replacement_base:
+            updated.append(replacement)
+            replaced = True
+        else:
+            updated.append(section)
+    if replaced:
+        return tuple(updated)
+    if after is None:
+        return (*tuple(updated), replacement)
+    insert_after_index = next(
+        (index for index, section in enumerate(updated) if _lammps_section_base_name(section.header) == after),
+        len(updated) - 1,
+    )
+    updated.insert(insert_after_index + 1, replacement)
+    return tuple(updated)
+
+
+def _lammps_header_count(header_lines: Sequence[str], key: str) -> int:
+    for line in header_lines:
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2 or parts[1] != key:
+            continue
+        try:
+            return int(parts[0])
+        except ValueError:
+            return 0
+    return 0
+
+
+def _update_lammps_header_counts(header_lines: Sequence[str], updates: Mapping[str, int]) -> list[str]:
+    remaining = dict(updates)
+    updated = list(header_lines)
+    count_line_indexes: list[int] = []
+    for index, line in enumerate(updated):
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        key = parts[1]
+        if key in _LAMMPS_HEADER_COUNT_ORDER:
+            count_line_indexes.append(index)
+        if key in remaining:
+            updated[index] = f"{remaining.pop(key)}  {key}"
+    insert_index = (max(count_line_indexes) + 1) if count_line_indexes else min(1, len(updated))
+    for key in _LAMMPS_HEADER_COUNT_ORDER:
+        if key not in remaining:
+            continue
+        if remaining[key] == 0 and key not in {"atoms", "atom types"}:
+            continue
+        updated.insert(insert_index, f"{remaining[key]}  {key}")
+        insert_index += 1
+    return updated
+
+
+def _format_lammps_atom_row_as_full(row: str, *, source_atom_style: str) -> str:
+    before, _hash, after = row.partition("#")
+    parts = before.split()
+    comment = f" # {after.strip()}" if after.strip() else ""
+    if source_atom_style == "full":
+        if len(parts) < 7:
+            return row
+        fields = parts[:7] + (parts[7:10] if len(parts) >= 10 else ["0", "0", "0"])
+    else:
+        if len(parts) < 6:
+            return row
+        fields = [parts[0], parts[1], parts[2], "0.0000", parts[3], parts[4], parts[5]]
+        fields.extend(parts[6:9] if len(parts) >= 9 else ["0", "0", "0"])
+    return " ".join(fields) + comment
+
+
+def _max_lammps_molecule_id(atom_rows: Sequence[str]) -> int:
+    max_molecule_id = 0
+    for row in atom_rows:
+        parts = row.split("#", 1)[0].split()
+        if len(parts) >= 2:
+            try:
+                max_molecule_id = max(max_molecule_id, int(parts[1]))
+            except ValueError:
+                continue
+    return max_molecule_id
+
+
+def _parse_pairij_diagonal_rows(pairij_rows: Sequence[str]) -> dict[int, tuple[float, float]]:
+    diagonals: dict[int, tuple[float, float]] = {}
+    for row in pairij_rows:
+        parts = row.split("#", 1)[0].split()
+        if len(parts) < 4:
+            continue
+        try:
+            left = int(parts[0])
+            right = int(parts[1])
+            epsilon = float(parts[2])
+            sigma = float(parts[3])
+        except ValueError:
+            continue
+        if left == right:
+            diagonals[left] = (epsilon, sigma)
+    return diagonals
+
+
+def _build_guest_pairij_rows(
+    *,
+    pairij_rows: Sequence[str],
+    old_atom_type_count: int,
+    guest_type_by_site: Mapping[str, int],
+    site_by_label: Mapping[str, LammpsGuestSite],
+) -> list[str]:
+    diagonals = _parse_pairij_diagonal_rows(pairij_rows)
+    guest_rows: list[str] = []
+    ordered_guest_sites = sorted(guest_type_by_site, key=guest_type_by_site.__getitem__)
+    for old_type in range(1, old_atom_type_count + 1):
+        old_epsilon, old_sigma = diagonals.get(old_type, (0.0, 0.0))
+        for site_label in ordered_guest_sites:
+            site = site_by_label[site_label]
+            epsilon = math.sqrt(max(old_epsilon, 0.0) * max(site.epsilon_kcal_per_mol, 0.0))
+            sigma = 0.5 * (old_sigma + site.sigma) if old_sigma > 0.0 and site.sigma > 0.0 else 0.0
+            guest_rows.append(
+                f"{old_type} {guest_type_by_site[site_label]} {epsilon:.8g} {sigma:.8g} # {site_label}"
+            )
+    for left_index, left_label in enumerate(ordered_guest_sites):
+        left_site = site_by_label[left_label]
+        for right_label in ordered_guest_sites[left_index:]:
+            right_site = site_by_label[right_label]
+            epsilon = math.sqrt(
+                max(left_site.epsilon_kcal_per_mol, 0.0) * max(right_site.epsilon_kcal_per_mol, 0.0)
+            )
+            sigma = 0.5 * (left_site.sigma + right_site.sigma)
+            guest_rows.append(
+                (
+                    f"{guest_type_by_site[left_label]} {guest_type_by_site[right_label]} "
+                    f"{epsilon:.8g} {sigma:.8g} # {left_label}-{right_label}"
+                )
+            )
+    return guest_rows
+
+
+def _validate_guest_template_index(template, index: int) -> None:
+    if index < 0 or index >= len(template.site_labels):
+        raise LammpsInputError(
+            f"Guest template {template.component!r} references atom index {index}, "
+            f"but it has {len(template.site_labels)} site(s)."
+        )
+
+
+def _guest_template_distance(template, left_index: int, right_index: int) -> float:
+    left = template.relative_positions[left_index]
+    right = template.relative_positions[right_index]
+    return _norm((left[0] - right[0], left[1] - right[1], left[2] - right[2]))
+
+
+def _guest_template_angles(template) -> tuple[tuple[int, int, int], ...]:
+    neighbors: dict[int, list[int]] = {index: [] for index in range(len(template.site_labels))}
+    for left_index, right_index in template.bonds:
+        _validate_guest_template_index(template, left_index)
+        _validate_guest_template_index(template, right_index)
+        neighbors[left_index].append(right_index)
+        neighbors[right_index].append(left_index)
+    angles: list[tuple[int, int, int]] = []
+    for center_index, neighbor_indexes in neighbors.items():
+        ordered_neighbors = sorted(neighbor_indexes)
+        for left_position in range(len(ordered_neighbors)):
+            for right_position in range(left_position + 1, len(ordered_neighbors)):
+                angles.append((ordered_neighbors[left_position], center_index, ordered_neighbors[right_position]))
+    return tuple(angles)
+
+
+def _guest_template_angle_degrees(template, left_index: int, center_index: int, right_index: int) -> float:
+    left = template.relative_positions[left_index]
+    center = template.relative_positions[center_index]
+    right = template.relative_positions[right_index]
+    left_vector = (left[0] - center[0], left[1] - center[1], left[2] - center[2])
+    right_vector = (right[0] - center[0], right[1] - center[1], right[2] - center[2])
+    return _angle_degrees(left_vector, right_vector)
 
 
 def _bundled_uff_parameter_file() -> Path:

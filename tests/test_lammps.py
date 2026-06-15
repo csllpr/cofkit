@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from cofkit.cli import main as cli_main
 import cofkit.lammps as lammps_module
 from cofkit.graspa import COFKIT_EQEQ_ENV_VAR, EqeqChargeSettings
+from cofkit.guest_restart import load_lammps_guest_force_field_assets, parse_lammps_guest_restart_snapshot
 from cofkit.lammps import (
     COFKIT_LMP_ENV_VAR,
     LammpsConfigurationError,
@@ -131,6 +132,71 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("write_dump all custom", script_text)
             output_text = Path(result.output_cif).read_text(encoding="utf-8")
             self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00", output_text)
+
+    def test_run_lammps_md_on_cif_injects_guest_restart_atoms(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "md_guest_example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+            snapshot_path = temp_path / "result_10.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "1 atoms",
+                        "1 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 131.293 # Xe",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 0.0 2.0 3.0 4.0 0 0 0",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            guest_restart_state = parse_lammps_guest_restart_snapshot(
+                snapshot_path,
+                templates=templates,
+                sites=sites,
+            )
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = run_lammps_md_on_cif(
+                    cif_path,
+                    output_dir=temp_path / "md_guest_out",
+                    settings=LammpsMdSettings(
+                        forcefield="uff",
+                        charge_model="none",
+                        steps=5,
+                    ),
+                    guest_restart_state=guest_restart_state,
+                )
+
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+
+            self.assertEqual(result.n_atoms, 3)
+            self.assertEqual(result.n_guest_atoms, 1)
+            self.assertEqual(result.n_total_atoms, 4)
+            self.assertEqual(result.guest_components, ("Xe",))
+            self.assertEqual(result.guest_restart_source_path, str(snapshot_path.resolve()))
+            self.assertEqual(result.charge_model, "guest_restart")
+            self.assertIn("4  atoms", data_text)
+            self.assertIn("3  atom types", data_text)
+            self.assertIn("Atoms # full", data_text)
+            self.assertIn("# Xe", data_text)
+            self.assertIn("atom_style full", script_text)
+            self.assertEqual(report["n_guest_atoms"], 1)
+            self.assertEqual(report["n_total_atoms"], 4)
+            self.assertEqual(report["guest_components"], ["Xe"])
 
     def test_optimize_cif_with_lammps_defaults_to_uff(self):
         with tempfile.TemporaryDirectory() as temp_dir:

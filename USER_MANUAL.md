@@ -851,7 +851,7 @@ The packaged Widom template currently ships definitions for:
 - `Xe`
 - `Kr`
 
-Activate packaged probes explicitly with repeated `--component NAME` flags or `--all-components`. External parameterized guests are added with repeated `--guest-bundle path/to/guest.json` flags, then selected with `--component` by bundle `name` or alias. Guest bundles are parameter bundles, not SMILES parameterizers: each bundle provides a RASPA molecule definition, pseudo-atom rows, mixing-rule rows, and a non-empty `lammps` section so future hybrid MD/MC workflows have a synchronized guest force-field source. If a bundle sets `"rotatable": false`, `cofkit` omits `RotationProbability` for that component.
+Activate packaged probes explicitly with repeated `--component NAME` flags or `--all-components`. External parameterized guests are added with repeated `--guest-bundle path/to/guest.json` flags, then selected with `--component` by bundle `name` or alias. Guest bundles are parameter bundles, not SMILES parameterizers: each bundle provides a RASPA molecule definition, pseudo-atom rows, mixing-rule rows, and a non-empty `lammps` section so hybrid MD/MC guest-restart workflows have a synchronized guest force-field source. If a bundle sets `"rotatable": false`, `cofkit` omits `RotationProbability` for that component.
 
 The generated `simulation.input` always uses CIF-backed framework input plus charges read from that charged CIF. `NumberOfBlocks` now defaults to `5`, and when `--production-cycles` is omitted, `cofkit` sets `NumberOfProductionCycles = (--widom-moves-per-component) * (number of active components)`.
 
@@ -1049,18 +1049,38 @@ cofkit calculate hybrid-mdmc \
 
 Use one `--component NAME` for a pure-component GCMC segment, or repeated `--component NAME:FRACTION` values for a mixture segment. Components can be packaged names or explicit guest-bundle names/aliases loaded with repeated `--guest-bundle path/to/guest.json`.
 
+By default, `hybrid-mdmc` uses framework exchange only. Add `--exchange-mode guest-restart` to carry the final GCMC guest-containing snapshot into the following LAMMPS MD segment:
+
+```bash
+cofkit calculate hybrid-mdmc \
+  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
+  --output-dir out/tapb_tfb_xekr_guest_restart \
+  --cycles 5 \
+  --exchange-mode guest-restart \
+  --component Xe:0.5 \
+  --component Kr:0.5 \
+  --pressure 100000 \
+  --lammps-forcefield dreiding \
+  --raspa-forcefield dreiding \
+  --json
+```
+
+In `guest-restart` mode, cofkit sets the GCMC `RestartFile` option, reads the latest `Movies/System_0/result_*.data` snapshot after each GCMC segment, and merges the requested guest molecules into the next LAMMPS MD data file. Packaged and guest-bundle force-field rows are synchronized across the two engines: guest masses and charges come from pseudo-atom rows unless overridden by the bundle `lammps` section, guest epsilon values are converted from kelvin to kcal/mol for LAMMPS `real` units, and PairIJ host-guest / guest-guest rows use Lorentz-Berthelot mixing. Binary guests are supported through the mixture path when every component has a massive-site LAMMPS representation.
+
 Current exchange-mode scope:
 
-- the only supported `exchange_mode` is `framework`
-- GCMC guest molecule coordinates are not yet converted into the next LAMMPS data file
-- guest-bundle `lammps` sections are validated and recorded for future reinjection support, but the current framework-only mode does not consume them
-- this is an alternating MD/GCMC workflow with framework snapshot exchange, not dynamic GCMC inside LAMMPS
+- `framework` remains the default mode and carries only the MD-updated framework CIF between cycles
+- `guest_restart` carries GCMC guest coordinates into the next LAMMPS MD segment, but cycle 1 still starts without guests unless a future API supplies an initial restart
+- post-MD guest coordinates are not yet converted into a gRASPA/RASPA2 `RestartInitial` file for the next MC segment
+- multi-site RASPA rigid guests are represented during MD with harmonic bond/angle terms inferred from the molecule definition
+- massless or dummy pseudo-sites are rejected for LAMMPS guest restart rather than converted into mobile atoms
+- this is an alternating MD/GCMC workflow, not dynamic GCMC inside LAMMPS
 
 The output directory stores:
 
 - one `cycle_*/1.lammps_md/` directory with `lammps_md_input.data`, `lammps_md.in`, logs, trajectory dump, `lammps_md_report.json`, and the MD-updated framework CIF
 - one `cycle_*/2.gcmc/` directory with the normal isotherm or mixture GCMC artifacts for that cycle
-- a top-level `hybrid_mdmc_report.json` containing per-cycle LAMMPS/GCMC report payloads and the final framework CIF path
+- a top-level `hybrid_mdmc_report.json` containing per-cycle LAMMPS/GCMC report payloads, guest restart source paths and guest atom counts when enabled, and the final framework CIF path
 
 ### Quantitative rules
 

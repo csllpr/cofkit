@@ -16,10 +16,14 @@ from .graspa import (
     run_graspa_isotherm_workflow,
     run_graspa_mixture_workflow,
 )
+from .guest_restart import (
+    LammpsGuestRestartState,
+    build_lammps_guest_restart_state_from_gcmc_result,
+)
 from .lammps import LammpsMdResult, LammpsMdSettings, run_lammps_md_on_cif
 
 
-HybridExchangeMode = Literal["framework"]
+HybridExchangeMode = Literal["framework", "guest_restart"]
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,12 @@ class HybridMdMcCycleResult:
     gcmc_result_type: str
     gcmc_result: GraspaIsothermResult | GraspaMixtureResult
     output_framework_cif: str
+    input_guest_restart_source_path: str | None = None
+    output_guest_restart_source_path: str | None = None
+    n_input_guest_atoms: int = 0
+    n_output_guest_atoms: int = 0
+    input_guest_components: tuple[str, ...] = ()
+    output_guest_components: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -82,6 +92,12 @@ class HybridMdMcCycleResult:
             "gcmc_result_type": self.gcmc_result_type,
             "gcmc_result": self.gcmc_result.to_dict(),
             "output_framework_cif": self.output_framework_cif,
+            "input_guest_restart_source_path": self.input_guest_restart_source_path,
+            "output_guest_restart_source_path": self.output_guest_restart_source_path,
+            "n_input_guest_atoms": self.n_input_guest_atoms,
+            "n_output_guest_atoms": self.n_output_guest_atoms,
+            "input_guest_components": list(self.input_guest_components),
+            "output_guest_components": list(self.output_guest_components),
             "warnings": list(self.warnings),
         }
 
@@ -147,17 +163,14 @@ def run_hybrid_mdmc_workflow(
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    warnings = (
-        "Hybrid exchange_mode='framework' alternates LAMMPS framework MD with gRASPA/RASPA2 GCMC on the "
-        "updated framework CIF. Guest molecule coordinates from GCMC are not yet reinjected into the next "
-        "LAMMPS segment; selected guest-bundle LAMMPS sections are validated for future reinjection support "
-        "but are not consumed by this framework-only exchange mode.",
-    )
+    warnings = _hybrid_exchange_warnings(settings)
 
     current_cif = input_path
+    current_guest_restart_state: LammpsGuestRestartState | None = None
     cycle_results: list[HybridMdMcCycleResult] = []
     for cycle in range(1, settings.cycles + 1):
         cycle_dir = run_dir / f"cycle_{cycle:03d}"
+        input_guest_restart_state = current_guest_restart_state
         lammps_result = run_lammps_md_on_cif(
             current_cif,
             output_dir=cycle_dir / "1.lammps_md",
@@ -167,6 +180,7 @@ def run_hybrid_mdmc_workflow(
             timeout_seconds=lammps_timeout_seconds,
             eqeq_settings=lammps_eqeq_settings,
             eqeq_timeout_seconds=eqeq_timeout_seconds,
+            guest_restart_state=input_guest_restart_state,
         )
         md_framework_cif = Path(lammps_result.output_cif)
         gcmc_result_type: str
@@ -199,6 +213,15 @@ def run_hybrid_mdmc_workflow(
                 eqeq_timeout_seconds=eqeq_timeout_seconds,
                 graspa_timeout_seconds=graspa_timeout_seconds,
             )
+        output_guest_restart_state: LammpsGuestRestartState | None = None
+        cycle_warnings: list[str] = []
+        if settings.exchange_mode == "guest_restart":
+            output_guest_restart_state = build_lammps_guest_restart_state_from_gcmc_result(
+                gcmc_result,
+                components=tuple(component.component for component in settings.components),
+                guest_bundles=settings.guest_bundles,
+            )
+            cycle_warnings.extend(output_guest_restart_state.warnings)
         cycle_results.append(
             HybridMdMcCycleResult(
                 cycle=cycle,
@@ -207,9 +230,29 @@ def run_hybrid_mdmc_workflow(
                 gcmc_result_type=gcmc_result_type,
                 gcmc_result=gcmc_result,
                 output_framework_cif=str(md_framework_cif),
+                input_guest_restart_source_path=(
+                    input_guest_restart_state.source_snapshot_path
+                    if input_guest_restart_state is not None
+                    else None
+                ),
+                output_guest_restart_source_path=(
+                    output_guest_restart_state.source_snapshot_path
+                    if output_guest_restart_state is not None
+                    else None
+                ),
+                n_input_guest_atoms=input_guest_restart_state.n_atoms if input_guest_restart_state is not None else 0,
+                n_output_guest_atoms=output_guest_restart_state.n_atoms if output_guest_restart_state is not None else 0,
+                input_guest_components=(
+                    input_guest_restart_state.components if input_guest_restart_state is not None else ()
+                ),
+                output_guest_components=(
+                    output_guest_restart_state.components if output_guest_restart_state is not None else ()
+                ),
+                warnings=tuple(dict.fromkeys(cycle_warnings)),
             )
         )
         current_cif = md_framework_cif
+        current_guest_restart_state = output_guest_restart_state
 
     report_path = run_dir / "hybrid_mdmc_report.json"
     result = HybridMdMcResult(
@@ -231,8 +274,8 @@ def run_hybrid_mdmc_workflow(
 def _validate_hybrid_settings(settings: HybridMdMcSettings) -> None:
     if settings.cycles <= 0:
         raise ValueError("cycles must be positive.")
-    if settings.exchange_mode != "framework":
-        raise ValueError("The only supported hybrid exchange_mode is 'framework'.")
+    if settings.exchange_mode not in {"framework", "guest_restart"}:
+        raise ValueError("hybrid exchange_mode must be one of: framework, guest_restart.")
     if settings.pressure <= 0.0:
         raise ValueError("pressure must be positive.")
     if not settings.components:
@@ -266,6 +309,21 @@ def _validate_hybrid_settings(settings: HybridMdMcSettings) -> None:
         raise ValueError("ewald_precision must be positive.")
 
 
+def _hybrid_exchange_warnings(settings: HybridMdMcSettings) -> tuple[str, ...]:
+    if settings.exchange_mode == "framework":
+        return (
+            "Hybrid exchange_mode='framework' alternates LAMMPS framework MD with gRASPA/RASPA2 GCMC on the "
+            "updated framework CIF. Guest molecule coordinates from GCMC are not reinjected into the next "
+            "LAMMPS segment in this mode.",
+        )
+    return (
+        "Hybrid exchange_mode='guest_restart' feeds the final GCMC guest restart/movie snapshot into the following "
+        "LAMMPS MD segment. Cycle 1 starts framework-only unless a future API supplies an initial guest restart.",
+        "The current guest restart path carries GCMC guest coordinates into MD; it does not yet generate a "
+        "gRASPA/RASPA2 RestartInitial file from post-MD guest coordinates for the next MC segment.",
+    )
+
+
 def _isotherm_settings_from_hybrid(
     settings: HybridMdMcSettings,
     component: GraspaMixtureComponentSettings,
@@ -281,6 +339,7 @@ def _isotherm_settings_from_hybrid(
         initialization_cycles=settings.initialization_cycles,
         equilibration_cycles=settings.equilibration_cycles,
         production_cycles=settings.production_cycles,
+        restart_file=settings.exchange_mode == "guest_restart",
         number_of_trial_positions=settings.number_of_trial_positions,
         number_of_trial_orientations=settings.number_of_trial_orientations,
         cutoff_vdw=settings.cutoff_vdw,
@@ -305,6 +364,7 @@ def _mixture_settings_from_hybrid(settings: HybridMdMcSettings) -> GraspaMixture
         initialization_cycles=settings.initialization_cycles,
         equilibration_cycles=settings.equilibration_cycles,
         production_cycles=settings.production_cycles,
+        restart_file=settings.exchange_mode == "guest_restart",
         number_of_trial_positions=settings.number_of_trial_positions,
         number_of_trial_orientations=settings.number_of_trial_orientations,
         cutoff_vdw=settings.cutoff_vdw,
