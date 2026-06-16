@@ -84,6 +84,71 @@ class GuestRestartTests(unittest.TestCase):
         self.assertEqual(state.n_atoms, 1)
         self.assertEqual((state.atoms[0].x, state.atoms[0].y, state.atoms[0].z), (1.25, 2.50, 3.75))
 
+    def test_parse_molecular_atoms_snapshot_with_trailing_label(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_1.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "LAMMPS molecular snapshot",
+                        "",
+                        "1 atoms",
+                        "1 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 131.293",
+                        "",
+                        "Atoms # molecular",
+                        "",
+                        "1 1 1 1.25 2.50 3.75 Xe",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(state.n_atoms, 1)
+        self.assertEqual((state.atoms[0].x, state.atoms[0].y, state.atoms[0].z), (1.25, 2.50, 3.75))
+
+    def test_parse_bare_atoms_header_with_charge_column_from_graspa_movie(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "1 atoms",
+                        "1 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 131.293 # Xe",
+                        "",
+                        "Atoms",
+                        "",
+                        "1 1 1 0.0 26.94846895 10.74633654 12.64790086 # Xe Xe",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(state.n_atoms, 1)
+        self.assertEqual(
+            (state.atoms[0].x, state.atoms[0].y, state.atoms[0].z),
+            (26.94846895, 10.74633654, 12.64790086),
+        )
+
     def test_zero_mass_pseudo_sites_are_rejected_for_lammps_restart(self):
         with self.assertRaises(GuestRestartError) as raised:
             load_lammps_guest_force_field_assets(("TIP4P",))

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -221,6 +221,12 @@ def run_hybrid_mdmc_workflow(
         if len(settings.components) == 1:
             component = settings.components[0]
             gcmc_result_type = "isotherm"
+            isotherm_settings = _isotherm_settings_from_hybrid(settings, component)
+            if settings.exchange_mode == "guest_restart":
+                isotherm_settings = replace(
+                    isotherm_settings,
+                    restart_file=gcmc_initial_restart_file_path is not None,
+                )
             gcmc_result = run_graspa_isotherm_workflow(
                 md_framework_cif,
                 output_dir=cycle_dir / "2.gcmc",
@@ -229,13 +235,19 @@ def run_hybrid_mdmc_workflow(
                 raspa_path=raspa_path,
                 raspa2_path=raspa2_path,
                 eqeq_settings=raspa_eqeq_settings,
-                isotherm_settings=_isotherm_settings_from_hybrid(settings, component),
+                isotherm_settings=isotherm_settings,
                 initial_restart_file=gcmc_initial_restart_file_path,
                 eqeq_timeout_seconds=eqeq_timeout_seconds,
                 graspa_timeout_seconds=graspa_timeout_seconds,
             )
         else:
             gcmc_result_type = "mixture"
+            mixture_settings = _mixture_settings_from_hybrid(settings)
+            if settings.exchange_mode == "guest_restart":
+                mixture_settings = replace(
+                    mixture_settings,
+                    restart_file=gcmc_initial_restart_file_path is not None,
+                )
             gcmc_result = run_graspa_mixture_workflow(
                 md_framework_cif,
                 output_dir=cycle_dir / "2.gcmc",
@@ -244,7 +256,7 @@ def run_hybrid_mdmc_workflow(
                 raspa_path=raspa_path,
                 raspa2_path=raspa2_path,
                 eqeq_settings=raspa_eqeq_settings,
-                mixture_settings=_mixture_settings_from_hybrid(settings),
+                mixture_settings=mixture_settings,
                 initial_restart_file=gcmc_initial_restart_file_path,
                 eqeq_timeout_seconds=eqeq_timeout_seconds,
                 graspa_timeout_seconds=graspa_timeout_seconds,

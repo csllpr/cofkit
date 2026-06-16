@@ -1482,12 +1482,16 @@ def _merge_guest_restart_state_into_lammps_data(
         for atom in ordered_atoms:
             site = site_by_label[atom.site_label]
             atom_type = guest_type_by_site[atom.site_label]
+            x, y, z = _wrap_cartesian_position_into_lammps_basis(
+                (atom.x, atom.y, atom.z),
+                parsed.lammps_basis,
+            )
             atom_id_by_molecule_site[(molecule_key, atom.site_index)] = next_atom_id
             guest_charge_sum += site.charge
             guest_atom_rows.append(
                 (
                     f"{next_atom_id} {molecule_id} {atom_type} {site.charge:.8g} "
-                    f"{atom.x:.10g} {atom.y:.10g} {atom.z:.10g} 0 0 0 # {atom.site_label} {atom.component}"
+                    f"{x:.10g} {y:.10g} {z:.10g} 0 0 0 # {atom.site_label} {atom.component}"
                 )
             )
             next_atom_id += 1
@@ -1512,6 +1516,8 @@ def _merge_guest_restart_state_into_lammps_data(
         for left_index, right_index in template.bonds:
             _validate_guest_template_index(template, left_index)
             _validate_guest_template_index(template, right_index)
+            if left_index == right_index:
+                continue
             bond_key = (component, min(left_index, right_index), max(left_index, right_index))
             bond_type = bond_type_by_key.get(bond_key)
             if bond_type is None:
@@ -1537,6 +1543,8 @@ def _merge_guest_restart_state_into_lammps_data(
             next_bond_id += 1
 
         for left_index, center_index, right_index in _guest_template_angles(template):
+            if len({left_index, center_index, right_index}) < 3:
+                continue
             angle_key = (component, left_index, center_index, right_index)
             angle_type = angle_type_by_key.get(angle_key)
             if angle_type is None:
@@ -1606,6 +1614,10 @@ def _merge_guest_restart_state_into_lammps_data(
     )
     data_text = _join_lammps_data_text(header_lines, sections)
     warnings = list(prepared.warnings) + list(guest_restart_state.warnings)
+    warnings.append(
+        "Guest restart coordinates from the GCMC simulation box were folded into the current LAMMPS framework "
+        "unit cell before MD injection."
+    )
     if guest_bond_rows:
         warnings.append(
             "Guest restart represents RASPA rigid intramolecular geometry with harmonic bond/angle terms "
@@ -1638,6 +1650,14 @@ def _merge_guest_restart_state_into_lammps_data(
         net_charge=framework_net_charge + guest_charge_sum,
         warnings=tuple(dict.fromkeys(warnings)),
     )
+
+
+def _wrap_cartesian_position_into_lammps_basis(
+    position: tuple[float, float, float],
+    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    fractional = _cartesian_positions_to_fractional((0.0, 0.0, 0.0), basis, {0: position})[0]
+    return _fractional_to_lammps(fractional, basis)
 
 
 def _split_lammps_data_text(data_text: str) -> tuple[list[str], tuple[_LammpsDataSection, ...]]:

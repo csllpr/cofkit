@@ -87,6 +87,7 @@ class HybridMdMcTests(unittest.TestCase):
             input_cif.write_text("data_framework\n", encoding="utf-8")
             lammps_guest_states = []
             gcmc_initial_restart_files = []
+            gcmc_restart_flags = []
             restart_text = ""
 
             def fake_lammps(cif_path, *, output_dir, settings, guest_restart_state=None, **kwargs):
@@ -106,6 +107,7 @@ class HybridMdMcTests(unittest.TestCase):
 
             def fake_mixture(cif_path, *, output_dir, mixture_settings, initial_restart_file=None, **kwargs):
                 gcmc_initial_restart_files.append(initial_restart_file)
+                gcmc_restart_flags.append(mixture_settings.restart_file)
                 run_dir = Path(output_dir)
                 pressure_run_dir = run_dir / "mixture" / "pressure_100000"
                 movie_dir = pressure_run_dir / "Movies" / "System_0"
@@ -171,6 +173,7 @@ class HybridMdMcTests(unittest.TestCase):
         self.assertEqual(result.cycle_results[1].input_guest_components, ("Xe", "Kr"))
         self.assertIsNone(gcmc_initial_restart_files[0])
         self.assertIsNotNone(gcmc_initial_restart_files[1])
+        self.assertEqual(gcmc_restart_flags, [False, True])
         self.assertEqual(result.cycle_results[0].gcmc_initial_restart_file_path, None)
         self.assertEqual(result.cycle_results[1].n_md_output_guest_atoms, 2)
         self.assertEqual(result.cycle_results[1].md_output_guest_components, ("Xe", "Kr"))

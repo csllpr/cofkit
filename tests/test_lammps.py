@@ -193,6 +193,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("3  atom types", data_text)
             self.assertIn("Atoms # full", data_text)
             self.assertIn("# Xe", data_text)
+            self.assertNotIn(" 4 4\n", data_text)
             self.assertIn("atom_style full", script_text)
             self.assertEqual(report["n_guest_atoms"], 1)
             self.assertEqual(report["n_total_atoms"], 4)

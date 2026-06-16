@@ -761,7 +761,7 @@ def _parse_lammps_data_atom_rows(text: str, *, type_labels: Mapping[int, str]) -
         if len(parts) < 6 or not _is_int_token(parts[0]) or not _is_int_token(parts[1]):
             continue
         type_id = int(parts[2]) if _is_int_token(parts[2]) else None
-        if atom_style == "full":
+        if atom_style == "full" or (len(parts) == 7 and _is_float_token(parts[6])):
             if len(parts) < 7:
                 continue
             coord_offset = 4
