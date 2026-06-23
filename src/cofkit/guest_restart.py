@@ -89,6 +89,7 @@ class LammpsGuestRestartState:
     atoms: tuple[LammpsGuestSnapshotAtom, ...]
     sites: tuple[LammpsGuestSite, ...]
     templates: tuple[LammpsGuestTemplate, ...]
+    snapshot_cell: LammpsGuestRestartCell | None = None
     warnings: tuple[str, ...] = ()
 
     @property
@@ -113,6 +114,7 @@ class LammpsGuestRestartState:
             "atoms": [atom.to_dict() for atom in self.atoms],
             "sites": [site.to_dict() for site in self.sites],
             "templates": [template.to_dict() for template in self.templates],
+            "snapshot_cell": self.snapshot_cell.to_dict() if self.snapshot_cell is not None else None,
             "warnings": list(self.warnings),
         }
 
@@ -211,6 +213,7 @@ def build_lammps_guest_restart_state_from_lammps_md_result(
         atoms=tuple(atoms),
         sites=previous_guest_restart_state.sites,
         templates=previous_guest_restart_state.templates,
+        snapshot_cell=cell,
         warnings=tuple(dict.fromkeys((*previous_guest_restart_state.warnings, *warnings))),
     )
     return state, cell
@@ -495,6 +498,7 @@ def parse_lammps_guest_restart_snapshot(
     known_sites = {site.label for site in sites}
     if not known_sites:
         raise GuestRestartError("No guest force-field sites were provided for snapshot parsing.")
+    snapshot_cell = _parse_lammps_data_cell(text, data_path=path)
     type_labels = _parse_lammps_mass_type_labels(text)
     raw_atoms = _parse_lammps_data_atom_rows(text, type_labels=type_labels)
 
@@ -566,6 +570,7 @@ def parse_lammps_guest_restart_snapshot(
         atoms=tuple(atoms),
         sites=tuple(sites),
         templates=tuple(templates),
+        snapshot_cell=snapshot_cell,
         warnings=tuple(dict.fromkeys(warnings)),
     )
 
@@ -898,6 +903,50 @@ def _section_rows(text: str, section_name: str) -> list[str]:
     return []
 
 
+def _parse_lammps_data_cell(text: str, *, data_path: Path) -> LammpsGuestRestartCell | None:
+    x_bounds: tuple[float, float] | None = None
+    y_bounds: tuple[float, float] | None = None
+    z_bounds: tuple[float, float] | None = None
+    tilt: tuple[float, float, float] | None = None
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if _is_lammps_section_header(stripped):
+            break
+        before, _hash, _after = stripped.partition("#")
+        parts = before.split()
+        if len(parts) >= 4 and parts[-2:] == ["xlo", "xhi"]:
+            try:
+                x_bounds = (float(parts[0]), float(parts[1]))
+            except ValueError as exc:
+                raise GuestRestartError(f"Invalid LAMMPS x box bounds in {data_path}: {raw_line!r}") from exc
+        elif len(parts) >= 4 and parts[-2:] == ["ylo", "yhi"]:
+            try:
+                y_bounds = (float(parts[0]), float(parts[1]))
+            except ValueError as exc:
+                raise GuestRestartError(f"Invalid LAMMPS y box bounds in {data_path}: {raw_line!r}") from exc
+        elif len(parts) >= 4 and parts[-2:] == ["zlo", "zhi"]:
+            try:
+                z_bounds = (float(parts[0]), float(parts[1]))
+            except ValueError as exc:
+                raise GuestRestartError(f"Invalid LAMMPS z box bounds in {data_path}: {raw_line!r}") from exc
+        elif len(parts) >= 6 and parts[-3:] == ["xy", "xz", "yz"]:
+            try:
+                tilt = (float(parts[0]), float(parts[1]), float(parts[2]))
+            except ValueError as exc:
+                raise GuestRestartError(f"Invalid LAMMPS triclinic tilt factors in {data_path}: {raw_line!r}") from exc
+    if x_bounds is None or y_bounds is None or z_bounds is None:
+        return None
+    xy, xz, yz = tilt or (0.0, 0.0, 0.0)
+    basis = (
+        (x_bounds[1] - x_bounds[0], 0.0, 0.0),
+        (xy, y_bounds[1] - y_bounds[0], 0.0),
+        (xz, yz, z_bounds[1] - z_bounds[0]),
+    )
+    return _cell_from_basis(basis, source=data_path)
+
+
 def _parse_lammps_dump_cell(lines: Sequence[str], *, dump_path: Path) -> LammpsGuestRestartCell:
     if len(lines) != 4:
         raise GuestRestartError(f"Unexpected LAMMPS dump box block in {dump_path}: expected 4 lines, got {len(lines)}")
@@ -935,9 +984,17 @@ def _parse_lammps_dump_cell(lines: Sequence[str], *, dump_path: Path) -> LammpsG
             (0.0, yhi - ylo, 0.0),
             (0.0, 0.0, zhi - zlo),
         )
+    return _cell_from_basis(basis, source=dump_path)
+
+
+def _cell_from_basis(
+    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    *,
+    source: Path,
+) -> LammpsGuestRestartCell:
     lengths = tuple(_vector_norm(vector) for vector in basis)
     if any(length <= 1.0e-12 for length in lengths):
-        raise GuestRestartError(f"LAMMPS dump box in {dump_path} is singular.")
+        raise GuestRestartError(f"LAMMPS box in {source} is singular.")
     angles = (
         _angle_degrees(basis[1], basis[2]),
         _angle_degrees(basis[0], basis[2]),

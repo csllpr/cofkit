@@ -199,6 +199,66 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(report["n_total_atoms"], 4)
             self.assertEqual(report["guest_components"], ["Xe"])
 
+    def test_run_lammps_md_on_cif_expands_framework_to_guest_restart_supercell(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "md_guest_supercell_example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+            snapshot_path = temp_path / "result_10.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "1 atoms",
+                        "1 atom types",
+                        "0 20 xlo xhi",
+                        "0 10 ylo yhi",
+                        "0 10 zlo zhi",
+                        "",
+                        "Masses",
+                        "",
+                        "1 131.293 # Xe",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 0.0 12.0 3.0 4.0 0 0 0",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            guest_restart_state = parse_lammps_guest_restart_snapshot(
+                snapshot_path,
+                templates=templates,
+                sites=sites,
+            )
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = run_lammps_md_on_cif(
+                    cif_path,
+                    output_dir=temp_path / "md_guest_supercell_out",
+                    settings=LammpsMdSettings(
+                        forcefield="uff",
+                        charge_model="none",
+                        steps=5,
+                    ),
+                    guest_restart_state=guest_restart_state,
+                )
+
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+
+        self.assertEqual(result.n_atoms, 6)
+        self.assertEqual(result.n_guest_atoms, 1)
+        self.assertEqual(result.n_total_atoms, 7)
+        self.assertIn("7  atoms", data_text)
+        self.assertIn("0.0000000000 20.0000000000  xlo xhi", data_text)
+        self.assertIn("7 2 3 0 12 3 4 0 0 0 # Xe Xe", data_text)
+        self.assertNotIn("wrapped into the current LAMMPS framework cell", " ".join(result.warnings))
+        self.assertNotIn("folded into the current LAMMPS framework unit cell", " ".join(result.warnings))
+
     def test_optimize_cif_with_lammps_defaults_to_uff(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

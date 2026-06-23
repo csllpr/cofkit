@@ -678,6 +678,13 @@ def run_lammps_md_on_cif(
             "The next hybrid cycle reruns EQeq on the updated framework CIF before GCMC."
         )
 
+    if guest_restart_state is not None:
+        parsed, guest_cell_warnings = _parsed_for_guest_restart_md_cell(
+            parsed,
+            guest_restart_state=guest_restart_state,
+        )
+        warnings.extend(guest_cell_warnings)
+
     optimization_settings = _md_settings_to_optimization_settings(settings)
     model = _build_optimization_model(parsed, settings=optimization_settings)
     prepared = _prepare_lammps_system(model.parsed, settings=optimization_settings)
@@ -1614,10 +1621,17 @@ def _merge_guest_restart_state_into_lammps_data(
     )
     data_text = _join_lammps_data_text(header_lines, sections)
     warnings = list(prepared.warnings) + list(guest_restart_state.warnings)
-    warnings.append(
-        "Guest restart coordinates from the GCMC simulation box were folded into the current LAMMPS framework "
-        "unit cell before MD injection."
-    )
+    snapshot_cell = guest_restart_state.snapshot_cell
+    if snapshot_cell is None:
+        warnings.append(
+            "Guest restart snapshot did not include LAMMPS box metadata, so guest coordinates were wrapped into "
+            "the current LAMMPS framework cell before MD injection."
+        )
+    elif not _basis_close(snapshot_cell.basis, parsed.lammps_basis):
+        warnings.append(
+            "Guest restart snapshot cell did not match the LAMMPS MD framework cell, so guest coordinates were "
+            "wrapped into the current LAMMPS framework cell before MD injection."
+        )
     if guest_bond_rows:
         warnings.append(
             "Guest restart represents RASPA rigid intramolecular geometry with harmonic bond/angle terms "
@@ -1658,6 +1672,20 @@ def _wrap_cartesian_position_into_lammps_basis(
 ) -> tuple[float, float, float]:
     fractional = _cartesian_positions_to_fractional((0.0, 0.0, 0.0), basis, {0: position})[0]
     return _fractional_to_lammps(fractional, basis)
+
+
+def _basis_close(
+    left: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    right: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+) -> bool:
+    return all(
+        _vectors_close(
+            left_vector,
+            right_vector,
+            abs_tol=max(1.0e-5, 5.0e-4 * max(_norm(left_vector), _norm(right_vector))),
+        )
+        for left_vector, right_vector in zip(left, right)
+    )
 
 
 def _split_lammps_data_text(data_text: str) -> tuple[list[str], tuple[_LammpsDataSection, ...]]:
@@ -3099,6 +3127,183 @@ def _with_atom_charges(
         for atom in parsed.atoms
     )
     return replace(parsed, atoms=atoms)
+
+
+def _parsed_for_guest_restart_md_cell(
+    parsed: _ParsedExplicitBondCif,
+    *,
+    guest_restart_state: LammpsGuestRestartState,
+) -> tuple[_ParsedExplicitBondCif, tuple[str, ...]]:
+    snapshot_cell = guest_restart_state.snapshot_cell
+    if snapshot_cell is None:
+        return parsed, ()
+    unit_cells = _infer_lammps_supercell_unit_cells(
+        supercell_basis=snapshot_cell.basis,
+        primitive_basis=parsed.lammps_basis,
+    )
+    if unit_cells is None:
+        return (
+            parsed,
+            (
+                "Guest restart snapshot includes LAMMPS box metadata, but cofkit could not align it to an "
+                "integer supercell of the current framework CIF; guest coordinates will be wrapped into the "
+                "current LAMMPS MD cell.",
+            ),
+        )
+    return (
+        _replicate_parsed_explicit_bond_cif(
+            parsed,
+            unit_cells=unit_cells,
+            supercell_basis=snapshot_cell.basis,
+        ),
+        (),
+    )
+
+
+def _infer_lammps_supercell_unit_cells(
+    *,
+    supercell_basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    primitive_basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+) -> tuple[int, int, int] | None:
+    unit_cells: list[int] = []
+    for super_vector, primitive_vector in zip(supercell_basis, primitive_basis):
+        primitive_length = _norm(primitive_vector)
+        super_length = _norm(super_vector)
+        if primitive_length <= 1.0e-12 or super_length <= 1.0e-12:
+            return None
+        scale = super_length / primitive_length
+        unit_cell = int(round(scale))
+        if unit_cell < 1:
+            return None
+        scaled_primitive = _scale_vector(primitive_vector, float(unit_cell))
+        tolerance = max(1.0e-5, 5.0e-4 * super_length)
+        if not _vectors_close(super_vector, scaled_primitive, abs_tol=tolerance):
+            return None
+        unit_cells.append(unit_cell)
+    return (unit_cells[0], unit_cells[1], unit_cells[2])
+
+
+def _replicate_parsed_explicit_bond_cif(
+    parsed: _ParsedExplicitBondCif,
+    *,
+    unit_cells: tuple[int, int, int],
+    supercell_basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+) -> _ParsedExplicitBondCif:
+    if any(value <= 0 for value in unit_cells):
+        raise LammpsInputError(f"Invalid guest-restart framework supercell factors: {unit_cells!r}")
+    nx, ny, nz = unit_cells
+    if unit_cells == (1, 1, 1):
+        return _replace_parsed_cell_basis(parsed, supercell_basis)
+
+    atom_id_by_key: dict[tuple[int, tuple[int, int, int]], int] = {}
+    atoms: list[_CifAtomRecord] = []
+    for ix in range(nx):
+        for iy in range(ny):
+            for iz in range(nz):
+                image = (ix, iy, iz)
+                for atom in parsed.atoms:
+                    atom_id = len(atoms) + 1
+                    atom_id_by_key[(atom.atom_id, image)] = atom_id
+                    fx, fy, fz = atom.fractional_position
+                    atoms.append(
+                        _CifAtomRecord(
+                            atom_id=atom_id,
+                            label=_replicated_atom_label(atom.label, image),
+                            symbol=atom.symbol,
+                            occupancy=atom.occupancy,
+                            fractional_position=((fx + ix) / nx, (fy + iy) / ny, (fz + iz) / nz),
+                            charge=atom.charge,
+                        )
+                    )
+
+    bonds: list[_CifBondRecord] = []
+    atom_by_id = {atom.atom_id: atom for atom in atoms}
+    for ix in range(nx):
+        for iy in range(ny):
+            for iz in range(nz):
+                left_image = (ix, iy, iz)
+                for bond in parsed.bonds:
+                    delta = _sub_shift(bond.shift_2, bond.shift_1)
+                    right_image, shift_2 = _wrap_supercell_image(
+                        (ix + delta[0], iy + delta[1], iz + delta[2]),
+                        unit_cells,
+                    )
+                    atom_id_1 = atom_id_by_key[(bond.atom_id_1, left_image)]
+                    atom_id_2 = atom_id_by_key[(bond.atom_id_2, right_image)]
+                    atom_1 = atom_by_id[atom_id_1]
+                    atom_2 = atom_by_id[atom_id_2]
+                    bonds.append(
+                        _CifBondRecord(
+                            bond_id=len(bonds) + 1,
+                            atom_id_1=atom_id_1,
+                            atom_id_2=atom_id_2,
+                            label_1=atom_1.label,
+                            label_2=atom_2.label,
+                            symmetry_1=".",
+                            symmetry_2=_format_p1_symmetry_shift(shift_2),
+                            shift_1=(0, 0, 0),
+                            shift_2=shift_2,
+                            equilibrium_distance=bond.equilibrium_distance,
+                            bond_order=bond.bond_order,
+                        )
+                    )
+
+    angles = _derive_angles(tuple(atoms), tuple(bonds), supercell_basis)
+    dihedrals = _derive_dihedrals(tuple(atoms), tuple(bonds))
+    impropers = _derive_impropers(tuple(atoms), tuple(bonds))
+    return replace(
+        parsed,
+        data_name=f"{parsed.data_name}_{nx}x{ny}x{nz}",
+        cell_parameters=_cell_parameters_from_lammps_basis(supercell_basis),
+        lammps_basis=supercell_basis,
+        atoms=tuple(atoms),
+        bonds=tuple(bonds),
+        angles=angles,
+        dihedrals=dihedrals,
+        impropers=impropers,
+    )
+
+
+def _replace_parsed_cell_basis(
+    parsed: _ParsedExplicitBondCif,
+    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+) -> _ParsedExplicitBondCif:
+    return replace(
+        parsed,
+        cell_parameters=_cell_parameters_from_lammps_basis(basis),
+        lammps_basis=basis,
+    )
+
+
+def _wrap_supercell_image(
+    image: tuple[int, int, int],
+    unit_cells: tuple[int, int, int],
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    wrapped: list[int] = []
+    shifts: list[int] = []
+    for value, size in zip(image, unit_cells):
+        shift, remainder = divmod(value, size)
+        shifts.append(shift)
+        wrapped.append(remainder)
+    return (wrapped[0], wrapped[1], wrapped[2]), (shifts[0], shifts[1], shifts[2])
+
+
+def _replicated_atom_label(label: str, image: tuple[int, int, int]) -> str:
+    ix, iy, iz = image
+    return f"{label}__{ix}_{iy}_{iz}"
+
+
+def _vectors_close(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+    *,
+    abs_tol: float,
+) -> bool:
+    return all(abs(left[index] - right[index]) <= abs_tol for index in range(3))
+
+
+def _scale_vector(vector: tuple[float, float, float], scale: float) -> tuple[float, float, float]:
+    return (vector[0] * scale, vector[1] * scale, vector[2] * scale)
 
 
 def _derive_angles(

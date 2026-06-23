@@ -53,6 +53,45 @@ class GuestRestartTests(unittest.TestCase):
         self.assertEqual(state.atoms[1].z, 6.0)
         self.assertGreater(state.site_by_label()["Xe"].epsilon_kcal_per_mol, 0.0)
 
+    def test_parse_guest_snapshot_keeps_lammps_supercell_box(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_5.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "1 atoms",
+                        "1 atom types",
+                        "0 20 xlo xhi",
+                        "0 30 ylo yhi",
+                        "0 40 zlo zhi",
+                        "5 0.25 -0.5 xy xz yz",
+                        "",
+                        "Masses",
+                        "",
+                        "1 131.293 # Xe",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 0.0 12.0 15.0 20.0 0 0 0",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertIsNotNone(state.snapshot_cell)
+        assert state.snapshot_cell is not None
+        self.assertEqual(state.snapshot_cell.basis[0], (20.0, 0.0, 0.0))
+        self.assertEqual(state.snapshot_cell.basis[1], (5.0, 30.0, 0.0))
+        self.assertEqual(state.snapshot_cell.basis[2], (0.25, -0.5, 40.0))
+        self.assertEqual(state.to_dict()["snapshot_cell"]["unit_cells"], [1, 1, 1])
+
     def test_parse_molecular_atoms_snapshot_coordinates_without_charge_column(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
