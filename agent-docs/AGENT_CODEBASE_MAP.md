@@ -7,9 +7,10 @@ This document is for later coding/agent sessions that need to move quickly in `c
 Read these files first, in this order:
 
 1. [README.md](../README.md)
-2. [USER_MANUAL.md](../USER_MANUAL.md)
-3. [ARCHITECTURE.md](../ARCHITECTURE.md)
-4. [CHANGELOG.md](../CHANGELOG.md)
+2. [docs/README.md](../docs/README.md)
+3. [docs/CURRENT_SCOPE.md](../docs/CURRENT_SCOPE.md)
+4. [ARCHITECTURE.md](../ARCHITECTURE.md)
+5. [CHANGELOG.md](../CHANGELOG.md)
 
 Then go straight to the module that matches the task.
 

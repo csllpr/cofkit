@@ -7,4 +7,4 @@ Development and agent-facing guides live here.
 - [ZEOPP_CAPABILITY_MAP.md](ZEOPP_CAPABILITY_MAP.md) for the discovered Zeo++ command/data surface and current `cofkit` exposure guidance
 - [../skills/cofkit-navigator/SKILL.md](../skills/cofkit-navigator/SKILL.md) for the agent-facing operation skill that maps user requests onto current CLI and Python workflows
 
-For end-user workflow guidance, start from [README.md](../README.md) or [USER_MANUAL.md](../USER_MANUAL.md).
+For end-user workflow guidance, start from [README.md](../README.md) or the focused docs index at [docs/README.md](../docs/README.md).

@@ -1,171 +1,57 @@
 # cofkit
 
-A reaction-aware periodic assembly toolkit for covalent organic frameworks (COFs).
+`cofkit` is a reaction-aware periodic assembly toolkit for covalent organic frameworks (COFs). It combines monomer detection, binary-bridge reaction templates, topology-aware assembly, CIF export, coarse validation, and optional external-tool wrappers.
 
-## Overview
+## Quick Start
 
-`cofkit` brings together chemistry-aware monomer definitions, reaction templates, topology selection, periodic assembly, scoring, validation, and CIF export in one package.
-
-Start here based on what you need:
-
-- use the installed `cofkit` CLI for practical single-pair and batch workflows
-- use [USER_MANUAL.md](USER_MANUAL.md) for broader Python and workflow examples
-- use [skills/cofkit-navigator/SKILL.md](skills/cofkit-navigator/SKILL.md) if you are operating the repo through Codex or another compatible agent
-- use [docs/README.md](docs/README.md) for technical background extracted from this README
-
-For current capabilities and limits, see [docs/CURRENT_SCOPE.md](docs/CURRENT_SCOPE.md).
-
-## Versioning
-
-`cofkit` uses calendar versioning in `YYYY.M.D` form for normal releases, for example `2026.4.7`.
-
-If a second release is needed on the same day, use a PEP 440 post-release such as `2026.4.7.post1`.
-
-## Installation and dependencies
-
-Canonical repository install:
+Install and verify the repository environment with `uv`:
 
 ```bash
 uv sync --locked
 uv run cofkit --help
 ```
 
-`uv` is the canonical install method for this repository. The base environment installs the mandatory Python runtime dependencies `gemmi`, `rdkit`, `openbabel`, `pandas`, and `pymatgen`.
-
-For local development and verification, add the `dev` extra:
+For development and the local test suite:
 
 ```bash
 uv sync --locked --extra dev
 uv run pytest -q
 ```
 
-`uv run ...` is the canonical local execution path for this repo because it uses the repo-managed `.venv` and keeps helper executables aligned with the same interpreter and dependencies.
+The base package installs the required Python runtime dependencies: `gemmi`, `rdkit`, `openbabel`, `pandas`, and `pymatgen`.
 
-If you explicitly want an editable install inside an existing Python environment, `python3 -m pip install -e .` still works, but it is no longer the canonical repo setup.
+## First Build
 
-Optional external tools you may want in your environment:
-
-- `Zeo++` for the initial `cofkit analyze zeopp` pore-property wrapper, with the binary path provided through `COFKIT_ZEOPP_PATH`
-- `LAMMPS` for the initial `cofkit calculate lammps-optimize` UFF/DREIDING local optimization wrapper, `cofkit validate optimize`, and the LAMMPS MD segment inside `cofkit calculate hybrid-mdmc`, with the executable path provided through `COFKIT_LMP_PATH`
-- `EQeq` for the default `cofkit calculate lammps-optimize` / `cofkit validate optimize` charge-assignment stage plus the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, `cofkit calculate graspa-mixture`, and `cofkit calculate hybrid-mdmc` workflows, with the executable path provided through `COFKIT_EQEQ_PATH`
-- `gRASPA` or `RASPA2` for the `cofkit calculate graspa-widom`, `cofkit calculate graspa-isotherm`, `cofkit calculate graspa-mixture`, and `cofkit calculate hybrid-mdmc` workflows with selectable DREIDING/UFF framework assets. gRASPA uses `COFKIT_GRASPA_PATH`; RASPA2 uses `COFKIT_RASPA2_PATH`
-- `pytest` to run the local test suite when you install the `dev` extra
-
-The bundled topology repository under [`src/cofkit/data/topologies`](src/cofkit/data/topologies) is sufficient for normal use. External RCSR archives and topology environment variables are optional advanced inputs, not required setup steps.
-
-For CLI convenience, `cofkit` automatically loads the nearest `.env` file by searching upward from the current working directory. Values already present in the shell environment are left unchanged, so explicit exports still take precedence.
-
-### Supported External Tool Installs
-
-For reproducible wrapper behavior, prefer these exact upstreams and binary names.
-
-#### Zeo++
-
-Use Zeo++ `0.3` from the upstream tarball:
-
-- download: `http://www.zeoplusplus.org/zeo++-0.3.tar.gz`
-- expected binary: `network`
-
-Typical build:
+Generate one imine COF from two SMILES strings:
 
 ```bash
-curl -LO http://www.zeoplusplus.org/zeo++-0.3.tar.gz
-gunzip zeo++-0.3.tar.gz
-tar xvf zeo++-0.3.tar
-cd zeo++-0.3/voro++/src
-make
-cd ../..
-make
-export COFKIT_ZEOPP_PATH="$PWD/network"
+uv run cofkit build single-pair \
+  --template-id imine_bridge \
+  --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
+  --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
+  --first-id tapb \
+  --second-id tfb \
+  --output-dir out/cli_single_pair
 ```
 
-#### LAMMPS
+This autodetects the monomer roles, evaluates the default topology pool, writes `summary.json`, and exports CIFs under `cifs/valid`, `cifs/warning`, or `cifs/invalid`.
 
-Install LAMMPS from `conda-forge`:
+## Main CLI Groups
 
 ```bash
-conda create -n cofkit-lammps -c conda-forge lammps
-conda activate cofkit-lammps
-export COFKIT_LMP_PATH="$(command -v lmp || command -v lmp_mpi)"
+uv run cofkit build --help
+uv run cofkit analyze --help
+uv run cofkit calculate --help
+uv run cofkit validate --help
+uv run cofkit build list-templates
 ```
 
-Conda is still useful here because LAMMPS is an external executable, not part of the canonical `uv`-managed Python environment for `cofkit`. `cofkit` accepts either `lmp` or `lmp_mpi` as long as `COFKIT_LMP_PATH` points to a working executable.
-
-#### EQeq
-
-Use the CIF-capable fork:
-
-- source: `https://github.com/csllpr/EQeq`
-- expected binary: `eqeq`
-
-Typical build:
-
-```bash
-git clone https://github.com/csllpr/EQeq.git
-cd EQeq
-g++ main.cpp -O3 -o eqeq
-export COFKIT_EQEQ_PATH="$PWD/eqeq"
-```
-
-That fork reads `data/ionizationdata.dat` and `data/chargecenters.dat` relative to the executable by default, so extra path arguments are usually unnecessary. `EQEQ_IONIZATION_DATA_PATH` and `EQEQ_CHARGE_CENTERS_PATH` remain available if you need to override them.
-
-#### gRASPA
-
-Use one of these repositories:
-
-- preferred: `https://github.com/csllpr/gRASPA`
-- fallback upstream: `https://github.com/snurr-group/gRASPA`
-- expected binary: `nvc_main.x`
-
-The preferred fork is the one we use for higher-throughput GPU scheduling because it carries local performance tweaks. gRASPA is source-first, so the exact build depends on your NVIDIA HPC SDK / CUDA installation. The checked-in `NVC_COMPILE` script in both repositories is the reference starting point and produces `nvc_main.x`.
-
-Typical flow:
-
-```bash
-git clone https://github.com/csllpr/gRASPA.git
-cd gRASPA
-# Edit NVC_COMPILE if your NVIDIA HPC SDK / CUDA paths differ.
-bash NVC_COMPILE
-export COFKIT_GRASPA_PATH="$PWD/nvc_main.x"
-```
-
-If your local build places the binary somewhere else, such as `src_clean/nvc_main.x`, point `COFKIT_GRASPA_PATH` there instead.
-
-#### RASPA2
-
-Use upstream RASPA2 when you need CPU-only Monte Carlo runs:
-
-- source: `https://github.com/iRASPA/RASPA2`
-- expected binary: `simulate`
-
-Build RASPA2 with its upstream instructions, then point `cofkit` at the compiled simulator:
-
-```bash
-export COFKIT_RASPA2_PATH=/path/to/simulate
-```
-
-The existing `graspa-*` command names are retained for compatibility. Select RASPA2 with `--backend raspa2`; the default backend remains `graspa`.
-
-## CLI
-
-After editable install, the main user-facing interface is the `cofkit` command.
-
-Inspect the available commands with:
-
-```bash
-cofkit --help
-cofkit build --help
-cofkit analyze --help
-cofkit calculate --help
-cofkit validate --help
-cofkit build list-templates
-```
-
-The most useful grouped commands are:
+Common commands:
 
 - `cofkit build single-pair`
 - `cofkit build batch-binary-bridge`
 - `cofkit build batch-all-binary-bridges`
+- `cofkit build default-library`
 - `cofkit analyze classify-output`
 - `cofkit analyze decompose`
 - `cofkit analyze zeopp`
@@ -176,421 +62,34 @@ The most useful grouped commands are:
 - `cofkit calculate hybrid-mdmc`
 - `cofkit validate simple`
 - `cofkit validate optimize`
-- `cofkit build default-library`
 
 Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` are still accepted for compatibility and emit deprecation warnings.
 
-### Single pair
+## Documentation
 
-Direct single-pair generation with motif autodetection and default topology enumeration:
+Start with the task page that matches what you are doing:
 
-```bash
-cofkit build single-pair \
-  --template-id imine_bridge \
-  --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
-  --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
-  --first-id tapb \
-  --second-id tfb \
-  --output-dir out/cli_single_pair
-```
+- [Getting started](docs/getting-started.md): install, verification, first commands
+- [Building COFs](docs/building.md): single-pair, batch, topology, stacking, default libraries
+- [Analysis and validation](docs/analysis-validation.md): classify, decompose, validate, Zeo++
+- [Calculations](docs/calculations.md): LAMMPS, EQeq, gRASPA/RASPA2, hybrid MD/MC
+- [Python API](docs/python-api.md): `COFEngine` and `BatchStructureGenerator`
+- [External tools](docs/external-tools.md): Zeo++, LAMMPS, EQeq, gRASPA, RASPA2 setup
+- [Current scope](docs/CURRENT_SCOPE.md): implemented capabilities and known limits
+- [Documentation index](docs/README.md): complete docs map
 
-That command autodetects the monomer roles (`amine` / `aldehyde` for this example), evaluates the current default topology pool for the pair, writes `summary.json`, and exports CIFs into validation buckets under `cifs/valid`, `cifs/warning`, or `cifs/invalid`.
+## Optional External Tools
 
-If you want to force one topology instead of using the default topology pool:
+The Python package works without external simulation binaries for build and basic validation workflows. These optional tools enable wrapper commands:
 
-```bash
-cofkit build single-pair \
-  --template-id imine_bridge \
-  --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
-  --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
-  --first-id tapb \
-  --second-id tfb \
-  --topology hcb \
-  --output-dir out/cli_single_pair_hcb
-```
+- `Zeo++` for `cofkit analyze zeopp`, configured with `COFKIT_ZEOPP_PATH`
+- `LAMMPS` for `cofkit calculate lammps-optimize`, `cofkit validate optimize`, and the MD segment of `cofkit calculate hybrid-mdmc`, configured with `COFKIT_LMP_PATH`
+- `EQeq` for default charge staging in LAMMPS and gRASPA/RASPA2 workflows, configured with `COFKIT_EQEQ_PATH`
+- `gRASPA` for Monte Carlo workflows, configured with `COFKIT_GRASPA_PATH`
+- `RASPA2` as the CPU Monte Carlo backend, configured with `COFKIT_RASPA2_PATH`
 
-For eligible `2D` structures, you can also enumerate named bilayer registries after the normal build:
+The CLI automatically loads the nearest `.env` file by searching upward from the current working directory. Variables already present in the shell take precedence.
 
-```bash
-cofkit build single-pair \
-  --template-id imine_bridge \
-  --first-smiles 'C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N' \
-  --second-smiles 'C1=C(C=C(C=C1C=O)C=O)C=O' \
-  --first-id tapb \
-  --second-id tfb \
-  --topology hcb \
-  --stacking AA \
-  --stacking AB \
-  --output-dir out/cli_single_pair_stacked
-```
+## Versioning
 
-That keeps the supported build pipeline unchanged and writes one exported CIF per requested registry. The first CIF comment line appends the registry tag after the `COFid`, for example `# COFid: ... stacking=AA`.
-
-### One linkage over a library
-
-Run one binary-bridge linkage over a monomer-library directory:
-
-```bash
-cofkit build batch-binary-bridge \
-  --template-id imine_bridge \
-  --input-dir examples/default_monomers_library \
-  --output-dir out/batch_imine_from_cli \
-  --max-workers 8
-```
-
-### All available binary-bridge linkages
-
-Run all currently available binary-bridge templates over one library directory:
-
-```bash
-cofkit build batch-all-binary-bridges \
-  --input-dir examples/default_monomers_library \
-  --output-dir out/available_binary_bridge_batches \
-  --max-workers 8
-```
-
-That CLI path reproduces the current per-template summary results for the supported `hydrazone_bridge`, `imine_bridge`, and `keto_enamine_bridge` batches in the shipped example library.
-
-### Classify a finished output tree
-
-```bash
-cofkit analyze classify-output \
-  out/full_cif_generation_default_selector_20260320 \
-  --output-dir out/full_cif_generation_default_selector_20260320_coarse_validation_triage
-```
-
-### Decompose one supported CIF to COFid
-
-```bash
-cofkit analyze decompose \
-  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
-  --topology hcb
-```
-
-On success, this prints the recovered COFid. Current support is intentionally scoped to atomistic CIFs for the supported binary-bridge linkages. Explicit `_geom_bond_*` connectivity is preferred; when the bond loop is absent, `cofkit` falls back to periodic distance-based bond detection, and when bond labels exist without `_ccdc_geom_bond_type` / `_geom_bond_type`, it infers bond orders from local geometry. The topology token is supplied by the caller. Use `--linkage` for non-imine structures. Supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest` for boronate ester, `bken` for beta-ketoenamine, and `vinylene`; template-id aliases such as `hydrazone_bridge` are also accepted. The decomposition logic in `cofkit` was adapted from the deCOFpose project: <https://github.com/r-fedorov/deCOFpose>.
-
-### Validate one CIF against a COFid
-
-```bash
-cofkit validate simple \
-  '3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.3:aldehyde:O=Cc1cc(C=O)cc(C=O)c1&&hcb&&imine' \
-  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif
-```
-
-`validate simple` forces distance-inferred decomposition even when explicit CIF bond rows exist, then compares recovered monomer blocks and linkage to the supplied COFid. Topology is intentionally not compared yet.
-
-```bash
-cofkit validate optimize \
-  '<COFID>' \
-  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
-  --output-dir out/tapb_tfb_validate_lammps
-```
-
-`validate optimize` first runs the default `cofkit calculate lammps-optimize` pipeline, then distance-decomposes the optimized CIF and performs the same COFid comparison. Use `--json` on either mode for structured diagnostics.
-
-### Run initial Zeo++ pore analysis on one CIF
-
-```bash
-export COFKIT_ZEOPP_PATH=/path/to/zeo++/network
-
-cofkit analyze zeopp \
-  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
-  --output-dir out/tapb_tfb_zeopp \
-  --json
-```
-
-By default, the Zeo++ wrapper writes a point-probe baseline:
-
-- basic pore metrics from `-res` and `-resex`
-- point-probe channel summary from `-chan 0`
-- point-probe surface area from `-sa 0 0 ...`
-- point-probe pore volume from `-vol 0 0 ...`
-
-If you also want accessibility-aware probe scans, repeat `--probe-radius`:
-
-```bash
-cofkit analyze zeopp \
-  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
-  --output-dir out/tapb_tfb_zeopp \
-  --probe-radius 1.20 \
-  --probe-radius 1.86 \
-  --json
-```
-
-Each requested probe radius adds one scan with channel, surface-area, volume, and accessibility outputs for that probe. The wrapper keeps the raw Zeo++ outputs plus stdout/stderr logs in the output directory and records a `zeopp_report.json` summary there.
-
-### Run an initial LAMMPS local cleanup on one CIF
-
-```bash
-export COFKIT_LMP_PATH=/path/to/lmp_mpi
-
-cofkit calculate lammps-optimize \
-  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
-  --output-dir out/tapb_tfb_lammps_opt \
-  --forcefield uff \
-  --json
-```
-
-The `lammps-optimize` CLI already exposes the main runtime and minimization controls:
-
-- `--forcefield {uff,dreiding}` selects the force-field backend
-- `--pair-cutoff` sets the global LJ cutoff
-- `--position-restraint-force-constant` controls the stage-1 local `spring/self` restraint
-- `--pre-minimization-steps` plus the `--pre-minimization-*` flags tune the default restrained `langevin + nve/limit` prerun; the default is `10000` steps and `--pre-minimization-steps 0` disables it
-- `--two-stage` and `--no-two-stage` plus the `--stage2-*` flags control the second minimization stage; it is enabled by default and unrestrained unless you set a stage-2 restraint explicitly
-- `--energy-tolerance`, `--force-tolerance`, `--max-iterations`, `--max-evaluations`, and `--min-style` control stage 1
-- `--timestep` and the `--min-modify-*` flags expose the main LAMMPS minimizer tuning knobs
-- `--relax-cell` and `--no-relax-cell` control the final `fix box/relax` stage; cell relaxation is enabled by default and the `--box-relax-*` flags tune it
-- `--timeout-seconds` caps wall-clock subprocess time
-- `--lmp-path` overrides `COFKIT_LMP_PATH` for one run
-
-If `OMP_NUM_THREADS` is not already set in the environment, `cofkit` now launches LAMMPS with a default of half the machine core count.
-
-For example, a longer staged run can be launched as:
-
-```bash
-cofkit calculate lammps-optimize \
-  out/cli_single_pair_hcb/cifs/valid/tapb__tfb__hcb.cif \
-  --output-dir out/tapb_tfb_lammps_opt \
-  --pair-cutoff 14.0 \
-  --position-restraint-force-constant 0.10 \
-  --pre-minimization-steps 100 \
-  --pre-minimization-temperature 300 \
-  --pre-minimization-damping 100 \
-  --pre-minimization-displacement-limit 0.05 \
-  --stage2-position-restraint-force-constant 0.02 \
-  --energy-tolerance 1e-8 \
-  --force-tolerance 1e-8 \
-  --max-iterations 5000 \
-  --max-evaluations 50000 \
-  --min-style fire \
-  --timestep 0.5 \
-  --min-modify-dmax 0.15 \
-  --min-modify-fire-integrator verlet \
-  --min-modify-fire-tmax 4.0 \
-  --box-relax-min-style cg \
-  --box-relax-vmax 0.001
-```
-
-This first LAMMPS wrapper is still conservative, but it no longer invents generic bonded/nonbonded coefficients:
-
-- it requires a `P1` CIF with an explicit `_geom_bond_*` loop
-- explicit CIF bond types in `_ccdc_geom_bond_type` are required, and `cofkit` atomistic exports now write them by default
-- it can run fixed-cell minimization only, or append an optional final `fix box/relax` stage
-- it builds a bonded LAMMPS data file from the explicit CIF bond graph
-- `UFF` is the default backend and uses Open Babel UFF atom typing plus formulas and parameter tables aligned with the bundled Open Babel `UFF.prm`
-- `DREIDING` is also available and uses Open Babel UFF atom typing mapped onto a standard DREIDING parameter table from Mayo et al. (Tables I-II) plus DREIDING-style coefficient formulas
-- both public backends currently write bond, angle, dihedral, improper, and van der Waals terms, plus optional local position restraints whose energy is explicitly included in minimization through `fix_modify energy yes`
-- for real optimization work, prefer `DREIDING`; `UFF` remains available for compatibility and comparison runs, but should currently be treated as experimental support
-- the default LAMMPS path stages EQeq before export, writes charged `atom_style full` data, and enables Coulomb terms in the generated LAMMPS input
-- `--charge-model none` is still available when you explicitly want an uncharged export
-- it writes an updated CIF, the generated LAMMPS data/input files, logs, a trajectory dump, and `lammps_report.json`
-
-Temporary parameter review note: the current `DREIDING` runtime path targets standard DREIDING from Mayo et al. (Tables I-II), while retaining a few explicitly heuristic heavier-atom carryovers (`Cu`, `Ni`, `Mg`) from the old `lammps-interface` seed. Hydrogen-bond-specific parameters are not part of the current `cofkit` export, and some historical rounded DREIDING/gRASPA template rows still differ slightly from the current generated values. The current `UFF` gRASPA rows are generated from the bundled Open Babel `UFF.prm`, so they may also differ slightly from rounded example files.
-
-This is still a topology-preserving pre-optimization step, not a full production force-field workflow. The current `UFF` and `DREIDING` paths are explicit-bond-order-driven and include torsions and impropers. Charges are now assigned through EQeq by default, but the workflow should still be treated as a serious cleanup / pre-optimization protocol rather than a final force-field-quality optimization.
-
-### Run EQeq + gRASPA/RASPA2 Widom insertion on one CIF
-
-```bash
-export COFKIT_EQEQ_PATH=/path/to/eqeq
-export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
-# Optional CPU backend:
-export COFKIT_RASPA2_PATH=/path/to/simulate
-
-cofkit calculate graspa-widom \
-  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
-  --output-dir out/tapb_tfb_graspa \
-  --forcefield dreiding \
-  --component CO2 \
-  --component N2 \
-  --widom-moves-per-component 300000 \
-  --json
-```
-
-Use `--backend raspa2` to write RASPA2-style `simulation.input` files and execute `COFKIT_RASPA2_PATH` instead of gRASPA. The `graspa-widom` wrapper runs one staged workflow:
-
-- copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
-- copy the charged framework into `widom/framework.cif`
-- materialize the packaged and selected guest-bundle adsorbate/pseudo-atom files in `widom/` and generate `force_field_mixing_rules.def` for the selected framework forcefield
-- compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
-- run the selected backend and parse the Widom summary values from `widom/Output/**/*.data`
-
-Packaged Widom probe definitions are available for `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate only the probes you want with repeated `--component NAME` flags or `--all-components`. External parameterized guests can be added to the Widom, isotherm, and mixture wrappers with repeated `--guest-bundle path/to/guest.json` flags, then selected by bundle `name` or alias. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--widom-moves-per-component` sets the target sampling per active component, and `cofkit` derives `NumberOfProductionCycles` from that selection. The bundled wrapper now defaults `NumberOfBlocks` to `5`.
-
-Guest bundles are parameter bundles, not SMILES parameterizers. Each bundle must carry one canonical component name, a RASPA molecule definition plus pseudo-atom and mixing-rule rows, and a non-empty `lammps` section so hybrid MD/MC guest-restart runs have one synchronized guest force-field source:
-
-```json
-{
-  "version": 1,
-  "name": "CH4",
-  "aliases": ["methane"],
-  "rotatable": false,
-  "raspa": {
-    "molecule_definition_path": "CH4.def",
-    "pseudo_atom_rows": [
-      "C_ch4 yes C C 0 16.04300 0.0 0.0 1.0 0.720 0 0 relative 0"
-    ],
-    "mixing_rule_rows": [
-      "C_ch4 lennard-jones 148.0000 3.73000"
-    ]
-  },
-  "lammps": {
-    "units": "real",
-    "atom_style": "full",
-    "site_order": ["C_ch4"],
-    "pair_style": "lj/cut/coul/long"
-  }
-}
-```
-
-For `hybrid-mdmc --exchange-mode guest-restart`, cofkit derives LAMMPS guest masses, charges, and Lennard-Jones terms from the same RASPA pseudo-atom and mixing-rule rows used by gRASPA/RASPA2. The `lammps` section may override `site_order`, `masses`, `charges`, `pair_coeff_rows`, `bond_force_constant`, or `angle_force_constant` when the RASPA rows are not the desired MD representation. Packaged or bundle guests with zero-mass pseudo-sites are rejected for LAMMPS guest restart instead of being silently converted into mobile atoms.
-
-For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
-
-The wrapper writes:
-
-- `eqeq/` logs plus the charged CIF emitted by EQeq
-- `widom/simulation.input`, `widom/framework.cif`, the packaged and selected guest-bundle adsorbate `.def` files, and a generated `force_field_mixing_rules.def`
-- `widom/Output/results.csv` with the parsed Widom energy and Henry coefficient summaries
-- `graspa_widom_report.json` with paths, settings, parsed component results, and warnings
-
-`COFKIT_EQEQ_PATH`, `COFKIT_GRASPA_PATH`, and `COFKIT_RASPA2_PATH` can be overridden per run with `--eqeq-path`, `--graspa-path`, `--raspa2-path`, or backend-neutral `--raspa-path`. On many gRASPA installations the executable is named `nvc_main.x`; RASPA2 is commonly named `simulate`. If the selected backend emits non-finite uncertainty fields, `cofkit` keeps the raw data file and records those specific values as `null` in the JSON report instead of failing the whole run. The same temporary parameter review note from the LAMMPS section applies here: generated `DREIDING` framework rows follow standard DREIDING Tables I-II, but a few heavier-atom carryovers remain heuristic and some older rounded template/example files still differ slightly. `UFF` is generated from the bundled Open Babel `UFF.prm`.
-
-### Run EQeq + gRASPA/RASPA2 single-component adsorption isotherms on one CIF
-
-```bash
-export COFKIT_EQEQ_PATH=/path/to/eqeq
-export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
-# Optional CPU backend:
-export COFKIT_RASPA2_PATH=/path/to/simulate
-
-cofkit calculate graspa-isotherm \
-  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
-  --output-dir out/tapb_tfb_isotherm \
-  --forcefield dreiding \
-  --component CO2 \
-  --pressure 10000 \
-  --pressure 100000 \
-  --pressure 1000000 \
-  --json
-```
-
-Add `--backend raspa2` for CPU-only RASPA2 execution. The `graspa-isotherm` wrapper runs one staged workflow:
-
-- copy the input CIF into an `eqeq/` run directory and assign framework charges with EQeq directly from the CIF
-- copy the charged framework into `isotherm/framework.cif`
-- materialize the packaged or selected guest-bundle component definitions plus one generated framework `force_field_mixing_rules.def` into one per-pressure run directory under `isotherm/`
-- compute `UnitCells` from the charged CIF cell lengths and the larger of `CutOffVDW` / `CutOffCoulomb`
-- run one single-component GCMC adsorption simulation per requested pressure point
-- parse absolute loading and heat summaries from each pressure-point `Output/**/*.data`
-
-The current public scope is intentionally narrow: one packaged or guest-bundle component at a time, one or more user-supplied pressure points, and one parser focused on absolute loading plus heat-of-adsorption block averages. Packaged components currently match the Widom wrapper: `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`.
-
-The wrapper writes:
-
-- `eqeq/` logs plus the charged CIF emitted by EQeq
-- `isotherm/framework.cif`
-- one staged backend run directory per pressure under `isotherm/pressure_*/`
-- `isotherm/results.csv` with the parsed pressure/loading summary
-- `graspa_isotherm_report.json` with paths, settings, parsed point results, and warnings
-
-`--pressure` repeats to define the isotherm grid. `--forcefield {dreiding,uff}` selects the generated framework mixing rules. `--production-cycles` applies per pressure point. `--fugacity-coefficient` accepts either a positive float or `PR-EOS`; for RASPA2, `PR-EOS` is represented by omitting an explicit fugacity coefficient so RASPA2 can use its internal calculation. RASPA2 reports `mol/kg framework` and heat of adsorption, but not the gRASPA `g/L` loading field, so that JSON value is recorded as `null`. If the selected backend emits non-finite loading or heat values, `cofkit` keeps the raw data file and records those specific fields as `null` in the JSON report instead of failing the whole run.
-
-For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
-
-This wrapper produces pure-component adsorption points. Ratios such as `Xe/Kr` computed from separate `graspa-isotherm` runs are loading ratios, not mixture selectivities. Use `graspa-mixture` when you need a true mixed-feed adsorption/selectivity calculation.
-
-### Run EQeq + gRASPA/RASPA2 mixture adsorption/selectivity on one CIF
-
-```bash
-cofkit calculate graspa-mixture \
-  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
-  --output-dir out/tapb_tfb_mixture \
-  --forcefield dreiding \
-  --component Kr:0.1 \
-  --component Xe:0.9 \
-  --pressure 10000 \
-  --pressure 100000 \
-  --fugacity-coefficient PR-EOS \
-  --json
-```
-
-The `graspa-mixture` wrapper stages `EQeq -> gRASPA/RASPA2` exactly once per pressure point, writes one generated framework `force_field_mixing_rules.def` plus one multi-component `simulation.input` with per-component `MolFraction`, `IdentityChangeProbability`, and `SwapProbability` entries, parses component-resolved loading summaries from each `Output/**/*.data`, computes adsorbed mole fractions, and reports pairwise selectivities using the standard mixed-feed definition `(x_i / x_j) / (y_i / y_j)`. Components may come from the packaged set or from repeated `--guest-bundle path/to/guest.json` inputs selected by bundle name or alias. RASPA2 mixture runs currently report component loading/selectivity; component-resolved `g/L` and heat fields are recorded as `null`.
-
-The wrapper writes:
-
-- `mixture/component_results.csv` with one row per pressure/component
-- `mixture/selectivity_results.csv` with one row per pressure/component pair
-- `graspa_mixture_report.json` with the staged paths, settings, parsed point results, and warnings
-
-`--forcefield {dreiding,uff}` selects the generated framework mixing rules for every pressure point. In real runs, gRASPA may still print a missing-restartfile line to stderr even when `RestartFile no` is set. `cofkit` currently preserves that stderr content and records it as a warning when the simulation otherwise completes successfully. The same temporary parameter review note from the Widom/isotherm sections applies here.
-
-For real adsorption calculations, prefer `--forcefield dreiding`. `UFF` is available for comparison and early support, but should currently be treated as experimental.
-
-### Run cyclic LAMMPS MD + gRASPA/RASPA2 GCMC on one CIF
-
-```bash
-cofkit calculate hybrid-mdmc \
-  out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
-  --output-dir out/tapb_tfb_hybrid_mdmc \
-  --cycles 5 \
-  --component CO2 \
-  --pressure 100000 \
-  --lammps-forcefield dreiding \
-  --raspa-forcefield dreiding \
-  --md-steps 1000 \
-  --gcmc-production-cycles 200000 \
-  --json
-```
-
-`hybrid-mdmc` implements the first actual cycle runner: each cycle runs a LAMMPS MD segment on the current explicit-bond framework CIF, exports the final framework snapshot as a CIF, then runs a single-pressure gRASPA/RASPA2 GCMC segment on that MD-updated framework. The next cycle starts from the MD-updated framework CIF. A single `--component NAME` runs the pure-component isotherm path; repeated `--component NAME:FRACTION` values run the mixture path. Packaged guests and explicit `--guest-bundle` components are accepted by the GCMC segment.
-
-The default exchange mode is `framework`: GCMC guest molecule coordinates are not converted back into the next LAMMPS data file. Add `--exchange-mode guest-restart` to enable the guest-containing restart loop. In that mode, cofkit sets the GCMC `RestartFile` option, parses the latest `Movies/System_0/result_*.data` snapshot after each GCMC segment, injects the parsed guest atoms into the following LAMMPS MD data file, then writes post-MD guest coordinates back to gRASPA as `RestartInitial/System_0/restartfile` for the next MC segment. Binary guests are supported through repeated mixture components such as `--component Xe:0.5 --component Kr:0.5`, provided every selected guest has synchronized RASPA/LAMMPS parameters. The bidirectional guest restart loop currently requires `--backend graspa`; RASPA2 restartfile staging is not yet supported.
-
-Guest restart uses the same guest pseudo-atom/mixing-rule rows for gRASPA/RASPA2 and LAMMPS, converts guest epsilon values from kelvin to kcal/mol for LAMMPS `real` units, and generates host-guest plus guest-guest PairIJ rows by Lorentz-Berthelot mixing. Multi-site RASPA rigid guests are represented in the MD segment with harmonic intramolecular bond/angle terms inferred from the molecule definition, so validate the force constants before production use.
-
-Current limitations are explicit: cycle 1 starts framework-only unless a future API supplies an initial guest restart; MD-to-MC guest restart staging is implemented only for gRASPA, not RASPA2; zero-mass pseudo-sites such as massless COM or dummy charge sites are rejected; and this is still an alternating MD/GCMC workflow, not dynamic GCMC inside LAMMPS.
-
-The wrapper writes one `cycle_*/1.lammps_md/` directory, one `cycle_*/2.gcmc/` directory, per-cycle `md_to_gcmc_restartfile` files when a guest-containing MD segment feeds gRASPA, and a top-level `hybrid_mdmc_report.json` containing per-cycle LAMMPS/GCMC reports, guest restart source paths and atom counts when enabled, plus the final framework CIF path.
-
-### Rebuild the detector-scanned example library
-
-```bash
-cofkit build default-library
-```
-
-## Skill integration
-
-If you are using Codex inside this repository, load [skills/cofkit-navigator/SKILL.md](skills/cofkit-navigator/SKILL.md). The skill routes natural-language requests into the narrowest supported `cofkit` workflow and is intended for:
-
-- single-pair generation from two SMILES strings
-- library-scale binary-bridge screening
-- classification of finished output trees
-- EQeq + gRASPA/RASPA2 Widom insertion on an exported CIF
-- EQeq + gRASPA/RASPA2 single-component adsorption isotherms on an exported CIF
-- EQeq + gRASPA/RASPA2 multi-component adsorption/selectivity on an exported CIF
-- cyclic LAMMPS MD + gRASPA/RASPA2 GCMC framework exchange or opt-in guest-restart exchange on an exported CIF
-- rebuilding the detector-scanned default monomer library
-- choosing between the CLI, `BatchStructureGenerator`, and `COFEngine`
-
-Typical prompts:
-
-- "Build a single-pair imine COF from these two SMILES."
-- "Run all supported binary-bridge batches over this library directory."
-- "Classify this finished output tree into validation buckets."
-- "Run the gRASPA/RASPA2 Widom wrapper on this optimized CIF."
-- "Run the gRASPA/RASPA2 isotherm wrapper on this optimized CIF."
-- "Run the hybrid MD/MC cycle on this optimized CIF for CO2."
-- "Should I use the CLI, `BatchStructureGenerator`, or `COFEngine` for this task?"
-
-The skill prefers the installed `cofkit` CLI. If the package is not installed in editable mode, it falls back to an equivalent `PYTHONPATH=src ...` launcher.
-
-For calculator workflows, the skill now prefers `DREIDING` for both LAMMPS optimization and gRASPA/RASPA2 calculations unless a user explicitly asks for `UFF` or requests a comparison run. `UFF` remains experimentally supported.
-
-## Additional documentation
-
-- [USER_MANUAL.md](USER_MANUAL.md) for end-user Python and workflow examples
-- [docs/README.md](docs/README.md) for scope, wrapper scripts, topology notes, pipeline details, and validation thresholds
-- [agent-docs/README.md](agent-docs/README.md) for development and agent-facing navigation guides
-- [ARCHITECTURE.md](ARCHITECTURE.md) and [CHANGELOG.md](CHANGELOG.md) for broader project context
+`cofkit` uses calendar versioning in `YYYY.M.D` form for normal releases, for example `2026.4.7`. If a second release is needed on the same day, use a PEP 440 post-release such as `2026.4.7.post1`.
