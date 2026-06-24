@@ -35,6 +35,7 @@ from .optimizer import ContinuousOptimizer, OptimizerConfig
 from .planner import AssignmentPlan, NetPlan, NetPlanner
 from .product_graph import PeriodicProductGraph
 from .post_build_conversions import annotate_post_build_conversions
+from .reaction_realization import ReactionRealizer
 from .reactions import (
     BinaryBridgeRole,
     ReactionLibrary,
@@ -1626,7 +1627,17 @@ class BatchStructureGenerator:
             reactive_site_distances.append(norm(edge_vector))
 
         fit = self._fit_decorated_bex_placement(expanded, target_edge_vectors)
-        cell = fit.cell
+        layer_spacing, layer_z_span = self._decorated_bex_layer_spacing(
+            node_spec=node_spec,
+            node_rotation=node_placement.rotation,
+            composite_spec=composite_spec,
+            composite_rotation=composite_placement.rotation,
+        )
+        cell = (
+            fit.cell[0],
+            fit.cell[1],
+            (0.0, 0.0, layer_spacing),
+        )
         monomer_poses = {
             "bex_node": Pose(
                 translation=self._fractional_position_in_cell(cell, expanded.node_fractional_position),
@@ -1659,6 +1670,28 @@ class BatchStructureGenerator:
                 "radial_offsets": tuple(round(value, 6) for value in composite_placement.offsets),
             },
         }
+        layer_spacing, layer_z_span = self._realized_decorated_bex_layer_spacing(
+            outcome=outcome,
+            monomer_specs={node_spec.id: node_spec, composite_spec.id: composite_spec},
+            state=AssemblyState(cell=cell, monomer_poses=monomer_poses, stacking_state="disabled"),
+            fallback_layer_z_span=layer_z_span,
+        )
+        if abs(layer_spacing - cell[2][2]) > 1e-9:
+            cell = (
+                cell[0],
+                cell[1],
+                (0.0, 0.0, layer_spacing),
+            )
+            monomer_poses = {
+                "bex_node": replace(
+                    monomer_poses["bex_node"],
+                    translation=self._fractional_position_in_cell(cell, expanded.node_fractional_position),
+                ),
+                "bex_composite": monomer_poses["bex_composite"],
+            }
+            pose_details["bex_node"]["translation"] = monomer_poses["bex_node"].translation
+            pose_details["bex_composite"]["translation"] = monomer_poses["bex_composite"].translation
+            pose_details["bex_composite"]["solved_translation"] = monomer_poses["bex_composite"].translation
         return EmbeddingResult(
             state=AssemblyState(cell=cell, monomer_poses=monomer_poses, stacking_state="disabled"),
             metadata={
@@ -1674,9 +1707,69 @@ class BatchStructureGenerator:
                 "topology_family": "decorated-indexed-2d",
                 "decorated_topology_unit": "c3-edge-c3",
                 "assignment_variant": variant_index,
+                "layer_z_span": round(layer_z_span, 6),
+                "c_axis_source": "decorated-bex-layer-extent",
                 "poses": pose_details,
             },
         )
+
+    def _decorated_bex_layer_spacing(
+        self,
+        *,
+        node_spec: MonomerSpec,
+        node_rotation: Mat3,
+        composite_spec: MonomerSpec,
+        composite_rotation: Mat3,
+    ) -> tuple[float, float]:
+        z_values: list[float] = []
+        for spec, rotation in ((node_spec, node_rotation), (composite_spec, composite_rotation)):
+            for position in spec.atom_positions:
+                z_values.append(matmul_vec(rotation, position)[2])
+        if not z_values:
+            return self.config.embedding_config.default_layer_spacing, 0.0
+        layer_z_span = max(z_values) - min(z_values)
+        spacing = max(
+            self.config.embedding_config.default_layer_spacing,
+            layer_z_span + self.config.embedding_config.default_layer_spacing,
+        )
+        return spacing, layer_z_span
+
+    def _realized_decorated_bex_layer_spacing(
+        self,
+        *,
+        outcome: AssignmentOutcome,
+        monomer_specs: Mapping[str, MonomerSpec],
+        state: AssemblyState,
+        fallback_layer_z_span: float,
+    ) -> tuple[float, float]:
+        instance_to_monomer = {
+            instance.id: instance.monomer_id
+            for instance in outcome.monomer_instances
+        }
+        temporary_candidate = Candidate(
+            id="decorated_bex_layer_probe",
+            score=0.0,
+            state=state,
+            events=outcome.events,
+        )
+        realization = ReactionRealizer().realize(temporary_candidate, monomer_specs, instance_to_monomer)
+        z_values: list[float] = []
+        for instance_id, pose in state.monomer_poses.items():
+            monomer = monomer_specs[instance_to_monomer[instance_id]]
+            realized_atoms = None if realization is None else realization.atoms_by_instance.get(instance_id)
+            atom_positions = (
+                (atom.local_position for atom in realized_atoms)
+                if realized_atoms is not None
+                else monomer.atom_positions
+            )
+            for local_position in atom_positions:
+                z_values.append(matmul_vec(pose.rotation_matrix, local_position)[2])
+        layer_z_span = max(z_values) - min(z_values) if z_values else fallback_layer_z_span
+        spacing = max(
+            self.config.embedding_config.default_layer_spacing,
+            layer_z_span + self.config.embedding_config.default_layer_spacing,
+        )
+        return spacing, layer_z_span
 
     def _resolve_node_linker_specs(
         self,

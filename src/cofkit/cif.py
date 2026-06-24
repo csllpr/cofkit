@@ -391,11 +391,26 @@ class CIFWriter:
                 fractional_z_values.append(self._cartesian_to_fractional(cell, world)[2])
         if not fractional_z_values:
             return (0.0, 0.0, 0.0)
-        min_z = min(fractional_z_values)
-        max_z = max(fractional_z_values)
-        if max_z - min_z >= 0.5:
+        wrapped_z_values = sorted(value % 1.0 for value in fractional_z_values)
+        if len(wrapped_z_values) == 1:
+            center_z = wrapped_z_values[0]
+        else:
+            largest_gap = -1.0
+            largest_gap_index = 0
+            for index, value in enumerate(wrapped_z_values):
+                next_value = wrapped_z_values[(index + 1) % len(wrapped_z_values)]
+                if index == len(wrapped_z_values) - 1:
+                    next_value += 1.0
+                gap = next_value - value
+                if gap > largest_gap:
+                    largest_gap = gap
+                    largest_gap_index = index
+            arc_start = wrapped_z_values[(largest_gap_index + 1) % len(wrapped_z_values)]
+            arc_span = 1.0 - largest_gap
+            center_z = (arc_start + 0.5 * arc_span) % 1.0
+        if not (0.0 <= center_z < 1.0):
             return (0.0, 0.0, 0.0)
-        shift_fractional_z = 0.5 - 0.5 * (min_z + max_z)
+        shift_fractional_z = 0.5 - center_z
         return (
             cell[2][0] * shift_fractional_z,
             cell[2][1] * shift_fractional_z,

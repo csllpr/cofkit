@@ -89,7 +89,9 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
 
     base_cell = state.cell
     c_direction = _safe_normalize(base_cell[2])
-    new_c = scale(c_direction, 2.0 * registry.interlayer_distance)
+    layer_z_span = _candidate_layer_z_span(candidate)
+    center_to_center_distance = registry.interlayer_distance + layer_z_span
+    new_c = scale(c_direction, 2.0 * center_to_center_distance)
     layer_offsets = (
         scale(new_c, 0.25),
         add(scale(new_c, 0.75), _fractional_shift_in_plane(base_cell, registry.lateral_shift)),
@@ -200,6 +202,8 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
         "stacking_mode": "enumerated",
         "stacking": {
             **_stacking_metadata(registry),
+            "layer_z_span": layer_z_span,
+            "center_to_center_distance": center_to_center_distance,
             "comment_suffix": stacking_comment_suffix(registry),
             "source_candidate_id": candidate.id,
         },
@@ -246,6 +250,18 @@ def _candidate_topology_id(candidate: Candidate) -> str | None:
         return None
     text = str(topology_id).strip()
     return text or None
+
+
+def _candidate_layer_z_span(candidate: Candidate) -> float:
+    embedding = _mapping(candidate.metadata.get("embedding"))
+    value = embedding.get("layer_z_span")
+    if value is None:
+        return 0.0
+    try:
+        span = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, span)
 
 
 def _fractional_shift_in_plane(

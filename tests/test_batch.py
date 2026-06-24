@@ -9,6 +9,7 @@ from cofkit import (
     BatchGenerationConfig,
     BatchMonomerRecord,
     BatchStructureGenerator,
+    CoarseValidationThresholds,
     Frame,
     MonomerSpec,
     ReactiveMotif,
@@ -1206,6 +1207,76 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             candidate.metadata["net_plan"]["metadata"]["decorated_topology_unit"],
             "c3-edge-c3",
         )
+        layer_z_span = candidate.metadata["embedding"]["layer_z_span"]
+        self.assertGreater(layer_z_span, 0.0)
+        self.assertAlmostEqual(
+            candidate.state.cell[2][2],
+            layer_z_span + generator.config.embedding_config.default_layer_spacing,
+            places=5,
+        )
+        self.assertEqual(candidate.state.cell[2][0], 0.0)
+        self.assertEqual(candidate.state.cell[2][1], 0.0)
+
+    def test_decorated_bex_pair_can_enumerate_and_export_stacked_variant(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=5,
+                topology_ids=("bex",),
+                stacking_ids=("AA",),
+                write_cif=True,
+                hard_hard_max_bridge_distance=10.0,
+                validation_thresholds=CoarseValidationThresholds(hard_hard_max_bridge_distance=10.0),
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="bex_d2h_amine",
+            name="bex_d2h_amine",
+            smiles=BEX_D2H_AMINE,
+            motif_kind="amine",
+            expected_connectivity=4,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="bex_d2h_aldehyde",
+            name="bex_d2h_aldehyde",
+            smiles=BEX_D2H_ALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=4,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summaries, candidates, attempted_structures = generator.generate_pair_candidates(
+                amine,
+                aldehyde,
+                out_dir=temp_dir,
+                write_cif=True,
+            )
+
+            self.assertEqual(attempted_structures, 1)
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(len(candidates), 1)
+            summary = summaries[0]
+            candidate = candidates[0]
+            self.assertEqual(summary.status, "ok")
+            self.assertEqual(summary.structure_id, "bex_d2h_amine__bex_d2h_aldehyde__bex__AA")
+            self.assertEqual(candidate.state.stacking_state, "AA")
+            self.assertEqual(summary.metadata["stacking"]["id"], "AA")
+            self.assertEqual(summary.metadata["stacking"]["comment_suffix"], "stacking=AA")
+            self.assertTrue(candidate.metadata["embedding"]["stacking_enabled"])
+            self.assertIn("stacked_2d", candidate.flags)
+            self.assertEqual(candidate.metadata["graph_summary"]["n_monomer_instances"], 4)
+            self.assertEqual(candidate.metadata["graph_summary"]["n_reaction_events"], 8)
+            layer_z_span = float(summary.metadata["stacking"]["layer_z_span"])
+            self.assertGreater(layer_z_span, 0.0)
+            self.assertAlmostEqual(
+                candidate.state.cell[2][2],
+                2.0 * (layer_z_span + summary.metadata["stacking"]["interlayer_distance"]),
+                places=5,
+            )
+            self.assertIsNotNone(summary.cif_path)
+            cif_text = Path(summary.cif_path).read_text(encoding="utf-8")
+
+        self.assertIn("stacking=AA", cif_text.splitlines()[0])
 
     def test_six_plus_two_pair_uses_expanded_default_topology_pool(self):
         generator = BatchStructureGenerator(
