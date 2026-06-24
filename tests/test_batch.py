@@ -1,7 +1,10 @@
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -560,6 +563,157 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             ("bridge_distance_exceeds_cif_export_limit",),
         )
         self.assertTrue(summary.metadata["cif_export_blocked"])
+
+    def test_repairable_bridge_geometry_exports_to_needs_optimization_bucket(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=2,
+                retain_top_results=5,
+                single_node_topology_ids=("hcb",),
+                hard_hard_max_bridge_distance=10.0,
+                validation_thresholds=CoarseValidationThresholds(
+                    hard_hard_max_bridge_distance=10.0,
+                    hard_max_bridge_distance_residual=0.0,
+                    hard_mean_bridge_distance_residual=0.0,
+                ),
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tpal",
+            name="tpal",
+            smiles=TEREPHTHALALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=2,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summary, candidate = generator.generate_pair_candidate(
+                amine,
+                aldehyde,
+                out_dir=temp_dir,
+                write_cif=True,
+            )
+
+        self.assertEqual(summary.status, "ok")
+        self.assertIsNotNone(candidate)
+        self.assertIsNotNone(summary.cif_path)
+        assert summary.cif_path is not None
+        self.assertIn(f"{Path(temp_dir) / 'needs_optimization'}", summary.cif_path)
+        validation = summary.metadata["validation"]
+        self.assertEqual(validation["classification"], "needs_optimization")
+        self.assertIn("optimization_hint", validation)
+        self.assertIn("bridge_distance_residual_max_hard", validation["needs_optimization_reasons"])
+
+    def test_repair_geometry_runs_lammps_for_needs_optimization_candidate(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=2,
+                retain_top_results=5,
+                single_node_topology_ids=("hcb",),
+                hard_hard_max_bridge_distance=10.0,
+                repair_geometry=True,
+                validation_thresholds=CoarseValidationThresholds(
+                    hard_hard_max_bridge_distance=10.0,
+                    hard_max_bridge_distance_residual=0.0,
+                    hard_mean_bridge_distance_residual=0.0,
+                ),
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tpal",
+            name="tpal",
+            smiles=TEREPHTHALALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=2,
+        )
+
+        def fake_optimize(cif_path, *, output_dir, lmp_path, settings, timeout_seconds, eqeq_timeout_seconds):
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            optimized_cif = output_path / "optimized.cif"
+            optimized_cif.write_text(Path(cif_path).read_text(encoding="utf-8"), encoding="utf-8")
+            return SimpleNamespace(
+                optimized_cif=str(optimized_cif),
+                output_dir=str(output_dir),
+                report_path=str(Path(output_dir) / "lammps_report.json"),
+                settings=settings,
+                warnings=(),
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch("cofkit.batch.optimize_cif_with_lammps", side_effect=fake_optimize) as optimized:
+            summary, candidate = generator.generate_pair_candidate(
+                amine,
+                aldehyde,
+                out_dir=temp_dir,
+                write_cif=True,
+            )
+
+        self.assertEqual(summary.status, "ok")
+        self.assertIsNotNone(candidate)
+        optimized.assert_called_once()
+        repair = summary.metadata["validation"]["geometry_repair"]
+        self.assertEqual(repair["status"], "ok")
+        self.assertEqual(repair["engine"], "lammps")
+        self.assertEqual(repair["settings"]["forcefield"], "dreiding")
+        self.assertEqual(repair["settings"]["charge_model"], "none")
+        self.assertEqual(repair["settings"]["pre_minimization_mode"], "soft")
+        self.assertEqual(repair["post_repair_validation"]["classification"], "valid")
+        self.assertTrue(repair["post_repair_validation"]["became_valid"])
+
+    def test_batch_geometry_repair_failures_are_counted_and_recorded(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=2,
+                retain_top_results=5,
+                single_node_topology_ids=("hcb",),
+                enumerate_all_topologies=False,
+                hard_hard_max_bridge_distance=10.0,
+                repair_geometry=True,
+                max_workers=1,
+                validation_thresholds=CoarseValidationThresholds(
+                    hard_hard_max_bridge_distance=10.0,
+                    hard_max_bridge_distance_residual=0.0,
+                    hard_mean_bridge_distance_residual=0.0,
+                ),
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "cofkit.batch.optimize_cif_with_lammps",
+            side_effect=RuntimeError("LAMMPS unavailable"),
+        ):
+            temp_root = Path(temp_dir)
+            input_dir = temp_root / "input"
+            output_dir = temp_root / "out"
+            input_dir.mkdir()
+            (input_dir / "amines_count_3.txt").write_text(f"smiles\n{TAPB}\n", encoding="utf-8")
+            (input_dir / "aldehydes_count_2.txt").write_text(f"smiles\n{TEREPHTHALALDEHYDE}\n", encoding="utf-8")
+
+            summary = generator.run_imine_batch(input_dir, output_dir, max_pairs=1, write_cif=True)
+
+            assert summary.geometry_repair_failed_records_path is not None
+            failure_path = Path(summary.geometry_repair_failed_records_path)
+            failure_rows = [json.loads(line) for line in failure_path.read_text(encoding="utf-8").splitlines() if line]
+
+        self.assertEqual(summary.geometry_repair_counts["failed"], 1)
+        self.assertEqual(len(failure_rows), 1)
+        repair = failure_rows[0]["metadata"]["validation"]["geometry_repair"]
+        self.assertEqual(repair["status"], "failed")
+        self.assertIn("RuntimeError: LAMMPS unavailable", repair["error"])
 
     def test_three_plus_two_pair_can_target_fes_single_node_topology(self):
         generator = BatchStructureGenerator(

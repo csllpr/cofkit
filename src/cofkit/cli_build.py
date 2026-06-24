@@ -11,6 +11,7 @@ from typing import Iterable
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .chem.rdkit import build_rdkit_monomer
 from .cofid import cofid_to_build_request
+from .lammps import LammpsOptimizationSettings
 from .monomer_library import MonomerRoleResolver
 from .reactions import ReactionLibrary
 
@@ -105,6 +106,30 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         default=8,
         help="Worker budget for pair generation. Defaults to 8.",
     )
+    _add_geometry_repair_arguments(parser)
+
+
+def _add_geometry_repair_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--repair-geometry",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Run the LAMMPS soft-minimization repair pass for graph-intact structures classified as "
+            "needs_optimization. Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--repair-lmp-path",
+        default=None,
+        help="Optional explicit LAMMPS executable for --repair-geometry. Defaults to COFKIT_LMP_PATH.",
+    )
+    parser.add_argument(
+        "--repair-timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Timeout per LAMMPS geometry-repair run. Default: 300.",
+    )
 
 
 def _configure_generator(args: argparse.Namespace, *, template_id: str | None = None) -> BatchStructureGenerator:
@@ -123,6 +148,15 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             write_cif=args.write_cif,
             max_cif_exports=args.max_cif_exports,
             max_workers=args.max_workers,
+            repair_geometry=args.repair_geometry,
+            repair_geometry_lmp_path=args.repair_lmp_path,
+            repair_geometry_timeout_seconds=args.repair_timeout_seconds,
+            repair_geometry_settings=LammpsOptimizationSettings(
+                forcefield="dreiding",
+                charge_model="none",
+                pre_minimization_mode="soft",
+                relax_cell=True,
+            ),
         )
     )
 
@@ -206,6 +240,7 @@ def _add_single_pair_parser(subparsers) -> None:
         help="Optional maximum number of CIF files to export. Defaults to no limit.",
     )
     parser.add_argument("--max-workers", type=int, default=1, help="Worker budget. Defaults to 1 for single-pair mode.")
+    _add_geometry_repair_arguments(parser)
     parser.set_defaults(func=_run_single_pair)
 
 
@@ -345,6 +380,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             f"{summary.score:.6f}" if summary.score is not None else "n/a",
             summary.cif_path or "-",
         )
+        _print_single_pair_geometry_repair_warning(summary)
 
 
 def _resolve_single_pair_motif_kind(
@@ -386,6 +422,29 @@ def _summary_to_single_pair_result(summary) -> dict[str, object]:
     }
 
 
+def _print_single_pair_geometry_repair_warning(summary) -> None:
+    validation = summary.metadata.get("validation")
+    if not isinstance(validation, dict):
+        return
+    repair = validation.get("geometry_repair")
+    if not isinstance(repair, dict):
+        return
+    if repair.get("status") == "failed":
+        print(
+            "WARNING:",
+            f"geometry repair failed for {summary.structure_id}:",
+            repair.get("error", "unknown error"),
+        )
+        return
+    post_repair = repair.get("post_repair_validation")
+    if isinstance(post_repair, dict) and post_repair.get("classification") != "valid":
+        print(
+            "WARNING:",
+            f"geometry repair completed for {summary.structure_id}, but repaired CIF validation classified it as",
+            post_repair.get("classification", "unknown"),
+        )
+
+
 def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     if template_id is not None:
         print("template_id:", template_id)
@@ -399,8 +458,28 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     print("failed_monomers:", summary.failed_monomers)
     print("mode_counts:", dict(summary.mode_counts))
     print("topology_counts:", dict(summary.topology_counts))
+    print("geometry_repair_counts:", dict(summary.geometry_repair_counts))
+    print("geometry_repair_revalidation_counts:", dict(summary.geometry_repair_revalidation_counts))
+    print("geometry_repair_failed_records:", summary.geometry_repair_failed_records_path or "-")
     print("cifs_written:", summary.cifs_written)
     print("manifest:", summary.manifest_path)
+    failed_repairs = int(summary.geometry_repair_counts.get("failed", 0))
+    if failed_repairs > 0:
+        print(
+            "WARNING:",
+            f"geometry repair failed for {failed_repairs} structure(s); failed records:",
+            summary.geometry_repair_failed_records_path,
+        )
+    nonvalid_repaired = sum(
+        int(count)
+        for classification, count in summary.geometry_repair_revalidation_counts.items()
+        if classification != "valid"
+    )
+    if nonvalid_repaired > 0:
+        print(
+            "WARNING:",
+            f"geometry repair completed for {nonvalid_repaired} structure(s) whose repaired CIF validation was not valid.",
+        )
     for result in summary.top_results[:10]:
         print(
             "top_result:",
@@ -531,6 +610,9 @@ def _summary_to_json(summary) -> dict[str, object]:
         "build_failures": dict(summary.build_failures),
         "mode_counts": dict(summary.mode_counts),
         "topology_counts": dict(summary.topology_counts),
+        "geometry_repair_counts": dict(summary.geometry_repair_counts),
+        "geometry_repair_revalidation_counts": dict(summary.geometry_repair_revalidation_counts),
+        "geometry_repair_failed_records_path": summary.geometry_repair_failed_records_path,
         "manifest_path": summary.manifest_path,
     }
 

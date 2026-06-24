@@ -108,5 +108,8 @@ class BatchRunSummary:
     build_failures: Mapping[str, str] = field(default_factory=dict)
     mode_counts: Mapping[str, int] = field(default_factory=dict)
     topology_counts: Mapping[str, int] = field(default_factory=dict)
+    geometry_repair_counts: Mapping[str, int] = field(default_factory=dict)
+    geometry_repair_revalidation_counts: Mapping[str, int] = field(default_factory=dict)
+    geometry_repair_failed_records_path: str | None = None
     manifest_path: str | None = None
     top_results: tuple[BatchPairSummary, ...] = ()

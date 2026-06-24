@@ -43,6 +43,7 @@ from .reactions import (
 )
 from .indexed_topology_layouts import ExpandedIndexedNodeSite, ExpandedIndexedTopology, expand_indexed_topology
 from .linkage_geometry import effective_motif_origin
+from .lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
 from .scoring import CandidateScorer
 from .search import AssignmentOutcome, AssignmentSolver
 from .single_node_topologies import (
@@ -111,6 +112,17 @@ class BatchGenerationConfig:
     max_workers: int = 8
     hard_hard_max_bridge_distance: float = 2.5
     separate_cif_outputs_by_validation: bool = True
+    repair_geometry: bool = False
+    repair_geometry_lmp_path: str | None = None
+    repair_geometry_timeout_seconds: float = 300.0
+    repair_geometry_settings: LammpsOptimizationSettings = field(
+        default_factory=lambda: LammpsOptimizationSettings(
+            forcefield="dreiding",
+            charge_model="none",
+            pre_minimization_mode="soft",
+            relax_cell=True,
+        )
+    )
     validation_thresholds: CoarseValidationThresholds = field(default_factory=CoarseValidationThresholds)
     embedding_config: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     engine_config: COFEngineConfig = field(default_factory=COFEngineConfig)
@@ -532,6 +544,13 @@ class BatchStructureGenerator:
                     monomer_specs=(amine.monomer, aldehyde.monomer),
                     provisional_summary=summary,
                 )
+                validation_metadata = self._maybe_repair_geometry_metadata(
+                    cif_path=cif_path,
+                    validation_metadata=validation_metadata,
+                    summary=summary,
+                    structure_id=summary.structure_id,
+                    out_dir=out_dir,
+                )
             elif export_blocked:
                 hard_hard_metrics = summary.metadata.get("hard_hard_invalid_metrics", {})
                 validation_metadata = self._hard_hard_validation_metadata(
@@ -650,6 +669,13 @@ class BatchStructureGenerator:
                     monomer_specs=(first, second),
                     provisional_summary=summary,
                 )
+                validation_metadata = self._maybe_repair_geometry_metadata(
+                    cif_path=cif_path,
+                    validation_metadata=validation_metadata,
+                    summary=summary,
+                    structure_id=summary.structure_id,
+                    out_dir=out_dir,
+                )
             elif export_blocked:
                 hard_hard_metrics = summary.metadata.get("hard_hard_invalid_metrics", {})
                 validation_metadata = self._hard_hard_validation_metadata(
@@ -757,6 +783,8 @@ class BatchStructureGenerator:
         cifs_written = 0
         mode_counts: dict[str, int] = {}
         topology_counts: dict[str, int] = {}
+        geometry_repair_counts: dict[str, int] = {}
+        geometry_repair_revalidation_counts: dict[str, int] = {}
         top_results: list[BatchPairSummary] = []
         effective_write_cif = self.config.write_cif if write_cif is None else write_cif
         parallelize_pairs = (
@@ -764,8 +792,9 @@ class BatchStructureGenerator:
             and len(pair_tasks) > 1
             and (not effective_write_cif or self.config.max_cif_exports is None)
         )
+        geometry_repair_failures_path = output_root / "geometry_repair_failures.jsonl"
 
-        with manifest_path.open("w", encoding="utf-8") as manifest:
+        with manifest_path.open("w", encoding="utf-8") as manifest, geometry_repair_failures_path.open("w", encoding="utf-8") as repair_failures:
             if parallelize_pairs:
                 if self._supports_process_pair_pool():
                     try:
@@ -782,6 +811,9 @@ class BatchStructureGenerator:
                                     top_results=top_results,
                                     mode_counts=mode_counts,
                                     topology_counts=topology_counts,
+                                    geometry_repair_counts=geometry_repair_counts,
+                                    geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
+                                    geometry_repair_failures=repair_failures,
                                 )
                                 attempted_structures += pair_attempted_structures
                                 successful_structures += sum(1 for summary in summaries if summary.status == "ok")
@@ -796,6 +828,9 @@ class BatchStructureGenerator:
                                     top_results=top_results,
                                     mode_counts=mode_counts,
                                     topology_counts=topology_counts,
+                                    geometry_repair_counts=geometry_repair_counts,
+                                    geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
+                                    geometry_repair_failures=repair_failures,
                                 )
                                 attempted_structures += pair_attempted_structures
                                 successful_structures += sum(1 for summary in summaries if summary.status == "ok")
@@ -810,6 +845,9 @@ class BatchStructureGenerator:
                                 top_results=top_results,
                                 mode_counts=mode_counts,
                                 topology_counts=topology_counts,
+                                geometry_repair_counts=geometry_repair_counts,
+                                geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
+                                geometry_repair_failures=repair_failures,
                             )
                             attempted_structures += pair_attempted_structures
                             successful_structures += sum(1 for summary in summaries if summary.status == "ok")
@@ -826,6 +864,9 @@ class BatchStructureGenerator:
                         top_results=top_results,
                         mode_counts=mode_counts,
                         topology_counts=topology_counts,
+                        geometry_repair_counts=geometry_repair_counts,
+                        geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
+                        geometry_repair_failures=repair_failures,
                     )
                     attempted_structures += pair_attempted_structures
                     successful_structures += sum(1 for summary in summaries if summary.status == "ok")
@@ -844,6 +885,13 @@ class BatchStructureGenerator:
             build_failures={key: value for key, value in build_failures.items() if value is not None},
             mode_counts=mode_counts,
             topology_counts=topology_counts,
+            geometry_repair_counts=geometry_repair_counts,
+            geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
+            geometry_repair_failed_records_path=(
+                str(geometry_repair_failures_path)
+                if int(geometry_repair_counts.get("failed", 0)) > 0
+                else None
+            ),
             manifest_path=str(manifest_path),
             top_results=tuple(top_results),
         )
@@ -853,6 +901,8 @@ class BatchStructureGenerator:
                 staging_dir.rmdir()
             except OSError:
                 pass
+        if int(geometry_repair_counts.get("failed", 0)) == 0:
+            geometry_repair_failures_path.unlink(missing_ok=True)
         self._write_summary_report(output_root / "summary.md", summary)
         return summary
 
@@ -907,6 +957,9 @@ class BatchStructureGenerator:
         top_results: list[BatchPairSummary],
         mode_counts: dict[str, int],
         topology_counts: dict[str, int],
+        geometry_repair_counts: dict[str, int],
+        geometry_repair_revalidation_counts: dict[str, int],
+        geometry_repair_failures,
     ) -> int:
         pair_had_success = False
         for summary in summaries:
@@ -921,8 +974,38 @@ class BatchStructureGenerator:
                     reverse=True,
                 )
                 del top_results[self.config.retain_top_results :]
+                self._record_geometry_repair_summary(
+                    summary,
+                    counts=geometry_repair_counts,
+                    revalidation_counts=geometry_repair_revalidation_counts,
+                    failures=geometry_repair_failures,
+                )
             manifest.write(json.dumps(self._json_safe(self._summary_to_dict(summary)), sort_keys=True) + "\n")
         return 1 if pair_had_success else 0
+
+    def _record_geometry_repair_summary(
+        self,
+        summary: BatchPairSummary,
+        *,
+        counts: dict[str, int],
+        revalidation_counts: dict[str, int],
+        failures,
+    ) -> None:
+        validation = summary.metadata.get("validation")
+        if not isinstance(validation, Mapping) or validation.get("classification") != "needs_optimization":
+            return
+        repair = validation.get("geometry_repair")
+        if not isinstance(repair, Mapping):
+            counts["skipped"] = counts.get("skipped", 0) + 1
+            return
+        status = str(repair.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+        if status == "failed":
+            failures.write(json.dumps(self._json_safe(self._summary_to_dict(summary)), sort_keys=True) + "\n")
+        post_repair = repair.get("post_repair_validation")
+        if isinstance(post_repair, Mapping):
+            classification = str(post_repair.get("classification") or "unknown")
+            revalidation_counts[classification] = revalidation_counts.get(classification, 0) + 1
 
     def run_imine_batch(
         self,
@@ -4041,7 +4124,7 @@ class BatchStructureGenerator:
     def _validation_metadata(self, report: CoarseValidationReport, *, cif_path: str | None) -> dict[str, object]:
         metrics = dict(report.metrics)
         metrics["cif_path"] = cif_path
-        return {
+        metadata = {
             "classification": report.classification,
             "is_valid": report.is_valid,
             "passes_hard_validation": report.passes_hard_validation,
@@ -4050,8 +4133,17 @@ class BatchStructureGenerator:
             "hard_hard_invalid_reasons": list(report.hard_hard_invalid_reasons),
             "warning_reasons": list(report.warning_reasons),
             "hard_invalid_reasons": list(report.hard_invalid_reasons),
+            "needs_optimization_reasons": list(report.needs_optimization_reasons),
             "metrics": self._json_safe(metrics),
         }
+        if report.classification == "needs_optimization":
+            metadata["optimization_hint"] = {
+                "recommended": True,
+                "engine": "lammps",
+                "pre_minimization_mode": "soft",
+                "reason": "graph-intact geometry violations are expected to be repairable by local optimization",
+            }
+        return metadata
 
     def _hard_hard_validation_metadata(
         self,
@@ -4068,6 +4160,7 @@ class BatchStructureGenerator:
             "hard_hard_invalid_reasons": list(reasons),
             "warning_reasons": [],
             "hard_invalid_reasons": [],
+            "needs_optimization_reasons": [],
             "metrics": self._json_safe({"cif_path": None, **dict(metrics)}),
         }
 
@@ -4086,6 +4179,7 @@ class BatchStructureGenerator:
             "hard_hard_invalid_reasons": [],
             "warning_reasons": [],
             "hard_invalid_reasons": [],
+            "needs_optimization_reasons": [],
             "metrics": self._json_safe({"cif_path": cif_path, "error": error}),
         }
 
@@ -4102,6 +4196,8 @@ class BatchStructureGenerator:
         bucket = "valid"
         if classification == "warning":
             bucket = "warning"
+        elif classification == "needs_optimization":
+            bucket = "needs_optimization"
         elif classification in {"hard_invalid", "hard_hard_invalid"}:
             bucket = "invalid"
         return output_root / bucket / f"{structure_id}.cif"
@@ -4331,6 +4427,13 @@ class BatchStructureGenerator:
                 )
                 if cif_path is not None:
                     local_cifs_written += 1
+                    validation_metadata = self._maybe_repair_geometry_metadata(
+                        cif_path=cif_path,
+                        validation_metadata=validation_metadata,
+                        summary=provisional_summary,
+                        structure_id=structure_id,
+                        out_dir=out_dir,
+                    )
             elif hard_hard_invalid_reasons:
                 validation_metadata = self._hard_hard_validation_metadata(
                     reasons=hard_hard_invalid_reasons,
@@ -4368,6 +4471,106 @@ class BatchStructureGenerator:
             return None
         text = str(suffix).strip()
         return text or None
+
+    def _maybe_repair_geometry_metadata(
+        self,
+        *,
+        cif_path: str | None,
+        validation_metadata: dict[str, object] | None,
+        summary: BatchPairSummary,
+        structure_id: str,
+        out_dir: str | Path,
+    ) -> dict[str, object] | None:
+        if (
+            not self.config.repair_geometry
+            or cif_path is None
+            or validation_metadata is None
+            or validation_metadata.get("classification") != "needs_optimization"
+        ):
+            return validation_metadata
+        return {
+            **dict(validation_metadata),
+            "geometry_repair": self._repair_geometry_cif(
+                cif_path=Path(cif_path),
+                summary=summary,
+                structure_id=structure_id,
+                out_dir=Path(out_dir),
+            ),
+        }
+
+    def _repair_geometry_cif(
+        self,
+        *,
+        cif_path: Path,
+        summary: BatchPairSummary,
+        structure_id: str,
+        out_dir: Path,
+    ) -> dict[str, object]:
+        repair_dir = out_dir / "geometry_repair" / structure_id
+        try:
+            result = optimize_cif_with_lammps(
+                cif_path,
+                output_dir=repair_dir,
+                lmp_path=self.config.repair_geometry_lmp_path,
+                settings=self.config.repair_geometry_settings,
+                timeout_seconds=self.config.repair_geometry_timeout_seconds,
+                eqeq_timeout_seconds=self.config.repair_geometry_timeout_seconds,
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "engine": "lammps",
+                "input_cif": str(cif_path),
+                "output_dir": str(repair_dir),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        post_repair_validation = self._validate_repaired_geometry_cif(Path(result.optimized_cif), summary=summary)
+        return {
+            "status": "ok",
+            "engine": "lammps",
+            "input_cif": str(cif_path),
+            "optimized_cif": result.optimized_cif,
+            "output_dir": result.output_dir,
+            "report_path": result.report_path,
+            "settings": result.settings.to_dict(),
+            "warnings": list(result.warnings),
+            "post_repair_validation": post_repair_validation,
+        }
+
+    def _validate_repaired_geometry_cif(
+        self,
+        optimized_cif: Path,
+        *,
+        summary: BatchPairSummary,
+    ) -> dict[str, object]:
+        metadata = dict(summary.metadata)
+        source_score_metadata = metadata.get("score_metadata")
+        score_metadata = dict(source_score_metadata) if isinstance(source_score_metadata, Mapping) else {}
+        score_metadata["bridge_event_metrics"] = []
+        score_metadata.setdefault("n_unreacted_motifs", 0)
+        metadata["score_metadata"] = score_metadata
+        repair_summary = replace(
+            summary,
+            structure_id=f"{summary.structure_id}_geometry_repaired",
+            cif_path=str(optimized_cif),
+            metadata=metadata,
+        )
+        try:
+            report = self.structure_validator.validate_manifest_record(self._summary_to_dict(repair_summary))
+        except ModuleNotFoundError as exc:
+            if "gemmi is required" not in str(exc):
+                raise
+            return {
+                "classification": "unvalidated",
+                "is_valid": None,
+                "became_valid": None,
+                "scope": "optimized_cif_cif_checks_without_stale_bridge_metrics",
+                "error": str(exc),
+            }
+        validation = self._validation_metadata(report, cif_path=str(optimized_cif))
+        validation["became_valid"] = report.is_valid
+        validation["scope"] = "optimized_cif_cif_checks_without_stale_bridge_metrics"
+        return validation
 
     def _hard_hard_invalid_reasons(self, candidate: Candidate) -> tuple[tuple[str, ...], dict[str, object]]:
         bridge_metrics = tuple(self._bridge_event_metrics(candidate))
@@ -4970,10 +5173,33 @@ class BatchStructureGenerator:
             f"- CIFs written: {summary.cifs_written}",
             f"- Mode counts (structures): {dict(summary.mode_counts)}",
             f"- Topology counts: {dict(summary.topology_counts)}",
+            f"- Geometry repair counts: {dict(summary.geometry_repair_counts)}",
+            f"- Geometry repair revalidation counts: {dict(summary.geometry_repair_revalidation_counts)}",
             "",
             "## Top results",
             "",
         ]
+        failed_repairs = int(summary.geometry_repair_counts.get("failed", 0))
+        if failed_repairs > 0:
+            lines.extend(
+                [
+                    f"WARNING: Geometry repair failed for {failed_repairs} structure(s).",
+                    f"Failed repair records: `{summary.geometry_repair_failed_records_path}`",
+                    "",
+                ]
+            )
+        nonvalid_repaired = sum(
+            int(count)
+            for classification, count in summary.geometry_repair_revalidation_counts.items()
+            if classification != "valid"
+        )
+        if nonvalid_repaired > 0:
+            lines.extend(
+                [
+                    f"WARNING: Geometry repair completed for {nonvalid_repaired} structure(s) whose repaired CIF validation was not valid.",
+                    "",
+                ]
+            )
         if not summary.top_results:
             lines.append("- No successful pairs were generated.")
         else:

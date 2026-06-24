@@ -45,6 +45,7 @@ class CoarseValidationReport:
     hard_hard_invalid_reasons: tuple[str, ...] = ()
     warning_reasons: tuple[str, ...] = ()
     hard_invalid_reasons: tuple[str, ...] = ()
+    needs_optimization_reasons: tuple[str, ...] = ()
     metrics: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -55,14 +56,17 @@ class BatchOutputClassificationSummary:
     total_structures: int
     valid_structures: int
     warning_structures: int
-    hard_hard_invalid_structures: int
-    hard_invalid_structures: int
+    needs_optimization_structures: int = 0
+    hard_hard_invalid_structures: int = 0
+    hard_invalid_structures: int = 0
     warning_reason_counts: Mapping[str, int] = field(default_factory=dict)
+    needs_optimization_reason_counts: Mapping[str, int] = field(default_factory=dict)
     hard_hard_invalid_reason_counts: Mapping[str, int] = field(default_factory=dict)
     hard_invalid_reason_counts: Mapping[str, int] = field(default_factory=dict)
     classification_manifest_path: str = ""
     valid_manifest_path: str = ""
     warning_manifest_path: str = ""
+    needs_optimization_manifest_path: str = ""
     hard_hard_invalid_manifest_path: str = ""
     hard_invalid_manifest_path: str = ""
 
@@ -72,6 +76,15 @@ class BatchOutputClassificationSummary:
 
 
 class CoarseStructureValidator:
+    _REPAIRABLE_GEOMETRY_REASONS = frozenset(
+        {
+            "bridge_distance_residual_max_hard",
+            "bridge_distance_residual_mean_hard",
+            "bridge_distance_too_short",
+            "bridge_distance_too_long",
+        }
+    )
+
     def __init__(self, thresholds: CoarseValidationThresholds | None = None) -> None:
         self.thresholds = thresholds or CoarseValidationThresholds()
 
@@ -167,25 +180,40 @@ class CoarseStructureValidator:
         normalized_warning_reasons = tuple(dict.fromkeys(warning_reasons))
         normalized_hard_hard_invalid_reasons = tuple(dict.fromkeys(hard_hard_invalid_reasons))
         normalized_hard_invalid_reasons = tuple(dict.fromkeys(hard_invalid_reasons))
-        normalized_reasons = normalized_hard_hard_invalid_reasons + normalized_hard_invalid_reasons + tuple(
+        needs_optimization_reasons: tuple[str, ...] = ()
+        remaining_hard_invalid_reasons = normalized_hard_invalid_reasons
+        if (
+            not normalized_hard_hard_invalid_reasons
+            and normalized_hard_invalid_reasons
+            and all(reason in self._REPAIRABLE_GEOMETRY_REASONS for reason in normalized_hard_invalid_reasons)
+        ):
+            needs_optimization_reasons = normalized_hard_invalid_reasons
+            remaining_hard_invalid_reasons = ()
+
+        normalized_reasons = normalized_hard_hard_invalid_reasons + remaining_hard_invalid_reasons + tuple(
+            reason for reason in needs_optimization_reasons if reason not in remaining_hard_invalid_reasons
+        ) + tuple(
             reason for reason in normalized_warning_reasons if reason not in normalized_hard_invalid_reasons
         )
         classification = "valid"
         if normalized_hard_hard_invalid_reasons:
             classification = "hard_hard_invalid"
-        elif normalized_hard_invalid_reasons:
+        elif remaining_hard_invalid_reasons:
             classification = "hard_invalid"
+        elif needs_optimization_reasons:
+            classification = "needs_optimization"
         elif normalized_warning_reasons:
             classification = "warning"
         return CoarseValidationReport(
             classification=classification,
             is_valid=classification == "valid",
-            passes_hard_validation=classification not in {"hard_invalid", "hard_hard_invalid"},
+            passes_hard_validation=classification not in {"needs_optimization", "hard_invalid", "hard_hard_invalid"},
             blocks_cif_export=bool(normalized_hard_hard_invalid_reasons),
             reasons=normalized_reasons,
             hard_hard_invalid_reasons=normalized_hard_hard_invalid_reasons,
             warning_reasons=normalized_warning_reasons,
-            hard_invalid_reasons=normalized_hard_invalid_reasons,
+            hard_invalid_reasons=remaining_hard_invalid_reasons,
+            needs_optimization_reasons=needs_optimization_reasons,
             metrics=metrics,
         )
 
@@ -460,27 +488,32 @@ def classify_batch_output(
     output_root.mkdir(parents=True, exist_ok=True)
     valid_root = output_root / "valid" / "cifs"
     warning_root = output_root / "warning"
+    needs_optimization_root = output_root / "needs_optimization"
     hard_hard_invalid_root = output_root / "hard_hard_invalid"
     hard_invalid_root = output_root / "hard_invalid"
     valid_root.mkdir(parents=True, exist_ok=True)
     warning_root.mkdir(parents=True, exist_ok=True)
+    needs_optimization_root.mkdir(parents=True, exist_ok=True)
     hard_hard_invalid_root.mkdir(parents=True, exist_ok=True)
     hard_invalid_root.mkdir(parents=True, exist_ok=True)
 
     classification_manifest_path = output_root / "classification_manifest.jsonl"
     valid_manifest_path = output_root / "valid" / "manifest.jsonl"
     warning_manifest_path = output_root / "warning" / "manifest.jsonl"
+    needs_optimization_manifest_path = output_root / "needs_optimization" / "manifest.jsonl"
     hard_hard_invalid_manifest_path = output_root / "hard_hard_invalid" / "manifest.jsonl"
     hard_invalid_manifest_path = output_root / "hard_invalid" / "manifest.jsonl"
 
     max_workers = max_workers or min(8, os.cpu_count() or 1)
     pending: dict[Future[tuple[dict[str, object], CoarseValidationReport]], dict[str, object]] = {}
     warning_reason_counts: Counter[str] = Counter()
+    needs_optimization_reason_counts: Counter[str] = Counter()
     hard_hard_invalid_reason_counts: Counter[str] = Counter()
     hard_invalid_reason_counts: Counter[str] = Counter()
     total_structures = 0
     valid_structures = 0
     warning_structures = 0
+    needs_optimization_structures = 0
     hard_hard_invalid_structures = 0
     hard_invalid_structures = 0
 
@@ -489,6 +522,7 @@ def classify_batch_output(
         classification_manifest_path.open("w", encoding="utf-8") as classification_manifest,
         valid_manifest_path.open("w", encoding="utf-8") as valid_manifest,
         warning_manifest_path.open("w", encoding="utf-8") as warning_manifest,
+        needs_optimization_manifest_path.open("w", encoding="utf-8") as needs_optimization_manifest,
         hard_hard_invalid_manifest_path.open("w", encoding="utf-8") as hard_hard_invalid_manifest,
         hard_invalid_manifest_path.open("w", encoding="utf-8") as hard_invalid_manifest,
         ThreadPoolExecutor(max_workers=max_workers) as executor,
@@ -505,45 +539,53 @@ def classify_batch_output(
             pending[future] = record
             total_structures += 1
             if len(pending) >= max_workers * 4:
-                valid_structures, warning_structures, hard_hard_invalid_structures, hard_invalid_structures = _drain_completed(
+                valid_structures, warning_structures, needs_optimization_structures, hard_hard_invalid_structures, hard_invalid_structures = _drain_completed(
                     pending,
                     classification_manifest,
                     valid_manifest,
                     warning_manifest,
+                    needs_optimization_manifest,
                     hard_hard_invalid_manifest,
                     hard_invalid_manifest,
                     valid_root,
                     warning_root,
+                    needs_optimization_root,
                     hard_hard_invalid_root,
                     hard_invalid_root,
                     warning_reason_counts,
+                    needs_optimization_reason_counts,
                     hard_hard_invalid_reason_counts,
                     hard_invalid_reason_counts,
                     link_mode,
                     valid_count=valid_structures,
                     warning_count=warning_structures,
+                    needs_optimization_count=needs_optimization_structures,
                     hard_hard_invalid_count=hard_hard_invalid_structures,
                     hard_invalid_count=hard_invalid_structures,
                 )
 
         while pending:
-            valid_structures, warning_structures, hard_hard_invalid_structures, hard_invalid_structures = _drain_completed(
+            valid_structures, warning_structures, needs_optimization_structures, hard_hard_invalid_structures, hard_invalid_structures = _drain_completed(
                 pending,
                 classification_manifest,
                 valid_manifest,
                 warning_manifest,
+                needs_optimization_manifest,
                 hard_hard_invalid_manifest,
                 hard_invalid_manifest,
                 valid_root,
                 warning_root,
+                needs_optimization_root,
                 hard_hard_invalid_root,
                 hard_invalid_root,
                 warning_reason_counts,
+                needs_optimization_reason_counts,
                 hard_hard_invalid_reason_counts,
                 hard_invalid_reason_counts,
                 link_mode,
                 valid_count=valid_structures,
                 warning_count=warning_structures,
+                needs_optimization_count=needs_optimization_structures,
                 hard_hard_invalid_count=hard_hard_invalid_structures,
                 hard_invalid_count=hard_invalid_structures,
             )
@@ -554,14 +596,17 @@ def classify_batch_output(
         total_structures=total_structures,
         valid_structures=valid_structures,
         warning_structures=warning_structures,
+        needs_optimization_structures=needs_optimization_structures,
         hard_hard_invalid_structures=hard_hard_invalid_structures,
         hard_invalid_structures=hard_invalid_structures,
         warning_reason_counts=dict(warning_reason_counts),
+        needs_optimization_reason_counts=dict(needs_optimization_reason_counts),
         hard_hard_invalid_reason_counts=dict(hard_hard_invalid_reason_counts),
         hard_invalid_reason_counts=dict(hard_invalid_reason_counts),
         classification_manifest_path=str(classification_manifest_path),
         valid_manifest_path=str(valid_manifest_path),
         warning_manifest_path=str(warning_manifest_path),
+        needs_optimization_manifest_path=str(needs_optimization_manifest_path),
         hard_hard_invalid_manifest_path=str(hard_hard_invalid_manifest_path),
         hard_invalid_manifest_path=str(hard_invalid_manifest_path),
     )
@@ -574,22 +619,26 @@ def _drain_completed(
     classification_manifest,
     valid_manifest,
     warning_manifest,
+    needs_optimization_manifest,
     hard_hard_invalid_manifest,
     hard_invalid_manifest,
     valid_root: Path,
     warning_root: Path,
+    needs_optimization_root: Path,
     hard_hard_invalid_root: Path,
     hard_invalid_root: Path,
     warning_reason_counts: Counter[str],
+    needs_optimization_reason_counts: Counter[str],
     hard_hard_invalid_reason_counts: Counter[str],
     hard_invalid_reason_counts: Counter[str],
     link_mode: str,
     *,
     valid_count: int,
     warning_count: int,
+    needs_optimization_count: int,
     hard_hard_invalid_count: int,
     hard_invalid_count: int,
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int]:
     done, _not_done = wait(set(pending), return_when=FIRST_COMPLETED)
     for future in done:
         record, report = future.result()
@@ -604,6 +653,7 @@ def _drain_completed(
             "hard_hard_invalid_reasons": list(report.hard_hard_invalid_reasons),
             "warning_reasons": list(report.warning_reasons),
             "hard_invalid_reasons": list(report.hard_invalid_reasons),
+            "needs_optimization_reasons": list(report.needs_optimization_reasons),
             "metrics": _json_safe(report.metrics),
         }
         classification_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
@@ -625,6 +675,16 @@ def _drain_completed(
                 for reason in report.warning_reasons:
                     _materialize_link(source, warning_root / "reasons" / reason / source.name, link_mode)
             continue
+        if report.classification == "needs_optimization":
+            needs_optimization_count += 1
+            needs_optimization_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
+            for reason in report.needs_optimization_reasons:
+                needs_optimization_reason_counts[reason] += 1
+            if source is not None and source.is_file():
+                _materialize_link(source, needs_optimization_root / "cifs" / source.name, link_mode)
+                for reason in report.needs_optimization_reasons:
+                    _materialize_link(source, needs_optimization_root / "reasons" / reason / source.name, link_mode)
+            continue
         if report.classification == "hard_hard_invalid":
             hard_hard_invalid_count += 1
             hard_hard_invalid_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
@@ -643,7 +703,7 @@ def _drain_completed(
             _materialize_link(source, hard_invalid_root / "cifs" / source.name, link_mode)
             for reason in report.hard_invalid_reasons:
                 _materialize_link(source, hard_invalid_root / "reasons" / reason / source.name, link_mode)
-    return valid_count, warning_count, hard_hard_invalid_count, hard_invalid_count
+    return valid_count, warning_count, needs_optimization_count, hard_hard_invalid_count, hard_invalid_count
 
 
 def _validate_record_worker(
@@ -684,11 +744,13 @@ def _write_classification_summary(
         f"- Total structures classified: {summary.total_structures}",
         f"- Valid structures: {summary.valid_structures}",
         f"- Warning structures: {summary.warning_structures}",
+        f"- Needs-optimization structures: {summary.needs_optimization_structures}",
         f"- Hard-hard-invalid structures: {summary.hard_hard_invalid_structures}",
         f"- Hard-invalid structures: {summary.hard_invalid_structures}",
         f"- Classification manifest: `{summary.classification_manifest_path}`",
         f"- Valid manifest: `{summary.valid_manifest_path}`",
         f"- Warning manifest: `{summary.warning_manifest_path}`",
+        f"- Needs-optimization manifest: `{summary.needs_optimization_manifest_path}`",
         f"- Hard-hard-invalid manifest: `{summary.hard_hard_invalid_manifest_path}`",
         f"- Hard-invalid manifest: `{summary.hard_invalid_manifest_path}`",
         "",
@@ -714,6 +776,18 @@ def _write_classification_summary(
         lines.append("- No warning structures were detected.")
     else:
         for reason, count in sorted(summary.warning_reason_counts.items(), key=lambda item: (-item[1], item[0])):
+            lines.append(f"- `{reason}`: {count}")
+    lines.extend(
+        [
+            "",
+            "## Needs-Optimization Reason Counts",
+            "",
+        ]
+    )
+    if not summary.needs_optimization_reason_counts:
+        lines.append("- No needs-optimization structures were detected.")
+    else:
+        for reason, count in sorted(summary.needs_optimization_reason_counts.items(), key=lambda item: (-item[1], item[0])):
             lines.append(f"- `{reason}`: {count}")
     lines.extend(
         [

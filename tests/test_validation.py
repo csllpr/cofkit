@@ -98,7 +98,7 @@ def _summary_record(
 
 @unittest.skipIf(gemmi is None, "gemmi is not available")
 class CoarseValidationTests(unittest.TestCase):
-    def test_validator_rejects_bridge_distance_metadata(self):
+    def test_validator_marks_bridge_distance_metadata_as_needs_optimization(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             cif_path = root / "valid.cif"
@@ -119,10 +119,11 @@ class CoarseValidationTests(unittest.TestCase):
 
             report = CoarseStructureValidator().validate_manifest_record(record)
 
-        self.assertEqual(report.classification, "hard_invalid")
+        self.assertEqual(report.classification, "needs_optimization")
         self.assertFalse(report.passes_hard_validation)
-        self.assertIn("bridge_distance_residual_max_hard", report.hard_invalid_reasons)
-        self.assertIn("bridge_distance_too_long", report.hard_invalid_reasons)
+        self.assertIn("bridge_distance_residual_max_hard", report.needs_optimization_reasons)
+        self.assertIn("bridge_distance_too_long", report.needs_optimization_reasons)
+        self.assertEqual(report.hard_invalid_reasons, ())
 
     def test_validator_marks_overlong_bridge_as_hard_hard_invalid(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -256,6 +257,7 @@ class CoarseValidationTests(unittest.TestCase):
             valid_cif = cifs / "valid.cif"
             warning_cif = cifs / "warning.cif"
             invalid_cif = cifs / "invalid.cif"
+            needs_optimization_cif = cifs / "needs_optimization.cif"
             hard_hard_cif = cifs / "hard_hard.cif"
             _write_test_cif(
                 valid_cif,
@@ -282,6 +284,14 @@ class CoarseValidationTests(unittest.TestCase):
                 bonds=[],
             )
             _write_test_cif(
+                needs_optimization_cif,
+                atoms=[
+                    ("n1_C1", "C", 0.1, 0.1, 0.1),
+                    ("n2_C1", "C", 0.25, 0.1, 0.1),
+                ],
+                bonds=[("n1_C1", "n2_C1")],
+            )
+            _write_test_cif(
                 hard_hard_cif,
                 atoms=[
                     ("h1_C1", "C", 0.1, 0.1, 0.1),
@@ -303,6 +313,12 @@ class CoarseValidationTests(unittest.TestCase):
                     distance_residual=1.3,
                     actual_distance=2.5,
                 ),
+                _summary_record(
+                    needs_optimization_cif,
+                    structure_id="needs_optimization",
+                    distance_residual=1.2,
+                    actual_distance=2.4,
+                ),
                 _summary_record(invalid_cif, structure_id="invalid"),
             ]
             (source / "manifest.jsonl").write_text(
@@ -313,14 +329,25 @@ class CoarseValidationTests(unittest.TestCase):
             output = root / "classified"
             summary = classify_batch_output(source, output, link_mode="copy", max_workers=2)
 
-            self.assertEqual(summary.total_structures, 4)
+            self.assertEqual(summary.total_structures, 5)
             self.assertEqual(summary.valid_structures, 1)
             self.assertEqual(summary.warning_structures, 1)
+            self.assertEqual(summary.needs_optimization_structures, 1)
             self.assertEqual(summary.hard_hard_invalid_structures, 1)
             self.assertEqual(summary.hard_invalid_structures, 1)
             self.assertTrue((output / "valid" / "cifs" / "valid.cif").is_file())
             self.assertTrue((output / "warning" / "cifs" / "warning.cif").is_file())
             self.assertTrue((output / "warning" / "reasons" / "bridge_distance_residual_mean" / "warning.cif").is_file())
+            self.assertTrue((output / "needs_optimization" / "cifs" / "needs_optimization.cif").is_file())
+            self.assertTrue(
+                (
+                    output
+                    / "needs_optimization"
+                    / "reasons"
+                    / "bridge_distance_residual_max_hard"
+                    / "needs_optimization.cif"
+                ).is_file()
+            )
             self.assertTrue((output / "hard_hard_invalid" / "cifs" / "hard_hard.cif").is_file())
             self.assertTrue(
                 (

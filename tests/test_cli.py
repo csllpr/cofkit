@@ -63,6 +63,14 @@ class CliTests(unittest.TestCase):
         self.assertIn("calculate", help_text)
         self.assertIn("validate", help_text)
 
+    def test_batch_build_help_lists_repair_geometry(self):
+        buffer = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stdout(buffer):
+            cli_main(["build", "batch-binary-bridge", "--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("--repair-geometry", buffer.getvalue())
+
     def test_package_version_uses_calver(self):
         self.assertRegex(package_version, r"^\d{4}\.\d{1,2}\.\d{1,2}(?:\.post\d+)?$")
 

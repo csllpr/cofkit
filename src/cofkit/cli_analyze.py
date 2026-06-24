@@ -33,7 +33,7 @@ def _set_help_default(parser: argparse.ArgumentParser) -> None:
 def _add_classify_output_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "classify-output",
-        help="Classify a batch output into valid, warning, hard-invalid, and hard-hard-invalid sets.",
+        help="Classify a batch output into valid, warning, needs-optimization, hard-invalid, and hard-hard-invalid sets.",
     )
     parser.add_argument("source_dir", help="Batch output directory containing manifest.jsonl and cifs/.")
     parser.add_argument(
@@ -91,9 +91,11 @@ def _run_classify_output(args: argparse.Namespace) -> None:
     print("total_structures:", summary.total_structures)
     print("valid_structures:", summary.valid_structures)
     print("warning_structures:", summary.warning_structures)
+    print("needs_optimization_structures:", summary.needs_optimization_structures)
     print("hard_hard_invalid_structures:", summary.hard_hard_invalid_structures)
     print("hard_invalid_structures:", summary.hard_invalid_structures)
     print("warning_reason_counts:", dict(summary.warning_reason_counts))
+    print("needs_optimization_reason_counts:", dict(summary.needs_optimization_reason_counts))
     print("hard_hard_invalid_reason_counts:", dict(summary.hard_hard_invalid_reason_counts))
     print("hard_invalid_reason_counts:", dict(summary.hard_invalid_reason_counts))
     print("classification_manifest:", summary.classification_manifest_path)
