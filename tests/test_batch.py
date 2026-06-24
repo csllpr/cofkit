@@ -33,6 +33,13 @@ LONG_DIALDEHYDE = "O=Cc1ccc(C#Cc2c3ccccc3c(C#Cc3ccc(C=O)cc3)c3ccccc23)cc1"
 ASYMMETRIC_TRIALDEHYDE = "O=Cc1ccccc1C#Cc1cc(C#Cc2ccccc2C=O)cc(C#Cc2ccccc2C=O)c1"
 TETRA_AMINE = "Nc1ccc(C(c2ccc(N)cc2)(c2ccc(N)cc2)c2ccc(N)cc2)cc1"
 TETRA_ALDEHYDE = "O=Cc1ccc(C(c2ccc(C=O)cc2)(c2ccc(C=O)cc2)c2ccc(C=O)cc2)cc1"
+BEX_D2H_ALDEHYDE = (
+    "C1C=C(N(C2C=CC(C3C4C(=NON=4)C(C4C=CC(N(C5C=CC(C=O)=CC=5)C5C=CC(C=O)=CC=5)=CC=4)=CC=3)=CC=2)"
+    "C2C=CC(C=O)=CC=2)C=CC=1C=O"
+)
+BEX_D2H_AMINE = (
+    "Nc1ccc(-c2ccc3c(c2)C(=C2c4cc(-c5ccc(N)cc5)ccc4-c4ccc(-c5ccc(N)cc5)cc42)c2cc(-c4ccc(N)cc4)ccc2-3)cc1"
+)
 HEXA_AMINE = "Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N"
 HEXA_ALDEHYDE = "O=Cc1ccc(-c2cc3c(cc2-c2ccc(C=O)cc2)C2c4cc(-c5ccc(C=O)cc5)c(-c5ccc(C=O)cc5)cc4C3c3cc(-c4ccc(C=O)cc4)c(-c4ccc(C=O)cc4)cc32)cc1"
 TP = "O=Cc1c(O)c(C=O)c(O)c(C=O)c1O"
@@ -1119,6 +1126,86 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "single-node-expanded-node-node")
         self.assertEqual(candidate.metadata["graph_summary"]["n_monomer_instances"], 4)
         self.assertEqual(candidate.metadata["graph_summary"]["n_reaction_events"], 8)
+
+    def test_four_plus_four_pair_can_target_decorated_bex_topology(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=5,
+                topology_ids=("bex",),
+                write_cif=False,
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tetra_amine",
+            name="tetra_amine",
+            smiles=TETRA_AMINE,
+            motif_kind="amine",
+            expected_connectivity=4,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tetra_aldehyde",
+            name="tetra_aldehyde",
+            smiles=TETRA_ALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=4,
+        )
+
+        summary, candidate = generator.generate_pair_candidate(amine, aldehyde)
+
+        self.assertEqual(summary.status, "ok")
+        self.assertEqual(summary.pair_mode, "4+4-node-node")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.metadata["net_plan"]["topology"], "bex")
+        self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "decorated-bex-node-node")
+        self.assertEqual(candidate.metadata["graph_summary"]["n_monomer_instances"], 2)
+        self.assertEqual(candidate.metadata["graph_summary"]["n_reaction_events"], 4)
+        self.assertEqual(
+            set(candidate.metadata["assignment"]),
+            {"bex_c4_node", "bex_c3_pair"},
+        )
+        self.assertEqual(
+            sorted(event.participants[1].periodic_image for event in candidate.events),
+            [(-1, -1, 0), (-1, 0, 0), (0, -1, 0), (0, 0, 0)],
+        )
+        self.assertIn("batch_decorated_bex_node_node", candidate.flags)
+
+    def test_reported_d2h_bex_smiles_build_decorated_topology(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=5,
+                topology_ids=("bex",),
+                write_cif=False,
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="bex_d2h_amine",
+            name="bex_d2h_amine",
+            smiles=BEX_D2H_AMINE,
+            motif_kind="amine",
+            expected_connectivity=4,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="bex_d2h_aldehyde",
+            name="bex_d2h_aldehyde",
+            smiles=BEX_D2H_ALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=4,
+        )
+
+        summary, candidate = generator.generate_pair_candidate(amine, aldehyde)
+
+        self.assertEqual(summary.status, "ok")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.metadata["net_plan"]["topology"], "bex")
+        self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "decorated-bex-node-node")
+        self.assertEqual(
+            candidate.metadata["net_plan"]["metadata"]["decorated_topology_unit"],
+            "c3-edge-c3",
+        )
 
     def test_six_plus_two_pair_uses_expanded_default_topology_pool(self):
         generator = BatchStructureGenerator(

@@ -154,6 +154,32 @@ class _NodeSitePlacement:
 
 
 @dataclass(frozen=True)
+class _DecoratedBexEdge:
+    id: str
+    node_edge_key: str
+    composite_edge_key: str
+    composite_image: tuple[int, int, int]
+    delta_fractional: tuple[float, float, float]
+    node_direction: Vec3
+    composite_direction: Vec3
+
+
+@dataclass(frozen=True)
+class _DecoratedBexTopology:
+    topology_id: str = "bex"
+    dimensionality: str = "2D"
+    node_fractional_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    composite_fractional_position: tuple[float, float, float] = (0.5, 0.5, 0.0)
+    edges: tuple[_DecoratedBexEdge, ...] = ()
+
+
+@dataclass(frozen=True)
+class _DecoratedBexFit:
+    cell: tuple[Vec3, Vec3, Vec3]
+    composite_translation: Vec3
+
+
+@dataclass(frozen=True)
 class _BatchPairTask:
     first_record: BatchMonomerRecord
     second_record: BatchMonomerRecord
@@ -234,6 +260,12 @@ class BatchStructureGenerator:
                     description="expanded single-node node-linker builder",
                     supports=self._supports_expanded_node_linker_builder,
                     build=self._build_expanded_node_linker_request,
+                ),
+                PairTopologyBuilder(
+                    id="decorated-bex-node-node",
+                    description="decorated bex 4+4 node-node builder with a composite topology unit",
+                    supports=self._supports_decorated_bex_node_node_builder,
+                    build=self._build_decorated_bex_node_node_request,
                 ),
                 PairTopologyBuilder(
                     id="indexed-node-node",
@@ -1171,12 +1203,16 @@ class BatchStructureGenerator:
         connectivities: tuple[int, int],
     ) -> PairTopologyBuildRequest:
         topology = get_topology_hint(topology_id)
-        try:
-            expanded = self._expand_supported_single_node_topology(topology_id)
-            builder_family = "single-node"
-        except (KeyError, ValueError):
-            expanded = expand_indexed_topology(topology_id)
-            builder_family = "indexed"
+        if self._is_decorated_bex_request(topology_id, pair_mode, connectivities):
+            expanded = self._decorated_bex_topology()
+            builder_family = "decorated-bex"
+        else:
+            try:
+                expanded = self._expand_supported_single_node_topology(topology_id)
+                builder_family = "single-node"
+            except (KeyError, ValueError):
+                expanded = expand_indexed_topology(topology_id)
+                builder_family = "indexed"
         return PairTopologyBuildRequest(
             project=COFProject(
                 monomers=(first, second),
@@ -1214,6 +1250,14 @@ class BatchStructureGenerator:
 
     def _supports_expanded_node_linker_builder(self, request: PairTopologyBuildRequest) -> bool:
         return request.builder_family == "single-node" and request.pair_mode == "node-linker"
+
+    def _supports_decorated_bex_node_node_builder(self, request: PairTopologyBuildRequest) -> bool:
+        return (
+            request.builder_family == "decorated-bex"
+            and request.pair_mode == "node-node"
+            and request.topology.id == "bex"
+            and tuple(sorted(request.connectivities)) == (4, 4)
+        )
 
     def _supports_indexed_node_node_builder(self, request: PairTopologyBuildRequest) -> bool:
         return request.builder_family == "indexed" and request.pair_mode == "node-node"
@@ -1382,6 +1426,257 @@ class BatchStructureGenerator:
         if not candidates:
             raise ValueError(f"topology {request.topology.id!r} did not produce an indexed node-node assignment")
         return max(candidates, key=lambda candidate: candidate.score)
+
+    def _build_decorated_bex_node_node_request(self, request: PairTopologyBuildRequest) -> Candidate:
+        first, second = request.monomers
+        expanded = request.expanded
+        assert isinstance(expanded, _DecoratedBexTopology)
+        variants = ((first, second, 1), (second, first, 2))
+        candidates: list[Candidate] = []
+        for node_spec, composite_spec, variant_index in variants:
+            outcome = self._build_decorated_bex_node_node_outcome(
+                node_spec,
+                composite_spec,
+                request.template,
+                request.topology,
+                expanded,
+                variant_index=variant_index,
+            )
+            embedding = self._embed_decorated_bex_node_node(
+                outcome,
+                node_spec,
+                composite_spec,
+                request.template,
+                request.topology,
+                expanded,
+                variant_index=variant_index,
+            )
+            candidate = self._assemble_single_node_candidate(
+                candidate_id=(
+                    f"{first.id}__{second.id}__{request.topology.id}"
+                    f"__decorated_bex_node_node_{variant_index}"
+                ),
+                project=request.project,
+                outcome=outcome,
+                embedding=embedding,
+                monomer_specs={first.id: first, second.id: second},
+                template=request.template,
+                extra_flags=("batch_decorated_bex_node_node",),
+            )
+            candidate_metadata = dict(candidate.metadata)
+            candidate_metadata["decorated_bex_assignment_variant"] = variant_index
+            candidates.append(replace(candidate, metadata=candidate_metadata))
+        return max(candidates, key=lambda candidate: candidate.score)
+
+    def _build_decorated_bex_node_node_outcome(
+        self,
+        node_spec: MonomerSpec,
+        composite_spec: MonomerSpec,
+        template,
+        topology,
+        expanded: _DecoratedBexTopology,
+        *,
+        variant_index: int,
+    ) -> AssignmentOutcome:
+        node_placement = self._decorated_bex_site_placement(
+            node_spec,
+            {edge.node_edge_key: edge.node_direction for edge in expanded.edges},
+            template_id=template.id,
+        )
+        composite_placement = self._decorated_bex_site_placement(
+            composite_spec,
+            {edge.composite_edge_key: edge.composite_direction for edge in expanded.edges},
+            template_id=template.id,
+        )
+        slot_to_conformer = {}
+        if node_spec.conformer_ids:
+            slot_to_conformer["bex_c4_node"] = node_spec.conformer_ids[0]
+        if composite_spec.conformer_ids:
+            slot_to_conformer["bex_c3_pair"] = composite_spec.conformer_ids[0]
+        net_plan = NetPlan(
+            topology=topology,
+            monomer_ids=(node_spec.id, composite_spec.id),
+            reaction_ids=(template.id,),
+            metadata={
+                "planning_mode": "batch-decorated-bex-node-node",
+                "decorated_topology": "bex",
+                "decorated_topology_unit": "c3-edge-c3",
+                "node_monomer_id": node_spec.id,
+                "composite_monomer_id": composite_spec.id,
+                "connectivities": (len(node_spec.motifs), len(composite_spec.motifs)),
+                "topology_metadata": dict(topology.metadata),
+                "topology_family": "decorated-indexed-2d",
+                "assignment_variant": variant_index,
+            },
+        )
+        assignment_plan = AssignmentPlan(
+            net_plan=net_plan,
+            slot_to_monomer={
+                "bex_c4_node": node_spec.id,
+                "bex_c3_pair": composite_spec.id,
+            },
+            slot_to_conformer=slot_to_conformer,
+            metadata={"assignment_mode": "batch-decorated-bex-node-node"},
+        )
+        instances = (
+            MonomerInstance(
+                id="bex_node",
+                monomer_id=node_spec.id,
+                conformer_id=node_spec.conformer_ids[0] if node_spec.conformer_ids else None,
+                metadata={
+                    "slot_id": "bex_c4_node",
+                    "role": "node",
+                    "decorated_role": "raw-c4-node",
+                    "fractional_position": expanded.node_fractional_position,
+                },
+            ),
+            MonomerInstance(
+                id="bex_composite",
+                monomer_id=composite_spec.id,
+                conformer_id=composite_spec.conformer_ids[0] if composite_spec.conformer_ids else None,
+                metadata={
+                    "slot_id": "bex_c3_pair",
+                    "role": "composite_topology_unit",
+                    "decorated_role": "raw-c3-edge-c3",
+                    "fractional_position": expanded.composite_fractional_position,
+                },
+            ),
+        )
+
+        events: list[ReactionEvent] = []
+        for edge in expanded.edges:
+            events.append(
+                ReactionEvent(
+                    id=f"rxn{len(events) + 1}",
+                    template_id=template.id,
+                    participants=(
+                        MotifRef(
+                            monomer_instance_id="bex_node",
+                            monomer_id=node_spec.id,
+                            motif_id=str(node_placement.motif_id_by_edge[edge.node_edge_key]),
+                        ),
+                        MotifRef(
+                            monomer_instance_id="bex_composite",
+                            monomer_id=composite_spec.id,
+                            motif_id=str(composite_placement.motif_id_by_edge[edge.composite_edge_key]),
+                            periodic_image=edge.composite_image,
+                        ),
+                    ),
+                    metadata={
+                        "decorated_topology_edge_id": edge.id,
+                        "composite_image": edge.composite_image,
+                    },
+                )
+            )
+
+        return AssignmentOutcome(
+            assignment_plan=assignment_plan,
+            monomer_instances=instances,
+            events=tuple(events),
+            unreacted_motifs=(),
+            consumed_count=sum(len(event.participants) for event in events),
+        )
+
+    def _embed_decorated_bex_node_node(
+        self,
+        outcome: AssignmentOutcome,
+        node_spec: MonomerSpec,
+        composite_spec: MonomerSpec,
+        template,
+        topology,
+        expanded: _DecoratedBexTopology,
+        *,
+        variant_index: int,
+    ) -> EmbeddingResult:
+        bridge_target = self._template_target_distance(template)
+        node_placement = self._decorated_bex_site_placement(
+            node_spec,
+            {edge.node_edge_key: edge.node_direction for edge in expanded.edges},
+            template_id=template.id,
+        )
+        composite_placement = self._decorated_bex_site_placement(
+            composite_spec,
+            {edge.composite_edge_key: edge.composite_direction for edge in expanded.edges},
+            template_id=template.id,
+        )
+        node_motifs = {motif.id: motif for motif in node_spec.motifs}
+        composite_motifs = {motif.id: motif for motif in composite_spec.motifs}
+
+        target_edge_vectors: dict[str, Vec3] = {}
+        reactive_site_distances: list[float] = []
+        for edge in expanded.edges:
+            node_motif = node_motifs[str(node_placement.motif_id_by_edge[edge.node_edge_key])]
+            composite_motif = composite_motifs[
+                str(composite_placement.motif_id_by_edge[edge.composite_edge_key])
+            ]
+            edge_vector = add(
+                scale(edge.node_direction, bridge_target),
+                sub(
+                    matmul_vec(
+                        node_placement.rotation,
+                        effective_motif_origin(template.id, node_spec, node_motif),
+                    ),
+                    matmul_vec(
+                        composite_placement.rotation,
+                        effective_motif_origin(template.id, composite_spec, composite_motif),
+                    ),
+                ),
+            )
+            target_edge_vectors[edge.id] = edge_vector
+            reactive_site_distances.append(norm(edge_vector))
+
+        fit = self._fit_decorated_bex_placement(expanded, target_edge_vectors)
+        cell = fit.cell
+        monomer_poses = {
+            "bex_node": Pose(
+                translation=self._fractional_position_in_cell(cell, expanded.node_fractional_position),
+                rotation_matrix=node_placement.rotation,
+            ),
+            "bex_composite": Pose(
+                translation=fit.composite_translation,
+                rotation_matrix=composite_placement.rotation,
+            ),
+        }
+        pose_details = {
+            "bex_node": {
+                "slot_id": "bex_c4_node",
+                "translation": monomer_poses["bex_node"].translation,
+                "rotation_matrix": node_placement.rotation,
+                "motif_count": len(node_spec.motifs),
+                "role": "node",
+                "decorated_role": "raw-c4-node",
+                "fractional_position": expanded.node_fractional_position,
+                "radial_offsets": tuple(round(value, 6) for value in node_placement.offsets),
+            },
+            "bex_composite": {
+                "slot_id": "bex_c3_pair",
+                "translation": monomer_poses["bex_composite"].translation,
+                "rotation_matrix": composite_placement.rotation,
+                "motif_count": len(composite_spec.motifs),
+                "role": "composite_topology_unit",
+                "decorated_role": "raw-c3-edge-c3",
+                "solved_translation": fit.composite_translation,
+                "radial_offsets": tuple(round(value, 6) for value in composite_placement.offsets),
+            },
+        }
+        return EmbeddingResult(
+            state=AssemblyState(cell=cell, monomer_poses=monomer_poses, stacking_state="disabled"),
+            metadata={
+                "mode": "topology-guided",
+                "topology": topology.id,
+                "target_distance": bridge_target,
+                "reactive_site_distance": sum(reactive_site_distances) / len(reactive_site_distances),
+                "edge_reactive_site_distances": tuple(round(value, 6) for value in reactive_site_distances),
+                "cell_kind": self._topology_cell_kind(cell, topology.dimensionality),
+                "stacking_enabled": False,
+                "placement_mode": "decorated-bex-node-node",
+                "node_instance_count": len(monomer_poses),
+                "topology_family": "decorated-indexed-2d",
+                "decorated_topology_unit": "c3-edge-c3",
+                "assignment_variant": variant_index,
+                "poses": pose_details,
+            },
+        )
 
     def _resolve_node_linker_specs(
         self,
@@ -3302,7 +3597,14 @@ class BatchStructureGenerator:
             except KeyError:
                 continue
             topology_modes = tuple(str(value) for value in hint.metadata.get(mode_key, ()))
-            if mode_token not in topology_modes:
+            if mode_token not in topology_modes and not (
+                configured
+                and self._is_decorated_bex_request(
+                    topology_id,
+                    pair_mode,
+                    connectivities,
+                )
+            ):
                 continue
             builder_error = self._topology_builder_compatibility_error(
                 topology_id=topology_id,
@@ -3395,7 +3697,11 @@ class BatchStructureGenerator:
                 errors[topology_id] = f"{type(exc).__name__}: {exc}"
                 continue
             topology_modes = tuple(str(value) for value in hint.metadata.get(mode_key, ()))
-            if mode_token not in topology_modes:
+            if mode_token not in topology_modes and not self._is_decorated_bex_request(
+                topology_id,
+                pair_mode,
+                connectivities,
+            ):
                 reason_key = (
                     "two_monomer_node_node_reason"
                     if pair_mode == "node-node"
@@ -3998,6 +4304,134 @@ class BatchStructureGenerator:
             item
             for item in metrics
             if isinstance(item, Mapping)
+        )
+
+    def _is_decorated_bex_request(
+        self,
+        topology_id: str,
+        pair_mode: str,
+        connectivities: tuple[int, int],
+    ) -> bool:
+        return topology_id == "bex" and pair_mode == "node-node" and tuple(sorted(connectivities)) == (4, 4)
+
+    def _decorated_bex_topology(self) -> _DecoratedBexTopology:
+        raw_cell_a = (2.18488, 0.0, 0.0)
+        raw_cell_b = (0.0, 1.61123, 0.0)
+
+        def direction(delta: tuple[float, float, float]) -> Vec3:
+            return self._safe_normalize(add(scale(raw_cell_a, delta[0]), scale(raw_cell_b, delta[1])))
+
+        edge_specs = (
+            ("e3", (-1, -1, 0), (-0.5, -0.5, 0.0)),
+            ("e1", (0, -1, 0), (0.5, -0.5, 0.0)),
+            ("e2", (0, 0, 0), (0.5, 0.5, 0.0)),
+            ("e4", (-1, 0, 0), (-0.5, 0.5, 0.0)),
+        )
+        edges = tuple(
+            _DecoratedBexEdge(
+                id=edge_id,
+                node_edge_key=f"{edge_id}:node",
+                composite_edge_key=f"{edge_id}:composite",
+                composite_image=image,
+                delta_fractional=delta,
+                node_direction=direction(delta),
+                composite_direction=scale(direction(delta), -1.0),
+            )
+            for edge_id, image, delta in edge_specs
+        )
+        return _DecoratedBexTopology(edges=edges)
+
+    def _decorated_bex_site_placement(
+        self,
+        spec: MonomerSpec,
+        direction_by_edge_key: Mapping[str, Vec3],
+        *,
+        template_id: str,
+    ) -> _NodeSitePlacement:
+        ordered = tuple(
+            sorted(
+                direction_by_edge_key.items(),
+                key=lambda item: (atan2(item[1][1], item[1][0]), item[0]),
+            )
+        )
+        rotation, motif_ids, offsets = self._rotation_for_planar_motifs(
+            spec,
+            tuple(direction for _edge_key, direction in ordered),
+            template_id=template_id,
+        )
+        return _NodeSitePlacement(
+            rotation=rotation,
+            motif_ids=motif_ids,
+            offsets=offsets,
+            motif_id_by_edge={
+                edge_key: motif_id
+                for (edge_key, _direction), motif_id in zip(ordered, motif_ids)
+            },
+        )
+
+    def _fit_decorated_bex_placement(
+        self,
+        expanded: _DecoratedBexTopology,
+        target_edge_vectors: Mapping[str, Vec3],
+    ) -> _DecoratedBexFit:
+        normal_matrix = [[0.0, 0.0, 0.0] for _ in range(3)]
+        rhs_x = [0.0, 0.0, 0.0]
+        rhs_y = [0.0, 0.0, 0.0]
+        for edge in expanded.edges:
+            coefficients = (
+                1.0,
+                float(edge.composite_image[0]),
+                float(edge.composite_image[1]),
+            )
+            target = target_edge_vectors[edge.id]
+            for row in range(3):
+                rhs_x[row] += coefficients[row] * target[0]
+                rhs_y[row] += coefficients[row] * target[1]
+                for column in range(3):
+                    normal_matrix[row][column] += coefficients[row] * coefficients[column]
+
+        solution_x = self._solve_symmetric_3x3(normal_matrix, rhs_x)
+        solution_y = self._solve_symmetric_3x3(normal_matrix, rhs_y)
+        if solution_x is None or solution_y is None:
+            return self._fallback_decorated_bex_cell(target_edge_vectors)
+        cell_a = (
+            solution_x[1],
+            solution_y[1],
+            0.0,
+        )
+        cell_b = (
+            solution_x[2],
+            solution_y[2],
+            0.0,
+        )
+        if norm(cell_a) < 1e-8 or norm(cell_b) < 1e-8:
+            return self._fallback_decorated_bex_cell(target_edge_vectors)
+        return _DecoratedBexFit(
+            cell=(
+                cell_a,
+                cell_b,
+                (0.0, 0.0, self.config.embedding_config.default_layer_spacing),
+            ),
+            composite_translation=(solution_x[0], solution_y[0], 0.0),
+        )
+
+    def _fallback_decorated_bex_cell(
+        self,
+        target_edge_vectors: Mapping[str, Vec3],
+    ) -> _DecoratedBexFit:
+        target_length = (
+            sum(norm(vector) for vector in target_edge_vectors.values()) / len(target_edge_vectors)
+            if target_edge_vectors
+            else self.config.embedding_config.bridge_target_distance
+        )
+        cell = (
+            (2.0 * target_length, 0.0, 0.0),
+            (0.0, 2.0 * target_length, 0.0),
+            (0.0, 0.0, self.config.embedding_config.default_layer_spacing),
+        )
+        return _DecoratedBexFit(
+            cell=cell,
+            composite_translation=self._fractional_position_in_cell(cell, (0.5, 0.5, 0.0)),
         )
 
     def _annotate_topology_selection(

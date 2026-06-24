@@ -280,6 +280,7 @@ class LammpsTests(unittest.TestCase):
         self.assertEqual(result.charge_model, "eqeq")
         self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
         self.assertEqual(result.n_charged_atoms, 3)
+        self.assertEqual(result.settings.pre_minimization_mode, "md")
         self.assertEqual(result.settings.pre_minimization_steps, 10000)
         self.assertTrue(result.settings.two_stage_protocol)
         self.assertTrue(result.settings.relax_cell)
@@ -390,6 +391,45 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("run 25", script_text)
             self.assertIn("unfix cofkit_prerun_langevin", script_text)
             self.assertIn("unfix cofkit_prerun_nve", script_text)
+
+    def test_lammps_script_supports_soft_pre_minimization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+            settings = LammpsOptimizationSettings(
+                forcefield="uff",
+                charge_model="none",
+                pre_minimization_mode="soft",
+                soft_pre_minimization_cutoff=7.5,
+                soft_pre_minimization_coefficients=(2.0, 10.0),
+                soft_pre_minimization_min_style="sd",
+                soft_pre_minimization_max_iterations=12,
+                soft_pre_minimization_max_evaluations=120,
+                min_style="cg",
+                relax_cell=False,
+            )
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "soft_prerun_out",
+                    settings=settings,
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("# pre_minimization_soft", script_text)
+            self.assertIn("pair_style soft 7.500000", script_text)
+            self.assertIn("min_style sd", script_text)
+            self.assertIn("pair_coeff * * 2", script_text)
+            self.assertIn("pair_coeff * * 10", script_text)
+            self.assertIn("minimize 1e-06 1e-06 12 120", script_text)
+            self.assertIn("pair_style lj/cut 12.000000", script_text)
+            self.assertIn("pair_coeff 1 1", script_text)
+            self.assertNotIn("velocity all create", script_text)
+            self.assertNotIn("fix cofkit_prerun_nve", script_text)
+            self.assertEqual(result.settings.pre_minimization_mode, "soft")
 
     def test_lammps_script_supports_final_box_relax_stage(self):
         with tempfile.TemporaryDirectory() as temp_dir:

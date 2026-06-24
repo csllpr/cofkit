@@ -23,6 +23,7 @@ from cofkit import (
     MotifRef,
     NetPlan,
     NetPlanner,
+    OptimizerConfig,
     PeriodicEmbedder,
     Pose,
     ReactiveMotif,
@@ -537,6 +538,34 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(optimized.metrics["enabled"])
         self.assertLessEqual(final_report.total_residual, initial_report.total_residual + 1e-9)
         self.assertGreaterEqual(final_report.score + 1e-9, initial_report.score)
+
+    def test_optimizer_translation_step_moves_long_bridge_toward_target(self):
+        specs, templates, outcome, base_state = build_single_imine_bridge_case()
+        stretched_poses = dict(base_state.monomer_poses)
+        stretched_poses["m2"] = Pose(
+            translation=(4.0, 0.0, 0.0),
+            rotation_matrix=base_state.monomer_poses["m2"].rotation_matrix,
+        )
+        stretched_state = AssemblyState(
+            cell=base_state.cell,
+            monomer_poses=stretched_poses,
+            torsions=base_state.torsions,
+            layer_offsets=base_state.layer_offsets,
+            stacking_state=base_state.stacking_state,
+        )
+        scorer = CandidateScorer()
+        optimizer = ContinuousOptimizer(
+            config=OptimizerConfig(max_iterations=1),
+            scorer=scorer,
+        )
+
+        initial_report = scorer.bridge_geometry_report(outcome, stretched_state, specs, templates)
+        optimized = optimizer.optimize(outcome, stretched_state, specs, templates)
+        final_report = scorer.bridge_geometry_report(outcome, optimized.state, specs, templates)
+
+        self.assertGreater(initial_report.event_metrics[0].actual_distance, 3.9)
+        self.assertLess(final_report.event_metrics[0].actual_distance, initial_report.event_metrics[0].actual_distance)
+        self.assertLess(final_report.total_residual, initial_report.total_residual)
 
     def test_normal_misalignment_residual_guides_twisted_imine_refinement(self):
         specs, templates, outcome, base_state = build_single_imine_bridge_case()

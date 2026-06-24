@@ -63,6 +63,7 @@ _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
 _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic", "spin_none"}
 _MIN_MODIFY_NORM_OPTIONS = {"two", "inf", "max"}
 _MIN_MODIFY_FIRE_INTEGRATOR_OPTIONS = {"eulerimplicit", "verlet", "leapfrog", "eulerexplicit"}
+_PRE_MINIMIZATION_MODE_OPTIONS = {"none", "md", "soft"}
 _BOX_RELAX_MODE_OPTIONS = {"auto", "iso", "aniso", "tri"}
 _UNSUPPORTED_BOX_RELAX_MIN_STYLES = {"quickmin", "fire", "hftn", "cg/kk"}
 _PINNED_UFF_PARAMETER_SHA256 = "934cb0e2ee1ef2102b2ae8dba74b1e9853b299bd7e26f695fb1fe6e55727bdc5"
@@ -145,11 +146,17 @@ class LammpsOptimizationSettings:
     coulomb_cutoff: float = 12.0
     ewald_precision: float = 1.0e-6
     position_restraint_force_constant: float = 0.20
+    pre_minimization_mode: str = "md"
     pre_minimization_steps: int = 10000
     pre_minimization_temperature: float = 300.0
     pre_minimization_damping: float = 100.0
     pre_minimization_seed: int = 246813
     pre_minimization_displacement_limit: float = 0.10
+    soft_pre_minimization_cutoff: float = 8.0
+    soft_pre_minimization_coefficients: tuple[float, ...] = (1.0, 5.0, 20.0, 50.0)
+    soft_pre_minimization_min_style: str = "cg"
+    soft_pre_minimization_max_iterations: int = 2000
+    soft_pre_minimization_max_evaluations: int = 20000
     two_stage_protocol: bool = True
     stage2_position_restraint_force_constant: float | None = None
     energy_tolerance: float = 1.0e-6
@@ -879,18 +886,50 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError("ewald_precision must be positive.")
     if settings.position_restraint_force_constant < 0.0:
         raise ValueError("position_restraint_force_constant must be non-negative.")
+    if settings.pre_minimization_mode not in _PRE_MINIMIZATION_MODE_OPTIONS:
+        raise ValueError(
+            "pre_minimization_mode must be one of: " + ", ".join(sorted(_PRE_MINIMIZATION_MODE_OPTIONS))
+        )
     if settings.pre_minimization_steps < 0:
         raise ValueError("pre_minimization_steps must be non-negative.")
-    if settings.pre_minimization_steps > 0 and settings.pre_minimization_temperature <= 0.0:
+    if (
+        settings.pre_minimization_mode == "md"
+        and settings.pre_minimization_steps > 0
+        and settings.pre_minimization_temperature <= 0.0
+    ):
         raise ValueError("pre_minimization_temperature must be positive when pre_minimization_steps is enabled.")
-    if settings.pre_minimization_steps > 0 and settings.pre_minimization_damping <= 0.0:
+    if (
+        settings.pre_minimization_mode == "md"
+        and settings.pre_minimization_steps > 0
+        and settings.pre_minimization_damping <= 0.0
+    ):
         raise ValueError("pre_minimization_damping must be positive when pre_minimization_steps is enabled.")
-    if settings.pre_minimization_steps > 0 and settings.pre_minimization_seed <= 0:
+    if (
+        settings.pre_minimization_mode == "md"
+        and settings.pre_minimization_steps > 0
+        and settings.pre_minimization_seed <= 0
+    ):
         raise ValueError("pre_minimization_seed must be a positive integer when pre_minimization_steps is enabled.")
-    if settings.pre_minimization_steps > 0 and settings.pre_minimization_displacement_limit <= 0.0:
+    if (
+        settings.pre_minimization_mode == "md"
+        and settings.pre_minimization_steps > 0
+        and settings.pre_minimization_displacement_limit <= 0.0
+    ):
         raise ValueError(
             "pre_minimization_displacement_limit must be positive when pre_minimization_steps is enabled."
         )
+    if settings.soft_pre_minimization_cutoff <= 0.0:
+        raise ValueError("soft_pre_minimization_cutoff must be positive.")
+    if not settings.soft_pre_minimization_coefficients:
+        raise ValueError("soft_pre_minimization_coefficients must contain at least one coefficient.")
+    if any(coefficient <= 0.0 for coefficient in settings.soft_pre_minimization_coefficients):
+        raise ValueError("soft_pre_minimization_coefficients must all be positive.")
+    if not settings.soft_pre_minimization_min_style:
+        raise ValueError("soft_pre_minimization_min_style must be non-empty.")
+    if settings.soft_pre_minimization_max_iterations <= 0:
+        raise ValueError("soft_pre_minimization_max_iterations must be positive.")
+    if settings.soft_pre_minimization_max_evaluations <= 0:
+        raise ValueError("soft_pre_minimization_max_evaluations must be positive.")
     if settings.stage2_position_restraint_force_constant is not None and settings.stage2_position_restraint_force_constant < 0.0:
         raise ValueError("stage2_position_restraint_force_constant must be non-negative when provided.")
     if settings.energy_tolerance <= 0.0:
@@ -3608,6 +3647,20 @@ def _render_special_bonds_line(prepared: _PreparedLammpsSystem) -> str:
     return "special_bonds lj 0.0 0.0 1.0"
 
 
+def _render_pairij_coeff_lines(prepared: _PreparedLammpsSystem) -> list[str]:
+    _header_lines, sections = _split_lammps_data_text(prepared.data_text)
+    pairij_rows = _lammps_section_rows(sections, "PairIJ Coeffs")
+    pair_coeff_lines: list[str] = []
+    for row in pairij_rows:
+        fields = row.split()
+        if len(fields) < 4:
+            continue
+        pair_coeff_lines.append(f"pair_coeff {fields[0]} {fields[1]} {fields[2]} {fields[3]}")
+    if not pair_coeff_lines:
+        raise LammpsInputError("LAMMPS soft pre-minimization could not find PairIJ Coeffs to restore.")
+    return pair_coeff_lines
+
+
 def _render_lammps_input_script(
     *,
     data_path: Path,
@@ -3673,7 +3726,7 @@ def _render_lammps_input_script(
         ]
     )
     active_restraint_force_constant: float | None = None
-    if settings.pre_minimization_steps > 0:
+    if settings.pre_minimization_mode == "md" and settings.pre_minimization_steps > 0:
         initial_restraint_force_constant = minimization_stages[0].position_restraint_force_constant
         lines.append("# pre_minimization")
         if initial_restraint_force_constant > 0.0:
@@ -3702,6 +3755,29 @@ def _render_lammps_input_script(
                 "unfix cofkit_prerun_nve",
             ]
         )
+    elif settings.pre_minimization_mode == "soft":
+        initial_restraint_force_constant = minimization_stages[0].position_restraint_force_constant
+        lines.append("# pre_minimization_soft")
+        if initial_restraint_force_constant > 0.0:
+            lines.append(f"fix cofkit_hold all spring/self {initial_restraint_force_constant:.6f}")
+            lines.append("fix_modify cofkit_hold energy yes")
+            active_restraint_force_constant = initial_restraint_force_constant
+        if periodic_electrostatics:
+            lines.append("kspace_style none")
+        lines.append(f"pair_style soft {settings.soft_pre_minimization_cutoff:.6f}")
+        lines.append(f"min_style {settings.soft_pre_minimization_min_style}")
+        for coefficient in settings.soft_pre_minimization_coefficients:
+            lines.append(f"pair_coeff * * {coefficient:.8g}")
+            lines.append(
+                f"minimize {settings.energy_tolerance:.8g} {settings.force_tolerance:.8g} "
+                f"{settings.soft_pre_minimization_max_iterations} "
+                f"{settings.soft_pre_minimization_max_evaluations}"
+            )
+        lines.append(pair_style_line)
+        lines.append("pair_modify shift yes")
+        lines.extend(_render_pairij_coeff_lines(prepared))
+        if periodic_electrostatics:
+            lines.append("kspace_style ewald " + f"{settings.ewald_precision:.8g}")
     for stage in minimization_stages:
         lines.append(f"# {stage.label}")
         if active_restraint_force_constant is not None and (

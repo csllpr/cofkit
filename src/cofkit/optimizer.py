@@ -102,9 +102,20 @@ class ContinuousOptimizer:
         monomer_specs: Mapping[str, MonomerSpec],
         templates: Mapping[str, ReactionTemplate],
     ) -> AssemblyState:
-        scaled_state = self._scale_lateral_cell(state, outcome, monomer_specs, templates)
-        translated_state = self._refine_translations(scaled_state, outcome, monomer_specs, templates)
-        return self._refine_orientations(translated_state, outcome, monomer_specs, templates)
+        working_state = state
+        working_report = self.scorer.bridge_geometry_report(outcome, working_state, monomer_specs, templates)
+        refiners = (
+            self._scale_lateral_cell,
+            self._refine_translations,
+            self._refine_orientations,
+        )
+        for refiner in refiners:
+            proposal = refiner(working_state, outcome, monomer_specs, templates)
+            proposal_report = self.scorer.bridge_geometry_report(outcome, proposal, monomer_specs, templates)
+            if proposal_report.total_residual + 1e-9 < working_report.total_residual:
+                working_state = proposal
+                working_report = proposal_report
+        return working_state
 
     def _scale_lateral_cell(
         self,
@@ -238,7 +249,7 @@ class ContinuousOptimizer:
             update = translation_updates[instance_id]
             count = max(1, counts[instance_id])
             monomer_poses[instance_id] = Pose(
-                translation=add(pose.translation, scale(update, -1.0 / count)),
+                translation=add(pose.translation, scale(update, 1.0 / count)),
                 rotation_matrix=pose.rotation_matrix,
             )
 

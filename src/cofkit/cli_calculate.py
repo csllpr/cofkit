@@ -279,6 +279,15 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         ),
     )
     parser.add_argument(
+        "--pre-minimization-mode",
+        choices=("none", "md", "soft"),
+        default="md",
+        help=(
+            "Pre-minimization repair mode before the normal minimization stages. "
+            "Use soft for staged LAMMPS pair_style soft minimizations without MD. Default: md."
+        ),
+    )
+    parser.add_argument(
         "--pre-minimization-temperature",
         type=float,
         default=300.0,
@@ -301,6 +310,37 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         type=float,
         default=0.10,
         help="Per-step displacement cap in angstrom for the default prerun nve/limit stage. Default: 0.10.",
+    )
+    parser.add_argument(
+        "--soft-pre-minimization-cutoff",
+        type=float,
+        default=8.0,
+        help="Cutoff in angstrom for pre-minimization pair_style soft. Default: 8.0.",
+    )
+    parser.add_argument(
+        "--soft-pre-minimization-coefficients",
+        type=float,
+        nargs="+",
+        default=(1.0, 5.0, 20.0, 50.0),
+        metavar="A",
+        help="Repulsion coefficients for staged pair_style soft minimizations. Default: 1 5 20 50.",
+    )
+    parser.add_argument(
+        "--soft-pre-minimization-min-style",
+        default="cg",
+        help="LAMMPS minimizer for soft pre-minimization stages. Default: cg.",
+    )
+    parser.add_argument(
+        "--soft-pre-minimization-max-iterations",
+        type=int,
+        default=2000,
+        help="Maximum iterations per soft pre-minimization coefficient. Default: 2000.",
+    )
+    parser.add_argument(
+        "--soft-pre-minimization-max-evaluations",
+        type=int,
+        default=20000,
+        help="Maximum force evaluations per soft pre-minimization coefficient. Default: 20000.",
     )
     parser.add_argument(
         "--two-stage",
@@ -509,11 +549,17 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         coulomb_cutoff=args.coulomb_cutoff,
         ewald_precision=args.ewald_precision,
         position_restraint_force_constant=args.position_restraint_force_constant,
+        pre_minimization_mode=args.pre_minimization_mode,
         pre_minimization_steps=args.pre_minimization_steps,
         pre_minimization_temperature=args.pre_minimization_temperature,
         pre_minimization_damping=args.pre_minimization_damping,
         pre_minimization_seed=args.pre_minimization_seed,
         pre_minimization_displacement_limit=args.pre_minimization_displacement_limit,
+        soft_pre_minimization_cutoff=args.soft_pre_minimization_cutoff,
+        soft_pre_minimization_coefficients=tuple(args.soft_pre_minimization_coefficients),
+        soft_pre_minimization_min_style=args.soft_pre_minimization_min_style,
+        soft_pre_minimization_max_iterations=args.soft_pre_minimization_max_iterations,
+        soft_pre_minimization_max_evaluations=args.soft_pre_minimization_max_evaluations,
         two_stage_protocol=args.two_stage,
         stage2_position_restraint_force_constant=args.stage2_position_restraint_force_constant,
         energy_tolerance=args.energy_tolerance,

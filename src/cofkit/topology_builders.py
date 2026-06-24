@@ -4,10 +4,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .engine import COFProject
-from .indexed_topology_layouts import ExpandedIndexedTopology
 from .model import Candidate, MonomerSpec, ReactionTemplate
 from .planner import TopologyHint
-from .single_node_topologies import ExpandedSingleNodeTopology
 
 
 @dataclass(frozen=True)
@@ -16,7 +14,7 @@ class PairTopologyBuildRequest:
     monomers: tuple[MonomerSpec, MonomerSpec]
     template: ReactionTemplate
     topology: TopologyHint
-    expanded: ExpandedSingleNodeTopology | ExpandedIndexedTopology
+    expanded: object
     builder_family: str
     pair_mode: str
     connectivities: tuple[int, int]
