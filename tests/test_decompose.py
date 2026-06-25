@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator
+from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, CoarseValidationThresholds
 from cofkit.cli import main as cli_main
 from cofkit.decompose import decompose_cif_to_cofid
 from cofkit.reactions import ReactionLibrary
@@ -23,6 +23,13 @@ PPD = "Nc1ccc(N)cc1"
 BDBA = "OB(O)c1ccc(B(O)O)cc1"
 HHTP = "OC1=C(O)C=C2C(=C1)C1=CC(O)=C(O)C=C1C1=CC(O)=C(O)C=C21"
 TMT = "Cc1nc(C)nc(C)n1"
+BEX_D2H_ALDEHYDE = (
+    "C1C=C(N(C2C=CC(C3C4C(=NON=4)C(C4C=CC(N(C5C=CC(C=O)=CC=5)C5C=CC(C=O)=CC=5)=CC=4)=CC=3)=CC=2)"
+    "C2C=CC(C=O)=CC=2)C=CC=1C=O"
+)
+BEX_D2H_AMINE = (
+    "Nc1ccc(-c2ccc3c(c2)C(=C2c4cc(-c5ccc(N)cc5)ccc4-c4ccc(-c5ccc(N)cc5)cc42)c2cc(-c4ccc(N)cc4)ccc2-3)cc1"
+)
 
 
 def _generator(template_id: str = "imine_bridge") -> BatchStructureGenerator:
@@ -217,6 +224,35 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertTrue(result.ok, result.reason)
         self.assertEqual(result.cofid, summary.metadata["cofid"])
         self.assertEqual(result.metadata["n_imine_linkage_bonds"], 6)
+        self.assertEqual(result.metadata["n_unique_monomers"], 2)
+
+    def test_decompose_generated_decorated_bex_imine_recovers_monomers(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                topology_ids=("bex",),
+                stacking_ids=("AA",),
+                enumerate_all_topologies=False,
+                write_cif=True,
+                rdkit_num_conformers=1,
+                hard_hard_max_bridge_distance=10.0,
+                validation_thresholds=CoarseValidationThresholds(hard_hard_max_bridge_distance=10.0),
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = generator.generate_pair_candidate(
+                _record("bex_d2h_amine", BEX_D2H_AMINE, "amine", 4),
+                _record("bex_d2h_aldehyde", BEX_D2H_ALDEHYDE, "aldehyde", 4),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped_bex.cif")
+
+            result = decompose_cif_to_cofid(input_cif, topology="bex")
+
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.cofid, summary.metadata["cofid"])
+        self.assertEqual(result.metadata["n_imine_linkage_bonds"], 8)
         self.assertEqual(result.metadata["n_unique_monomers"], 2)
 
     def test_analyze_decompose_cli_prints_recovered_cofid(self):

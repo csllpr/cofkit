@@ -734,7 +734,7 @@ def _rdkit_bond_type(order: float):
 def _instance_id(label: str) -> str:
     if "_" not in label:
         return ""
-    return label.split("_", 1)[0]
+    return label.rsplit("_", 1)[0]
 
 
 def _orient_vinylene_atoms(first, second):
