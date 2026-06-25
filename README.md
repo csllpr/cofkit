@@ -34,7 +34,7 @@ uv run cofkit build single-pair \
   --output-dir out/cli_single_pair
 ```
 
-This autodetects the monomer roles, evaluates the default topology pool, writes `summary.json`, and exports CIFs under `cifs/valid`, `cifs/warning`, or `cifs/invalid`.
+This autodetects the monomer roles, evaluates the default topology pool, writes `summary.json`, and exports CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`.
 
 ## Main CLI Groups
 

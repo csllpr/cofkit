@@ -81,7 +81,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/scoring.py](../src/cofkit/scoring.py)
   - Candidate scoring and bridge-geometry metrics.
 - [src/cofkit/validation.py](../src/cofkit/validation.py)
-  - `valid` / `warning` / `hard_invalid` / `hard_hard_invalid` triage.
+  - `valid` / `warning` / `needs_optimization` / `hard_invalid` / `hard_hard_invalid` triage.
 - [src/cofkit/cif.py](../src/cofkit/cif.py)
   - CIF export, including realized inter-monomer bonds.
 - [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
@@ -119,11 +119,11 @@ Then go straight to the module that matches the task.
 2. library resolution via [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
 3. pair enumeration and topology selection in [src/cofkit/batch.py](../src/cofkit/batch.py)
 4. topology-family dispatch via [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
-5. validation-aware CIF writing into `cifs/valid`, `cifs/warning`, or `cifs/invalid`
+5. validation-aware CIF writing into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`; `hard_hard_invalid` structures stay manifest-only
 
 ### CIF decomposition from CLI
 
-1. `cofkit analyze decompose <CIF> --topology <TOKEN>` in [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py)
+1. `cofkit analyze decompose <CIF>` in [src/cofkit/cli_analyze.py](../src/cofkit/cli_analyze.py), with optional `--topology <TOKEN>` when the topology is known or auto-detection is ambiguous
 2. atom and bond extraction via [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
 3. linkage-specific cutting and monomer repair via [src/cofkit/decompose.py](../src/cofkit/decompose.py)
 4. COFid serialization through [src/cofkit/cofid.py](../src/cofkit/cofid.py)

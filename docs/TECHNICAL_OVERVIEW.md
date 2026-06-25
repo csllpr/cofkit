@@ -55,7 +55,7 @@ The batch binary-bridge pipeline builds on top of that:
 4. topology-family-aware candidate generation
 5. manifest / summary writing
 6. process-level pair execution by default in the practical batch CLIs (`8` workers unless overridden)
-7. CIF export into `cifs/valid`, `cifs/warning`, or `cifs/invalid`
+7. CIF export into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`
 8. block CIF export for `hard_hard_invalid` structures while still recording them in the manifest
 9. optional reclassification of a finished output tree with `examples/classify_batch_output.py`
 
@@ -84,14 +84,16 @@ The CIF exporter is deliberately honest as well: if a `MonomerSpec` carries atom
 
 ## CIF Decomposition
 
-`cofkit analyze decompose` is the first reverse path from an exported-style atomistic CIF back to COFid. The current implementation is deliberately narrow: it prefers explicit CIF bond loops, infers missing bond orders from local geometry when bond labels are present without type fields, falls back to periodic distance-based bond detection when bond loops are absent, identifies supported buildable binary-bridge linkages, cuts those bonds, repairs the recovered monomer classes back to canonical SMILES, and serializes the caller-supplied topology with the recovered monomer blocks.
+`cofkit analyze decompose` is the first reverse path from an atomistic CIF back to COFid. The current implementation is deliberately narrow: it prefers explicit CIF bond loops, infers missing bond orders from local geometry when bond labels are present without type fields, falls back to periodic distance-based bond detection when bond loops are absent, identifies supported buildable binary-bridge linkages, cuts those bonds, repairs the recovered monomer classes back to canonical SMILES, and serializes the recovered monomer blocks with either a caller-supplied topology or a conservatively auto-detected topology.
 
 Supported linkage codes currently match the public binary-bridge build surface: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`. Template-id aliases such as `hydrazone_bridge` and `keto_enamine_bridge` resolve to the canonical COFid linkage code.
 
-The CIF extraction layer is local to `cofkit` and uses `gemmi`; it does not add ASE as a runtime dependency. The decomposition logic was adapted from the deCOFpose project at <https://github.com/r-fedorov/deCOFpose>, then scoped to fit `cofkit`'s generated-style atomistic CIFs and COFid serializer.
+Topology auto-detection first trusts embedded `# COFid:` comments, then ranks cofkit repository topologies against the recovered periodic linkage graph. It can operate without explicit CIF bond loops and without cofkit-style atom labels, but it is not a general net recognizer: it remains tied to the supported binary-bridge decomposition chemistry and to topologies available in cofkit's local topology repository. Ambiguous candidates are reported instead of guessed, and decorated special cases such as `bex` may still need an explicit `--topology`.
+
+The CIF extraction layer is local to `cofkit` and uses `gemmi`; it does not add ASE as a runtime dependency. The decomposition logic was adapted from the deCOFpose project at <https://github.com/r-fedorov/deCOFpose>, then scoped to fit `cofkit`'s binary-bridge COFid serializer.
 
 ## COFid Validation
 
-`cofkit validate simple` wraps decomposition as a direct CIF-vs-COFid check. It forces distance-inferred bond detection, even when explicit CIF bond rows exist, then compares recovered monomer blocks and linkage against the supplied COFid. The supplied topology is only used as a placeholder for the decomposition result and is intentionally excluded from the comparison.
+`cofkit validate simple` wraps decomposition as a direct CIF-vs-COFid check. It forces distance-inferred bond detection, even when explicit CIF bond rows exist, then compares recovered monomer blocks and linkage against the supplied COFid. The supplied topology is only used as an explicit decomposition input and is intentionally excluded from the validation comparison.
 
 `cofkit validate optimize` runs the default LAMMPS optimization workflow first, then applies the same forced distance-inferred decomposition to the optimized CIF. This keeps the validation path focused on whether the post-optimization geometry still decomposes to the expected monomer/linkage identity.

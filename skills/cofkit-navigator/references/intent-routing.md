@@ -152,6 +152,7 @@ Primary artifacts:
 - `classification_manifest.jsonl`
 - `valid/manifest.jsonl`
 - `warning/manifest.jsonl`
+- `needs_optimization/manifest.jsonl`
 - `hard_invalid/manifest.jsonl`
 - `hard_hard_invalid/manifest.jsonl`
 
@@ -161,14 +162,15 @@ Use `analyze decompose`.
 
 ```bash
 cofkit analyze decompose \
-  <STRUCTURE_CIF> \
-  --topology hcb
+  <STRUCTURE_CIF>
 ```
 
 Useful variants:
 
 - add `--json` when you need recovered monomer details and diagnostic metadata
+- pass `--topology hcb` when the topology is known or when auto-detection is ambiguous
 - pass `--linkage hydrazone`, `--linkage azine`, `--linkage boest`, `--linkage bken`, or `--linkage vinylene` for non-imine CIFs
+- pass `--bond-mode distance` when explicit CIF bond rows should be ignored and periodic distance-based connectivity should be forced
 - template-id aliases such as `--linkage hydrazone_bridge` are accepted and normalize to the canonical COFid linkage code
 
 Requirements:
@@ -176,7 +178,7 @@ Requirements:
 - input must be one atomistic CIF for a supported binary-bridge structure
 - explicit `_geom_bond_*` connectivity is preferred; if bond labels are present without `_ccdc_geom_bond_type` / `_geom_bond_type`, bond orders are inferred, and if the bond loop is absent, connectivity falls back to periodic distance-based detection
 - current public decomposition support covers the buildable binary-bridge linkages: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`
-- topology must be supplied by the caller; automatic topology inference is not implemented
+- topology auto-detection is conservative and only ranks cofkit repository topologies from embedded COFid metadata or the recovered periodic linkage graph; pass `--topology` for ambiguous cases or decorated special cases such as `bex`
 
 Output:
 
@@ -477,7 +479,7 @@ Choose the API by how much the user already knows:
 - For `manifest.jsonl`, treat each line as one generated structure summary. Use it when the printed terminal summary is not enough.
 - For `summary.md`, treat it as the human-readable batch overview, not the detailed machine-readable source of truth.
 - For `combined_summary.json`, summarize each template separately and do not collapse per-template counts together without saying so.
-- For classification outputs, keep the four-way split explicit: `valid`, `warning`, `hard_invalid`, `hard_hard_invalid`.
+- For classification outputs, keep the five-way split explicit: `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`.
 - For `zeopp_report.json`, keep the point-probe baseline separate from any requested probe scans. Do not assume `probe_scans_successful` means no useful probe data exists; inspect individual scan status and parsed fields.
 - For `lammps_report.json`, report the optimized CIF path, atom/bond/angle/dihedral/improper counts, the forcefield backend, the key settings used, and any warnings.
 - For `graspa_widom_report.json`, report `raspa_backend`, selected components, `unit_cells`, parsed Widom energies, Henry coefficients, source data files, and warnings.

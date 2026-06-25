@@ -7,14 +7,17 @@ deCOFpose project: https://github.com/r-fedorov/deCOFpose
 from __future__ import annotations
 
 import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from math import sqrt
 from pathlib import Path
 from typing import Callable, Mapping
 
 from .bond_types import cif_type_to_bond_order, is_aromatic_bond_order
-from .cofid import COFidMonomer, canonicalize_smiles, serialize_cofid
+from .cofid import COFidMonomer, canonicalize_smiles, parse_cofid, read_cofid_from_cif, serialize_cofid
 from .decompose_cif import PeriodicCifAtoms, read_periodic_cif_atoms
+from .topologies import default_topology_repository
+from .topology_symmetry import expand_topology_definition
 
 try:
     from rdkit import Chem
@@ -41,7 +44,7 @@ class DecomposedMonomer:
 class CifDecompositionResult:
     status: str
     input_cif: str
-    topology: str
+    topology: str | None
     linkage: str
     cofid: str | None = None
     monomers: tuple[DecomposedMonomer, ...] = ()
@@ -100,18 +103,92 @@ class BondCandidate:
     atom_idx_2: int
     distance: float
     explicit_order: float | None = None
+    periodic_image: tuple[int, int, int] = (0, 0, 0)
 
 
 @dataclass(frozen=True)
 class BondedMolBuildResult:
     mol: object
     metadata: Mapping[str, object] = field(default_factory=dict)
+    candidates: tuple[BondCandidate, ...] = ()
+
+
+@dataclass(frozen=True)
+class TopologyDetectionCandidate:
+    topology: str
+    score: float
+    confidence: str
+    reason: str
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "topology": self.topology,
+            "score": self.score,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class TopologyDetectionResult:
+    status: str
+    selected_topology: str | None = None
+    confidence: str = "failed"
+    reason: str | None = None
+    candidates: tuple[TopologyDetectionCandidate, ...] = ()
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "success" and self.selected_topology is not None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "selected_topology": self.selected_topology,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "candidates": [candidate.to_dict() for candidate in self.candidates],
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class LinkageTopologyGraph:
+    node_connectivities: tuple[int, ...]
+    gain_edges: tuple[tuple[int, int, tuple[int, int, int]], ...]
+    dimensionality_hint: str | None
+
+    @property
+    def node_count(self) -> int:
+        return len(self.node_connectivities)
+
+    @property
+    def edge_count(self) -> int:
+        return len(self.gain_edges)
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "node_connectivities": list(self.node_connectivities),
+            "n_nodes": self.node_count,
+            "n_edges": self.edge_count,
+            "dimensionality_hint": self.dimensionality_hint,
+        }
+
+
+@dataclass(frozen=True)
+class LinkageDecompositionDetails:
+    monomers: tuple[DecomposedMonomer, ...]
+    metadata: dict[str, object]
+    topology_graph: LinkageTopologyGraph | None = None
 
 
 def decompose_cif_to_cofid(
     cif_path: str | Path,
     *,
-    topology: str,
+    topology: str | None = None,
     linkage: str = "imine",
     bond_mode: str = "auto",
 ) -> CifDecompositionResult:
@@ -133,7 +210,9 @@ def decompose_cif_to_cofid(
         if bond_mode not in {"auto", "distance"}:
             raise ValueError("bond_mode must be 'auto' or 'distance'")
         atoms = read_periodic_cif_atoms(input_path)
-        monomers, metadata = _decompose_linkage_atoms(atoms, spec, bond_mode=bond_mode)
+        details = _decompose_linkage_atoms(atoms, spec, bond_mode=bond_mode)
+        monomers = details.monomers
+        metadata = dict(details.metadata)
         if not monomers:
             return CifDecompositionResult(
                 status="skipped",
@@ -143,17 +222,38 @@ def decompose_cif_to_cofid(
                 reason=f"no {spec.linkage_code} monomers were recovered",
                 metadata=metadata,
             )
+        selected_topology = topology
+        if selected_topology is None:
+            detection = detect_cif_topology(
+                input_path,
+                linkage=spec.linkage_code,
+                bond_mode=bond_mode,
+                atoms=atoms,
+                details=details,
+            )
+            metadata["topology_detection"] = detection.to_dict()
+            if not detection.ok:
+                return CifDecompositionResult(
+                    status="skipped",
+                    input_cif=str(input_path),
+                    topology=None,
+                    linkage=spec.linkage_code,
+                    reason=detection.reason or "topology auto-detection failed",
+                    monomers=monomers,
+                    metadata=metadata,
+                )
+            selected_topology = str(detection.selected_topology)
         cofid_monomers = tuple(
             sorted(
                 (monomer.to_cofid_monomer() for monomer in monomers),
                 key=lambda monomer: (-monomer.connectivity, monomer.canonical_smiles),
             )
         )
-        cofid = serialize_cofid(monomers=cofid_monomers, topology=topology, linkage=spec.linkage_code)
+        cofid = serialize_cofid(monomers=cofid_monomers, topology=selected_topology, linkage=spec.linkage_code)
         return CifDecompositionResult(
             status="success",
             input_cif=str(input_path),
-            topology=topology,
+            topology=selected_topology,
             linkage=spec.linkage_code,
             cofid=cofid,
             monomers=monomers,
@@ -174,26 +274,35 @@ def _decompose_linkage_atoms(
     spec: LinkageDecompositionSpec,
     *,
     bond_mode: str,
-) -> tuple[tuple[DecomposedMonomer, ...], dict[str, object]]:
+) -> LinkageDecompositionDetails:
     if Chem is None:
         raise RuntimeError("RDKit is required for CIF decomposition.")
     build_result = _build_bonded_mol(atoms, bond_mode=bond_mode)
     mol = build_result.mol
     linkage_bond_indices = spec.marker(mol)
     if not linkage_bond_indices:
-        return (), {
+        return LinkageDecompositionDetails((), {
             **dict(build_result.metadata),
             "n_atoms": mol.GetNumAtoms(),
             "n_bonds": mol.GetNumBonds(),
             spec.metadata_key: 0,
-        }
+        })
 
     editable = Chem.RWMol(mol)
+    linkage_bond_atom_pairs: list[tuple[int, int]] = []
     for bond_idx in sorted(linkage_bond_indices, reverse=True):
         bond = editable.GetBondWithIdx(bond_idx)
+        linkage_bond_atom_pairs.append((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()))
         editable.RemoveBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
 
-    fragments = Chem.GetMolFrags(editable.GetMol(), asMols=True, sanitizeFrags=False)
+    cut_mol = editable.GetMol()
+    fragment_members = Chem.GetMolFrags(cut_mol, asMols=False, sanitizeFrags=False)
+    atom_to_fragment = {
+        int(atom_idx): fragment_idx
+        for fragment_idx, atom_indices in enumerate(fragment_members)
+        for atom_idx in atom_indices
+    }
+    fragments = Chem.GetMolFrags(cut_mol, asMols=True, sanitizeFrags=False)
     monomers_by_key: dict[tuple[str, str, int], tuple[DecomposedMonomer, int]] = {}
     skipped_fragments = 0
     for fragment in fragments:
@@ -222,7 +331,13 @@ def _decompose_linkage_atoms(
             key=lambda monomer: (-monomer.connectivity, monomer.canonical_smiles),
         )
     )
-    return monomers, {
+    topology_graph = _linkage_topology_graph(
+        mol,
+        linkage_bond_atom_pairs,
+        atom_to_fragment,
+        build_result.candidates,
+    )
+    metadata = {
         **dict(build_result.metadata),
         "n_atoms": mol.GetNumAtoms(),
         "n_bonds": mol.GetNumBonds(),
@@ -231,6 +346,9 @@ def _decompose_linkage_atoms(
         "n_unique_monomers": len(monomers),
         "n_skipped_fragments": skipped_fragments,
     }
+    if topology_graph is not None:
+        metadata["topology_graph"] = topology_graph.to_metadata()
+    return LinkageDecompositionDetails(monomers, metadata, topology_graph)
 
 
 def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> BondedMolBuildResult:
@@ -277,7 +395,366 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
             **metadata,
             "n_bond_orders_inferred": inferred_order_count,
         },
+        candidates=tuple(candidates),
     )
+
+
+def detect_cif_topology(
+    cif_path: str | Path,
+    *,
+    linkage: str = "imine",
+    bond_mode: str = "auto",
+    atoms: PeriodicCifAtoms | None = None,
+    details: LinkageDecompositionDetails | None = None,
+) -> TopologyDetectionResult:
+    input_path = Path(cif_path)
+    comment_cofid = read_cofid_from_cif(input_path)
+    if comment_cofid:
+        try:
+            parsed = parse_cofid(comment_cofid)
+        except ValueError:
+            pass
+        else:
+            return TopologyDetectionResult(
+                status="success",
+                selected_topology=parsed.topology,
+                confidence="exact",
+                reason="topology recovered from embedded COFid comment",
+                metadata={"source": "cofid_comment", "cofid": comment_cofid},
+            )
+
+    spec = _resolve_linkage_spec(linkage)
+    if spec is None:
+        return TopologyDetectionResult(
+            status="failed",
+            reason=f"unsupported linkage {linkage!r}",
+            metadata={"source": "linkage_decomposition"},
+        )
+
+    try:
+        if details is None:
+            atoms = atoms or read_periodic_cif_atoms(input_path)
+            details = _decompose_linkage_atoms(atoms, spec, bond_mode=bond_mode)
+    except Exception as exc:
+        return TopologyDetectionResult(
+            status="failed",
+            reason=f"{type(exc).__name__}: {exc}",
+            metadata={"source": "linkage_decomposition"},
+        )
+
+    graph = details.topology_graph
+    if graph is None or graph.node_count == 0 or graph.edge_count == 0:
+        return TopologyDetectionResult(
+            status="failed",
+            reason="could not extract a periodic linkage graph from the CIF",
+            metadata={
+                "source": "linkage_graph",
+                "decomposition": dict(details.metadata),
+            },
+        )
+
+    candidates = _rank_topology_candidates(graph)
+    if not candidates:
+        return TopologyDetectionResult(
+            status="failed",
+            reason="no topology candidates matched the recovered linkage graph connectivities",
+            metadata={"source": "topology_repository", "topology_graph": graph.to_metadata()},
+        )
+
+    best = candidates[0]
+    runner_up = candidates[1] if len(candidates) > 1 else None
+    decisive = best.confidence in {"exact", "high"} and (
+        runner_up is None or best.score - runner_up.score >= 0.05
+    )
+    if decisive:
+        return TopologyDetectionResult(
+            status="success",
+            selected_topology=best.topology,
+            confidence=best.confidence,
+            reason=best.reason,
+            candidates=candidates[:10],
+            metadata={"source": "periodic_linkage_graph", "topology_graph": graph.to_metadata()},
+        )
+
+    ambiguous = ", ".join(candidate.topology for candidate in candidates[:5])
+    return TopologyDetectionResult(
+        status="ambiguous",
+        confidence=best.confidence,
+        reason=f"topology auto-detection is ambiguous among: {ambiguous}",
+        candidates=candidates[:10],
+        metadata={"source": "periodic_linkage_graph", "topology_graph": graph.to_metadata()},
+    )
+
+
+def _linkage_topology_graph(
+    mol,
+    linkage_bond_atom_pairs: list[tuple[int, int]],
+    atom_to_fragment: Mapping[int, int],
+    candidates: tuple[BondCandidate, ...],
+) -> LinkageTopologyGraph | None:
+    candidate_by_pair = {
+        frozenset((candidate.atom_idx_1, candidate.atom_idx_2)): candidate
+        for candidate in candidates
+    }
+    participating_fragments: set[int] = set()
+    raw_edges: list[tuple[int, int, tuple[int, int, int]]] = []
+    for atom_idx_1, atom_idx_2 in linkage_bond_atom_pairs:
+        fragment_1 = atom_to_fragment.get(atom_idx_1)
+        fragment_2 = atom_to_fragment.get(atom_idx_2)
+        if fragment_1 is None or fragment_2 is None or fragment_1 == fragment_2:
+            continue
+        candidate = candidate_by_pair.get(frozenset((atom_idx_1, atom_idx_2)))
+        image = (0, 0, 0) if candidate is None else candidate.periodic_image
+        if candidate is not None and (candidate.atom_idx_1, candidate.atom_idx_2) != (atom_idx_1, atom_idx_2):
+            image = _negate_image(image)
+        participating_fragments.update((fragment_1, fragment_2))
+        raw_edges.append((fragment_1, fragment_2, image))
+
+    if not raw_edges:
+        return None
+
+    node_map = {fragment_id: index for index, fragment_id in enumerate(sorted(participating_fragments))}
+    degrees: Counter[int] = Counter()
+    edges: list[tuple[int, int, tuple[int, int, int]]] = []
+    for fragment_1, fragment_2, image in raw_edges:
+        start = node_map[fragment_1]
+        end = node_map[fragment_2]
+        degrees[start] += 1
+        degrees[end] += 1
+        if end < start:
+            start, end = end, start
+            image = _negate_image(image)
+        edges.append((start, end, image))
+
+    dimensionality_hint = "2D" if all(edge[2][2] == 0 for edge in edges) else "3D"
+    return LinkageTopologyGraph(
+        node_connectivities=tuple(int(degrees[index]) for index in range(len(node_map))),
+        gain_edges=tuple(sorted(edges)),
+        dimensionality_hint=dimensionality_hint,
+    )
+
+
+def _rank_topology_candidates(graph: LinkageTopologyGraph) -> tuple[TopologyDetectionCandidate, ...]:
+    repository = default_topology_repository()
+    entries = repository.list_index(dimensionality=graph.dimensionality_hint)
+    if not entries:
+        entries = repository.list_index()
+
+    observed_connectivities = tuple(sorted(set(graph.node_connectivities)))
+    ranked: list[TopologyDetectionCandidate] = []
+    for entry in entries:
+        entry_connectivities = tuple(sorted(set(int(value) for value in entry.node_connectivities)))
+        if entry_connectivities != observed_connectivities:
+            continue
+        score = 0.35
+        reasons = ["node connectivities match"]
+        metadata: dict[str, object] = {
+            "node_connectivities": list(entry.node_connectivities),
+            "dimensionality": entry.dimensionality,
+        }
+        if graph.dimensionality_hint == entry.dimensionality:
+            score += 0.10
+            reasons.append("dimensionality hint matches")
+        try:
+            topology_graph = _topology_definition_graph(repository.load(entry.id))
+        except Exception as exc:
+            metadata["topology_load_error"] = f"{type(exc).__name__}: {exc}"
+            topology_graph = None
+
+        confidence = "low"
+        if topology_graph is not None:
+            metadata["definition_graph"] = topology_graph.to_metadata()
+            if graph.node_count == topology_graph.node_count and graph.edge_count == topology_graph.edge_count:
+                if _periodic_graphs_match(graph, topology_graph, compare_gains=True):
+                    score += 0.55
+                    confidence = "exact"
+                    reasons.append("periodic quotient graph matches")
+                elif _periodic_graphs_match(graph, topology_graph, compare_gains=False):
+                    score += 0.45
+                    confidence = "high"
+                    reasons.append("quotient graph matches without periodic-gain comparison")
+            else:
+                if topology_graph.node_count > 0 and graph.node_count % topology_graph.node_count == 0:
+                    score += 0.10
+                    reasons.append("observed node count is a topology supercell multiple")
+                if topology_graph.edge_count > 0 and graph.edge_count % topology_graph.edge_count == 0:
+                    score += 0.10
+                    reasons.append("observed edge count is a topology supercell multiple")
+                if _degree_histogram_matches_supercell(graph, topology_graph):
+                    score += 0.20
+                    reasons.append("degree histogram is consistent with a topology supercell")
+        if confidence == "low":
+            if score >= 0.85:
+                confidence = "high"
+            elif score >= 0.65:
+                confidence = "medium"
+        ranked.append(
+            TopologyDetectionCandidate(
+                topology=entry.id,
+                score=round(score, 6),
+                confidence=confidence,
+                reason="; ".join(reasons),
+                metadata=metadata,
+            )
+        )
+    return tuple(sorted(ranked, key=lambda candidate: (-candidate.score, candidate.topology)))
+
+
+def _topology_definition_graph(definition) -> LinkageTopologyGraph:
+    expanded = expand_topology_definition(definition)
+    node_index_by_id = {node.id: index for index, node in enumerate(expanded.node_sites)}
+    edges: list[tuple[int, int, tuple[int, int, int]]] = []
+    for edge in expanded.edge_sites:
+        start = node_index_by_id[edge.start_node_id]
+        end = node_index_by_id[edge.end_node_id]
+        image = _pad_image(edge.end_image)
+        if end < start:
+            start, end = end, start
+            image = _negate_image(image)
+        edges.append((start, end, image))
+    return LinkageTopologyGraph(
+        node_connectivities=tuple(int(node.connectivity) for node in expanded.node_sites),
+        gain_edges=tuple(sorted(edges)),
+        dimensionality_hint=definition.dimensionality,
+    )
+
+
+def _periodic_graphs_match(
+    observed: LinkageTopologyGraph,
+    expected: LinkageTopologyGraph,
+    *,
+    compare_gains: bool,
+) -> bool:
+    if observed.node_count != expected.node_count or observed.edge_count != expected.edge_count:
+        return False
+    if sorted(observed.node_connectivities) != sorted(expected.node_connectivities):
+        return False
+    if observed.node_count > 10:
+        return False
+
+    expected_pair_counts = _pair_edge_counter(expected.gain_edges)
+    expected_edge_counter = _edge_counter(expected.gain_edges, compare_gains=compare_gains)
+    observed_nodes = sorted(
+        range(observed.node_count),
+        key=lambda index: (-observed.node_connectivities[index], index),
+    )
+    expected_by_connectivity: dict[int, list[int]] = defaultdict(list)
+    for index, connectivity in enumerate(expected.node_connectivities):
+        expected_by_connectivity[int(connectivity)].append(index)
+
+    mapping: dict[int, int] = {}
+    used_expected: set[int] = set()
+
+    def backtrack(position: int) -> bool:
+        if position == len(observed_nodes):
+            mapped_edges = []
+            for start, end, image in observed.gain_edges:
+                mapped_start = mapping[start]
+                mapped_end = mapping[end]
+                mapped_image = image
+                if mapped_end < mapped_start:
+                    mapped_start, mapped_end = mapped_end, mapped_start
+                    mapped_image = _negate_image(mapped_image)
+                mapped_edges.append((mapped_start, mapped_end, mapped_image))
+            return _edge_counter(tuple(mapped_edges), compare_gains=compare_gains) == expected_edge_counter
+
+        observed_node = observed_nodes[position]
+        connectivity = int(observed.node_connectivities[observed_node])
+        for expected_node in expected_by_connectivity.get(connectivity, ()):
+            if expected_node in used_expected:
+                continue
+            if not _partial_mapping_is_consistent(
+                observed,
+                expected_pair_counts,
+                mapping,
+                observed_node,
+                expected_node,
+            ):
+                continue
+            mapping[observed_node] = expected_node
+            used_expected.add(expected_node)
+            if backtrack(position + 1):
+                return True
+            used_expected.remove(expected_node)
+            del mapping[observed_node]
+        return False
+
+    return backtrack(0)
+
+
+def _partial_mapping_is_consistent(
+    observed: LinkageTopologyGraph,
+    expected_pair_counts: Counter[tuple[int, int]],
+    mapping: Mapping[int, int],
+    observed_node: int,
+    expected_node: int,
+) -> bool:
+    for start, end, _image in observed.gain_edges:
+        other = None
+        if start == observed_node and end in mapping:
+            other = end
+        elif end == observed_node and start in mapping:
+            other = start
+        if other is None:
+            continue
+        mapped_pair = tuple(sorted((expected_node, mapping[other])))
+        observed_count = sum(
+            1
+            for edge_start, edge_end, _ in observed.gain_edges
+            if {edge_start, edge_end} == {observed_node, other}
+        )
+        if expected_pair_counts[mapped_pair] < observed_count:
+            return False
+    return True
+
+
+def _degree_histogram_matches_supercell(
+    observed: LinkageTopologyGraph,
+    expected: LinkageTopologyGraph,
+) -> bool:
+    observed_counts = Counter(observed.node_connectivities)
+    expected_counts = Counter(expected.node_connectivities)
+    if not expected_counts:
+        return False
+    multiplier: int | None = None
+    for connectivity, expected_count in expected_counts.items():
+        observed_count = observed_counts.get(connectivity, 0)
+        if observed_count == 0 or observed_count % expected_count != 0:
+            return False
+        current = observed_count // expected_count
+        if multiplier is None:
+            multiplier = current
+        elif multiplier != current:
+            return False
+    return sum(observed_counts.values()) == sum(expected_counts.values()) * (multiplier or 0)
+
+
+def _pair_edge_counter(edges: tuple[tuple[int, int, tuple[int, int, int]], ...]) -> Counter[tuple[int, int]]:
+    return Counter(tuple(sorted((start, end))) for start, end, _image in edges)
+
+
+def _edge_counter(
+    edges: tuple[tuple[int, int, tuple[int, int, int]], ...],
+    *,
+    compare_gains: bool,
+) -> Counter[tuple[object, ...]]:
+    if compare_gains:
+        return Counter((start, end, image) for start, end, image in edges)
+    return Counter((start, end) for start, end, _image in edges)
+
+
+def _pad_image(image: tuple[int, ...]) -> tuple[int, int, int]:
+    if len(image) >= 3:
+        return (int(image[0]), int(image[1]), int(image[2]))
+    if len(image) == 2:
+        return (int(image[0]), int(image[1]), 0)
+    if len(image) == 1:
+        return (int(image[0]), 0, 0)
+    return (0, 0, 0)
+
+
+def _negate_image(image: tuple[int, int, int]) -> tuple[int, int, int]:
+    return (-image[0], -image[1], -image[2])
 
 
 def _bond_candidates_from_cif_or_geometry(
@@ -317,6 +794,8 @@ def _explicit_bond_candidates(
 ) -> tuple[tuple[BondCandidate, ...], int]:
     bond_types = tuple(atoms.info.get("_ccdc_geom_bond_type") or atoms.info.get("_geom_bond_type") or ())
     bond_distances = tuple(atoms.info.get("_geom_bond_distance") or ())
+    symmetries_1 = tuple(atoms.info.get("_geom_bond_site_symmetry_1") or ())
+    symmetries_2 = tuple(atoms.info.get("_geom_bond_site_symmetry_2") or ())
     candidates: list[BondCandidate] = []
     added_pairs: set[frozenset[int]] = set()
     for row_idx, (label_1, label_2) in enumerate(zip(bond_labels_1, bond_labels_2)):
@@ -331,9 +810,30 @@ def _explicit_bond_candidates(
             continue
         order = cif_type_to_bond_order(bond_types[row_idx] if row_idx < len(bond_types) else None)
         distance = _explicit_bond_distance(atoms, idx_1, idx_2, bond_distances, row_idx)
-        candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=order))
+        image = _explicit_bond_periodic_image(symmetries_1, symmetries_2, row_idx)
+        candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=order, periodic_image=image))
         added_pairs.add(key)
     return tuple(candidates), sum(1 for candidate in candidates if candidate.explicit_order is None)
+
+
+def _explicit_bond_periodic_image(
+    symmetries_1: tuple[str, ...],
+    symmetries_2: tuple[str, ...],
+    row_idx: int,
+) -> tuple[int, int, int]:
+    first = _parse_p1_symmetry_shift(symmetries_1[row_idx] if row_idx < len(symmetries_1) else None)
+    second = _parse_p1_symmetry_shift(symmetries_2[row_idx] if row_idx < len(symmetries_2) else None)
+    return (second[0] - first[0], second[1] - first[1], second[2] - first[2])
+
+
+def _parse_p1_symmetry_shift(value: object | None) -> tuple[int, int, int]:
+    text = "" if value is None else str(value).strip().strip("'\"")
+    if not text or text in {".", "?", "1"}:
+        return (0, 0, 0)
+    match = re.match(r"^1_([0-9])([0-9])([0-9])$", text)
+    if match is None:
+        return (0, 0, 0)
+    return tuple(int(component) - 5 for component in match.groups())  # type: ignore[return-value]
 
 
 def _explicit_bond_distance(
@@ -356,10 +856,71 @@ def _distance_inferred_bond_candidates(atoms: PeriodicCifAtoms) -> tuple[BondCan
     for idx_1, symbol_1 in enumerate(atoms.symbols):
         for idx_2 in range(idx_1 + 1, len(atoms.symbols)):
             symbol_2 = atoms.symbols[idx_2]
-            distance = _minimum_image_distance(atoms, idx_1, idx_2)
+            image, distance = _minimum_image_bond_geometry(atoms, idx_1, idx_2)
             if _is_plausible_bond_distance(symbol_1, symbol_2, distance):
-                candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=None))
-    return tuple(candidates)
+                candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=None, periodic_image=image))
+    return _prune_distance_inferred_bond_candidates(atoms, tuple(candidates))
+
+
+def _prune_distance_inferred_bond_candidates(
+    atoms: PeriodicCifAtoms,
+    candidates: tuple[BondCandidate, ...],
+) -> tuple[BondCandidate, ...]:
+    if not candidates:
+        return ()
+    active: set[int] = set(range(len(candidates)))
+    incident: dict[int, set[int]] = defaultdict(set)
+    for candidate_index, candidate in enumerate(candidates):
+        incident[candidate.atom_idx_1].add(candidate_index)
+        incident[candidate.atom_idx_2].add(candidate_index)
+
+    changed = True
+    while changed:
+        changed = False
+        for atom_idx, symbol in enumerate(atoms.symbols):
+            max_degree = _max_distance_inferred_degree(symbol)
+            active_incident = [candidate_index for candidate_index in incident.get(atom_idx, ()) if candidate_index in active]
+            while len(active_incident) > max_degree:
+                remove_index = max(
+                    active_incident,
+                    key=lambda candidate_index: (
+                        candidates[candidate_index].distance,
+                        _distance_prune_priority(atoms, candidates[candidate_index], atom_idx),
+                    ),
+                )
+                active.remove(remove_index)
+                active_incident.remove(remove_index)
+                changed = True
+    return tuple(candidate for candidate_index, candidate in enumerate(candidates) if candidate_index in active)
+
+
+def _max_distance_inferred_degree(symbol: str) -> int:
+    atomic_number = _atomic_number(symbol)
+    return {
+        1: 1,
+        5: 3,
+        6: 4,
+        7: 4,
+        8: 2,
+        9: 1,
+        15: 5,
+        16: 6,
+        17: 1,
+        35: 1,
+        53: 1,
+    }.get(atomic_number, 6)
+
+
+def _distance_prune_priority(
+    atoms: PeriodicCifAtoms,
+    candidate: BondCandidate,
+    atom_idx: int,
+) -> int:
+    other_idx = candidate.atom_idx_2 if candidate.atom_idx_1 == atom_idx else candidate.atom_idx_1
+    pair = frozenset((_atomic_number(atoms.symbols[atom_idx]), _atomic_number(atoms.symbols[other_idx])))
+    if pair in {frozenset((6, 7)), frozenset((6, 8)), frozenset((6, 6))}:
+        return 0
+    return 1
 
 
 def _ring_bond_keys(mol) -> set[frozenset[int]]:
@@ -383,8 +944,18 @@ def _infer_bond_order(mol, candidate: BondCandidate, ring_bonds: set[frozenset[i
     distance = candidate.distance
     ring_key = frozenset((candidate.atom_idx_1, candidate.atom_idx_2))
 
-    same_instance = atom_1.GetProp("instance_id") == atom_2.GetProp("instance_id")
-    if same_instance and ring_key in ring_bonds and pair in {frozenset((6, 6)), frozenset((6, 7)), frozenset((6, 16))}:
+    instance_1 = atom_1.GetProp("instance_id")
+    instance_2 = atom_2.GetProp("instance_id")
+    same_instance = bool(instance_1 and instance_2 and instance_1 == instance_2)
+    known_different_instance = bool(instance_1 and instance_2 and instance_1 != instance_2)
+    if pair == frozenset((6, 7)):
+        if distance <= 1.22:
+            return 3.0
+        if known_different_instance and distance <= 1.48:
+            return 2.0
+        if not same_instance and distance <= 1.34:
+            return 2.0
+    if ring_key in ring_bonds and pair in {frozenset((6, 6)), frozenset((6, 7)), frozenset((6, 16))}:
         if 1.20 <= distance <= 1.50:
             return 1.5
 
@@ -395,15 +966,11 @@ def _infer_bond_order(mol, candidate: BondCandidate, ring_bonds: set[frozenset[i
     if pair == frozenset((6, 8)):
         return 2.0 if distance <= 1.30 else 1.0
     if pair == frozenset((6, 7)):
-        if distance <= 1.22:
-            return 3.0
-        if not same_instance and distance <= 1.48:
-            return 2.0
         return 2.0 if distance <= 1.28 else 1.0
     if pair == frozenset((6, 6)):
         if distance <= 1.24:
             return 3.0
-        if not same_instance and distance <= 1.46:
+        if known_different_instance and distance <= 1.46:
             return 2.0
         return 2.0 if distance <= 1.37 else 1.0
     return 1.0
@@ -433,7 +1000,9 @@ def _mark_carbon_hetero_double_linkage_bonds(
         atomic_nums = {first.GetAtomicNum(), second.GetAtomicNum()}
         if atomic_nums != {6, hetero_atomic_num}:
             continue
-        if first.GetProp("instance_id") == second.GetProp("instance_id"):
+        first_instance = first.GetProp("instance_id")
+        second_instance = second.GetProp("instance_id")
+        if first_instance and second_instance and first_instance == second_instance:
             continue
         carbon = first if first.GetAtomicNum() == 6 else second
         hetero = first if first.GetAtomicNum() == hetero_atomic_num else second
@@ -488,7 +1057,9 @@ def _mark_vinylene_linkage_bonds(mol) -> tuple[int, ...]:
         second = bond.GetEndAtom()
         if first.GetAtomicNum() != 6 or second.GetAtomicNum() != 6:
             continue
-        if first.GetProp("instance_id") == second.GetProp("instance_id"):
+        first_instance = first.GetProp("instance_id")
+        second_instance = second.GetProp("instance_id")
+        if first_instance and second_instance and first_instance == second_instance:
             continue
         aldehyde, activated = _orient_vinylene_atoms(first, second)
         aldehyde.SetProp("cofkit_decompose_role", "aldehyde")
@@ -507,7 +1078,9 @@ def _mark_boronate_ester_linkage_bonds(mol) -> tuple[int, ...]:
         atomic_nums = {first.GetAtomicNum(), second.GetAtomicNum()}
         if atomic_nums != {5, 8}:
             continue
-        if first.GetProp("instance_id") == second.GetProp("instance_id"):
+        first_instance = first.GetProp("instance_id")
+        second_instance = second.GetProp("instance_id")
+        if first_instance and second_instance and first_instance == second_instance:
             continue
         boron = first if first.GetAtomicNum() == 5 else second
         oxygen = first if first.GetAtomicNum() == 8 else second
@@ -653,12 +1226,21 @@ def _has_double_bonded_oxygen(atom) -> bool:
 
 
 def _minimum_image_distance(atoms: PeriodicCifAtoms, idx_1: int, idx_2: int) -> float:
+    return _minimum_image_bond_geometry(atoms, idx_1, idx_2)[1]
+
+
+def _minimum_image_bond_geometry(
+    atoms: PeriodicCifAtoms,
+    idx_1: int,
+    idx_2: int,
+) -> tuple[tuple[int, int, int], float]:
     frac_1 = atoms.fractional_positions[idx_1]
     frac_2 = atoms.fractional_positions[idx_2]
     delta = tuple(frac_2[axis] - frac_1[axis] for axis in range(3))
-    minimum_delta = tuple(value - round(value) for value in delta)
+    image = tuple(-int(round(value)) for value in delta)
+    minimum_delta = tuple(delta[axis] + image[axis] for axis in range(3))
     cartesian = _fractional_delta_to_cartesian(atoms.cell_basis, minimum_delta)  # type: ignore[arg-type]
-    return _norm(cartesian)
+    return image, _norm(cartesian)
 
 
 def _fractional_delta_to_cartesian(cell_basis: tuple[Vec3, Vec3, Vec3], delta: Vec3) -> Vec3:
@@ -841,5 +1423,8 @@ _DECOMPOSITION_LINKAGE_ALIASES: Mapping[str, LinkageDecompositionSpec] = {
 __all__ = [
     "CifDecompositionResult",
     "DecomposedMonomer",
+    "TopologyDetectionCandidate",
+    "TopologyDetectionResult",
+    "detect_cif_topology",
     "decompose_cif_to_cofid",
 ]

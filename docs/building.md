@@ -125,12 +125,12 @@ The generated library under `examples/default_monomers_library` contains grouped
 Single-pair runs write:
 
 - `summary.json`
-- exported CIFs under `cifs/valid`, `cifs/warning`, or `cifs/invalid`
+- exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`
 
 Batch runs write:
 
 - `manifest.jsonl`
 - `summary.md`
-- exported CIFs under `cifs/valid`, `cifs/warning`, or `cifs/invalid`
+- exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`
 
 Structures classified as `hard_hard_invalid` are recorded in the manifest, but CIF export is blocked and `cif_export_blocked = true` is set in the per-structure metadata.

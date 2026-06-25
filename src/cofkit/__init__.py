@@ -6,7 +6,14 @@ from .batch import (
 from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
 from .build_workflows import BuildWorkflowDefinition, BuildWorkflowRegistry, builtin_build_workflow_registry
 from .cif import CIFExportResult, CIFWriter, candidate_to_cif, write_candidate_cif
-from .decompose import CifDecompositionResult, DecomposedMonomer, decompose_cif_to_cofid
+from .decompose import (
+    CifDecompositionResult,
+    DecomposedMonomer,
+    TopologyDetectionCandidate,
+    TopologyDetectionResult,
+    decompose_cif_to_cofid,
+    detect_cif_topology,
+)
 from .decompose_cif import PeriodicCifAtoms, prepare_periodic_cif_atoms, read_periodic_cif_atoms
 from .graspa import (
     AVAILABLE_WIDOM_COMPONENTS,
@@ -209,6 +216,8 @@ __all__ = [
     "COFidValidationResult",
     "ContinuousOptimizer",
     "DecomposedMonomer",
+    "TopologyDetectionCandidate",
+    "TopologyDetectionResult",
     "DEFAULT_LAMMPS_BINARY",
     "BridgeEventMetrics",
     "BatchOutputClassificationSummary",
@@ -333,6 +342,7 @@ __all__ = [
     "default_motif_kind_registry",
     "default_topology_repository",
     "decompose_cif_to_cofid",
+    "detect_cif_topology",
     "discover_rcsr_archives",
     "find_latest_gcmc_movie_snapshot",
     "get_topology_hint",

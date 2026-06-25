@@ -111,3 +111,22 @@ print(summary.manifest_path)
 ```
 
 The older `run_imine_batch(...)` convenience method remains available and delegates to the generic binary-bridge path with `template_id="imine_bridge"`.
+
+## CIF Decomposition
+
+Use `decompose_cif_to_cofid` for supported binary-bridge atomistic CIFs. Pass `topology=` when you know the topology, or omit it to use conservative topology detection from an embedded COFid comment or the recovered periodic linkage graph. The default `bond_mode="auto"` prefers explicit CIF bonds and falls back to distance inference; use `bond_mode="distance"` to force distance-inferred connectivity.
+
+```python
+from cofkit import decompose_cif_to_cofid, detect_cif_topology
+
+detection = detect_cif_topology("out/tapb_tfb.cif", linkage="imine")
+print(detection.status, detection.selected_topology, detection.confidence)
+
+result = decompose_cif_to_cofid("out/tapb_tfb.cif", linkage="imine", bond_mode="auto")
+if result.ok:
+    print(result.cofid)
+else:
+    print(result.reason)
+```
+
+Topology detection only ranks topologies available in cofkit's local topology repository and remains scoped to the currently supported binary-bridge decomposition chemistries. Ambiguous cases return diagnostics instead of guessing; pass `topology="bex"` or another explicit topology when needed.

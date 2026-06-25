@@ -52,13 +52,13 @@
 - `cofkit.decompose_cif`
   - dependency-light CIF atom and explicit-bond extraction for decomposition workflows, using `gemmi` rather than ASE for the primary path
 - `cofkit.decompose`
-  - explicit-bond CIF decomposition into recovered monomer SMILES and a COFid for the buildable binary-bridge linkages; this logic is adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`
+  - CIF decomposition into recovered monomer SMILES and a COFid for the buildable binary-bridge linkages, with optional conservative topology detection from embedded COFid metadata or the recovered periodic linkage graph; this logic is adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`
 - `cofkit.engine`
   - orchestration layer that combines planning, assignment, product-graph construction, initial embedding, optimization, and candidate scoring
 - `cofkit.batch`
   - batch binary-bridge generation over monomer libraries, including RDKit-backed monomer caching, detector-backed library autodiscovery, `3+3` / `3+2` / `4+4` / `4+2` / `6+2` pair handling, symmetry-expanded one-node topology builders, indexed-topology fallback, manifest output, process-level pair execution, and CIF export enabled by default
 - `cofkit.validation`
-  - coarse post-generation validation / triage into `valid`, `warning`, `hard_invalid`, and `hard_hard_invalid` buckets using bridge metrics plus CIF-backed network and clash checks
+  - coarse post-generation validation / triage into `valid`, `warning`, `needs_optimization`, `hard_invalid`, and `hard_hard_invalid` buckets using bridge metrics plus CIF-backed network and clash checks
 - `cofkit.graspa`
   - EQeq-backed charge assignment plus packaged gRASPA/RASPA2 Monte Carlo run preparation, execution, and result parsing for one CIF
 - `cofkit.cli`
@@ -89,9 +89,9 @@
 5. route supported one-node and indexed-topology pair cases through the shared topology-builder registry used by both batch generation and direct single-pair input
 6. write `manifest.jsonl` and `summary.md`
 7. run pair generation through a process pool by default in the practical batch CLIs (`8` workers unless overridden)
-8. export one CIF per successful topology-specific structure by default, routing it into `cifs/valid`, `cifs/warning`, or `cifs/invalid`
+8. export one CIF per successful topology-specific structure by default, routing it into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`
 9. block CIF export for `hard_hard_invalid` structures while still recording them in manifests
-10. optionally reclassify a finished output tree into `valid`, `warning`, `hard_invalid`, and `hard_hard_invalid`
+10. optionally reclassify a finished output tree into `valid`, `warning`, `needs_optimization`, `hard_invalid`, and `hard_hard_invalid`
 
 ## CLI flow
 

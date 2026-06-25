@@ -107,14 +107,15 @@ def _add_decompose_parser(subparsers) -> None:
         help="Decompose one atomistic CIF and emit a COFid when supported.",
         description=(
             "Decompose one atomistic CIF into COFid monomer blocks. Current support covers "
-            "the buildable binary-bridge linkages with explicit CIF bonds; topology must be supplied by the caller."
+            "the buildable binary-bridge linkages. When --topology is omitted, cofkit attempts "
+            "to infer the topology from embedded COFid metadata or the recovered periodic linkage graph."
         ),
     )
     parser.add_argument("cif_path", help="Input CIF file to decompose.")
     parser.add_argument(
         "--topology",
-        required=True,
-        help="Topology token to place in the COFid, for example hcb or dia.",
+        default=None,
+        help="Topology token to place in the COFid, for example hcb or dia. When omitted, topology is auto-detected.",
     )
     parser.add_argument(
         "--linkage",
@@ -123,6 +124,12 @@ def _add_decompose_parser(subparsers) -> None:
             "Linkage token to analyze. Supported canonical values: imine, hydrazone, azine, "
             "boest, bken, vinylene. Template-id aliases such as hydrazone_bridge are also accepted."
         ),
+    )
+    parser.add_argument(
+        "--bond-mode",
+        choices=("auto", "distance"),
+        default="auto",
+        help="Bond source for decomposition. Default: auto uses explicit CIF bonds when present and distance inference otherwise.",
     )
     parser.add_argument(
         "--json",
@@ -137,6 +144,7 @@ def _run_decompose(args: argparse.Namespace) -> None:
         args.cif_path,
         topology=args.topology,
         linkage=args.linkage,
+        bond_mode=args.bond_mode,
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
