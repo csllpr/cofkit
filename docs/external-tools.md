@@ -58,16 +58,18 @@ That fork reads `data/ionizationdata.dat` and `data/chargecenters.dat` relative 
 
 Use one of these repositories:
 
-- preferred: `https://github.com/csllpr/gRASPA`
-- fallback upstream: `https://github.com/snurr-group/gRASPA`
+- official upstream: `https://github.com/snurr-group/gRASPA`
+- WSL2 / high-concurrency fork: `https://github.com/csllpr/gRASPA`
 - expected binary: `nvc_main.x`
 
-The preferred fork carries local performance tweaks for higher-throughput GPU scheduling. gRASPA is source-first, so the exact build depends on your NVIDIA HPC SDK / CUDA installation. The checked-in `NVC_COMPILE` script in both repositories is the reference starting point.
+Use the official upstream repository for normal gRASPA runs; it generally tracks upstream features and has better single-job efficiency. Use the `csllpr/gRASPA` fork when you need WSL2 compatibility or high-throughput calculation, especially more than four concurrent tasks per GPU. That fork includes performance tweaks that improve high-concurrency efficiency, but those changes can reduce single-job efficiency.
+
+gRASPA is source-first, so the exact build depends on your NVIDIA HPC SDK / CUDA installation. The checked-in `NVC_COMPILE` script in both repositories is the reference starting point.
 
 Typical flow:
 
 ```bash
-git clone https://github.com/csllpr/gRASPA.git
+git clone https://github.com/snurr-group/gRASPA.git
 cd gRASPA
 # Edit NVC_COMPILE if your NVIDIA HPC SDK / CUDA paths differ.
 bash NVC_COMPILE

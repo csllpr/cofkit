@@ -90,6 +90,19 @@ The Python package works without external simulation binaries for build and basi
 
 The CLI automatically loads the nearest `.env` file by searching upward from the current working directory. Variables already present in the shell take precedence.
 
+## Credits And References
+
+Several parts of `cofkit` were developed with reference to existing reticular chemistry and simulation tooling:
+
+- The topology-guided structure assembly strategy refers to ToBaCCo: <https://github.com/tobacco-mofs/tobacco>
+- CIF decomposition uses the deCOFpose codebase as an important reference: <https://github.com/r-fedorov/deCOFpose>
+- LAMMPS input creation follows workflows adapted from LAMMPS Interface: <https://github.com/peteboyd/lammps_interface>
+
+Co-author contributions:
+
+- Shijie Tao ([@taoshijie111](https://github.com/taoshijie111)) contributed performance optimization and bug fixes for the decomposition module, plus general testing.
+- Ao Sun ([@weijin04](https://github.com/weijin04)) participated in adaptation and bug fixes of the LAMMPS Interface workflow, enabling smoother integration.
+
 ## Versioning
 
 `cofkit` uses calendar versioning in `YYYY.M.D` form for normal releases, for example `2026.4.7`. If a second release is needed on the same day, use a PEP 440 post-release such as `2026.4.7.post1`.
