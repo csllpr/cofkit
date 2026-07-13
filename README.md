@@ -78,6 +78,7 @@ Legacy flat aliases such as `cofkit single-pair` and `cofkit classify-output` ar
 
 Start with the task page that matches what you are doing:
 
+- [Jupyter tutorial series](tutorials/README.md): Conda setup, a first build, selected topology/linkage examples, and Zeo++ pore analysis
 - [Getting started](docs/getting-started.md): install, verification, first commands
 - [Building COFs](docs/building.md): single-pair, batch, topology, stacking, default libraries
 - [Analysis and validation](docs/analysis-validation.md): classify, decompose, validate, Zeo++
