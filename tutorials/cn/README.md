@@ -2,6 +2,8 @@
 
 语言：[English](../en/README.md) | **中文**
 
+平台：**Bash（Linux/macOS/WSL）** | [原生 Windows PowerShell](../windows/cn/README.md)
+
 请从仓库根目录启动 Jupyter，并按以下顺序学习：
 
 1. [`01_environment_and_first_build.ipynb`](01_environment_and_first_build.ipynb) 创建或更新 `cofkit` Conda 环境、注册其 Jupyter 内核，并首次构建 TAPB–TFB 亚胺 COF。

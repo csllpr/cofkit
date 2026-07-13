@@ -4,7 +4,7 @@ Use this directory as the canonical documentation set for `cofkit`.
 
 ## User Workflows
 
-- [Bilingual Jupyter tutorial series](../tutorials/README.md): English and Chinese CLI notebooks with commented Python API equivalents
+- [Cross-platform bilingual Jupyter tutorials](../tutorials/README.md): English and Chinese Bash/PowerShell notebooks with commented Python API equivalents
 - [Getting started](getting-started.md): repository setup, verification, first build, CLI shape
 - [Building COFs](building.md): single-pair generation, batch generation, all binary bridges, default library rebuilds, topology and stacking options
 - [Analysis and validation](analysis-validation.md): output classification, CIF-to-COFid decomposition, COFid validation, Zeo++ pore analysis

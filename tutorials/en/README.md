@@ -2,6 +2,8 @@
 
 Language: **English** | [中文](../cn/README.md)
 
+Platform: **Bash (Linux/macOS/WSL)** | [Native Windows PowerShell](../windows/en/README.md)
+
 Run Jupyter from the repository root and follow the notebooks in order:
 
 1. [`01_environment_and_first_build.ipynb`](01_environment_and_first_build.ipynb) creates or updates the `cofkit` Conda environment, registers its kernel, and builds a first TAPB–TFB imine COF.
