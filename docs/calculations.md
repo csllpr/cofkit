@@ -22,7 +22,7 @@ cofkit calculate lammps-optimize \
 
 Important controls:
 
-- `--forcefield {uff,dreiding}` selects the force-field backend
+- `--forcefield` selects a registered force-field family or stable parameter-set ID
 - `--charge-model {none,eqeq}` controls charge staging; default is `eqeq`
 - `--pair-cutoff`, `--coulomb-cutoff`, and `--ewald-precision` tune nonbonded settings
 - `--pre-minimization-steps` and `--pre-minimization-*` tune the restrained prerun
@@ -32,6 +32,12 @@ Important controls:
 - `--timeout-seconds` caps the LAMMPS subprocess
 
 For real optimization work, prefer `--forcefield dreiding`. `UFF` remains available for compatibility and comparison runs, but should be treated as experimental support.
+
+## Force-Field Metadata
+
+Framework force fields are registered as versioned parameter-set implementations rather than bare family names. Each registry entry records a stable ID and aliases, primary citations, checksummed parameter artifacts, atom-typing implementation, charge assumptions, nonbonded mixing rules, intramolecular scaling, element coverage, validation status, and parameter-data license status. The packaged registry is available through `cofkit.load_packaged_forcefield_metadata()` and `cofkit.resolve_forcefield_metadata()`.
+
+Current default IDs are `uff-openbabel-3.1.0-cofkit-1.0` and `dreiding-standard-1990-cofkit-1.0`. Family selectors such as `uff` and `dreiding` resolve to their registered defaults; stable IDs can be used anywhere a framework force field is selected. Calculation reports embed the complete resolved metadata snapshot. Monte Carlo run directories also contain `framework_forcefield_metadata.json`, separate from guest provenance in `guest_forcefield_metadata.json`.
 
 ## EQeq
 
@@ -82,7 +88,7 @@ Packaged guest parameters carry explicit family, source, and framework-compatibi
 
 External parameterized guests use repeated `--guest-bundle path/to/guest.json` flags and are selected by bundle `name` or alias. Guest-bundle schema version 2 requires top-level `parameter_family`, `parameter_source`, and `compatible_framework_forcefields` fields; incompatible selections fail before a backend is executed. Legacy version 1 bundles must be upgraded rather than silently treated as compatible.
 
-Outputs include staged `eqeq/` and `widom/` directories, backend logs, raw `Output/**/*.data`, `widom/Output/results.csv`, `widom/guest_forcefield_metadata.json`, and `graspa_widom_report.json`.
+Outputs include staged `eqeq/` and `widom/` directories, backend logs, raw `Output/**/*.data`, `widom/Output/results.csv`, `widom/framework_forcefield_metadata.json`, `widom/guest_forcefield_metadata.json`, and `graspa_widom_report.json`.
 
 ## Single-Component Isotherms
 
@@ -100,7 +106,7 @@ cofkit calculate graspa-isotherm \
 
 Use exactly one `--component NAME` and one or more repeated `--pressure PA` values. `--fugacity-coefficient` accepts a positive float or `PR-EOS`; for RASPA2, `PR-EOS` omits an explicit fugacity coefficient so RASPA2 can use its internal calculation.
 
-Outputs include staged `eqeq/`, `isotherm/framework.cif`, one `isotherm/pressure_*/` directory per pressure point with `guest_forcefield_metadata.json`, `isotherm/results.csv`, and `graspa_isotherm_report.json`.
+Outputs include staged `eqeq/`, `isotherm/framework.cif`, one `isotherm/pressure_*/` directory per pressure point with framework and guest force-field metadata JSON files, `isotherm/results.csv`, and `graspa_isotherm_report.json`.
 
 ## Mixture Adsorption
 
@@ -119,7 +125,7 @@ cofkit calculate graspa-mixture \
 
 Mixtures require at least two repeated `--component NAME:FRACTION` values and one or more pressure points. The wrapper computes adsorbed mole fractions and pairwise selectivities using `(x_i / x_j) / (y_i / y_j)`.
 
-Outputs include `mixture/component_results.csv`, `mixture/selectivity_results.csv`, staged per-pressure backend directories with `guest_forcefield_metadata.json`, and `graspa_mixture_report.json`.
+Outputs include `mixture/component_results.csv`, `mixture/selectivity_results.csv`, staged per-pressure backend directories with framework and guest force-field metadata JSON files, and `graspa_mixture_report.json`.
 
 ## Hybrid MD/MC
 

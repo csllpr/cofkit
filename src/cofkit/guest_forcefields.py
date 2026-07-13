@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from .forcefields import ForceFieldMetadataError, resolve_forcefield_metadata, supported_forcefield_families
 
-SUPPORTED_GUEST_FORCEFIELDS = ("dreiding", "uff")
+
+SUPPORTED_GUEST_FORCEFIELDS = supported_forcefield_families()
 
 
 class GuestForceFieldMetadataError(ValueError):
@@ -23,7 +25,11 @@ class GuestForceFieldMetadata:
     provenance_note: str | None = None
 
     def supports(self, forcefield: str) -> bool:
-        return forcefield.strip().lower().replace("-", "_") in self.compatible_framework_forcefields
+        try:
+            family = resolve_forcefield_metadata(forcefield).family
+        except ForceFieldMetadataError:
+            family = forcefield.strip().lower().replace("-", "_")
+        return family in self.compatible_framework_forcefields
 
     def to_dict(self) -> dict[str, object]:
         result: dict[str, object] = {

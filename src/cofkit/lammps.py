@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -25,6 +24,12 @@ from .graspa import (
     assign_eqeq_charges_to_cif,
 )
 from .guest_restart import LammpsGuestRestartState, LammpsGuestSite, LammpsGuestSnapshotAtom
+from .forcefields import (
+    ForceFieldMetadataError,
+    packaged_forcefield_artifact_path,
+    resolve_forcefield_metadata,
+    supported_forcefield_families,
+)
 
 try:
     import pandas as pd
@@ -57,7 +62,7 @@ except ImportError:  # pragma: no cover - exercised in environments without pyma
 
 COFKIT_LMP_ENV_VAR = "COFKIT_LMP_PATH"
 DEFAULT_LAMMPS_BINARY: Path | None = None
-_SUPPORTED_FORCEFIELDS = ("uff", "dreiding")
+_SUPPORTED_FORCEFIELDS = supported_forcefield_families()
 _SUPPORTED_CHARGE_MODELS = ("none", "eqeq")
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
 _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic", "spin_none"}
@@ -66,7 +71,6 @@ _MIN_MODIFY_FIRE_INTEGRATOR_OPTIONS = {"eulerimplicit", "verlet", "leapfrog", "e
 _PRE_MINIMIZATION_MODE_OPTIONS = {"none", "md", "soft"}
 _BOX_RELAX_MODE_OPTIONS = {"auto", "iso", "aniso", "tri"}
 _UNSUPPORTED_BOX_RELAX_MIN_STYLES = {"quickmin", "fire", "hftn", "cg/kk"}
-_PINNED_UFF_PARAMETER_SHA256 = "934cb0e2ee1ef2102b2ae8dba74b1e9853b299bd7e26f695fb1fe6e55727bdc5"
 _DREIDING_SUPPORTED_ELEMENT_TYPES = frozenset(DREIDING_FRAMEWORK_TYPE_BY_ELEMENT)
 _DREIDING_TYPE_BY_UFF_TYPE = {
     "H_": "H_",
@@ -253,6 +257,7 @@ class LammpsOptimizationResult:
     eqeq_stderr_log_path: str | None = None
     eqeq_json_output_path: str | None = None
     warnings: tuple[str, ...] = ()
+    forcefield_metadata: dict[str, object] = field(default_factory=dict)
 
 
     def to_dict(self) -> dict[str, object]:
@@ -302,6 +307,7 @@ class LammpsMdResult:
     n_total_atoms: int = 0
     guest_components: tuple[str, ...] = ()
     guest_restart_source_path: str | None = None
+    forcefield_metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -612,6 +618,7 @@ def optimize_cif_with_lammps(
         settings=effective_settings,
         forcefield_backend=prepared.forcefield_backend,
         parameter_sources=parameter_sources,
+        forcefield_metadata=resolve_forcefield_metadata(effective_settings.forcefield).to_dict(),
         charge_model=resolved_charge_model,
         n_charged_atoms=prepared.n_charged_atoms,
         net_charge=prepared.net_charge,
@@ -789,6 +796,7 @@ def run_lammps_md_on_cif(
         settings=settings,
         forcefield_backend=prepared.forcefield_backend,
         parameter_sources=parameter_sources,
+        forcefield_metadata=resolve_forcefield_metadata(settings.forcefield).to_dict(),
         charge_model=resolved_charge_model,
         n_charged_atoms=prepared.n_charged_atoms,
         net_charge=prepared.net_charge,
@@ -1003,7 +1011,10 @@ def _build_optimization_model(
 
 
 def _normalize_forcefield_name(forcefield: str) -> str:
-    return forcefield.strip().lower().replace("-", "_")
+    try:
+        return resolve_forcefield_metadata(forcefield).family
+    except ForceFieldMetadataError:
+        return forcefield.strip().lower().replace("-", "_")
 
 
 def _normalize_charge_model_name(charge_model: str) -> str:
@@ -1979,21 +1990,21 @@ def _guest_template_angle_degrees(template, left_index: int, center_index: int, 
 
 
 def _bundled_uff_parameter_file() -> Path:
-    path = Path(__file__).resolve().parent / "data" / "forcefields" / "openbabel" / "3.1.0" / "UFF.prm"
-    if not path.is_file():
-        raise LammpsConfigurationError(f"Bundled UFF.prm is missing from the package data: {path}")
-    return path
+    try:
+        return packaged_forcefield_artifact_path("uff", "parameter_table")
+    except ForceFieldMetadataError as exc:
+        raise LammpsConfigurationError(str(exc)) from exc
 
 
 @lru_cache(maxsize=1)
 def _bundled_uff_parameter_sha256() -> str:
-    digest = hashlib.sha256(_bundled_uff_parameter_file().read_bytes()).hexdigest()
-    if digest != _PINNED_UFF_PARAMETER_SHA256:
-        raise LammpsConfigurationError(
-            "Bundled UFF.prm does not match the pinned Open Babel reference hash. "
-            f"Expected {_PINNED_UFF_PARAMETER_SHA256}, observed {digest}."
-        )
-    return digest
+    _bundled_uff_parameter_file()
+    metadata = resolve_forcefield_metadata("uff")
+    return next(
+        artifact.sha256
+        for artifact in metadata.parameter_source.artifacts
+        if artifact.role == "parameter_table"
+    )
 
 
 def _require_uff_support() -> None:

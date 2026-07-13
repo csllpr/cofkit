@@ -50,7 +50,10 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(
                     cif_path,
                     output_dir=output_dir,
-                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
+                    settings=LammpsOptimizationSettings(
+                        forcefield="uff-openbabel-3.1.0-cofkit-1.0",
+                        charge_model="none",
+                    ),
                 )
 
             self.assertTrue(Path(result.optimized_cif).is_file())
@@ -72,7 +75,9 @@ class LammpsTests(unittest.TestCase):
             report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
             self.assertEqual(report["n_angles"], 1)
             self.assertEqual(report["n_dihedrals"], 0)
-            self.assertEqual(report["settings"]["forcefield"], "uff")
+            self.assertEqual(report["settings"]["forcefield"], "uff-openbabel-3.1.0-cofkit-1.0")
+            self.assertEqual(result.forcefield_metadata["id"], "uff-openbabel-3.1.0-cofkit-1.0")
+            self.assertEqual(report["forcefield_metadata"], result.forcefield_metadata)
             self.assertEqual(report["n_atom_types"], 2)
             self.assertTrue(report["atom_type_symbols"]["1"])
 
@@ -300,7 +305,12 @@ class LammpsTests(unittest.TestCase):
         bundled_path = lammps_module._bundled_uff_parameter_file()
         self.assertTrue(bundled_path.is_file())
         digest = hashlib.sha256(bundled_path.read_bytes()).hexdigest()
-        self.assertEqual(digest, lammps_module._PINNED_UFF_PARAMETER_SHA256)
+        metadata = lammps_module.resolve_forcefield_metadata("uff")
+        parameter_artifact = next(
+            artifact for artifact in metadata.parameter_source.artifacts if artifact.role == "parameter_table"
+        )
+        self.assertEqual(digest, parameter_artifact.sha256)
+        self.assertEqual(digest, lammps_module._bundled_uff_parameter_sha256())
 
     def test_lammps_script_includes_fix_modify_for_restraint_energy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -557,7 +567,7 @@ class LammpsTests(unittest.TestCase):
                             "--output-dir",
                             str(output_dir),
                             "--forcefield",
-                            "uff",
+                            "uff-openbabel-3.1.0-cofkit-1.0",
                             "--json",
                         ]
                     )
@@ -566,7 +576,11 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(report["output_dir"], str(output_dir.resolve()))
             self.assertEqual(report["n_bonds"], 2)
             self.assertEqual(report["n_angles"], 1)
-            self.assertEqual(report["settings"]["forcefield"], "uff")
+            self.assertEqual(
+                report["settings"]["forcefield"],
+                "uff-openbabel-3.1.0-cofkit-1.0",
+            )
+            self.assertEqual(report["forcefield_metadata"]["family"], "uff")
             self.assertEqual(report["settings"]["charge_model"], "eqeq")
             self.assertTrue(report["settings"]["two_stage_protocol"])
             self.assertTrue(report["settings"]["relax_cell"])

@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
@@ -23,6 +23,12 @@ from .guest_forcefields import (
     load_packaged_guest_forcefield_metadata,
     packaged_guest_forcefield_catalog,
 )
+from .forcefields import (
+    ForceFieldMetadataError,
+    packaged_forcefield_artifact_path,
+    resolve_forcefield_metadata,
+    supported_forcefield_families,
+)
 
 
 COFKIT_EQEQ_ENV_VAR = "COFKIT_EQEQ_PATH"
@@ -32,7 +38,7 @@ DEFAULT_EQEQ_BINARY: Path | None = None
 DEFAULT_GRASPA_BINARY: Path | None = None
 DEFAULT_RASPA2_BINARY: Path | None = None
 _SUPPORTED_EQEQ_METHODS = {"ewald", "nonperiodic"}
-_SUPPORTED_GRASPA_FORCEFIELDS = ("dreiding", "uff")
+_SUPPORTED_GRASPA_FORCEFIELDS = supported_forcefield_families()
 SUPPORTED_RASPA_BACKENDS = ("graspa", "raspa2")
 DEFAULT_RASPA_BACKEND = "graspa"
 PACKAGED_GUEST_FORCEFIELD_METADATA = load_packaged_guest_forcefield_metadata()
@@ -299,6 +305,7 @@ class GraspaWidomResult:
     widom_settings: GraspaWidomSettings
     component_results: tuple[GraspaWidomComponentResult, ...]
     warnings: tuple[str, ...] = ()
+    framework_forcefield_metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -326,6 +333,10 @@ class GraspaWidomResult:
             "unit_cells": list(self.unit_cells),
             "eqeq_settings": self.eqeq_settings.to_dict(),
             "widom_settings": self.widom_settings.to_dict(),
+            "framework_forcefield_metadata": self.framework_forcefield_metadata,
+            "framework_forcefield_metadata_paths": [
+                str(Path(self.widom_run_dir) / "framework_forcefield_metadata.json")
+            ],
             "guest_forcefield_metadata_paths": [
                 str(Path(self.widom_run_dir) / "guest_forcefield_metadata.json")
             ],
@@ -482,6 +493,7 @@ class GraspaIsothermResult:
     isotherm_settings: GraspaIsothermSettings
     point_results: tuple[GraspaIsothermPointResult, ...]
     warnings: tuple[str, ...] = ()
+    framework_forcefield_metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -504,6 +516,11 @@ class GraspaIsothermResult:
             "unit_cells": list(self.unit_cells),
             "eqeq_settings": self.eqeq_settings.to_dict(),
             "isotherm_settings": self.isotherm_settings.to_dict(),
+            "framework_forcefield_metadata": self.framework_forcefield_metadata,
+            "framework_forcefield_metadata_paths": [
+                str(Path(point.pressure_run_dir) / "framework_forcefield_metadata.json")
+                for point in self.point_results
+            ],
             "guest_forcefield_metadata_paths": [
                 str(Path(point.pressure_run_dir) / "guest_forcefield_metadata.json") for point in self.point_results
             ],
@@ -713,6 +730,7 @@ class GraspaMixtureResult:
     mixture_settings: GraspaMixtureSettings
     point_results: tuple[GraspaMixturePointResult, ...]
     warnings: tuple[str, ...] = ()
+    framework_forcefield_metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -736,6 +754,11 @@ class GraspaMixtureResult:
             "unit_cells": list(self.unit_cells),
             "eqeq_settings": self.eqeq_settings.to_dict(),
             "mixture_settings": self.mixture_settings.to_dict(),
+            "framework_forcefield_metadata": self.framework_forcefield_metadata,
+            "framework_forcefield_metadata_paths": [
+                str(Path(point.pressure_run_dir) / "framework_forcefield_metadata.json")
+                for point in self.point_results
+            ],
             "guest_forcefield_metadata_paths": [
                 str(Path(point.pressure_run_dir) / "guest_forcefield_metadata.json") for point in self.point_results
             ],
@@ -1031,6 +1054,7 @@ def run_graspa_widom_workflow(
         widom_settings=widom_settings,
         component_results=component_results,
         warnings=tuple(warnings),
+        framework_forcefield_metadata=resolve_forcefield_metadata(widom_settings.forcefield).to_dict(),
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2, allow_nan=False), encoding="utf-8")
     return result
@@ -1226,6 +1250,7 @@ def run_graspa_isotherm_workflow(
         isotherm_settings=isotherm_settings,
         point_results=tuple(point_results),
         warnings=tuple(warnings),
+        framework_forcefield_metadata=resolve_forcefield_metadata(isotherm_settings.forcefield).to_dict(),
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2, allow_nan=False), encoding="utf-8")
     return result
@@ -1447,6 +1472,7 @@ def run_graspa_mixture_workflow(
         mixture_settings=mixture_settings,
         point_results=tuple(point_results),
         warnings=tuple(warnings),
+        framework_forcefield_metadata=resolve_forcefield_metadata(mixture_settings.forcefield).to_dict(),
     )
     report_path.write_text(json.dumps(result.to_dict(), indent=2, allow_nan=False), encoding="utf-8")
     return result
@@ -1503,7 +1529,10 @@ def _validate_eqeq_settings(settings: EqeqChargeSettings) -> None:
 
 
 def _normalize_graspa_forcefield_name(forcefield: str) -> str:
-    return forcefield.strip().lower().replace("-", "_")
+    try:
+        return resolve_forcefield_metadata(forcefield).family
+    except ForceFieldMetadataError:
+        return forcefield.strip().lower().replace("-", "_")
 
 
 def _normalize_raspa_backend_name(backend: str) -> str:
@@ -1933,11 +1962,17 @@ def _copy_widom_template_assets(
         _render_graspa_force_field_mixing_rules(forcefield, guest_mixing_rule_rows=guest_mixing_rule_rows),
         encoding="utf-8",
     )
+    framework_forcefield_metadata = resolve_forcefield_metadata(forcefield)
+    (destination_dir / "framework_forcefield_metadata.json").write_text(
+        json.dumps(framework_forcefield_metadata.to_dict(), indent=2) + "\n",
+        encoding="utf-8",
+    )
     (destination_dir / "guest_forcefield_metadata.json").write_text(
         json.dumps(
             {
                 "schema_version": 1,
-                "framework_forcefield": _normalize_graspa_forcefield_name(forcefield),
+                "framework_forcefield": framework_forcefield_metadata.family,
+                "framework_forcefield_id": framework_forcefield_metadata.id,
                 "guests": [
                     _guest_forcefield_metadata_dict(component, guest_bundles) for component in components
                 ],
@@ -2025,10 +2060,10 @@ def _row_type_token(row: str) -> str | None:
 
 
 def _bundled_uff_parameter_file() -> Path:
-    path = Path(__file__).resolve().parent / "data" / "forcefields" / "openbabel" / "3.1.0" / "UFF.prm"
-    if not path.is_file():
-        raise GraspaConfigurationError(f"Packaged UFF.prm is missing from the package data: {path}")
-    return path
+    try:
+        return packaged_forcefield_artifact_path("uff", "parameter_table")
+    except ForceFieldMetadataError as exc:
+        raise GraspaConfigurationError(str(exc)) from exc
 
 
 @dataclass(frozen=True)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from .forcefields import supported_forcefield_selectors
 from .graspa import (
     AVAILABLE_WIDOM_COMPONENTS,
     COFKIT_GRASPA_ENV_VAR,
@@ -41,6 +42,7 @@ from .lammps import (
 
 
 _GRASPA_COMPONENT_NAME_MAP = {name.casefold(): name for name in AVAILABLE_WIDOM_COMPONENTS}
+_FORCEFIELD_SELECTORS = supported_forcefield_selectors()
 
 
 def add_calculate_group(subparsers) -> None:
@@ -185,7 +187,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--forcefield",
         default="uff",
-        choices=("uff", "dreiding"),
+        choices=_FORCEFIELD_SELECTORS,
         help=(
             "Forcefield backend to use for the LAMMPS data file. Default: uff."
         ),
@@ -671,9 +673,9 @@ def _add_graspa_widom_parser(subparsers) -> None:
     _add_guest_bundle_arguments(parser)
     parser.add_argument(
         "--forcefield",
-        choices=("dreiding", "uff"),
+        choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
-        help="Framework forcefield asset family; selected guests must declare compatibility. Default: dreiding.",
+        help="Registered framework forcefield; selected guests must declare family compatibility. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -942,9 +944,9 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
     _add_guest_bundle_arguments(parser)
     parser.add_argument(
         "--forcefield",
-        choices=("dreiding", "uff"),
+        choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
-        help="Framework forcefield asset family; selected guests must declare compatibility. Default: dreiding.",
+        help="Registered framework forcefield; selected guests must declare family compatibility. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -1187,9 +1189,9 @@ def _add_graspa_mixture_parser(subparsers) -> None:
     _add_guest_bundle_arguments(parser)
     parser.add_argument(
         "--forcefield",
-        choices=("dreiding", "uff"),
+        choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
-        help="Framework forcefield asset family; selected guests must declare compatibility. Default: dreiding.",
+        help="Registered framework forcefield; selected guests must declare family compatibility. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -1527,7 +1529,7 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--lammps-forcefield",
-        choices=("dreiding", "uff"),
+        choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
         help="LAMMPS framework forcefield for each MD segment. Default: dreiding.",
     )
@@ -1539,7 +1541,7 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--raspa-forcefield",
-        choices=("dreiding", "uff"),
+        choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
         help="Framework forcefield asset family for GCMC segments. Default: dreiding.",
     )

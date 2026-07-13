@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "forcefields": [
+    {
+      "id": "uff-openbabel-3.1.0-cofkit-1.0",
+      "family": "uff",
+      "variant": "openbabel-3.1.0-cofkit",
+      "version": "1.0",
+      "display_name": "UFF (Open Babel 3.1.0 / cofkit)",
+      "default_for_family": true,
+      "aliases": [],
+      "scope": "framework",
+      "parameter_source": {
+        "description": "UFF parameters from the bundled Open Babel 3.1.0 UFF.prm table; cofkit evaluates bonded terms with its LAMMPS exporter.",
+        "citations": [
+          {
+            "role": "forcefield_definition",
+            "title": "UFF, a Full Periodic Table Force Field for Molecular Mechanics and Molecular Dynamics Simulations",
+            "authors": "Rappe, Casewit, Colwell, Goddard, and Skiff",
+            "year": 1992,
+            "doi": "10.1021/ja00051a040",
+            "url": "https://doi.org/10.1021/ja00051a040"
+          }
+        ],
+        "artifacts": [
+          {
+            "role": "parameter_table",
+            "path": "data/forcefields/openbabel/3.1.0/UFF.prm",
+            "sha256": "934cb0e2ee1ef2102b2ae8dba74b1e9853b299bd7e26f695fb1fe6e55727bdc5",
+            "provenance": "Bundled Open Babel 3.1.0 UFF.prm; its header states that the numerical parameters came from the RDKit implementation."
+          }
+        ]
+      },
+      "atom_typing": [
+        {
+          "backends": ["lammps"],
+          "method": "openbabel_uff",
+          "implementation": "Open Babel OBForceField UFF typing over cofkit's explicit periodic CIF bond graph",
+          "implementation_version": "runtime",
+          "requires_explicit_bond_orders": true,
+          "notes": [
+            "The bundled table pins numerical parameters, while atom typing uses the installed Open Babel runtime."
+          ]
+        },
+        {
+          "backends": ["raspa"],
+          "method": "element_representative",
+          "implementation": "cofkit's bounded element-to-UFF-type map for rigid RASPA frameworks",
+          "implementation_version": "cofkit-1.0",
+          "requires_explicit_bond_orders": false,
+          "notes": [
+            "Only the explicitly registered backend elements are accepted; coordination-dependent UFF typing is not performed."
+          ]
+        }
+      ],
+      "electrostatics": {
+        "native_charge_model": "none",
+        "supported_charge_sources": ["none", "input_cif", "eqeq"],
+        "notes": [
+          "UFF does not prescribe partial charges; input-CIF and EQeq charges are cofkit workflow additions."
+        ]
+      },
+      "nonbonded": {
+        "potential": "lennard-jones-12-6",
+        "epsilon_mixing_rule": "geometric",
+        "sigma_mixing_rule": "arithmetic",
+        "pair_coefficient_mode_by_backend": {
+          "lammps": "explicit_pairij",
+          "raspa": "mixing_rules"
+        },
+        "notes": [
+          "This records cofkit's current PairIJ construction rather than claiming every UFF implementation uses the same export convention."
+        ]
+      },
+      "intramolecular_scaling": {
+        "backends": ["lammps"],
+        "lj_12": 0.0,
+        "lj_13": 0.0,
+        "lj_14": 1.0,
+        "coulomb_12": 0.0,
+        "coulomb_13": 0.0,
+        "coulomb_14": 1.0
+      },
+      "coverage": {
+        "parameterized_elements": [
+          "Ac", "Ag", "Al", "Am", "Ar", "As", "At", "Au", "B", "Ba", "Be", "Bi", "Bk", "Br",
+          "C", "Ca", "Cd", "Ce", "Cf", "Cl", "Cm", "Co", "Cr", "Cs", "Cu", "Dy", "Er", "Es",
+          "Eu", "F", "Fe", "Fm", "Fr", "Ga", "Gd", "Ge", "H", "He", "Hf", "Hg", "Ho", "I", "In",
+          "Ir", "K", "Kr", "La", "Li", "Lu", "Md", "Mg", "Mn", "Mo", "N", "Na", "Nb", "Nd", "Ne",
+          "Ni", "No", "Np", "O", "Os", "P", "Pa", "Pb", "Pd", "Pm", "Po", "Pr", "Pt", "Pu", "Ra",
+          "Rb", "Re", "Rh", "Rn", "Ru", "S", "Sb", "Sc", "Se", "Si", "Sm", "Sn", "Sr", "Ta", "Tb",
+          "Tc", "Te", "Th", "Ti", "Tl", "Tm", "U", "V", "W", "Xe", "Y", "Yb", "Zn", "Zr"
+        ],
+        "validated_linkages": [],
+        "linkage_validation_status": "not_validated",
+        "backend_elements": {
+          "lammps": [
+            "Ac", "Ag", "Al", "Am", "Ar", "As", "At", "Au", "B", "Ba", "Be", "Bi", "Bk", "Br",
+            "C", "Ca", "Cd", "Ce", "Cf", "Cl", "Cm", "Co", "Cr", "Cs", "Cu", "Dy", "Er", "Es",
+            "Eu", "F", "Fe", "Fm", "Fr", "Ga", "Gd", "Ge", "H", "He", "Hf", "Hg", "Ho", "I", "In",
+            "Ir", "K", "Kr", "La", "Li", "Lu", "Md", "Mg", "Mn", "Mo", "N", "Na", "Nb", "Nd", "Ne",
+            "Ni", "No", "Np", "O", "Os", "P", "Pa", "Pb", "Pd", "Pm", "Po", "Pr", "Pt", "Pu", "Ra",
+            "Rb", "Re", "Rh", "Rn", "Ru", "S", "Sb", "Sc", "Se", "Si", "Sm", "Sn", "Sr", "Ta", "Tb",
+            "Tc", "Te", "Th", "Ti", "Tl", "Tm", "U", "V", "W", "Xe", "Y", "Yb", "Zn", "Zr"
+          ],
+          "raspa": ["H", "B", "C", "N", "O", "F", "P", "S", "Cl", "Br"]
+        },
+        "notes": [
+          "Backend element coverage is a mechanical parameter/typing boundary, not a validation claim for every coordination environment.",
+          "The bundled Open Babel table uses the legacy type label Lw6+3 for lawrencium; Lr is not claimed as supported by the current typing path."
+        ]
+      },
+      "license": {
+        "status": "unreviewed",
+        "identifier": null,
+        "source_url": "https://github.com/openbabel/openbabel/blob/master/data/UFF.prm",
+        "notes": "No standalone parameter-data license is recorded in the bundled UFF.prm header; redistribution status requires review."
+      },
+      "notes": [
+        "UFF support remains experimental in cofkit."
+      ]
+    },
+    {
+      "id": "dreiding-standard-1990-cofkit-1.0",
+      "family": "dreiding",
+      "variant": "standard-1990-cofkit",
+      "version": "1.0",
+      "display_name": "DREIDING (standard 1990 / cofkit)",
+      "default_for_family": true,
+      "aliases": [],
+      "scope": "framework",
+      "parameter_source": {
+        "description": "Paper-backed standard DREIDING Tables I-II with explicitly documented cofkit heuristic carryovers for Cu, Ni, and Mg.",
+        "citations": [
+          {
+            "role": "forcefield_definition",
+            "title": "DREIDING: A Generic Force Field for Molecular Simulations",
+            "authors": "Mayo, Olafson, and Goddard",
+            "year": 1990,
+            "doi": "10.1021/j100389a010",
+            "url": "https://doi.org/10.1021/j100389a010"
+          }
+        ],
+        "artifacts": [
+          {
+            "role": "parameter_table",
+            "path": "_dreiding_reference.py",
+            "sha256": "2aa0f958fb360c5cec55d6a8f03aeaa6c5c4e184bf666ddcd4598f66e1cc73a0",
+            "provenance": "cofkit's embedded DREIDING parameter table and element representatives."
+          }
+        ]
+      },
+      "atom_typing": [
+        {
+          "backends": ["lammps"],
+          "method": "openbabel_uff_to_dreiding",
+          "implementation": "Open Babel UFF atom types mapped to cofkit's DREIDING types over the explicit periodic CIF bond graph",
+          "implementation_version": "cofkit-1.0",
+          "requires_explicit_bond_orders": true,
+          "notes": [
+            "This is a bounded mapping, not a general DREIDING atom typer."
+          ]
+        },
+        {
+          "backends": ["raspa"],
+          "method": "element_representative",
+          "implementation": "cofkit's bounded element-to-DREIDING-type map for rigid RASPA frameworks",
+          "implementation_version": "cofkit-1.0",
+          "requires_explicit_bond_orders": false,
+          "notes": [
+            "Only the explicitly registered backend elements are accepted; hybridization-dependent DREIDING typing is not performed."
+          ]
+        }
+      ],
+      "electrostatics": {
+        "native_charge_model": "none",
+        "supported_charge_sources": ["none", "input_cif", "eqeq"],
+        "notes": [
+          "DREIDING does not prescribe partial charges; input-CIF and EQeq charges are separate cofkit workflow choices."
+        ]
+      },
+      "nonbonded": {
+        "potential": "lennard-jones-12-6",
+        "epsilon_mixing_rule": "geometric",
+        "sigma_mixing_rule": "arithmetic",
+        "pair_coefficient_mode_by_backend": {
+          "lammps": "explicit_pairij",
+          "raspa": "mixing_rules"
+        },
+        "notes": [
+          "Hydrogen-bond-specific DREIDING terms are not implemented by the current exporter."
+        ]
+      },
+      "intramolecular_scaling": {
+        "backends": ["lammps"],
+        "lj_12": 0.0,
+        "lj_13": 0.0,
+        "lj_14": 1.0,
+        "coulomb_12": 0.0,
+        "coulomb_13": 0.0,
+        "coulomb_14": 1.0
+      },
+      "coverage": {
+        "parameterized_elements": [
+          "H", "B", "C", "N", "O", "F", "Al", "Si", "P", "S", "Cl", "Ga", "Ge", "As", "Se",
+          "Br", "In", "Sn", "Sb", "Te", "I", "Na", "Ca", "Fe", "Zn", "Cu", "Ni", "Mg"
+        ],
+        "validated_linkages": [],
+        "linkage_validation_status": "not_validated",
+        "backend_elements": {
+          "lammps": [
+            "H", "B", "C", "N", "O", "F", "Al", "Si", "P", "S", "Cl", "Ga", "Ge", "As", "Se",
+            "Br", "In", "Sn", "Sb", "Te", "I", "Na", "Ca", "Fe", "Zn", "Cu", "Ni", "Mg"
+          ],
+          "raspa": ["H", "B", "C", "N", "O", "F", "P", "S", "Cl", "Br"]
+        },
+        "notes": [
+          "Cu, Ni, and Mg are heuristic carryovers rather than paper-backed standard DREIDING rows.",
+          "No COF linkage family has yet completed a force-field-specific validation suite."
+        ]
+      },
+      "license": {
+        "status": "unreviewed",
+        "identifier": null,
+        "source_url": "https://doi.org/10.1021/j100389a010",
+        "notes": "The numerical table is literature-derived and includes attributed implementation carryovers; redistribution status requires review."
+      },
+      "notes": [
+        "The registry describes cofkit's implemented subset and deviations, not all published DREIDING variants."
+      ]
+    }
+  ]
+}

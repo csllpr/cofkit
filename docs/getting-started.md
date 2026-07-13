@@ -18,6 +18,17 @@ uv run pytest -q
 
 If you explicitly need an editable install inside an existing Python environment, `python3 -m pip install -e .` still works. The repository-standard path is `uv run ...` because it keeps helper executables aligned with the repo-managed environment.
 
+For a Conda-based deployment, run these commands from the repository root:
+
+```bash
+conda env create --file environment.yml
+conda activate cofkit
+python -m pip install --no-deps .
+cofkit --help
+```
+
+The environment file resolves Gemmi, RDKit, pandas, and pymatgen from `conda-forge`. Open Babel is installed in its pip phase to satisfy cofkit's declared `openbabel>=3.2.0` requirement. The final `--no-deps` install adds cofkit itself without asking pip to replace those packages. Optional simulation executables remain separate; see [external-tools.md](external-tools.md).
+
 ## CLI Shape
 
 The installable CLI is grouped by task:

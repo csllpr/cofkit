@@ -45,6 +45,7 @@ packages = ["src/cofkit"]
 
 [tool.hatch.build]
 include = [
+  "src/cofkit/data/forcefields/**/*.json",
   "src/cofkit/data/forcefields/**/*.prm",
   "src/cofkit/data/graspa/**/*.def",
   "src/cofkit/data/graspa/**/*.json",

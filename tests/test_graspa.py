@@ -166,6 +166,15 @@ class GraspaWidomTests(unittest.TestCase):
             )
             self.assertEqual(guest_metadata["framework_forcefield"], "dreiding")
             self.assertEqual(
+                guest_metadata["framework_forcefield_id"],
+                "dreiding-standard-1990-cofkit-1.0",
+            )
+            framework_metadata_path = Path(result.widom_run_dir) / "framework_forcefield_metadata.json"
+            framework_metadata = json.loads(framework_metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(framework_metadata["schema_version"], 1)
+            self.assertEqual(framework_metadata["id"], "dreiding-standard-1990-cofkit-1.0")
+            self.assertEqual(result.framework_forcefield_metadata, framework_metadata)
+            self.assertEqual(
                 [(guest["name"], guest["parameter_family"]) for guest in guest_metadata["guests"]],
                 [
                     ("TIP4P", "dreiding"),
@@ -215,6 +224,11 @@ class GraspaWidomTests(unittest.TestCase):
                 report["guest_forcefield_metadata_paths"],
                 [str(Path(result.widom_run_dir) / "guest_forcefield_metadata.json")],
             )
+            self.assertEqual(
+                report["framework_forcefield_metadata_paths"],
+                [str(framework_metadata_path)],
+            )
+            self.assertEqual(report["framework_forcefield_metadata"], framework_metadata)
             self.assertEqual(report["component_results"][1]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["henry"], 2e-05)
             self.assertEqual(report["component_results"][5]["component"], "Xe")
@@ -468,7 +482,7 @@ class GraspaWidomTests(unittest.TestCase):
                             "--output-dir",
                             str(output_dir),
                             "--forcefield",
-                            "uff",
+                            "uff-openbabel-3.1.0-cofkit-1.0",
                             "--component",
                             "Xe",
                             "--component",
@@ -484,7 +498,11 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["unit_cells"], [1, 2, 3])
             self.assertEqual(report["widom_settings"]["widom_moves_per_component"], 2500)
             self.assertEqual(report["widom_settings"]["production_cycles"], 5000)
-            self.assertEqual(report["widom_settings"]["forcefield"], "uff")
+            self.assertEqual(
+                report["widom_settings"]["forcefield"],
+                "uff-openbabel-3.1.0-cofkit-1.0",
+            )
+            self.assertEqual(report["framework_forcefield_metadata"]["family"], "uff")
             self.assertEqual(len(report["component_results"]), 2)
             self.assertEqual(report["component_results"][0]["component"], "Xe")
             self.assertEqual(report["component_results"][1]["component"], "Kr")

@@ -1,0 +1,19 @@
+name: cofkit
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - pip
+  - gemmi>=0.7
+  - pandas
+  - pymatgen
+  - rdkit
+  - pip:
+      # Use the Python distribution to satisfy cofkit's Open Babel 3.2+ floor.
+      - openbabel>=3.2.0
+
+# From the repository root, install cofkit after creating this environment:
+#   conda env create --file environment.yml
+#   conda activate cofkit
+#   python -m pip install --no-deps .

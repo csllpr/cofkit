@@ -20,6 +20,15 @@ uv run pytest -q
 
 The base package installs the required Python runtime dependencies: `gemmi`, `rdkit`, `openbabel`, `pandas`, and `pymatgen`.
 
+As an alternative deployment path, create the checked-in Conda environment and install the local package without allowing pip to replace the dependencies already resolved by the environment file:
+
+```bash
+conda env create --file environment.yml
+conda activate cofkit
+python -m pip install --no-deps .
+cofkit --help
+```
+
 ## First Build
 
 Generate one imine COF from two SMILES strings:
