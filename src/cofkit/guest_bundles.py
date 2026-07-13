@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .guest_forcefields import SUPPORTED_GUEST_FORCEFIELDS
+
 
 class GuestBundleError(ValueError):
     """Raised when a parameterized guest bundle cannot be loaded."""
@@ -31,6 +33,9 @@ class GuestBundle:
     source_path: str
     aliases: tuple[str, ...]
     rotatable: bool
+    parameter_family: str
+    parameter_source: str
+    compatible_framework_forcefields: tuple[str, ...]
     raspa: RaspaGuestBundle
     lammps: Mapping[str, Any]
     notes: tuple[str, ...] = ()
@@ -44,6 +49,9 @@ class GuestBundle:
             "source_path": self.source_path,
             "aliases": list(self.aliases),
             "rotatable": self.rotatable,
+            "parameter_family": self.parameter_family,
+            "parameter_source": self.parameter_source,
+            "compatible_framework_forcefields": list(self.compatible_framework_forcefields),
             "raspa": self.raspa.to_dict(),
             "lammps_keys": sorted(str(key) for key in self.lammps),
             "notes": list(self.notes),
@@ -62,8 +70,11 @@ def load_guest_bundle(path: str | Path) -> GuestBundle:
         raise GuestBundleError(f"Guest bundle root must be a JSON object: {bundle_path}")
 
     version = raw.get("version", 1)
-    if version != 1:
-        raise GuestBundleError(f"Unsupported guest bundle version {version!r} in {bundle_path}; expected 1.")
+    if version != 2:
+        raise GuestBundleError(
+            f"Unsupported guest bundle version {version!r} in {bundle_path}; expected 2. "
+            "Version 2 requires force-field provenance and compatibility metadata."
+        )
 
     name = _required_token(raw, "name", context=str(bundle_path))
     aliases = tuple(_normalize_token(value, context=f"{bundle_path}:aliases") for value in raw.get("aliases", ()))
@@ -75,6 +86,27 @@ def load_guest_bundle(path: str | Path) -> GuestBundle:
     rotatable = raw.get("rotatable", True)
     if not isinstance(rotatable, bool):
         raise GuestBundleError(f"Guest bundle rotatable must be a boolean: {bundle_path}")
+
+    parameter_family = _required_forcefield(raw, "parameter_family", context=str(bundle_path))
+    parameter_source = _required_nonblank_string(raw, "parameter_source", context=str(bundle_path))
+    compatible_raw = raw.get("compatible_framework_forcefields")
+    if not isinstance(compatible_raw, Sequence) or isinstance(compatible_raw, (str, bytes)) or not compatible_raw:
+        raise GuestBundleError(
+            f"Guest bundle compatible_framework_forcefields must be a non-empty list: {bundle_path}"
+        )
+    compatible_framework_forcefields = tuple(
+        _normalize_forcefield(value, context=f"{bundle_path}:compatible_framework_forcefields")
+        for value in compatible_raw
+    )
+    if len(set(compatible_framework_forcefields)) != len(compatible_framework_forcefields):
+        raise GuestBundleError(
+            f"Guest bundle compatible_framework_forcefields must not contain duplicates: {bundle_path}"
+        )
+    if parameter_family not in compatible_framework_forcefields:
+        raise GuestBundleError(
+            f"Guest bundle parameter family {parameter_family!r} must be listed in "
+            f"compatible_framework_forcefields: {bundle_path}"
+        )
 
     raspa_raw = raw.get("raspa")
     if not isinstance(raspa_raw, Mapping):
@@ -129,6 +161,9 @@ def load_guest_bundle(path: str | Path) -> GuestBundle:
         source_path=str(bundle_path),
         aliases=aliases,
         rotatable=rotatable,
+        parameter_family=parameter_family,
+        parameter_source=parameter_source,
+        compatible_framework_forcefields=compatible_framework_forcefields,
         raspa=raspa,
         lammps=dict(lammps_raw),
         notes=notes,
@@ -164,6 +199,29 @@ def _normalize_token(value: Any, *, context: str) -> str:
         raise GuestBundleError(f"String token must not be blank at {context}.")
     if any(character.isspace() for character in token):
         raise GuestBundleError(f"String token must not contain whitespace at {context}: {value!r}")
+    return token
+
+
+def _required_forcefield(raw: Mapping[str, Any], key: str, *, context: str) -> str:
+    if key not in raw:
+        raise GuestBundleError(f"Missing required guest bundle field {key!r}: {context}")
+    return _normalize_forcefield(raw[key], context=f"{context}:{key}")
+
+
+def _required_nonblank_string(raw: Mapping[str, Any], key: str, *, context: str) -> str:
+    value = raw.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise GuestBundleError(f"Guest bundle {key} must be a non-blank string: {context}")
+    return value.strip()
+
+
+def _normalize_forcefield(value: Any, *, context: str) -> str:
+    token = _normalize_token(value, context=context).lower().replace("-", "_")
+    if token not in SUPPORTED_GUEST_FORCEFIELDS:
+        raise GuestBundleError(
+            f"Unsupported guest bundle force field {value!r} at {context}; "
+            f"expected one of: {', '.join(SUPPORTED_GUEST_FORCEFIELDS)}"
+        )
     return token
 
 

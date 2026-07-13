@@ -44,6 +44,7 @@ from .graspa import (
     GraspaWidomComponentResult,
     GraspaWidomResult,
     GraspaWidomSettings,
+    PACKAGED_GUEST_FORCEFIELD_METADATA,
     SUPPORTED_RASPA_BACKENDS,
     assign_eqeq_charges_to_cif,
     resolve_eqeq_binary,
@@ -53,6 +54,11 @@ from .graspa import (
     run_graspa_mixture_workflow,
     run_graspa_isotherm_workflow,
     run_graspa_widom_workflow,
+)
+from .guest_forcefields import (
+    GuestForceFieldMetadata,
+    GuestForceFieldMetadataError,
+    load_packaged_guest_forcefield_metadata,
 )
 from .hybrid_mdmc import (
     HybridMdMcCycleResult,
@@ -200,6 +206,10 @@ __all__ = [
     "BatchRunSummary",
     "BatchStructureGenerator",
     "AVAILABLE_WIDOM_COMPONENTS",
+    "PACKAGED_GUEST_FORCEFIELD_METADATA",
+    "GuestForceFieldMetadata",
+    "GuestForceFieldMetadataError",
+    "load_packaged_guest_forcefield_metadata",
     "BuildWorkflowDefinition",
     "BuildWorkflowRegistry",
     "BinaryBridgeLibraryLoader",

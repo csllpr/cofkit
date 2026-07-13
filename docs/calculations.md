@@ -78,9 +78,11 @@ cofkit calculate graspa-widom \
 
 Use `--backend raspa2` for RASPA2. The selected executable can be overridden with `--graspa-path`, `--raspa2-path`, or backend-neutral `--raspa-path`.
 
-Packaged components are `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`. Activate all packaged probes with `--all-components`. Add external parameterized guests with repeated `--guest-bundle path/to/guest.json`, then select them by bundle `name` or alias.
+Packaged guest parameters carry explicit family, source, and framework-compatibility metadata. `TIP4P`, `CO2`, `H2`, `N2`, and `SO2` are registered in the DREIDING family and are accepted only with `--forcefield dreiding`. `Xe` and `Kr` are registered in the UFF family and are accepted with both UFF and DREIDING because DREIDING does not provide parameters for them. Their current values come from the RASPA `GenericMOFs` force field and are distinct from the bundled Open Babel `UFF.prm`; this distinction is recorded in `guest_forcefield_metadata.json`. `--all-components` therefore requires DREIDING; a UFF run can select `Xe` and/or `Kr`.
 
-Outputs include staged `eqeq/` and `widom/` directories, backend logs, raw `Output/**/*.data`, `widom/Output/results.csv`, and `graspa_widom_report.json`.
+External parameterized guests use repeated `--guest-bundle path/to/guest.json` flags and are selected by bundle `name` or alias. Guest-bundle schema version 2 requires top-level `parameter_family`, `parameter_source`, and `compatible_framework_forcefields` fields; incompatible selections fail before a backend is executed. Legacy version 1 bundles must be upgraded rather than silently treated as compatible.
+
+Outputs include staged `eqeq/` and `widom/` directories, backend logs, raw `Output/**/*.data`, `widom/Output/results.csv`, `widom/guest_forcefield_metadata.json`, and `graspa_widom_report.json`.
 
 ## Single-Component Isotherms
 
@@ -98,7 +100,7 @@ cofkit calculate graspa-isotherm \
 
 Use exactly one `--component NAME` and one or more repeated `--pressure PA` values. `--fugacity-coefficient` accepts a positive float or `PR-EOS`; for RASPA2, `PR-EOS` omits an explicit fugacity coefficient so RASPA2 can use its internal calculation.
 
-Outputs include staged `eqeq/`, `isotherm/framework.cif`, one `isotherm/pressure_*/` directory per pressure point, `isotherm/results.csv`, and `graspa_isotherm_report.json`.
+Outputs include staged `eqeq/`, `isotherm/framework.cif`, one `isotherm/pressure_*/` directory per pressure point with `guest_forcefield_metadata.json`, `isotherm/results.csv`, and `graspa_isotherm_report.json`.
 
 ## Mixture Adsorption
 
@@ -117,7 +119,7 @@ cofkit calculate graspa-mixture \
 
 Mixtures require at least two repeated `--component NAME:FRACTION` values and one or more pressure points. The wrapper computes adsorbed mole fractions and pairwise selectivities using `(x_i / x_j) / (y_i / y_j)`.
 
-Outputs include `mixture/component_results.csv`, `mixture/selectivity_results.csv`, staged per-pressure backend directories, and `graspa_mixture_report.json`.
+Outputs include `mixture/component_results.csv`, `mixture/selectivity_results.csv`, staged per-pressure backend directories with `guest_forcefield_metadata.json`, and `graspa_mixture_report.json`.
 
 ## Hybrid MD/MC
 

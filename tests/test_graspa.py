@@ -24,6 +24,7 @@ from cofkit.graspa import (
     GraspaMixtureSettings,
     GraspaIsothermSettings,
     GraspaWidomSettings,
+    PACKAGED_GUEST_FORCEFIELD_METADATA,
     resolve_eqeq_binary,
     resolve_graspa_binary,
     resolve_raspa2_binary,
@@ -35,6 +36,27 @@ from cofkit.guest_bundles import GuestBundleError, load_guest_bundle
 
 
 class GraspaWidomTests(unittest.TestCase):
+    def test_load_guest_bundle_rejects_legacy_schema_without_forcefield_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle_path = Path(temp_dir) / "legacy_guest.json"
+            bundle_path.write_text(json.dumps({"version": 1, "name": "CH4"}), encoding="utf-8")
+
+            with self.assertRaises(GuestBundleError) as raised:
+                load_guest_bundle(bundle_path)
+
+        self.assertIn("expected 2", str(raised.exception))
+        self.assertIn("force-field provenance", str(raised.exception))
+
+    def test_load_guest_bundle_requires_forcefield_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle_path = Path(temp_dir) / "missing_forcefield_metadata.json"
+            bundle_path.write_text(json.dumps({"version": 2, "name": "CH4"}), encoding="utf-8")
+
+            with self.assertRaises(GuestBundleError) as raised:
+                load_guest_bundle(bundle_path)
+
+        self.assertIn("parameter_family", str(raised.exception))
+
     def test_load_guest_bundle_requires_synchronized_lammps_section(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -42,8 +64,11 @@ class GraspaWidomTests(unittest.TestCase):
             bundle_path.write_text(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": 2,
                         "name": "CH4",
+                        "parameter_family": "dreiding",
+                        "parameter_source": "test methane model",
+                        "compatible_framework_forcefields": ["dreiding"],
                         "raspa": {
                             "molecule_definition": "# methane\n",
                             "pseudo_atom_rows": [
@@ -136,6 +161,22 @@ class GraspaWidomTests(unittest.TestCase):
                 re.compile(r"^Br\s+lennard-jones\s+186\.1924\s+3\.51905\b", re.MULTILINE),
             )
             self.assertNotIn("126.2900", mixing_rules_text)
+            guest_metadata = json.loads(
+                (Path(result.widom_run_dir) / "guest_forcefield_metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(guest_metadata["framework_forcefield"], "dreiding")
+            self.assertEqual(
+                [(guest["name"], guest["parameter_family"]) for guest in guest_metadata["guests"]],
+                [
+                    ("TIP4P", "dreiding"),
+                    ("CO2", "dreiding"),
+                    ("H2", "dreiding"),
+                    ("N2", "dreiding"),
+                    ("SO2", "dreiding"),
+                    ("Xe", "uff"),
+                    ("Kr", "uff"),
+                ],
+            )
 
             simulation_input = Path(result.simulation_input_path).read_text(encoding="utf-8")
             self.assertIn("UseGPUReduction yes", simulation_input)
@@ -170,6 +211,10 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["widom_settings"]["number_of_blocks"], 5)
             self.assertEqual(report["widom_settings"]["production_cycles"], 2000000)
             self.assertIsNone(report["widom_settings"]["widom_moves_per_component"])
+            self.assertEqual(
+                report["guest_forcefield_metadata_paths"],
+                [str(Path(result.widom_run_dir) / "guest_forcefield_metadata.json")],
+            )
             self.assertEqual(report["component_results"][1]["component"], "CO2")
             self.assertEqual(report["component_results"][1]["henry"], 2e-05)
             self.assertEqual(report["component_results"][5]["component"], "Xe")
@@ -226,10 +271,18 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("C_ch4", pseudo_atoms_text)
             mixing_rules_text = (run_dir / "force_field_mixing_rules.def").read_text(encoding="utf-8")
             self.assertIn("C_ch4          lennard-jones   148.0000   3.73000", mixing_rules_text)
+            metadata = json.loads((run_dir / "guest_forcefield_metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["guests"][0]["source"], "guest_bundle")
+            self.assertEqual(metadata["guests"][0]["parameter_family"], "dreiding")
+            self.assertEqual(metadata["guests"][0]["parameter_source"], "test methane model")
 
             report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
             self.assertEqual(report["isotherm_settings"]["component"], "CH4")
             self.assertEqual(report["isotherm_settings"]["guest_bundles"], [str(bundle_path)])
+            self.assertEqual(
+                report["guest_forcefield_metadata_paths"],
+                [str(run_dir / "guest_forcefield_metadata.json")],
+            )
 
     def test_run_graspa_widom_workflow_preserves_stacking_suffix_in_eqeq_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -272,7 +325,74 @@ class GraspaWidomTests(unittest.TestCase):
                 f"# COFid: {cofid} stacking=AA",
             )
 
-    def test_run_graspa_widom_workflow_supports_uff_forcefield_assets(self):
+    def test_packaged_guest_forcefield_metadata_declares_native_and_compatible_families(self):
+        metadata = {entry.name: entry for entry in PACKAGED_GUEST_FORCEFIELD_METADATA}
+
+        self.assertEqual(set(metadata), {"TIP4P", "CO2", "H2", "N2", "SO2", "Xe", "Kr"})
+        for component in ("TIP4P", "CO2", "H2", "N2", "SO2"):
+            self.assertEqual(metadata[component].parameter_family, "dreiding")
+            self.assertEqual(metadata[component].compatible_framework_forcefields, ("dreiding",))
+        for component in ("Xe", "Kr"):
+            self.assertEqual(metadata[component].parameter_family, "uff")
+            self.assertEqual(metadata[component].parameter_source, "RASPA GenericMOFs force field.")
+            self.assertEqual(metadata[component].compatible_framework_forcefields, ("uff", "dreiding"))
+            self.assertIn("distinct from", metadata[component].provenance_note)
+
+    def test_run_graspa_widom_workflow_rejects_dreiding_guest_with_uff_framework(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cif_path = Path(temp_dir) / "uff_incompatible_framework.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError) as raised:
+                run_graspa_widom_workflow(
+                    cif_path,
+                    widom_settings=GraspaWidomSettings(components=("CO2",), forcefield="uff"),
+                )
+
+        self.assertIn("CO2", str(raised.exception))
+        self.assertIn("not registered as compatible", str(raised.exception))
+
+    def test_run_graspa_isotherm_rejects_incompatible_external_guest_bundle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cif_path = temp_path / "uff_external_framework.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+            bundle_path = self._write_guest_bundle(temp_path / "ch4_bundle.json")
+
+            with self.assertRaises(ValueError) as raised:
+                run_graspa_isotherm_workflow(
+                    cif_path,
+                    isotherm_settings=GraspaIsothermSettings(
+                        component="CH4",
+                        guest_bundles=(str(bundle_path),),
+                        forcefield="uff",
+                    ),
+                )
+
+        self.assertIn("CH4", str(raised.exception))
+        self.assertIn("not registered as compatible", str(raised.exception))
+
+    def test_run_graspa_mixture_rejects_incompatible_packaged_guest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cif_path = Path(temp_dir) / "uff_mixture_framework.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError) as raised:
+                run_graspa_mixture_workflow(
+                    cif_path,
+                    mixture_settings=GraspaMixtureSettings(
+                        components=(
+                            GraspaMixtureComponentSettings(component="CO2", mol_fraction=0.5),
+                            GraspaMixtureComponentSettings(component="Xe", mol_fraction=0.5),
+                        ),
+                        forcefield="uff",
+                    ),
+                )
+
+        self.assertIn("CO2", str(raised.exception))
+        self.assertIn("not registered as compatible", str(raised.exception))
+
+    def test_run_graspa_widom_workflow_supports_uff_forcefield_assets_for_xe(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
@@ -298,7 +418,7 @@ class GraspaWidomTests(unittest.TestCase):
                     cif_path,
                     output_dir=temp_path / "uff_widom_out",
                     eqeq_settings=EqeqChargeSettings(),
-                    widom_settings=GraspaWidomSettings(components=("CO2",), forcefield="uff"),
+                    widom_settings=GraspaWidomSettings(components=("Xe",), forcefield="uff"),
                     graspa_timeout_seconds=30.0,
                 )
 
@@ -307,6 +427,13 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("// UFF from bundled Open Babel UFF.prm", mixing_rules_text)
             self.assertIn("C              lennard-jones    52.8384", mixing_rules_text)
             self.assertIn("Br             lennard-jones   126.3089", mixing_rules_text)
+            metadata = json.loads(
+                (Path(result.widom_run_dir) / "guest_forcefield_metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["guests"][0]["parameter_family"], "uff")
+            self.assertEqual(metadata["guests"][0]["parameter_source"], "RASPA GenericMOFs force field.")
+            self.assertEqual(metadata["guests"][0]["compatible_framework_forcefields"], ["uff", "dreiding"])
+            self.assertIn("distinct from", metadata["guests"][0]["provenance_note"])
 
     def test_calculate_graspa_widom_cli_prints_json_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -343,9 +470,9 @@ class GraspaWidomTests(unittest.TestCase):
                             "--forcefield",
                             "uff",
                             "--component",
-                            "CO2",
-                            "--component",
                             "Xe",
+                            "--component",
+                            "Kr",
                             "--widom-moves-per-component",
                             "2500",
                             "--json",
@@ -359,8 +486,8 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["widom_settings"]["production_cycles"], 5000)
             self.assertEqual(report["widom_settings"]["forcefield"], "uff")
             self.assertEqual(len(report["component_results"]), 2)
-            self.assertEqual(report["component_results"][0]["component"], "CO2")
-            self.assertEqual(report["component_results"][1]["component"], "Xe")
+            self.assertEqual(report["component_results"][0]["component"], "Xe")
+            self.assertEqual(report["component_results"][1]["component"], "Kr")
 
     def test_run_raspa2_widom_workflow_prepares_inputs_and_parses_results(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -828,10 +955,13 @@ class GraspaWidomTests(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,
                     "name": "CH4",
                     "aliases": ["methane"],
                     "rotatable": False,
+                    "parameter_family": "dreiding",
+                    "parameter_source": "test methane model",
+                    "compatible_framework_forcefields": ["dreiding"],
                     "raspa": {
                         "molecule_definition": (
                             "# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]\n"

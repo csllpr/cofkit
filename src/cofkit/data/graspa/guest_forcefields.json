@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "guests": [
+    {
+      "name": "TIP4P",
+      "parameter_family": "dreiding",
+      "parameter_source": "Jorgensen et al., J. Chem. Phys. (1983), with the packaged TIP4P.def geometry metadata.",
+      "compatible_framework_forcefields": ["dreiding"]
+    },
+    {
+      "name": "CO2",
+      "parameter_family": "dreiding",
+      "parameter_source": "Potoff and Siepmann, AIChE J. 47, 1676-1682 (2001).",
+      "compatible_framework_forcefields": ["dreiding"]
+    },
+    {
+      "name": "H2",
+      "parameter_family": "dreiding",
+      "parameter_source": "Garcia-Holley et al., ACS Energy Lett. 2018, 3, 748-754.",
+      "compatible_framework_forcefields": ["dreiding"]
+    },
+    {
+      "name": "N2",
+      "parameter_family": "dreiding",
+      "parameter_source": "Martin-Calvo et al., Phys. Chem. Chem. Phys. 2011, 13, 11165-11174.",
+      "compatible_framework_forcefields": ["dreiding"]
+    },
+    {
+      "name": "SO2",
+      "parameter_family": "dreiding",
+      "parameter_source": "J. Phys. Chem. B 2011, 115, 4949-4954.",
+      "compatible_framework_forcefields": ["dreiding"]
+    },
+    {
+      "name": "Xe",
+      "parameter_family": "uff",
+      "parameter_source": "RASPA GenericMOFs force field.",
+      "compatible_framework_forcefields": ["uff", "dreiding"],
+      "compatibility_note": "Registered in the UFF family and also used with DREIDING because DREIDING does not provide Xe parameters.",
+      "provenance_note": "The GenericMOFs 221 K and 4.100 A values are distinct from the Xe4+4 row derived from cofkit's bundled Open Babel UFF.prm."
+    },
+    {
+      "name": "Kr",
+      "parameter_family": "uff",
+      "parameter_source": "RASPA GenericMOFs force field.",
+      "compatible_framework_forcefields": ["uff", "dreiding"],
+      "compatibility_note": "Registered in the UFF family and also used with DREIDING because DREIDING does not provide Kr parameters.",
+      "provenance_note": "The GenericMOFs 166.4 K and 3.636 A values are distinct from the Kr4+4 row derived from cofkit's bundled Open Babel UFF.prm."
+    }
+  ]
+}

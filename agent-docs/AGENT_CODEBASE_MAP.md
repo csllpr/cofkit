@@ -101,7 +101,9 @@ Then go straight to the module that matches the task.
 - [src/cofkit/guest_restart.py](../src/cofkit/guest_restart.py)
   - GCMC movie/restart snapshot discovery, guest force-field asset synchronization from packaged/bundle RASPA rows into LAMMPS-ready guest sites/templates, binary guest parsing, and zero-mass pseudo-site rejection.
 - [src/cofkit/guest_bundles.py](../src/cofkit/guest_bundles.py)
-  - Shared external guest parameter-bundle contract for gRASPA/RASPA2 workflows. Bundles add RASPA molecule definitions, pseudo-atom rows, mixing-rule rows, aliases, rotatability, and a required non-empty `lammps` section for synchronized hybrid MD/MC guest restart.
+  - Shared external guest parameter-bundle contract for gRASPA/RASPA2 workflows. Bundles add force-field provenance and compatibility metadata, RASPA molecule definitions, pseudo-atom rows, mixing-rule rows, aliases, rotatability, and a required non-empty `lammps` section for synchronized hybrid MD/MC guest restart.
+- [src/cofkit/guest_forcefields.py](../src/cofkit/guest_forcefields.py)
+  - Strict loader and public metadata model for packaged guest native parameter families and allowed framework-force-field combinations.
 
 ## Typical execution paths
 

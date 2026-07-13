@@ -30,8 +30,8 @@ H_h2           lennard-jones    0.0 0.0                                    // Pa
 H2_com          feynman-hibbs-lennard-jones    36.7000   2.95800    1.008  //
 S_so2          lennard-jones    73.8       3.39        // J. Phys. Chem. B 2011, 115, 17, 4949-4954
 O_so2          lennard-jones    79.0       3.05        // J. Phys. Chem. B 2011, 115, 17, 4949-4954
-Xe             lennard-jones   221.0000   4.10000      // Adapted from the local gRASPA XeKr-Mixture example.
-Kr             lennard-jones   166.4000   3.63600      // Adapted from the local gRASPA XeKr-Mixture example.
+Xe             lennard-jones   221.0000   4.10000      // RASPA GenericMOFs force field.
+Kr             lennard-jones   166.4000   3.63600      // RASPA GenericMOFs force field.
 
 # general mixing rule for Lennard-Jones
 Lorentz-Berthelot

@@ -19,6 +19,10 @@ from ._dreiding_reference import (
 )
 from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
 from .guest_bundles import GuestBundle, GuestBundleError, load_guest_bundles
+from .guest_forcefields import (
+    load_packaged_guest_forcefield_metadata,
+    packaged_guest_forcefield_catalog,
+)
 
 
 COFKIT_EQEQ_ENV_VAR = "COFKIT_EQEQ_PATH"
@@ -31,7 +35,8 @@ _SUPPORTED_EQEQ_METHODS = {"ewald", "nonperiodic"}
 _SUPPORTED_GRASPA_FORCEFIELDS = ("dreiding", "uff")
 SUPPORTED_RASPA_BACKENDS = ("graspa", "raspa2")
 DEFAULT_RASPA_BACKEND = "graspa"
-_DEFAULT_WIDOM_COMPONENTS = ("TIP4P", "CO2", "H2", "N2", "SO2", "Xe", "Kr")
+PACKAGED_GUEST_FORCEFIELD_METADATA = load_packaged_guest_forcefield_metadata()
+_DEFAULT_WIDOM_COMPONENTS = tuple(metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA)
 AVAILABLE_WIDOM_COMPONENTS = _DEFAULT_WIDOM_COMPONENTS
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
 _RASPA2_LOCAL_FORCEFIELD_NAME = "COFKit"
@@ -65,8 +70,8 @@ _GRASPA_SHARED_MIXING_RULE_LINES = (
     "H2_com         feynman-hibbs-lennard-jones    36.7000   2.95800    1.008  // Garcia-Holley et al., ACS Energy Lett. 2018, 3, 748-754.",
     "S_so2          lennard-jones    73.8       3.39        // J. Phys. Chem. B 2011, 115, 4949-4954.",
     "O_so2          lennard-jones    79.0       3.05        // J. Phys. Chem. B 2011, 115, 4949-4954.",
-    "Xe             lennard-jones   221.0000   4.10000      // Local gRASPA XeKr mixture example.",
-    "Kr             lennard-jones   166.4000   3.63600      // Local gRASPA XeKr mixture example.",
+    "Xe             lennard-jones   221.0000   4.10000      // RASPA GenericMOFs force field.",
+    "Kr             lennard-jones   166.4000   3.63600      // RASPA GenericMOFs force field.",
 )
 _WIDOM_RESULT_RE = re.compile(
     r"=+Rosenbluth Summary For Component \[\d+\] \((.+?)\)=+.*?"
@@ -321,6 +326,9 @@ class GraspaWidomResult:
             "unit_cells": list(self.unit_cells),
             "eqeq_settings": self.eqeq_settings.to_dict(),
             "widom_settings": self.widom_settings.to_dict(),
+            "guest_forcefield_metadata_paths": [
+                str(Path(self.widom_run_dir) / "guest_forcefield_metadata.json")
+            ],
             "component_results": [component.to_dict() for component in self.component_results],
             "warnings": list(self.warnings),
         }
@@ -496,6 +504,9 @@ class GraspaIsothermResult:
             "unit_cells": list(self.unit_cells),
             "eqeq_settings": self.eqeq_settings.to_dict(),
             "isotherm_settings": self.isotherm_settings.to_dict(),
+            "guest_forcefield_metadata_paths": [
+                str(Path(point.pressure_run_dir) / "guest_forcefield_metadata.json") for point in self.point_results
+            ],
             "point_results": [point.to_dict() for point in self.point_results],
             "warnings": list(self.warnings),
         }
@@ -725,6 +736,9 @@ class GraspaMixtureResult:
             "unit_cells": list(self.unit_cells),
             "eqeq_settings": self.eqeq_settings.to_dict(),
             "mixture_settings": self.mixture_settings.to_dict(),
+            "guest_forcefield_metadata_paths": [
+                str(Path(point.pressure_run_dir) / "guest_forcefield_metadata.json") for point in self.point_results
+            ],
             "point_results": [point.to_dict() for point in self.point_results],
             "warnings": list(self.warnings),
         }
@@ -1587,6 +1601,44 @@ def _is_supported_graspa_component(component: str, guest_bundles: Sequence[Guest
     return component in AVAILABLE_WIDOM_COMPONENTS or any(component == bundle.name for bundle in guest_bundles)
 
 
+def _guest_forcefield_metadata_dict(
+    component: str,
+    guest_bundles: Sequence[GuestBundle],
+) -> dict[str, object]:
+    packaged = packaged_guest_forcefield_catalog().get(component)
+    if packaged is not None:
+        return {"source": "packaged", **packaged.to_dict()}
+    for bundle in guest_bundles:
+        if component == bundle.name:
+            return {
+                "source": "guest_bundle",
+                "source_path": bundle.source_path,
+                "name": bundle.name,
+                "parameter_family": bundle.parameter_family,
+                "parameter_source": bundle.parameter_source,
+                "compatible_framework_forcefields": list(bundle.compatible_framework_forcefields),
+            }
+    raise GraspaConfigurationError(f"No guest force-field metadata is registered for component {component!r}.")
+
+
+def _validate_guest_forcefield_compatibility(
+    components: Sequence[str],
+    *,
+    forcefield: str,
+    guest_bundles: Sequence[GuestBundle],
+) -> None:
+    normalized_forcefield = _normalize_graspa_forcefield_name(forcefield)
+    for component in components:
+        metadata = _guest_forcefield_metadata_dict(component, guest_bundles)
+        compatible = tuple(str(value) for value in metadata["compatible_framework_forcefields"])
+        if normalized_forcefield not in compatible:
+            raise ValueError(
+                f"Guest component {component!r} belongs to parameter family {metadata['parameter_family']!r} and is not "
+                f"registered as compatible with framework force field {normalized_forcefield!r}. "
+                f"Compatible force fields: {', '.join(compatible)}."
+            )
+
+
 def _component_is_rotatable(component: str, guest_bundles: Sequence[GuestBundle]) -> bool:
     for bundle in guest_bundles:
         if component == bundle.name:
@@ -1612,6 +1664,11 @@ def _validate_widom_settings(
         if not _is_supported_graspa_component(component, guest_bundles):
             supported = ", ".join(_supported_graspa_component_names(guest_bundles))
             raise ValueError(f"Unsupported gRASPA component {component!r}. Supported components: {supported}.")
+    _validate_guest_forcefield_compatibility(
+        settings.components,
+        forcefield=forcefield,
+        guest_bundles=guest_bundles,
+    )
     if settings.framework_name.strip() == "":
         raise ValueError("framework_name must not be blank.")
     if settings.input_file_type.lower() != "cif":
@@ -1659,6 +1716,11 @@ def _validate_isotherm_settings(
     if not _is_supported_graspa_component(settings.component, guest_bundles):
         supported = ", ".join(_supported_graspa_component_names(guest_bundles))
         raise ValueError(f"Unsupported gRASPA component {settings.component!r}. Supported components: {supported}.")
+    _validate_guest_forcefield_compatibility(
+        (settings.component,),
+        forcefield=forcefield,
+        guest_bundles=guest_bundles,
+    )
     if not settings.pressures:
         raise ValueError("At least one pressure point must be configured.")
     if settings.framework_name.strip() == "":
@@ -1745,6 +1807,11 @@ def _validate_mixture_settings(
 
     if mol_fraction_total <= 0.0:
         raise ValueError("The total mixture mol_fraction must be positive.")
+    _validate_guest_forcefield_compatibility(
+        tuple(component.component for component in settings.components),
+        forcefield=forcefield,
+        guest_bundles=guest_bundles,
+    )
     if not settings.pressures:
         raise ValueError("At least one pressure point must be configured.")
     if settings.framework_name.strip() == "":
@@ -1864,6 +1931,20 @@ def _copy_widom_template_assets(
     )
     (destination_dir / "force_field_mixing_rules.def").write_text(
         _render_graspa_force_field_mixing_rules(forcefield, guest_mixing_rule_rows=guest_mixing_rule_rows),
+        encoding="utf-8",
+    )
+    (destination_dir / "guest_forcefield_metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "framework_forcefield": _normalize_graspa_forcefield_name(forcefield),
+                "guests": [
+                    _guest_forcefield_metadata_dict(component, guest_bundles) for component in components
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
 

@@ -155,6 +155,7 @@ def _add_guest_bundle_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help=(
             "Add one external parameterized guest bundle JSON. Repeat for multiple bundles. "
+            "Each bundle must declare parameter_family, parameter_source, and compatible_framework_forcefields. "
             "Bundled components remain available without this flag."
         ),
     )
@@ -672,7 +673,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
         "--forcefield",
         choices=("dreiding", "uff"),
         default="dreiding",
-        help="Framework forcefield asset family for gRASPA. Default: dreiding.",
+        help="Framework forcefield asset family; selected guests must declare compatibility. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -743,7 +744,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--all-components",
         action="store_true",
-        help="Activate all packaged Widom probe components.",
+        help="Activate all packaged Widom probes. The full packaged set requires --forcefield dreiding.",
     )
     parser.add_argument(
         "--widom-moves-per-component",
@@ -943,7 +944,7 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
         "--forcefield",
         choices=("dreiding", "uff"),
         default="dreiding",
-        help="Framework forcefield asset family for gRASPA. Default: dreiding.",
+        help="Framework forcefield asset family; selected guests must declare compatibility. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -1188,7 +1189,7 @@ def _add_graspa_mixture_parser(subparsers) -> None:
         "--forcefield",
         choices=("dreiding", "uff"),
         default="dreiding",
-        help="Framework forcefield asset family for gRASPA. Default: dreiding.",
+        help="Framework forcefield asset family; selected guests must declare compatibility. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
