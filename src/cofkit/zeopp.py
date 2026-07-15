@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 COFKIT_ZEOPP_ENV_VAR = "COFKIT_ZEOPP_PATH"
+_WINDOWS_STACK_BUFFER_OVERRUN_STATUS = 0xC0000409
 
 
 class ZeoppError(RuntimeError):
@@ -384,6 +385,7 @@ def _run_baseline_analysis(
     _run_zeopp_command(
         binary,
         ("-res", output_paths["res"], str(input_path)),
+        expected_output_path=Path(output_paths["res"]),
         stdout_log_path=Path(output_paths["res_stdout_log"]),
         stderr_log_path=Path(output_paths["res_stderr_log"]),
         timeout_seconds=timeout_seconds,
@@ -391,6 +393,7 @@ def _run_baseline_analysis(
     _run_zeopp_command(
         binary,
         ("-resex", output_paths["resex"], str(input_path)),
+        expected_output_path=Path(output_paths["resex"]),
         stdout_log_path=Path(output_paths["resex_stdout_log"]),
         stderr_log_path=Path(output_paths["resex_stderr_log"]),
         timeout_seconds=timeout_seconds,
@@ -398,6 +401,7 @@ def _run_baseline_analysis(
     chan_stdout = _run_zeopp_command(
         binary,
         ("-chan", "0", output_paths["chan"], str(input_path)),
+        expected_output_path=Path(output_paths["chan"]),
         stdout_log_path=Path(output_paths["chan_stdout_log"]),
         stderr_log_path=Path(output_paths["chan_stderr_log"]),
         timeout_seconds=timeout_seconds,
@@ -405,6 +409,7 @@ def _run_baseline_analysis(
     _run_zeopp_command(
         binary,
         ("-sa", "0", "0", str(surface_samples_per_atom), output_paths["sa"], str(input_path)),
+        expected_output_path=Path(output_paths["sa"]),
         stdout_log_path=Path(output_paths["sa_stdout_log"]),
         stderr_log_path=Path(output_paths["sa_stderr_log"]),
         timeout_seconds=timeout_seconds,
@@ -412,6 +417,7 @@ def _run_baseline_analysis(
     _run_zeopp_command(
         binary,
         ("-vol", "0", "0", str(volume_samples_total), output_paths["vol"], str(input_path)),
+        expected_output_path=Path(output_paths["vol"]),
         stdout_log_path=Path(output_paths["vol_stdout_log"]),
         stderr_log_path=Path(output_paths["vol_stderr_log"]),
         timeout_seconds=timeout_seconds,
@@ -464,6 +470,7 @@ def _run_probe_scan(
         chan_stdout = _run_zeopp_command(
             binary,
             ("-chan", f"{settings.probe_radius:g}", output_paths["chan"], str(input_path)),
+            expected_output_path=Path(output_paths["chan"]),
             stdout_log_path=Path(output_paths["chan_stdout_log"]),
             stderr_log_path=Path(output_paths["chan_stderr_log"]),
             timeout_seconds=timeout_seconds,
@@ -485,6 +492,7 @@ def _run_probe_scan(
                 output_paths["sa"],
                 str(input_path),
             ),
+            expected_output_path=Path(output_paths["sa"]),
             stdout_log_path=Path(output_paths["sa_stdout_log"]),
             stderr_log_path=Path(output_paths["sa_stderr_log"]),
             timeout_seconds=timeout_seconds,
@@ -506,6 +514,7 @@ def _run_probe_scan(
                 output_paths["vol"],
                 str(input_path),
             ),
+            expected_output_path=Path(output_paths["vol"]),
             stdout_log_path=Path(output_paths["vol_stdout_log"]),
             stderr_log_path=Path(output_paths["vol_stderr_log"]),
             timeout_seconds=timeout_seconds,
@@ -520,6 +529,7 @@ def _run_probe_scan(
         _run_zeopp_command(
             binary,
             ("-axs", f"{settings.probe_radius:g}", output_paths["axs"], str(input_path)),
+            expected_output_path=Path(output_paths["axs"]),
             stdout_log_path=Path(output_paths["axs_stdout_log"]),
             stderr_log_path=Path(output_paths["axs_stderr_log"]),
             timeout_seconds=timeout_seconds,
@@ -562,11 +572,13 @@ def _run_zeopp_command(
     binary: Path,
     args: tuple[str, ...],
     *,
+    expected_output_path: Path,
     stdout_log_path: Path,
     stderr_log_path: Path,
     timeout_seconds: float,
 ) -> str:
     command = [str(binary), *args]
+    expected_output_path.unlink(missing_ok=True)
     try:
         completed = subprocess.run(
             command,
@@ -586,12 +598,25 @@ def _run_zeopp_command(
 
     stdout_log_path.write_text(completed.stdout or "", encoding="utf-8")
     stderr_log_path.write_text(completed.stderr or "", encoding="utf-8")
-    if completed.returncode != 0:
+    if completed.returncode != 0 and not _is_completed_windows_zeopp_run(
+        completed.returncode,
+        expected_output_path,
+    ):
         raise ZeoppExecutionError(
             "Zeo++ command failed with "
             f"exit code {completed.returncode}: {' '.join(command)}"
         )
     return completed.stdout or ""
+
+
+def _is_completed_windows_zeopp_run(returncode: int, expected_output_path: Path) -> bool:
+    """Recognize the late process-teardown failure in the static Windows build."""
+    return (
+        os.name == "nt"
+        and returncode & 0xFFFFFFFF == _WINDOWS_STACK_BUFFER_OVERRUN_STATUS
+        and expected_output_path.is_file()
+        and expected_output_path.stat().st_size > 0
+    )
 
 
 def _parse_resex_output(resex_output_path: Path) -> ZeoppBasicPoreProperties:

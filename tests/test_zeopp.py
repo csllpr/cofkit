@@ -3,6 +3,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,8 @@ from cofkit.cli import main as cli_main
 from cofkit.zeopp import (
     COFKIT_ZEOPP_ENV_VAR,
     ZeoppConfigurationError,
+    ZeoppExecutionError,
+    _run_zeopp_command,
     analyze_zeopp_pore_properties,
     resolve_zeopp_binary,
 )
@@ -147,8 +150,67 @@ class ZeoppTests(unittest.TestCase):
 
         self.assertIn("zeopp", buffer.getvalue())
 
+    def test_windows_static_binary_teardown_status_accepts_completed_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            output_path = temp_path / "example.res"
+            output_path.write_text("complete output\n", encoding="utf-8")
+            completed = subprocess.CompletedProcess(
+                ["network.exe", "-res"],
+                0xC0000409,
+                stdout="Opening File: example.cif\n",
+                stderr="",
+            )
+
+            def run_completed_command(*args, **kwargs):
+                output_path.write_text("complete output\n", encoding="utf-8")
+                return completed
+
+            with (
+                patch("cofkit.zeopp.os.name", "nt"),
+                patch("cofkit.zeopp.subprocess.run", side_effect=run_completed_command),
+            ):
+                stdout = _run_zeopp_command(
+                    temp_path / "network.exe",
+                    ("-res", str(output_path), "example.cif"),
+                    expected_output_path=output_path,
+                    stdout_log_path=temp_path / "stdout.log",
+                    stderr_log_path=temp_path / "stderr.log",
+                    timeout_seconds=30.0,
+                )
+
+            self.assertEqual(stdout, completed.stdout)
+            self.assertEqual((temp_path / "stdout.log").read_text(encoding="utf-8"), completed.stdout)
+
+    def test_windows_static_binary_teardown_status_rejects_stale_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            output_path = temp_path / "stale.res"
+            output_path.write_text("old output\n", encoding="utf-8")
+            completed = subprocess.CompletedProcess(
+                ["network.exe", "-res"],
+                0xC0000409,
+                stdout="",
+                stderr="",
+            )
+
+            with (
+                patch("cofkit.zeopp.os.name", "nt"),
+                patch("cofkit.zeopp.subprocess.run", return_value=completed),
+                self.assertRaises(ZeoppExecutionError),
+            ):
+                _run_zeopp_command(
+                    temp_path / "network.exe",
+                    ("-res", str(output_path), "example.cif"),
+                    expected_output_path=output_path,
+                    stdout_log_path=temp_path / "stdout.log",
+                    stderr_log_path=temp_path / "stderr.log",
+                    timeout_seconds=30.0,
+                )
+
     def _write_fake_zeopp_binary(self, path: Path) -> Path:
-        path.write_text(
+        script_path = path.with_suffix(".py") if os.name == "nt" else path
+        script_path.write_text(
             f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
             "import sys\n"
@@ -271,8 +333,16 @@ class ZeoppTests(unittest.TestCase):
             "    sys.exit(2)\n",
             encoding="utf-8",
         )
-        path.chmod(path.stat().st_mode | stat.S_IXUSR)
-        return path
+        if os.name == "nt":
+            launcher_path = path.with_suffix(".cmd")
+            launcher_path.write_text(
+                f'@"{sys.executable}" "{script_path}" %*\n',
+                encoding="utf-8",
+            )
+            return launcher_path
+
+        script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
+        return script_path
 
 
 if __name__ == "__main__":
