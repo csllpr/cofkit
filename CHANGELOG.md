@@ -6,6 +6,10 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ## Unreleased
 
+### Fixed
+
+- LAMMPS optimization and MD runs now stage relative data and trajectory filenames and execute from their run directory, allowing input, output, and executable paths that contain spaces
+
 ## 2026.7.20 (2026-07-20)
 
 ### Added

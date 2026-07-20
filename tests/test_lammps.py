@@ -81,6 +81,29 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(report["n_atom_types"], 2)
             self.assertTrue(report["atom_type_symbols"]["1"])
 
+    def test_optimize_cif_with_lammps_accepts_paths_with_spaces(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace with spaces"
+            input_dir = workspace / "input files"
+            output_dir = workspace / "optimization output"
+            input_dir.mkdir(parents=True)
+            fake_binary = self._write_fake_lammps_binary(workspace / "lmp fake")
+            cif_path = input_dir / "example framework.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+
+            result = optimize_cif_with_lammps(
+                cif_path,
+                output_dir=output_dir,
+                lmp_path=fake_binary,
+                settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
+            )
+
+            self.assertTrue(Path(result.optimized_cif).is_file())
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("read_data lammps_input.data", script_text)
+            self.assertIn("dump cofkit_dump all custom 1 lammps_trajectory.lammpstrj", script_text)
+            self.assertNotIn(str(output_dir), script_text)
+
     def test_optimize_cif_with_lammps_preserves_stacking_suffix_in_optimized_cif_comment(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -137,6 +160,30 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("write_dump all custom", script_text)
             output_text = Path(result.output_cif).read_text(encoding="utf-8")
             self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00", output_text)
+
+    def test_run_lammps_md_on_cif_accepts_paths_with_spaces(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace with spaces"
+            input_dir = workspace / "input files"
+            output_dir = workspace / "md output"
+            input_dir.mkdir(parents=True)
+            fake_binary = self._write_fake_lammps_binary(workspace / "lmp fake")
+            cif_path = input_dir / "md framework.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+
+            result = run_lammps_md_on_cif(
+                cif_path,
+                output_dir=output_dir,
+                lmp_path=fake_binary,
+                settings=LammpsMdSettings(forcefield="uff", charge_model="none", steps=2),
+            )
+
+            self.assertTrue(Path(result.output_cif).is_file())
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("read_data lammps_md_input.data", script_text)
+            self.assertIn("dump cofkit_dump all custom 100 lammps_md_trajectory.lammpstrj", script_text)
+            self.assertIn("write_dump all custom lammps_md_trajectory.lammpstrj", script_text)
+            self.assertNotIn(str(output_dir), script_text)
 
     def test_run_lammps_md_on_cif_injects_guest_restart_atoms(self):
         with tempfile.TemporaryDirectory() as temp_dir:

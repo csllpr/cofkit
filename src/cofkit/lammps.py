@@ -3681,6 +3681,8 @@ def _render_lammps_input_script(
     prepared: _PreparedLammpsSystem,
     boundary: str,
 ) -> str:
+    data_file = data_path.name
+    dump_file = dump_path.name
     thermo_terms = ["step", "pe", "ebond"]
     minimization_stages = _build_minimization_stages(settings)
     periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
@@ -3720,7 +3722,7 @@ def _render_lammps_input_script(
     thermo_terms.append("press")
     lines.extend(
         [
-            f"read_data {data_path}",
+            f"read_data {data_file}",
             *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
@@ -3732,7 +3734,7 @@ def _render_lammps_input_script(
         [
             "thermo 50",
             "thermo_style custom " + " ".join(thermo_terms),
-            f"dump cofkit_dump all custom 1 {dump_path} id x y z",
+            f"dump cofkit_dump all custom 1 {dump_file} id x y z",
             "dump_modify cofkit_dump sort id",
         ]
     )
@@ -3827,6 +3829,8 @@ def _render_lammps_md_input_script(
     prepared: _PreparedLammpsSystem,
     boundary: str,
 ) -> str:
+    data_file = data_path.name
+    dump_file = dump_path.name
     periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
     pair_style_line = (
         f"pair_style lj/cut/coul/long {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
@@ -3859,14 +3863,14 @@ def _render_lammps_md_input_script(
         lines.append(_render_style_line("improper_style", prepared.improper_styles))
     lines.extend(
         [
-            f"read_data {data_path}",
+            f"read_data {data_file}",
             *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
             f"timestep {settings.timestep:.8g}",
             "thermo 100",
             "thermo_style custom " + " ".join(thermo_terms),
-            f"dump cofkit_dump all custom {settings.dump_interval} {dump_path} id x y z",
+            f"dump cofkit_dump all custom {settings.dump_interval} {dump_file} id x y z",
             "dump_modify cofkit_dump sort id",
         ]
     )
@@ -3894,7 +3898,7 @@ def _render_lammps_md_input_script(
             f"{settings.thermostat_damping:.8g}"
         )
         lines.append(f"run {settings.steps}")
-        lines.append(f"write_dump all custom {dump_path} id x y z modify sort id append yes")
+        lines.append(f"write_dump all custom {dump_file} id x y z modify sort id append yes")
         lines.append("unfix cofkit_md")
     else:
         lines.extend(
@@ -3905,7 +3909,7 @@ def _render_lammps_md_input_script(
                     f"{settings.thermostat_damping:.8g} {settings.velocity_seed + 104729}"
                 ),
                 f"run {settings.steps}",
-                f"write_dump all custom {dump_path} id x y z modify sort id append yes",
+                f"write_dump all custom {dump_file} id x y z modify sort id append yes",
                 "unfix cofkit_langevin",
                 "unfix cofkit_md",
             ]
@@ -3950,6 +3954,7 @@ def _run_lammps(
             text=True,
             timeout=timeout_seconds,
             env=environment,
+            cwd=input_script_path.parent,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
