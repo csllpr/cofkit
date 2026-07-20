@@ -165,7 +165,7 @@ class LammpsTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
             guest_restart_state = parse_lammps_guest_restart_snapshot(
                 snapshot_path,
                 templates=templates,
@@ -191,7 +191,7 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(result.n_atoms, 3)
             self.assertEqual(result.n_guest_atoms, 1)
             self.assertEqual(result.n_total_atoms, 4)
-            self.assertEqual(result.guest_components, ("Xe",))
+            self.assertEqual(result.guest_components, ("Xe_GENERICMOFS",))
             self.assertEqual(result.guest_restart_source_path, str(snapshot_path.resolve()))
             self.assertEqual(result.charge_model, "guest_restart")
             self.assertIn("4  atoms", data_text)
@@ -202,7 +202,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("atom_style full", script_text)
             self.assertEqual(report["n_guest_atoms"], 1)
             self.assertEqual(report["n_total_atoms"], 4)
-            self.assertEqual(report["guest_components"], ["Xe"])
+            self.assertEqual(report["guest_components"], ["Xe_GENERICMOFS"])
 
     def test_run_lammps_md_on_cif_expands_framework_to_guest_restart_supercell(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -234,7 +234,7 @@ class LammpsTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
             guest_restart_state = parse_lammps_guest_restart_snapshot(
                 snapshot_path,
                 templates=templates,

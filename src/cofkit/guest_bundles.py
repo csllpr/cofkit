@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .guest_forcefields import SUPPORTED_GUEST_FORCEFIELDS
+from .guest_forcefields import (
+    SUPPORTED_GUEST_MIXING_RULES,
+    SUPPORTED_GUEST_PARAMETER_FAMILIES,
+    SUPPORTED_GUEST_VDW_TREATMENTS,
+)
 
 
 class GuestBundleError(ValueError):
@@ -35,7 +39,9 @@ class GuestBundle:
     rotatable: bool
     parameter_family: str
     parameter_source: str
-    compatible_framework_forcefields: tuple[str, ...]
+    vdw_treatment: str
+    tail_corrections: bool
+    mixing_rule: str
     raspa: RaspaGuestBundle
     lammps: Mapping[str, Any]
     notes: tuple[str, ...] = ()
@@ -51,7 +57,9 @@ class GuestBundle:
             "rotatable": self.rotatable,
             "parameter_family": self.parameter_family,
             "parameter_source": self.parameter_source,
-            "compatible_framework_forcefields": list(self.compatible_framework_forcefields),
+            "vdw_treatment": self.vdw_treatment,
+            "tail_corrections": self.tail_corrections,
+            "mixing_rule": self.mixing_rule,
             "raspa": self.raspa.to_dict(),
             "lammps_keys": sorted(str(key) for key in self.lammps),
             "notes": list(self.notes),
@@ -73,7 +81,7 @@ def load_guest_bundle(path: str | Path) -> GuestBundle:
     if version != 2:
         raise GuestBundleError(
             f"Unsupported guest bundle version {version!r} in {bundle_path}; expected 2. "
-            "Version 2 requires force-field provenance and compatibility metadata."
+            "Version 2 requires force-field provenance metadata."
         )
 
     name = _required_token(raw, "name", context=str(bundle_path))
@@ -87,26 +95,26 @@ def load_guest_bundle(path: str | Path) -> GuestBundle:
     if not isinstance(rotatable, bool):
         raise GuestBundleError(f"Guest bundle rotatable must be a boolean: {bundle_path}")
 
-    parameter_family = _required_forcefield(raw, "parameter_family", context=str(bundle_path))
+    parameter_family = _required_parameter_family(raw, "parameter_family", context=str(bundle_path))
     parameter_source = _required_nonblank_string(raw, "parameter_source", context=str(bundle_path))
-    compatible_raw = raw.get("compatible_framework_forcefields")
-    if not isinstance(compatible_raw, Sequence) or isinstance(compatible_raw, (str, bytes)) or not compatible_raw:
-        raise GuestBundleError(
-            f"Guest bundle compatible_framework_forcefields must be a non-empty list: {bundle_path}"
-        )
-    compatible_framework_forcefields = tuple(
-        _normalize_forcefield(value, context=f"{bundle_path}:compatible_framework_forcefields")
-        for value in compatible_raw
+
+    vdw_treatment = _optional_choice(
+        raw,
+        "vdw_treatment",
+        default="truncated",
+        choices=SUPPORTED_GUEST_VDW_TREATMENTS,
+        context=str(bundle_path),
     )
-    if len(set(compatible_framework_forcefields)) != len(compatible_framework_forcefields):
-        raise GuestBundleError(
-            f"Guest bundle compatible_framework_forcefields must not contain duplicates: {bundle_path}"
-        )
-    if parameter_family not in compatible_framework_forcefields:
-        raise GuestBundleError(
-            f"Guest bundle parameter family {parameter_family!r} must be listed in "
-            f"compatible_framework_forcefields: {bundle_path}"
-        )
+    tail_corrections = raw.get("tail_corrections", False)
+    if not isinstance(tail_corrections, bool):
+        raise GuestBundleError(f"Guest bundle tail_corrections must be a boolean: {bundle_path}")
+    mixing_rule = _optional_choice(
+        raw,
+        "mixing_rule",
+        default="lorentz_berthelot",
+        choices=SUPPORTED_GUEST_MIXING_RULES,
+        context=str(bundle_path),
+    )
 
     raspa_raw = raw.get("raspa")
     if not isinstance(raspa_raw, Mapping):
@@ -163,7 +171,9 @@ def load_guest_bundle(path: str | Path) -> GuestBundle:
         rotatable=rotatable,
         parameter_family=parameter_family,
         parameter_source=parameter_source,
-        compatible_framework_forcefields=compatible_framework_forcefields,
+        vdw_treatment=vdw_treatment,
+        tail_corrections=tail_corrections,
+        mixing_rule=mixing_rule,
         raspa=raspa,
         lammps=dict(lammps_raw),
         notes=notes,
@@ -202,10 +212,10 @@ def _normalize_token(value: Any, *, context: str) -> str:
     return token
 
 
-def _required_forcefield(raw: Mapping[str, Any], key: str, *, context: str) -> str:
+def _required_parameter_family(raw: Mapping[str, Any], key: str, *, context: str) -> str:
     if key not in raw:
         raise GuestBundleError(f"Missing required guest bundle field {key!r}: {context}")
-    return _normalize_forcefield(raw[key], context=f"{context}:{key}")
+    return _normalize_parameter_family(raw[key], context=f"{context}:{key}")
 
 
 def _required_nonblank_string(raw: Mapping[str, Any], key: str, *, context: str) -> str:
@@ -215,12 +225,29 @@ def _required_nonblank_string(raw: Mapping[str, Any], key: str, *, context: str)
     return value.strip()
 
 
-def _normalize_forcefield(value: Any, *, context: str) -> str:
-    token = _normalize_token(value, context=context).lower().replace("-", "_")
-    if token not in SUPPORTED_GUEST_FORCEFIELDS:
+def _optional_choice(
+    raw: Mapping[str, Any],
+    key: str,
+    *,
+    default: str,
+    choices: tuple[str, ...],
+    context: str,
+) -> str:
+    value = raw.get(key, default)
+    token = _normalize_token(value, context=f"{context}:{key}").lower().replace("-", "_")
+    if token not in choices:
         raise GuestBundleError(
-            f"Unsupported guest bundle force field {value!r} at {context}; "
-            f"expected one of: {', '.join(SUPPORTED_GUEST_FORCEFIELDS)}"
+            f"Unsupported guest bundle {key} {value!r} at {context}; expected one of: {', '.join(choices)}"
+        )
+    return token
+
+
+def _normalize_parameter_family(value: Any, *, context: str) -> str:
+    token = _normalize_token(value, context=context).lower().replace("-", "_")
+    if token not in SUPPORTED_GUEST_PARAMETER_FAMILIES:
+        raise GuestBundleError(
+            f"Unsupported guest bundle parameter family {value!r} at {context}; "
+            f"expected one of: {', '.join(SUPPORTED_GUEST_PARAMETER_FAMILIES)}"
         )
     return token
 

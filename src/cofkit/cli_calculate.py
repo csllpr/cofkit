@@ -6,6 +6,7 @@ import json
 from .forcefields import supported_forcefield_selectors
 from .graspa import (
     AVAILABLE_WIDOM_COMPONENTS,
+    DEFAULT_WIDOM_COMPONENTS,
     COFKIT_GRASPA_ENV_VAR,
     COFKIT_RASPA2_ENV_VAR,
     DEFAULT_WIDOM_MOVES_PER_COMPONENT,
@@ -100,7 +101,7 @@ def _parse_graspa_mixture_component_spec(raw_value: str) -> tuple[str, float]:
     component_name, separator, raw_fraction = value.partition(":")
     if separator == "":
         raise argparse.ArgumentTypeError(
-            "Mixture components must use NAME:FRACTION syntax, for example CO2:0.15."
+            "Mixture components must use NAME:FRACTION syntax, for example CO2_DREIDING:0.15."
         )
     component = _parse_graspa_component_name(component_name)
     try:
@@ -157,7 +158,7 @@ def _add_guest_bundle_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help=(
             "Add one external parameterized guest bundle JSON. Repeat for multiple bundles. "
-            "Each bundle must declare parameter_family, parameter_source, and compatible_framework_forcefields. "
+            "Each bundle must declare parameter_family and parameter_source. "
             "Bundled components remain available without this flag."
         ),
     )
@@ -675,7 +676,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
         "--forcefield",
         choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
-        help="Registered framework forcefield; selected guests must declare family compatibility. Default: dreiding.",
+        help="Framework forcefield, selected independently from the tagged guest parameter model. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -746,7 +747,10 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--all-components",
         action="store_true",
-        help="Activate all packaged Widom probes. The full packaged set requires --forcefield dreiding.",
+        help=(
+            "Activate the default packaged Widom probe set. Alternative RASPA example models must be selected "
+            "explicitly because they use a different global nonbonded convention."
+        ),
     )
     parser.add_argument(
         "--widom-moves-per-component",
@@ -836,7 +840,7 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
 
     selected_components: list[str] = []
     if args.all_components:
-        selected_components.extend(AVAILABLE_WIDOM_COMPONENTS)
+        selected_components.extend(DEFAULT_WIDOM_COMPONENTS)
     if args.components:
         selected_components.extend(args.components)
     deduped_components = tuple(dict.fromkeys(selected_components))
@@ -946,7 +950,7 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
         "--forcefield",
         choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
-        help="Registered framework forcefield; selected guests must declare family compatibility. Default: dreiding.",
+        help="Framework forcefield, selected independently from the tagged guest parameter model. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
@@ -1191,7 +1195,7 @@ def _add_graspa_mixture_parser(subparsers) -> None:
         "--forcefield",
         choices=_FORCEFIELD_SELECTORS,
         default="dreiding",
-        help="Registered framework forcefield; selected guests must declare family compatibility. Default: dreiding.",
+        help="Framework forcefield, selected independently from the tagged guest parameter model. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",

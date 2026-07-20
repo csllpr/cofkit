@@ -43,11 +43,11 @@ class GuestRestartTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            templates, sites = load_lammps_guest_force_field_assets(("Xe", "Kr"))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
             state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
 
         self.assertEqual(state.n_atoms, 2)
-        self.assertEqual(state.components, ("Xe", "Kr"))
+        self.assertEqual(state.components, ("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
         self.assertEqual([atom.site_label for atom in state.atoms], ["Xe", "Kr"])
         self.assertEqual(state.atoms[0].x, 1.0)
         self.assertEqual(state.atoms[1].z, 6.0)
@@ -82,7 +82,7 @@ class GuestRestartTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
             state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
 
         self.assertIsNotNone(state.snapshot_cell)
@@ -117,7 +117,7 @@ class GuestRestartTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
             state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
 
         self.assertEqual(state.n_atoms, 1)
@@ -148,7 +148,7 @@ class GuestRestartTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
             state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
 
         self.assertEqual(state.n_atoms, 1)
@@ -179,7 +179,7 @@ class GuestRestartTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            templates, sites = load_lammps_guest_force_field_assets(("Xe",))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
             state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
 
         self.assertEqual(state.n_atoms, 1)
@@ -190,7 +190,7 @@ class GuestRestartTests(unittest.TestCase):
 
     def test_zero_mass_pseudo_sites_are_rejected_for_lammps_restart(self):
         with self.assertRaises(GuestRestartError) as raised:
-            load_lammps_guest_force_field_assets(("TIP4P",))
+            load_lammps_guest_force_field_assets(("TIP4P_DREIDING",))
 
         self.assertIn("zero or negative mass", str(raised.exception))
 
@@ -220,7 +220,7 @@ class GuestRestartTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            templates, sites = load_lammps_guest_force_field_assets(("Xe", "Kr"))
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
             previous_state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
 
             data_path = temp_path / "lammps_md_input.data"
@@ -283,19 +283,19 @@ class GuestRestartTests(unittest.TestCase):
                 md_state,
                 temp_path / "restartfile",
                 cell=cell,
-                component_order=("Xe", "Kr"),
+                component_order=("Xe_GENERICMOFS", "Kr_GENERICMOFS"),
             )
             restart_text = Path(restart_result.restart_file_path).read_text(encoding="utf-8")
 
         self.assertEqual(md_state.n_atoms, 2)
-        self.assertEqual(md_state.components, ("Xe", "Kr"))
+        self.assertEqual(md_state.components, ("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
         self.assertEqual((md_state.atoms[0].x, md_state.atoms[0].y, md_state.atoms[0].z), (1.25, 2.50, 3.75))
         self.assertEqual(cell.lengths, (20.0, 21.0, 22.0))
         self.assertEqual(restart_result.n_adsorbate_molecules, 2)
-        self.assertEqual(restart_result.components, ("Xe", "Kr"))
+        self.assertEqual(restart_result.components, ("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
         self.assertIn("Components: 2 (Adsorbates 2, Cations 0)", restart_text)
-        self.assertIn("Components 0 (Xe)", restart_text)
-        self.assertIn("Components 1 (Kr)", restart_text)
+        self.assertIn("Components 0 (Xe_GENERICMOFS)", restart_text)
+        self.assertIn("Components 1 (Kr_GENERICMOFS)", restart_text)
         self.assertIn("Adsorbate-atom-position: 0 0 1.250000 2.500000 3.750000", restart_text)
         self.assertIn("Adsorbate-atom-position: 0 0 4.250000 5.500000 6.750000", restart_text)
         self.assertIn("Adsorbate-atom-charge: 0 0 0.000000", restart_text)

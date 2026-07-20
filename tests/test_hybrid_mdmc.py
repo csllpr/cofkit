@@ -52,7 +52,7 @@ class HybridMdMcTests(unittest.TestCase):
                         settings=HybridMdMcSettings(
                             cycles=2,
                             pressure=100000.0,
-                            components=(GraspaMixtureComponentSettings(component="CO2", mol_fraction=1.0),),
+                            components=(GraspaMixtureComponentSettings(component="CO2_DREIDING", mol_fraction=1.0),),
                             initialization_cycles=1,
                             equilibration_cycles=1,
                             production_cycles=2,
@@ -146,8 +146,8 @@ class HybridMdMcTests(unittest.TestCase):
                             exchange_mode="guest_restart",
                             pressure=100000.0,
                             components=(
-                                GraspaMixtureComponentSettings(component="Xe", mol_fraction=0.5),
-                                GraspaMixtureComponentSettings(component="Kr", mol_fraction=0.5),
+                                GraspaMixtureComponentSettings(component="Xe_GENERICMOFS", mol_fraction=0.5),
+                                GraspaMixtureComponentSettings(component="Kr_GENERICMOFS", mol_fraction=0.5),
                             ),
                             initialization_cycles=1,
                             equilibration_cycles=1,
@@ -166,17 +166,17 @@ class HybridMdMcTests(unittest.TestCase):
 
         self.assertIsNone(lammps_guest_states[0])
         self.assertEqual(lammps_guest_states[1].n_atoms, 2)
-        self.assertEqual(lammps_guest_states[1].components, ("Xe", "Kr"))
+        self.assertEqual(lammps_guest_states[1].components, ("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
         self.assertEqual(result.cycle_results[0].n_output_guest_atoms, 2)
         self.assertEqual(result.cycle_results[1].n_input_guest_atoms, 2)
         self.assertEqual(result.cycle_results[1].lammps_md_result.n_guest_atoms, 2)
-        self.assertEqual(result.cycle_results[1].input_guest_components, ("Xe", "Kr"))
+        self.assertEqual(result.cycle_results[1].input_guest_components, ("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
         self.assertIsNone(gcmc_initial_restart_files[0])
         self.assertIsNotNone(gcmc_initial_restart_files[1])
         self.assertEqual(gcmc_restart_flags, [False, True])
         self.assertEqual(result.cycle_results[0].gcmc_initial_restart_file_path, None)
         self.assertEqual(result.cycle_results[1].n_md_output_guest_atoms, 2)
-        self.assertEqual(result.cycle_results[1].md_output_guest_components, ("Xe", "Kr"))
+        self.assertEqual(result.cycle_results[1].md_output_guest_components, ("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
         self.assertEqual(result.cycle_results[1].gcmc_initial_restart_file_path, gcmc_initial_restart_files[1])
         self.assertIn("Components: 2 (Adsorbates 2, Cations 0)", restart_text)
         self.assertIn("Adsorbate-atom-position: 0 0 1.250000 2.500000 3.750000", restart_text)
@@ -201,7 +201,7 @@ class HybridMdMcTests(unittest.TestCase):
                     settings=HybridMdMcSettings(
                         exchange_mode="guest_restart",
                         raspa_backend="raspa2",
-                        components=(GraspaMixtureComponentSettings(component="Xe", mol_fraction=1.0),),
+                        components=(GraspaMixtureComponentSettings(component="Xe_GENERICMOFS", mol_fraction=1.0),),
                     ),
                     lammps_md_settings=LammpsMdSettings(forcefield="uff", charge_model="none", steps=5),
                     lammps_eqeq_settings=EqeqChargeSettings(),
@@ -209,6 +209,23 @@ class HybridMdMcTests(unittest.TestCase):
                 )
 
         self.assertIn("RASPA2 restart staging is not yet supported", str(raised.exception))
+
+    def test_hybrid_mdmc_guest_restart_rejects_raspa_only_packaged_model(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_cif = Path(temp_dir) / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError) as raised:
+                run_hybrid_mdmc_workflow(
+                    input_cif,
+                    settings=HybridMdMcSettings(
+                        exchange_mode="guest_restart",
+                        components=(GraspaMixtureComponentSettings(component="CH4_RASPA", mol_fraction=1.0),),
+                    ),
+                )
+
+        self.assertIn("not supported for packaged guest model(s): CH4_RASPA", str(raised.exception))
+        self.assertIn("exchange_mode='framework'", str(raised.exception))
 
 
 def _fake_lammps_result(

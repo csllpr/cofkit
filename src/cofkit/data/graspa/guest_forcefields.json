@@ -1,51 +1,250 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "guests": [
     {
-      "name": "TIP4P",
+      "name": "TIP4P_DREIDING",
+      "species": "H2O",
+      "model_tag": "DREIDING",
       "parameter_family": "dreiding",
-      "parameter_source": "Jorgensen et al., J. Chem. Phys. (1983), with the packaged TIP4P.def geometry metadata.",
-      "compatible_framework_forcefields": ["dreiding"]
+      "parameter_source": "Jorgensen et al., J. Chem. Phys. (1983), with the packaged TIP4P_DREIDING.def geometry metadata.",
+      "rotatable": true,
+      "default_widom": true,
+      "vdw_treatment": "truncated",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false
     },
     {
-      "name": "CO2",
+      "name": "CO2_DREIDING",
+      "species": "CO2",
+      "model_tag": "DREIDING",
       "parameter_family": "dreiding",
       "parameter_source": "Potoff and Siepmann, AIChE J. 47, 1676-1682 (2001).",
-      "compatible_framework_forcefields": ["dreiding"]
+      "rotatable": true,
+      "default_widom": true,
+      "vdw_treatment": "truncated",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": true
     },
     {
-      "name": "H2",
+      "name": "H2_DREIDING",
+      "species": "H2",
+      "model_tag": "DREIDING",
       "parameter_family": "dreiding",
       "parameter_source": "Garcia-Holley et al., ACS Energy Lett. 2018, 3, 748-754.",
-      "compatible_framework_forcefields": ["dreiding"]
+      "rotatable": true,
+      "default_widom": true,
+      "vdw_treatment": "truncated",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false
     },
     {
-      "name": "N2",
+      "name": "N2_DREIDING",
+      "species": "N2",
+      "model_tag": "DREIDING",
       "parameter_family": "dreiding",
       "parameter_source": "Martin-Calvo et al., Phys. Chem. Chem. Phys. 2011, 13, 11165-11174.",
-      "compatible_framework_forcefields": ["dreiding"]
+      "rotatable": true,
+      "default_widom": true,
+      "vdw_treatment": "truncated",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false
     },
     {
-      "name": "SO2",
+      "name": "SO2_DREIDING",
+      "species": "SO2",
+      "model_tag": "DREIDING",
       "parameter_family": "dreiding",
       "parameter_source": "J. Phys. Chem. B 2011, 115, 4949-4954.",
-      "compatible_framework_forcefields": ["dreiding"]
+      "rotatable": true,
+      "default_widom": true,
+      "vdw_treatment": "truncated",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": true
     },
     {
-      "name": "Xe",
-      "parameter_family": "uff",
+      "name": "Xe_GENERICMOFS",
+      "species": "Xe",
+      "model_tag": "GENERICMOFS",
+      "parameter_family": "genericmofs",
       "parameter_source": "RASPA GenericMOFs force field.",
-      "compatible_framework_forcefields": ["uff", "dreiding"],
-      "compatibility_note": "Registered in the UFF family and also used with DREIDING because DREIDING does not provide Xe parameters.",
+      "rotatable": false,
+      "default_widom": true,
+      "vdw_treatment": "truncated",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": true,
+      "compatibility_note": "Uses RASPA GenericMOFs guest parameters. The framework force field is selected independently and cofkit does not restrict that pairing.",
       "provenance_note": "The GenericMOFs 221 K and 4.100 A values are distinct from the Xe4+4 row derived from cofkit's bundled Open Babel UFF.prm."
     },
     {
-      "name": "Kr",
-      "parameter_family": "uff",
+      "name": "Kr_GENERICMOFS",
+      "species": "Kr",
+      "model_tag": "GENERICMOFS",
+      "parameter_family": "genericmofs",
       "parameter_source": "RASPA GenericMOFs force field.",
-      "compatible_framework_forcefields": ["uff", "dreiding"],
-      "compatibility_note": "Registered in the UFF family and also used with DREIDING because DREIDING does not provide Kr parameters.",
+      "rotatable": false,
+      "default_widom": true,
+      "vdw_treatment": "truncated",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": true,
+      "compatibility_note": "Uses RASPA GenericMOFs guest parameters. The framework force field is selected independently and cofkit does not restrict that pairing.",
       "provenance_note": "The GenericMOFs 166.4 K and 3.636 A values are distinct from the Kr4+4 row derived from cofkit's bundled Open Babel UFF.prm."
+    },
+    {
+      "name": "He_RASPA",
+      "species": "He",
+      "model_tag": "RASPA",
+      "parameter_family": "raspa_example_molecule",
+      "parameter_source": "Hirschfelder, Curtiss, and Bird, Molecular Theory of Gases and Liquids, Wiley (1954), p. 1114, as packaged by RASPA2 ExampleMoleculeForceField.",
+      "rotatable": false,
+      "default_widom": false,
+      "vdw_treatment": "shifted",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false,
+      "pseudo_atom_rows": [
+        "He_raspa yes He He 0 4.002602 0.0 0.0 1.0 1.0 0 0 relative 0"
+      ],
+      "mixing_rule_rows": [
+        "He_raspa lennard-jones 10.9 2.64 // RASPA2 ExampleMoleculeForceField; Hirschfelder et al. (1954)."
+      ],
+      "compatibility_note": "The framework force field is selected independently; validation of the chosen guest/framework combination remains the user's responsibility.",
+      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. The site label was namespaced, an explicit origin was added, and the source's one-site flexible group was normalized to rigid; numerical parameters are unchanged.",
+      "source_url": "https://github.com/iRASPA/RASPA2/tree/master/molecules/ExampleDefinitions",
+      "source_commit": "6498ab1eec9c8e0f063dcd0d71dd7add372c529b",
+      "license": "MIT"
+    },
+    {
+      "name": "Ar_RASPA",
+      "species": "Ar",
+      "model_tag": "RASPA",
+      "parameter_family": "raspa_example_molecule",
+      "parameter_source": "Martin-Calvo et al., Phys. Chem. Chem. Phys. 2011, 13, 11165-11174, as packaged by RASPA2 ExampleMoleculeForceField.",
+      "rotatable": false,
+      "default_widom": false,
+      "vdw_treatment": "shifted",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false,
+      "pseudo_atom_rows": [
+        "Ar_raspa yes Ar Ar 0 39.948 0.0 0.0 1.0 0.7 0 0 relative 0"
+      ],
+      "mixing_rule_rows": [
+        "Ar_raspa lennard-jones 124.070 3.38 // RASPA2 ExampleMoleculeForceField; Martin-Calvo et al. (2011)."
+      ],
+      "compatibility_note": "The framework force field is selected independently; validation of the chosen guest/framework combination remains the user's responsibility.",
+      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. The site label was namespaced, an explicit origin was added, and the source's one-site flexible group was normalized to rigid; numerical parameters are unchanged. RASPA2's argon critical temperature and pressure closely repeat its O2 values, so independently validate them before requesting PR-EOS fugacity handling.",
+      "source_url": "https://github.com/iRASPA/RASPA2/tree/master/molecules/ExampleDefinitions",
+      "source_commit": "6498ab1eec9c8e0f063dcd0d71dd7add372c529b",
+      "license": "MIT"
+    },
+    {
+      "name": "CH4_RASPA",
+      "species": "CH4",
+      "model_tag": "RASPA",
+      "parameter_family": "raspa_example_molecule",
+      "parameter_source": "Martin, Thompson, and Nenoff, J. Chem. Phys. 2001, 114, 7174-7181, as packaged by RASPA2 ExampleMoleculeForceField.",
+      "rotatable": false,
+      "default_widom": false,
+      "vdw_treatment": "shifted",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false,
+      "pseudo_atom_rows": [
+        "CH4_raspa yes C C 0 16.04246 0.0 0.0 1.0 1.00 0 0 relative 0"
+      ],
+      "mixing_rule_rows": [
+        "CH4_raspa lennard-jones 158.5 3.72 // RASPA2 ExampleMoleculeForceField; Martin et al. (2001)."
+      ],
+      "compatibility_note": "The framework force field is selected independently; validation of the chosen guest/framework combination remains the user's responsibility.",
+      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. The united-atom site label was namespaced, an explicit origin was added, and the source's one-site flexible group was normalized to rigid; numerical parameters are unchanged.",
+      "source_url": "https://github.com/iRASPA/RASPA2/tree/master/molecules/ExampleDefinitions",
+      "source_commit": "6498ab1eec9c8e0f063dcd0d71dd7add372c529b",
+      "license": "MIT"
+    },
+    {
+      "name": "O2_RASPA",
+      "species": "O2",
+      "model_tag": "RASPA",
+      "parameter_family": "raspa_example_molecule",
+      "parameter_source": "Martin-Calvo et al., Phys. Chem. Chem. Phys. 2011, 13, 11165-11174, as packaged by RASPA2 ExampleMoleculeForceField.",
+      "rotatable": true,
+      "default_widom": false,
+      "vdw_treatment": "shifted",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false,
+      "pseudo_atom_rows": [
+        "O_o2_raspa yes O O 0 15.9994 -0.112 0.0 1.0 0.7 0 0 relative 0",
+        "O_com_raspa no O - 0 0.0 0.224 0.0 1.0 0.7 0 0 relative 0"
+      ],
+      "mixing_rule_rows": [
+        "O_o2_raspa lennard-jones 53.023 3.045 // RASPA2 ExampleMoleculeForceField; Martin-Calvo et al. (2011).",
+        "O_com_raspa none // RASPA2 ExampleMoleculeForceField; charge-only center site."
+      ],
+      "compatibility_note": "The framework force field is selected independently; validation of the chosen guest/framework combination remains the user's responsibility.",
+      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. Site labels were namespaced for cofkit without changing geometry or numerical parameters.",
+      "source_url": "https://github.com/iRASPA/RASPA2/tree/master/molecules/ExampleDefinitions",
+      "source_commit": "6498ab1eec9c8e0f063dcd0d71dd7add372c529b",
+      "license": "MIT"
+    },
+    {
+      "name": "CO2_RASPA",
+      "species": "CO2",
+      "model_tag": "RASPA",
+      "parameter_family": "raspa_example_molecule",
+      "parameter_source": "Garcia-Sanchez et al., J. Phys. Chem. C 2009, 113, 8814-8820, as packaged by RASPA2 ExampleMoleculeForceField.",
+      "rotatable": true,
+      "default_widom": false,
+      "vdw_treatment": "shifted",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false,
+      "pseudo_atom_rows": [
+        "O_co2_raspa yes O O 0 15.9994 -0.3256 0.0 1.0 0.68 0 0 relative 0",
+        "C_co2_raspa yes C C 0 12.0 0.6512 0.0 1.0 0.720 0 0 relative 0"
+      ],
+      "mixing_rule_rows": [
+        "O_co2_raspa lennard-jones 85.671 3.017 // RASPA2 ExampleMoleculeForceField; Garcia-Sanchez et al. (2009).",
+        "C_co2_raspa lennard-jones 29.933 2.745 // RASPA2 ExampleMoleculeForceField; Garcia-Sanchez et al. (2009)."
+      ],
+      "compatibility_note": "Alternative shifted-LJ CO2 model for use with the RASPA example-molecule family; it does not replace cofkit's default Potoff-Siepmann CO2 model.",
+      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. Site labels and the selector were namespaced for cofkit without changing geometry or numerical parameters.",
+      "source_url": "https://github.com/iRASPA/RASPA2/tree/master/molecules/ExampleDefinitions",
+      "source_commit": "6498ab1eec9c8e0f063dcd0d71dd7add372c529b",
+      "license": "MIT"
+    },
+    {
+      "name": "N2_RASPA",
+      "species": "N2",
+      "model_tag": "RASPA",
+      "parameter_family": "raspa_example_molecule",
+      "parameter_source": "Martin-Calvo et al., Phys. Chem. Chem. Phys. 2011, 13, 11165-11174, as packaged by RASPA2 ExampleMoleculeForceField.",
+      "rotatable": true,
+      "default_widom": false,
+      "vdw_treatment": "shifted",
+      "tail_corrections": false,
+      "mixing_rule": "lorentz_berthelot",
+      "supports_hybrid_guest_restart": false,
+      "pseudo_atom_rows": [
+        "N_n2_raspa yes N N 0 14.00674 -0.405 0.0 1.0 0.7 0 0 relative 0",
+        "N_com_raspa no N - 0 0.0 0.810 0.0 1.0 0.7 0 0 relative 0"
+      ],
+      "mixing_rule_rows": [
+        "N_n2_raspa lennard-jones 38.298 3.306 // RASPA2 ExampleMoleculeForceField; Martin-Calvo et al. (2011).",
+        "N_com_raspa none // RASPA2 ExampleMoleculeForceField; charge-only center site."
+      ],
+      "compatibility_note": "Alternative shifted-LJ N2 model for use with the RASPA example-molecule family; it does not replace cofkit's default truncated-LJ N2 model.",
+      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. Site labels and the selector were namespaced for cofkit without changing geometry or numerical parameters.",
+      "source_url": "https://github.com/iRASPA/RASPA2/tree/master/molecules/ExampleDefinitions",
+      "source_commit": "6498ab1eec9c8e0f063dcd0d71dd7add372c529b",
+      "license": "MIT"
     }
   ]
 }

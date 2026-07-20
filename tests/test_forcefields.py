@@ -18,7 +18,6 @@ from cofkit.forcefields import (
     supported_forcefield_selectors,
     verify_forcefield_artifacts,
 )
-from cofkit.guest_forcefields import packaged_guest_forcefield_catalog
 
 
 class ForceFieldMetadataTests(unittest.TestCase):
@@ -120,15 +119,6 @@ class ForceFieldMetadataTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ForceFieldMetadataError, "exactly one default variant"):
                 load_forcefield_metadata(registry_path, verify_artifacts=False)
-
-    def test_guest_compatibility_accepts_registered_family_or_stable_id(self):
-        xenon = packaged_guest_forcefield_catalog()["Xe"]
-        carbon_dioxide = packaged_guest_forcefield_catalog()["CO2"]
-
-        self.assertTrue(xenon.supports("uff-openbabel-3.1.0-cofkit-1.0"))
-        self.assertTrue(xenon.supports("dreiding-standard-1990-cofkit-1.0"))
-        self.assertFalse(carbon_dioxide.supports("uff-openbabel-3.1.0-cofkit-1.0"))
-
 
 if __name__ == "__main__":
     unittest.main()

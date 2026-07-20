@@ -290,8 +290,8 @@ export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 cofkit calculate graspa-widom \
   <STRUCTURE_CIF> \
   --output-dir out/widom \
-  --component CO2 \
-  --component Xe \
+  --component CO2_DREIDING \
+  --component Xe_GENERICMOFS \
   --json
 ```
 
@@ -299,7 +299,7 @@ Useful variants:
 
 - add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate` for CPU-only RASPA2
 - add `--raspa-path ...` as a backend-neutral executable override for the selected backend
-- add `--all-components` to screen every packaged probe
+- add `--all-components` to screen the default packaged probe set; select shifted-LJ RASPA example models explicitly
 - add repeated `--guest-bundle path/to/guest.json` flags to load external parameterized guests, then select them with `--component NAME` by bundle name or alias
 - tune `--widom-moves-per-component`, `--production-cycles`, `--temperature`, `--pressure`, `--cutoff-vdw`, `--cutoff-coulomb`, and `--ewald-precision`
 
@@ -309,7 +309,7 @@ Requirements:
 - `COFKIT_EQEQ_PATH` or `--eqeq-path` selects EQeq
 - default backend is gRASPA through `COFKIT_GRASPA_PATH` or `--graspa-path`
 - RASPA2 backend uses `COFKIT_RASPA2_PATH`, `--raspa2-path`, or `--raspa-path` with `--backend raspa2`
-- packaged probe names are `TIP4P`, `CO2`, `H2`, `N2`, `SO2`, `Xe`, and `Kr`; guest-bundle component names and aliases become available only after `--guest-bundle`
+- every packaged selector has a mandatory model tag; default names are `TIP4P_DREIDING`, `CO2_DREIDING`, `H2_DREIDING`, `N2_DREIDING`, `SO2_DREIDING`, `Xe_GENERICMOFS`, and `Kr_GENERICMOFS`; optional shifted-LJ models are `He_RASPA`, `Ar_RASPA`, `CH4_RASPA`, `O2_RASPA`, `CO2_RASPA`, and `N2_RASPA`; untagged packaged aliases are not accepted; the tag identifies the guest parameter model and does not select the backend or restrict the framework force field; use only components with the same shifted/truncated convention in one run; guest-bundle component names and aliases become available only after `--guest-bundle`
 
 Primary artifacts:
 
@@ -332,7 +332,7 @@ export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 cofkit calculate graspa-isotherm \
   <STRUCTURE_CIF> \
   --output-dir out/isotherm \
-  --component CO2 \
+  --component CO2_DREIDING \
   --pressure 10000 \
   --pressure 100000 \
   --json
@@ -377,8 +377,8 @@ export COFKIT_GRASPA_PATH=/path/to/nvc_main.x
 cofkit calculate graspa-mixture \
   <STRUCTURE_CIF> \
   --output-dir out/mixture \
-  --component Xe:0.2 \
-  --component Kr:0.8 \
+  --component Xe_GENERICMOFS:0.2 \
+  --component Kr_GENERICMOFS:0.8 \
   --pressure 100000 \
   --json
 ```
@@ -426,7 +426,7 @@ cofkit calculate hybrid-mdmc \
   <STRUCTURE_CIF> \
   --output-dir out/hybrid_mdmc \
   --cycles 5 \
-  --component CO2 \
+  --component CO2_DREIDING \
   --pressure 100000 \
   --lammps-forcefield dreiding \
   --raspa-forcefield dreiding \
@@ -438,7 +438,7 @@ Useful variants:
 - add `--backend raspa2` and configure `COFKIT_RASPA2_PATH` or pass `--raspa2-path /path/to/simulate`
 - add repeated `--guest-bundle path/to/guest.json` flags for external parameterized guests, then select them with `--component NAME` or `--component NAME:FRACTION`
 - use one `--component NAME` for a pure-component GCMC segment, or repeated `--component NAME:FRACTION` values for a mixture segment
-- add `--exchange-mode guest-restart` with the gRASPA backend when the user wants GCMC guest coordinates injected into the following LAMMPS MD segment and MD-evolved guest coordinates written back to the next MC segment; binary guests use repeated mixture components, for example `--component Xe:0.5 --component Kr:0.5`
+- add `--exchange-mode guest-restart` with the gRASPA backend when the user wants GCMC guest coordinates injected into the following LAMMPS MD segment and MD-evolved guest coordinates written back to the next MC segment; binary guests use repeated mixture components, for example `--component Xe_GENERICMOFS:0.5 --component Kr_GENERICMOFS:0.5`
 - tune `--md-steps`, `--md-timestep`, `--md-ensemble`, `--md-dump-interval`, `--gcmc-production-cycles`, cutoffs, and timeouts
 
 Requirements:
@@ -497,6 +497,7 @@ Choose the API by how much the user already knows:
 - Do not route users to the current internal benzothiazole/sulfur-enabled conversion prototype through the public CLI.
 - Do not send legacy atomistic CIFs without `_ccdc_geom_bond_type` into `cofkit calculate lammps-optimize`.
 - Do not treat separate pure-component `graspa-isotherm` loading ratios as mixture selectivity; use `graspa-mixture` for mixed-feed selectivity.
+- Do not infer the framework `--forcefield` or Monte Carlo `--backend` from a guest model tag. These are independent explicit selections, and cofkit does not apply a guest/framework compatibility allowlist.
 - Do not invent external guest force-field parameters from SMILES. `--guest-bundle` requires explicit RASPA molecule, pseudo-atom, and mixing-rule data plus a non-empty `lammps` section for synchronized hybrid MD/MC guest restart.
 - Do not claim `hybrid-mdmc --exchange-mode guest-restart` is dynamic GCMC inside LAMMPS. It is an alternating gRASPA-backed guest restart loop; RASPA2 MD-to-MC restartfile staging is not supported yet.
 - Do not expect every gRASPA summary metric to exist for RASPA2. RASPA2 result grabbing works through recursive `Output/**/*.data`, but some backend-specific fields are `null`.

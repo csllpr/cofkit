@@ -2,9 +2,11 @@
 
 All notable changes to `cofkit` are recorded here.
 
-Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-04-07` is version `2026.4.7`.
+Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-07-20` is version `2026.7.20`.
 
 ## Unreleased
+
+## 2026.7.20 (2026-07-20)
 
 ### Added
 
@@ -15,6 +17,9 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 - regression coverage for hcb CIF round trips, verifying that decomposition recovers the original monomer inputs for generated COFs across the buildable binary-bridge linkages
 - initial `cofkit calculate hybrid-mdmc` command for cyclic LAMMPS MD plus gRASPA/RASPA2 GCMC with framework snapshot exchange
 - LAMMPS MD segment support for explicit-bond CIFs, including `lammps_md_report.json`, trajectory dumping, optional pre-MD minimization, and MD-updated framework CIF export
+- model-aware packaged RASPA example guests for `He_RASPA`, `Ar_RASPA`, `CH4_RASPA`, `O2_RASPA`, `CO2_RASPA`, and `N2_RASPA`, with pinned provenance and shifted/truncated nonbonded-convention validation for binary mixtures
+- mandatory force-field tags on all packaged guest selectors and metadata, including `CO2_DREIDING` and `Xe_GENERICMOFS`, so model selection remains explicit
+- explicit user-controlled guest/framework force-field pairing, replacing the previous `compatible_framework_forcefields` allowlist while retaining global nonbonded-convention and hybrid-restart representability checks
 
 ### Notes
 

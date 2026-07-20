@@ -1,0 +1,22 @@
+# Derived from RASPA2 molecules/ExampleDefinitions/methane.def at commit
+# 6498ab1eec9c8e0f063dcd0d71dd7add372c529b (MIT). The united-atom site label is
+# namespaced for cofkit; an explicit origin was added and the one-site group was
+# normalized from flexible to rigid for backend interoperability.
+# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]
+190.564
+4599200.0
+0.01142
+# Number Of Atoms
+1
+# Number Of Groups
+1
+# methane-group
+rigid
+# number of atoms
+1
+# atomic positions
+0 CH4_raspa 0.0 0.0 0.0
+# Chiral centers Bond BondDipoles Bend UrayBradley InvBend Torsion Imp. Torsion Bond/Bond Bond/Bend Bend/Bend Bond/Torsion Bend/Torsion IntraVDW Intra ch-ch Intra ch-bd Intra bd-bd
+               0    0            0    0            0       0        0            0         0         0         0            0            0        0           0           0           0
+# Number of config moves
+0

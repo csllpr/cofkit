@@ -23,6 +23,7 @@ from .guest_restart import (
     build_lammps_guest_restart_state_from_lammps_md_result,
     write_graspa_restart_file,
 )
+from .guest_forcefields import packaged_guest_forcefield_catalog
 from .lammps import LammpsMdResult, LammpsMdSettings, run_lammps_md_on_cif
 
 
@@ -35,7 +36,7 @@ class HybridMdMcSettings:
     exchange_mode: HybridExchangeMode = "framework"
     pressure: float = 100_000.0
     components: tuple[GraspaMixtureComponentSettings, ...] = (
-        GraspaMixtureComponentSettings(component="CO2", mol_fraction=1.0),
+        GraspaMixtureComponentSettings(component="CO2_DREIDING", mol_fraction=1.0),
     )
     guest_bundles: tuple[str, ...] = ()
     raspa_backend: str = DEFAULT_RASPA_BACKEND
@@ -340,6 +341,21 @@ def _validate_hybrid_settings(settings: HybridMdMcSettings) -> None:
             "hybrid exchange_mode='guest_restart' requires raspa_backend='graspa' because post-MD guest "
             "coordinates are staged through gRASPA RestartInitial files; RASPA2 restart staging is not yet supported."
         )
+    if settings.exchange_mode == "guest_restart":
+        packaged = {name.casefold(): metadata for name, metadata in packaged_guest_forcefield_catalog().items()}
+        unsupported = [
+            component.component
+            for component in settings.components
+            if (
+                (metadata := packaged.get(component.component.strip().casefold())) is not None
+                and not metadata.supports_hybrid_guest_restart
+            )
+        ]
+        if unsupported:
+            raise ValueError(
+                "hybrid exchange_mode='guest_restart' is not supported for packaged guest model(s): "
+                f"{', '.join(unsupported)}. Use exchange_mode='framework' for RASPA-only GCMC coupling."
+            )
     if settings.pressure <= 0.0:
         raise ValueError("pressure must be positive.")
     if not settings.components:

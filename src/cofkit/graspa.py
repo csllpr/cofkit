@@ -20,6 +20,7 @@ from ._dreiding_reference import (
 from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
 from .guest_bundles import GuestBundle, GuestBundleError, load_guest_bundles
 from .guest_forcefields import (
+    PACKAGED_GUEST_FORCEFIELD_SCHEMA_VERSION,
     load_packaged_guest_forcefield_metadata,
     packaged_guest_forcefield_catalog,
 )
@@ -42,12 +43,13 @@ _SUPPORTED_GRASPA_FORCEFIELDS = supported_forcefield_families()
 SUPPORTED_RASPA_BACKENDS = ("graspa", "raspa2")
 DEFAULT_RASPA_BACKEND = "graspa"
 PACKAGED_GUEST_FORCEFIELD_METADATA = load_packaged_guest_forcefield_metadata()
-_DEFAULT_WIDOM_COMPONENTS = tuple(metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA)
-AVAILABLE_WIDOM_COMPONENTS = _DEFAULT_WIDOM_COMPONENTS
+DEFAULT_WIDOM_COMPONENTS = tuple(
+    metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA if metadata.default_widom
+)
+AVAILABLE_WIDOM_COMPONENTS = tuple(metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA)
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
 _RASPA2_LOCAL_FORCEFIELD_NAME = "COFKit"
 _RASPA2_LOCAL_MOLECULE_DEFINITION = "COFKit"
-_NON_ROTATABLE_GCMC_COMPONENTS = {"Kr", "Xe"}
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 _FLOAT_TOKEN_PATTERN = r"(?:[-+]?(?:nan|inf)|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
@@ -184,7 +186,7 @@ class EqeqChargeResult:
 
 @dataclass(frozen=True)
 class GraspaWidomSettings:
-    components: tuple[str, ...] = _DEFAULT_WIDOM_COMPONENTS
+    components: tuple[str, ...] = DEFAULT_WIDOM_COMPONENTS
     guest_bundles: tuple[str, ...] = ()
     backend: str = DEFAULT_RASPA_BACKEND
     forcefield: str = "dreiding"
@@ -347,7 +349,7 @@ class GraspaWidomResult:
 
 @dataclass(frozen=True)
 class GraspaIsothermSettings:
-    component: str = "CO2"
+    component: str = "CO2_DREIDING"
     guest_bundles: tuple[str, ...] = ()
     pressures: tuple[float, ...] = (10_000.0, 100_000.0, 1_000_000.0)
     fugacity_coefficient: float | str = 1.0
@@ -1645,34 +1647,47 @@ def _guest_forcefield_metadata_dict(
                 "name": bundle.name,
                 "parameter_family": bundle.parameter_family,
                 "parameter_source": bundle.parameter_source,
-                "compatible_framework_forcefields": list(bundle.compatible_framework_forcefields),
+                "rotatable": bundle.rotatable,
+                "vdw_treatment": bundle.vdw_treatment,
+                "tail_corrections": bundle.tail_corrections,
+                "mixing_rule": bundle.mixing_rule,
             }
     raise GraspaConfigurationError(f"No guest force-field metadata is registered for component {component!r}.")
 
 
-def _validate_guest_forcefield_compatibility(
+def _guest_nonbonded_convention(
     components: Sequence[str],
-    *,
-    forcefield: str,
     guest_bundles: Sequence[GuestBundle],
-) -> None:
-    normalized_forcefield = _normalize_graspa_forcefield_name(forcefield)
+) -> tuple[str, bool, str]:
+    by_convention: dict[tuple[str, bool, str], list[str]] = {}
     for component in components:
         metadata = _guest_forcefield_metadata_dict(component, guest_bundles)
-        compatible = tuple(str(value) for value in metadata["compatible_framework_forcefields"])
-        if normalized_forcefield not in compatible:
-            raise ValueError(
-                f"Guest component {component!r} belongs to parameter family {metadata['parameter_family']!r} and is not "
-                f"registered as compatible with framework force field {normalized_forcefield!r}. "
-                f"Compatible force fields: {', '.join(compatible)}."
-            )
+        convention = (
+            str(metadata.get("vdw_treatment", "truncated")),
+            bool(metadata.get("tail_corrections", False)),
+            str(metadata.get("mixing_rule", "lorentz_berthelot")),
+        )
+        by_convention.setdefault(convention, []).append(component)
+    if len(by_convention) != 1:
+        details = "; ".join(
+            f"{', '.join(names)}: vdw={vdw}, tail_corrections={tail}, mixing_rule={mixing}"
+            for (vdw, tail, mixing), names in by_convention.items()
+        )
+        raise ValueError(
+            "Selected guest components require incompatible global RASPA nonbonded conventions. "
+            f"Choose models with one shared convention; {details}."
+        )
+    return next(iter(by_convention))
 
 
 def _component_is_rotatable(component: str, guest_bundles: Sequence[GuestBundle]) -> bool:
     for bundle in guest_bundles:
         if component == bundle.name:
             return bundle.rotatable
-    return component not in _NON_ROTATABLE_GCMC_COMPONENTS
+    packaged = packaged_guest_forcefield_catalog().get(component)
+    if packaged is not None:
+        return packaged.rotatable
+    return True
 
 
 def _validate_widom_settings(
@@ -1693,11 +1708,7 @@ def _validate_widom_settings(
         if not _is_supported_graspa_component(component, guest_bundles):
             supported = ", ".join(_supported_graspa_component_names(guest_bundles))
             raise ValueError(f"Unsupported gRASPA component {component!r}. Supported components: {supported}.")
-    _validate_guest_forcefield_compatibility(
-        settings.components,
-        forcefield=forcefield,
-        guest_bundles=guest_bundles,
-    )
+    _guest_nonbonded_convention(settings.components, guest_bundles)
     if settings.framework_name.strip() == "":
         raise ValueError("framework_name must not be blank.")
     if settings.input_file_type.lower() != "cif":
@@ -1745,11 +1756,7 @@ def _validate_isotherm_settings(
     if not _is_supported_graspa_component(settings.component, guest_bundles):
         supported = ", ".join(_supported_graspa_component_names(guest_bundles))
         raise ValueError(f"Unsupported gRASPA component {settings.component!r}. Supported components: {supported}.")
-    _validate_guest_forcefield_compatibility(
-        (settings.component,),
-        forcefield=forcefield,
-        guest_bundles=guest_bundles,
-    )
+    _guest_nonbonded_convention((settings.component,), guest_bundles)
     if not settings.pressures:
         raise ValueError("At least one pressure point must be configured.")
     if settings.framework_name.strip() == "":
@@ -1836,10 +1843,9 @@ def _validate_mixture_settings(
 
     if mol_fraction_total <= 0.0:
         raise ValueError("The total mixture mol_fraction must be positive.")
-    _validate_guest_forcefield_compatibility(
+    _guest_nonbonded_convention(
         tuple(component.component for component in settings.components),
-        forcefield=forcefield,
-        guest_bundles=guest_bundles,
+        guest_bundles,
     )
     if not settings.pressures:
         raise ValueError("At least one pressure point must be configured.")
@@ -1925,6 +1931,12 @@ def _copy_widom_template_assets(
 
     selected_bundles = _guest_bundles_for_components(components, guest_bundles)
     selected_bundle_names = {bundle.name for bundle in selected_bundles}
+    packaged_catalog = packaged_guest_forcefield_catalog()
+    selected_packaged = tuple(
+        packaged_catalog[component]
+        for component in components
+        if component not in selected_bundle_names
+    )
     for component in components:
         if component in selected_bundle_names:
             continue
@@ -1941,10 +1953,9 @@ def _copy_widom_template_assets(
     pseudo_atoms_source_path = template_dir / "pseudo_atoms.def"
     if not pseudo_atoms_source_path.is_file():
         raise GraspaConfigurationError(f"Packaged Widom asset is missing: {pseudo_atoms_source_path}")
-    pseudo_atom_rows = tuple(
-        row
-        for bundle in selected_bundles
-        for row in bundle.raspa.pseudo_atom_rows
+    pseudo_atom_rows = (
+        tuple(row for metadata in selected_packaged for row in metadata.pseudo_atom_rows)
+        + tuple(row for bundle in selected_bundles for row in bundle.raspa.pseudo_atom_rows)
     )
     (destination_dir / "pseudo_atoms.def").write_text(
         _append_pseudo_atom_rows(
@@ -1953,13 +1964,22 @@ def _copy_widom_template_assets(
         ),
         encoding="utf-8",
     )
-    guest_mixing_rule_rows = tuple(
-        row
-        for bundle in selected_bundles
-        for row in bundle.raspa.mixing_rule_rows
+    guest_mixing_rule_rows = (
+        tuple(row for metadata in selected_packaged for row in metadata.mixing_rule_rows)
+        + tuple(row for bundle in selected_bundles for row in bundle.raspa.mixing_rule_rows)
+    )
+    vdw_treatment, tail_corrections, mixing_rule = _guest_nonbonded_convention(
+        components,
+        guest_bundles,
     )
     (destination_dir / "force_field_mixing_rules.def").write_text(
-        _render_graspa_force_field_mixing_rules(forcefield, guest_mixing_rule_rows=guest_mixing_rule_rows),
+        _render_graspa_force_field_mixing_rules(
+            forcefield,
+            guest_mixing_rule_rows=guest_mixing_rule_rows,
+            vdw_treatment=vdw_treatment,
+            tail_corrections=tail_corrections,
+            mixing_rule=mixing_rule,
+        ),
         encoding="utf-8",
     )
     framework_forcefield_metadata = resolve_forcefield_metadata(forcefield)
@@ -1970,7 +1990,7 @@ def _copy_widom_template_assets(
     (destination_dir / "guest_forcefield_metadata.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": PACKAGED_GUEST_FORCEFIELD_SCHEMA_VERSION,
                 "framework_forcefield": framework_forcefield_metadata.family,
                 "framework_forcefield_id": framework_forcefield_metadata.id,
                 "guests": [
@@ -2026,8 +2046,9 @@ def _append_pseudo_atom_rows(base_text: str, rows: Sequence[str]) -> str:
         appended_types.add(row_type)
 
     lines[count_index] = str(base_count + len(rows))
-    if lines and lines[-1].strip():
-        lines.append("")
+    # NOTE: gRASPA parses pseudo_atoms.def with a strict line counter (one atom
+    # per line, count must match the header); an empty separator line here
+    # shifts every appended row and causes an out-of-bounds crash in gRASPA.
     lines.extend(row.strip() for row in rows)
     return "\n".join(lines).rstrip() + "\n"
 
@@ -2130,6 +2151,9 @@ def _render_graspa_force_field_mixing_rules(
     forcefield: str,
     *,
     guest_mixing_rule_rows: Sequence[str] = (),
+    vdw_treatment: str = "truncated",
+    tail_corrections: bool = False,
+    mixing_rule: str = "lorentz_berthelot",
 ) -> str:
     framework_rows = _graspa_framework_rows_for_forcefield(forcefield)
     base_rows = [*framework_rows, *_GRASPA_SHARED_MIXING_RULE_LINES]
@@ -2138,16 +2162,16 @@ def _render_graspa_force_field_mixing_rules(
     return "\n".join(
         [
             "# general rule for shifted vs truncated",
-            "truncated",
+            vdw_treatment,
             "# general rule tailcorrections",
-            "no",
+            _bool_token(tail_corrections),
             "# number of defined interactions",
             str(len(interaction_rows)),
             "# type,        interaction,  epsilon [K],  sigma [A] IMPORTANT: define shortest matches first, so that more specific ones overwrites these",
             *interaction_rows,
             "",
             "# general mixing rule for Lennard-Jones",
-            "Lorentz-Berthelot",
+            mixing_rule.replace("_", "-").title(),
             "",
         ]
     )

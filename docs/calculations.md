@@ -76,17 +76,29 @@ cofkit calculate graspa-widom \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_widom \
   --forcefield dreiding \
-  --component CO2 \
-  --component N2 \
+  --component CO2_DREIDING \
+  --component N2_DREIDING \
   --widom-moves-per-component 300000 \
   --json
 ```
 
 Use `--backend raspa2` for RASPA2. The selected executable can be overridden with `--graspa-path`, `--raspa2-path`, or backend-neutral `--raspa-path`.
 
-Packaged guest parameters carry explicit family, source, and framework-compatibility metadata. `TIP4P`, `CO2`, `H2`, `N2`, and `SO2` are registered in the DREIDING family and are accepted only with `--forcefield dreiding`. `Xe` and `Kr` are registered in the UFF family and are accepted with both UFF and DREIDING because DREIDING does not provide parameters for them. Their current values come from the RASPA `GenericMOFs` force field and are distinct from the bundled Open Babel `UFF.prm`; this distinction is recorded in `guest_forcefield_metadata.json`. `--all-components` therefore requires DREIDING; a UFF run can select `Xe` and/or `Kr`.
+Every packaged guest selector is force-field tagged, and the same tag is stored as validated `model_tag` metadata. The default truncated-LJ probe set is `TIP4P_DREIDING`, `CO2_DREIDING`, `H2_DREIDING`, `N2_DREIDING`, `SO2_DREIDING`, `Xe_GENERICMOFS`, and `Kr_GENERICMOFS`; `--all-components` selects this default set. Untagged packaged names are intentionally not aliases, so a selector cannot silently choose a model. The guest tag identifies its parameter model or source; it does not select or restrict the framework `--forcefield`. The user explicitly chooses that pairing, and cofkit records both selections without applying a guest/framework compatibility allowlist. The RASPA GenericMOFs Xe/Kr values remain distinct from the bundled Open Babel `UFF.prm` values.
 
-External parameterized guests use repeated `--guest-bundle path/to/guest.json` flags and are selected by bundle `name` or alias. Guest-bundle schema version 2 requires top-level `parameter_family`, `parameter_source`, and `compatible_framework_forcefields` fields; incompatible selections fail before a backend is executed. Legacy version 1 bundles must be upgraded rather than silently treated as compatible.
+The optional RASPA2 ExampleMoleculeForceField set provides `He_RASPA`, `Ar_RASPA`, `CH4_RASPA`, `O2_RASPA`, `CO2_RASPA`, and `N2_RASPA`. These models use shifted LJ interactions, no tail corrections, and Lorentz-Berthelot mixing, and are not selected by `--all-components`. The framework force field remains an independent, explicit user choice. Because RASPA has one global shifted/truncated setting, every component in a mixture must use the same convention. For example, use `CH4_RASPA` with `CO2_RASPA`, not with the truncated-LJ `CO2_DREIDING`:
+
+```bash
+cofkit calculate graspa-mixture framework.cif \
+  --forcefield dreiding \
+  --component CH4_RASPA:0.5 \
+  --component CO2_RASPA:0.5 \
+  --pressure 100000
+```
+
+The RASPA example models are supported by the Widom, isotherm, and mixture workflows with either gRASPA or RASPA2. They are intentionally marked unsupported for hybrid `guest_restart` exchange because cofkit's current LAMMPS handoff does not reproduce shifted LJ interactions or massless charge-only sites. Hybrid `framework` exchange remains available because guest coordinates are not injected into LAMMPS. RASPA describes these source files as examples that require validation for the target system; cofkit preserves that warning in the staged `guest_forcefield_metadata.json` provenance.
+
+External parameterized guests use repeated `--guest-bundle path/to/guest.json` flags and are selected by bundle `name` or alias. Guest-bundle schema version 2 requires top-level `parameter_family` and `parameter_source` provenance fields. Optional `vdw_treatment` (`truncated` or `shifted`), `tail_corrections` (boolean), and `mixing_rule` (`lorentz_berthelot`) fields declare the bundle's global RASPA convention and default to cofkit's legacy truncated/no-tail/Lorentz-Berthelot behavior. The framework force field is selected independently. Legacy version 1 bundles must still be upgraded because they lack the required provenance contract.
 
 Outputs include staged `eqeq/` and `widom/` directories, backend logs, raw `Output/**/*.data`, `widom/Output/results.csv`, `widom/framework_forcefield_metadata.json`, `widom/guest_forcefield_metadata.json`, and `graspa_widom_report.json`.
 
@@ -97,7 +109,7 @@ cofkit calculate graspa-isotherm \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_isotherm \
   --forcefield dreiding \
-  --component CO2 \
+  --component CO2_DREIDING \
   --pressure 10000 \
   --pressure 100000 \
   --pressure 1000000 \
@@ -115,8 +127,8 @@ cofkit calculate graspa-mixture \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_mixture \
   --forcefield dreiding \
-  --component Kr:0.1 \
-  --component Xe:0.9 \
+  --component Kr_GENERICMOFS:0.1 \
+  --component Xe_GENERICMOFS:0.9 \
   --pressure 10000 \
   --pressure 100000 \
   --fugacity-coefficient PR-EOS \
@@ -134,7 +146,7 @@ cofkit calculate hybrid-mdmc \
   out/tapb_tfb_lammps_opt/tapb__tfb__hcb_lammps_optimized.cif \
   --output-dir out/tapb_tfb_hybrid_mdmc \
   --cycles 5 \
-  --component CO2 \
+  --component CO2_DREIDING \
   --pressure 100000 \
   --lammps-forcefield dreiding \
   --raspa-forcefield dreiding \
