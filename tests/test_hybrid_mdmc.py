@@ -188,6 +188,99 @@ class HybridMdMcTests(unittest.TestCase):
         self.assertEqual(report["cycle_results"][1]["n_md_output_guest_atoms"], 2)
         self.assertEqual(report["cycle_results"][1]["gcmc_initial_restart_file_path"], gcmc_initial_restart_files[1])
 
+    def test_hybrid_mdmc_guest_restart_continues_after_empty_gcmc_population(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_cif = temp_path / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+            lammps_guest_states = []
+            gcmc_initial_restart_files = []
+            gcmc_restart_flags = []
+
+            def fake_lammps(cif_path, *, output_dir, settings, guest_restart_state=None, **kwargs):
+                input_path = Path(cif_path)
+                lammps_guest_states.append(guest_restart_state)
+                run_dir = Path(output_dir)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                output_cif = run_dir / f"{input_path.stem}_md.cif"
+                output_cif.write_text(f"data_cycle_{len(lammps_guest_states)}\n", encoding="utf-8")
+                return _fake_lammps_result(
+                    input_path,
+                    run_dir,
+                    output_cif,
+                    settings,
+                    guest_restart_state=guest_restart_state,
+                )
+
+            def fake_mixture(cif_path, *, output_dir, mixture_settings, initial_restart_file=None, **kwargs):
+                gcmc_initial_restart_files.append(initial_restart_file)
+                gcmc_restart_flags.append(mixture_settings.restart_file)
+                run_dir = Path(output_dir)
+                pressure_run_dir = run_dir / "mixture" / "pressure_100000"
+                movie_dir = pressure_run_dir / "Movies" / "System_0"
+                movie_dir.mkdir(parents=True, exist_ok=True)
+                (movie_dir / "result_2.data").write_text(
+                    "\n".join(
+                        [
+                            "gRASPA movie snapshot",
+                            "",
+                            "3 atoms",
+                            "4 atom types",
+                            "",
+                            "Masses",
+                            "",
+                            "1 12.011 # C",
+                            "2 15.999 # O",
+                            "3 131.293 # Xe",
+                            "4 83.798 # Kr",
+                            "",
+                            "Atoms # full",
+                            "",
+                            "1 1 1 0.0 0.0 0.0 0.0 # C",
+                            "2 1 2 0.0 1.0 0.0 0.0 # O",
+                            "3 1 2 0.0 0.0 1.0 0.0 # O",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                return _FakeMixtureResult(run_dir, pressure_run_dir, mixture_settings)
+
+            with patch("cofkit.hybrid_mdmc.run_lammps_md_on_cif", side_effect=fake_lammps):
+                with patch("cofkit.hybrid_mdmc.run_graspa_mixture_workflow", side_effect=fake_mixture):
+                    result = run_hybrid_mdmc_workflow(
+                        input_cif,
+                        output_dir=temp_path / "hybrid_empty_guest_out",
+                        settings=HybridMdMcSettings(
+                            cycles=2,
+                            exchange_mode="guest_restart",
+                            pressure=100000.0,
+                            components=(
+                                GraspaMixtureComponentSettings(component="Xe_GENERICMOFS", mol_fraction=0.2),
+                                GraspaMixtureComponentSettings(component="Kr_GENERICMOFS", mol_fraction=0.8),
+                            ),
+                            initialization_cycles=1,
+                            equilibration_cycles=1,
+                            production_cycles=2,
+                        ),
+                        lammps_md_settings=LammpsMdSettings(
+                            forcefield="uff",
+                            charge_model="none",
+                            steps=5,
+                        ),
+                        lammps_eqeq_settings=EqeqChargeSettings(),
+                        raspa_eqeq_settings=EqeqChargeSettings(),
+                    )
+
+        self.assertEqual(lammps_guest_states, [None, None])
+        self.assertEqual(gcmc_initial_restart_files, [None, None])
+        self.assertEqual(gcmc_restart_flags, [False, False])
+        self.assertEqual([cycle.n_output_guest_atoms for cycle in result.cycle_results], [0, 0])
+        self.assertIn(
+            "adsorbate population is being treated as empty",
+            result.cycle_results[0].warnings[0],
+        )
+
     def test_hybrid_mdmc_guest_restart_rejects_raspa2_backend(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

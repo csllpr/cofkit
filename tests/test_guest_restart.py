@@ -188,6 +188,144 @@ class GuestRestartTests(unittest.TestCase):
             (26.94846895, 10.74633654, 12.64790086),
         )
 
+    def test_parse_graspa_movie_component_then_site_comment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "2 atoms",
+                        "2 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 131.293 # Xe",
+                        "2 83.798 # Kr",
+                        "",
+                        "Atoms",
+                        "",
+                        "1 1 1 0.0 1.0 2.0 3.0 # Xe_GENERICMOFS Xe",
+                        "2 2 2 0.0 4.0 5.0 6.0 # Kr_GENERICMOFS Kr",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(state.n_atoms, 2)
+        self.assertEqual(state.components, ("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
+        self.assertEqual([atom.site_label for atom in state.atoms], ["Xe", "Kr"])
+
+    def test_parse_empty_guest_population_as_valid_restart_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "2 atoms",
+                        "4 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 12.011 # C",
+                        "2 1.008 # H",
+                        "3 131.293 # Xe",
+                        "4 83.798 # Kr",
+                        "",
+                        "Atoms",
+                        "",
+                        "1 1 1 0.0 1.0 2.0 3.0 # C",
+                        "2 1 2 0.0 4.0 5.0 6.0 # H",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(state.n_atoms, 0)
+        self.assertEqual(state.components, ())
+        self.assertIn("adsorbate population is being treated as empty", state.warnings[0])
+
+    def test_parse_empty_guest_population_rejects_incomplete_atom_table(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "2 atoms",
+                        "4 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 12.011 # C",
+                        "2 1.008 # H",
+                        "3 131.293 # Xe",
+                        "4 83.798 # Kr",
+                        "",
+                        "Atoms",
+                        "",
+                        "1 1 1 0.0 1.0 2.0 3.0 # C",
+                        "2 1 2 0.0 invalid 5.0 6.0 # H",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
+            with self.assertRaises(GuestRestartError) as raised:
+                parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertIn("declares 2 atoms, but 1 atom rows were parsed", str(raised.exception))
+
+    def test_parse_empty_guest_population_requires_requested_guest_types(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "2 atoms",
+                        "2 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 12.011 # C",
+                        "2 1.008 # H",
+                        "",
+                        "Atoms",
+                        "",
+                        "1 1 1 0.0 1.0 2.0 3.0 # C",
+                        "2 1 2 0.0 4.0 5.0 6.0 # H",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS", "Kr_GENERICMOFS"))
+            with self.assertRaises(GuestRestartError) as raised:
+                parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertIn("does not declare the requested guest site type(s) 'Kr', 'Xe'", str(raised.exception))
+
     def test_zero_mass_pseudo_sites_are_rejected_for_lammps_restart(self):
         with self.assertRaises(GuestRestartError) as raised:
             load_lammps_guest_force_field_assets(("TIP4P_DREIDING",))

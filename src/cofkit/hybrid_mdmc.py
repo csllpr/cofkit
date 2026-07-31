@@ -312,7 +312,11 @@ def run_hybrid_mdmc_workflow(
             )
         )
         current_cif = md_framework_cif
-        current_guest_restart_state = output_guest_restart_state
+        current_guest_restart_state = (
+            output_guest_restart_state
+            if output_guest_restart_state is not None and output_guest_restart_state.n_atoms > 0
+            else None
+        )
 
     report_path = run_dir / "hybrid_mdmc_report.json"
     result = HybridMdMcResult(

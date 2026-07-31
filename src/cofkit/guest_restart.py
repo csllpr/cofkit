@@ -501,6 +501,7 @@ def parse_lammps_guest_restart_snapshot(
     snapshot_cell = _parse_lammps_data_cell(text, data_path=path)
     type_labels = _parse_lammps_mass_type_labels(text)
     raw_atoms = _parse_lammps_data_atom_rows(text, type_labels=type_labels)
+    _validate_lammps_snapshot_atom_table(text, parsed_rows=raw_atoms, data_path=path)
 
     site_to_components: dict[str, list[str]] = {}
     template_by_component = {template.component: template for template in templates}
@@ -562,8 +563,21 @@ def parse_lammps_guest_restart_snapshot(
             )
 
     if not atoms:
-        raise GuestRestartError(
-            f"No guest atoms from the requested components were parsed from snapshot {path}."
+        matching_guest_rows = sum(1 for row in raw_atoms if row["label"] in known_sites)
+        if matching_guest_rows:
+            raise GuestRestartError(
+                f"No complete guest molecules from the requested components were parsed from snapshot {path}."
+            )
+        missing_guest_type_labels = sorted(known_sites - set(type_labels.values()))
+        if missing_guest_type_labels:
+            formatted_labels = ", ".join(repr(label) for label in missing_guest_type_labels)
+            raise GuestRestartError(
+                f"Cannot confirm an empty guest population in snapshot {path}: the Masses section does not "
+                f"declare the requested guest site type(s) {formatted_labels}."
+            )
+        warnings.append(
+            "The GCMC snapshot contains no atoms matching the requested guest components; "
+            "the adsorbate population is being treated as empty."
         )
     return LammpsGuestRestartState(
         source_snapshot_path=str(path),
@@ -782,9 +796,14 @@ def _parse_lammps_data_atom_rows(text: str, *, type_labels: Mapping[int, str]) -
         component = None
         comment_parts = after.split()
         if comment_parts:
-            label = comment_parts[0]
-            if len(comment_parts) > 1:
-                component = comment_parts[1]
+            type_label = type_labels.get(type_id) if type_id is not None else None
+            if len(comment_parts) > 1 and type_label is not None and comment_parts[1] == type_label:
+                component = comment_parts[0]
+                label = comment_parts[1]
+            else:
+                label = comment_parts[0]
+                if len(comment_parts) > 1:
+                    component = comment_parts[1]
         if label is None and type_id is not None:
             label = type_labels.get(type_id)
         if label is None:
@@ -806,6 +825,54 @@ def _parse_lammps_data_atom_rows(text: str, *, type_labels: Mapping[int, str]) -
             }
         )
     return parsed
+
+
+def _validate_lammps_snapshot_atom_table(
+    text: str,
+    *,
+    parsed_rows: Sequence[Mapping[str, object]],
+    data_path: Path,
+) -> None:
+    declared_atom_count = _parse_lammps_data_atom_count(text, data_path=data_path)
+    if len(parsed_rows) != declared_atom_count:
+        raise GuestRestartError(
+            f"LAMMPS-style guest snapshot {data_path} declares {declared_atom_count} atoms, "
+            f"but {len(parsed_rows)} atom rows were parsed."
+        )
+    atom_ids = [int(row["atom_id"]) for row in parsed_rows]
+    if len(set(atom_ids)) != len(atom_ids):
+        raise GuestRestartError(f"LAMMPS-style guest snapshot {data_path} contains duplicate atom IDs.")
+    if any(row["type_id"] is None for row in parsed_rows):
+        raise GuestRestartError(f"LAMMPS-style guest snapshot {data_path} contains a non-integer atom type ID.")
+    if any(
+        not math.isfinite(float(row[coordinate]))
+        for row in parsed_rows
+        for coordinate in ("x", "y", "z")
+    ):
+        raise GuestRestartError(f"LAMMPS-style guest snapshot {data_path} contains non-finite atom coordinates.")
+
+
+def _parse_lammps_data_atom_count(text: str, *, data_path: Path) -> int:
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if _is_lammps_section_header(stripped):
+            break
+        before, _hash, _after = stripped.partition("#")
+        parts = before.split()
+        if len(parts) != 2 or parts[1] != "atoms":
+            continue
+        try:
+            atom_count = int(parts[0])
+        except ValueError as exc:
+            raise GuestRestartError(
+                f"LAMMPS-style guest snapshot {data_path} has an invalid atom count: {parts[0]!r}."
+            ) from exc
+        if atom_count < 0:
+            raise GuestRestartError(
+                f"LAMMPS-style guest snapshot {data_path} has a negative atom count: {atom_count}."
+            )
+        return atom_count
+    raise GuestRestartError(f"LAMMPS-style guest snapshot {data_path} does not declare an atom count.")
 
 
 def _parse_lammps_guest_atom_identities_from_data(
