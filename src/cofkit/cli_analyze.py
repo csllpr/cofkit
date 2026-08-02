@@ -107,7 +107,7 @@ def _add_decompose_parser(subparsers) -> None:
         help="Decompose one atomistic CIF and emit a COFid when supported.",
         description=(
             "Decompose one atomistic CIF into COFid monomer blocks. Current support covers "
-            "the buildable binary-bridge linkages. When --topology is omitted, cofkit attempts "
+            "the buildable binary-bridge and ring-forming linkages. When --topology is omitted, cofkit attempts "
             "to infer the topology from embedded COFid metadata or the recovered periodic linkage graph."
         ),
     )
@@ -122,7 +122,8 @@ def _add_decompose_parser(subparsers) -> None:
         default="imine",
         help=(
             "Linkage token to analyze. Supported canonical values: imine, hydrazone, azine, "
-            "boest, bken, vinylene. Template-id aliases such as hydrazone_bridge are also accepted."
+            "boest, bken, vinylene, boroxine, triazine. Template-id aliases such as "
+            "hydrazone_bridge and boroxine_trimerization are also accepted."
         ),
     )
     parser.add_argument(

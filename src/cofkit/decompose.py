@@ -98,6 +98,23 @@ class LinkageDecompositionSpec:
 
 
 @dataclass(frozen=True)
+class RingDecompositionSpec:
+    linkage_code: str
+    template_id: str
+    reactive_group: str
+    anchor_atomic_num: int
+    hetero_atomic_num: int
+    repairer: FragmentRepairer
+
+    @property
+    def metadata_key(self) -> str:
+        return f"n_{self.linkage_code}_rings"
+
+
+DecompositionSpec = LinkageDecompositionSpec | RingDecompositionSpec
+
+
+@dataclass(frozen=True)
 class BondCandidate:
     atom_idx_1: int
     atom_idx_2: int
@@ -185,6 +202,12 @@ class LinkageDecompositionDetails:
     topology_graph: LinkageTopologyGraph | None = None
 
 
+@dataclass(frozen=True)
+class RingDecompositionEvent:
+    anchor_atom_indices: tuple[int, int, int]
+    anchor_images: tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]
+
+
 def decompose_cif_to_cofid(
     cif_path: str | Path,
     *,
@@ -210,7 +233,7 @@ def decompose_cif_to_cofid(
         if bond_mode not in {"auto", "distance"}:
             raise ValueError("bond_mode must be 'auto' or 'distance'")
         atoms = read_periodic_cif_atoms(input_path)
-        details = _decompose_linkage_atoms(atoms, spec, bond_mode=bond_mode)
+        details = _decompose_atoms(atoms, spec, bond_mode=bond_mode)
         monomers = details.monomers
         metadata = dict(details.metadata)
         if not monomers:
@@ -351,6 +374,340 @@ def _decompose_linkage_atoms(
     return LinkageDecompositionDetails(monomers, metadata, topology_graph)
 
 
+def _decompose_atoms(
+    atoms: PeriodicCifAtoms,
+    spec: DecompositionSpec,
+    *,
+    bond_mode: str,
+) -> LinkageDecompositionDetails:
+    if isinstance(spec, RingDecompositionSpec):
+        return _decompose_ring_atoms(atoms, spec, bond_mode=bond_mode)
+    return _decompose_linkage_atoms(atoms, spec, bond_mode=bond_mode)
+
+
+def _decompose_ring_atoms(
+    atoms: PeriodicCifAtoms,
+    spec: RingDecompositionSpec,
+    *,
+    bond_mode: str,
+) -> LinkageDecompositionDetails:
+    if Chem is None:
+        raise RuntimeError("RDKit is required for CIF decomposition.")
+    build_result = _build_bonded_mol(atoms, bond_mode=bond_mode)
+    mol = build_result.mol
+    ring_events, ring_bond_indices = _mark_ring_decomposition_events(mol, build_result.candidates, spec)
+    if not ring_events:
+        return LinkageDecompositionDetails((), {
+            **dict(build_result.metadata),
+            "n_atoms": mol.GetNumAtoms(),
+            "n_bonds": mol.GetNumBonds(),
+            spec.metadata_key: 0,
+            f"n_{spec.linkage_code}_ring_bonds": 0,
+        })
+
+    editable = Chem.RWMol(mol)
+    for bond_idx in sorted(ring_bond_indices, reverse=True):
+        bond = editable.GetBondWithIdx(bond_idx)
+        editable.RemoveBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
+
+    cut_mol = editable.GetMol()
+    fragment_members = Chem.GetMolFrags(cut_mol, asMols=False, sanitizeFrags=False)
+    atom_to_fragment = {
+        int(atom_idx): fragment_idx
+        for fragment_idx, atom_indices in enumerate(fragment_members)
+        for atom_idx in atom_indices
+    }
+    fragments = Chem.GetMolFrags(cut_mol, asMols=True, sanitizeFrags=False)
+    monomers_by_key: dict[tuple[str, str, int], tuple[DecomposedMonomer, int]] = {}
+    skipped_fragments = 0
+    for fragment in fragments:
+        monomer = _repair_ring_fragment_to_monomer(fragment, spec)
+        if monomer is None:
+            skipped_fragments += 1
+            continue
+        key = (monomer.reactive_group, monomer.canonical_smiles, monomer.connectivity)
+        previous = monomers_by_key.get(key)
+        if previous is None:
+            monomers_by_key[key] = (monomer, 1)
+        else:
+            monomers_by_key[key] = (previous[0], previous[1] + 1)
+
+    monomers = tuple(
+        sorted(
+            (
+                DecomposedMonomer(
+                    connectivity=monomer.connectivity,
+                    reactive_group=monomer.reactive_group,
+                    canonical_smiles=monomer.canonical_smiles,
+                    amount=amount,
+                )
+                for monomer, amount in monomers_by_key.values()
+            ),
+            key=lambda monomer: (-monomer.connectivity, monomer.canonical_smiles),
+        )
+    )
+    topology_graph, topology_component_count = _ring_topology_graph(ring_events, atom_to_fragment)
+    metadata = {
+        **dict(build_result.metadata),
+        "decomposition_strategy": "ring",
+        "n_atoms": mol.GetNumAtoms(),
+        "n_bonds": mol.GetNumBonds(),
+        spec.metadata_key: len(ring_events),
+        f"n_{spec.linkage_code}_ring_bonds": len(ring_bond_indices),
+        "n_fragments_after_cut": len(fragments),
+        "n_unique_monomers": len(monomers),
+        "n_skipped_fragments": skipped_fragments,
+        "n_topology_components": topology_component_count,
+    }
+    if topology_graph is not None:
+        metadata["topology_graph"] = topology_graph.to_metadata()
+    return LinkageDecompositionDetails(monomers, metadata, topology_graph)
+
+
+def _mark_ring_decomposition_events(
+    mol,
+    candidates: tuple[BondCandidate, ...],
+    spec: RingDecompositionSpec,
+) -> tuple[tuple[RingDecompositionEvent, ...], tuple[int, ...]]:
+    Chem.GetSymmSSSR(mol)
+    candidate_by_pair = {
+        frozenset((candidate.atom_idx_1, candidate.atom_idx_2)): candidate
+        for candidate in candidates
+    }
+    events: list[RingDecompositionEvent] = []
+    marked_bonds: set[int] = set()
+    used_atoms: set[int] = set()
+    seen_rings: set[frozenset[int]] = set()
+    for raw_ring in mol.GetRingInfo().AtomRings():
+        ring = tuple(int(atom_idx) for atom_idx in raw_ring)
+        ring_key = frozenset(ring)
+        if ring_key in seen_rings or not _matches_ring_decomposition_pattern(mol, ring, spec):
+            continue
+        seen_rings.add(ring_key)
+        if used_atoms.intersection(ring):
+            continue
+
+        ring_bonds: list[int] = []
+        for index, atom_idx in enumerate(ring):
+            next_idx = ring[(index + 1) % len(ring)]
+            bond = mol.GetBondBetweenAtoms(atom_idx, next_idx)
+            if bond is None:
+                ring_bonds = []
+                break
+            ring_bonds.append(int(bond.GetIdx()))
+        if len(ring_bonds) != 6:
+            continue
+
+        atom_images = _unwrap_ring_atom_images(ring, candidate_by_pair)
+        if atom_images is None:
+            continue
+        anchors = tuple(atom_idx for atom_idx in ring if mol.GetAtomWithIdx(atom_idx).GetAtomicNum() == spec.anchor_atomic_num)
+        if len(anchors) != 3:
+            continue
+        for atom_idx in anchors:
+            mol.GetAtomWithIdx(atom_idx).SetProp("cofkit_decompose_role", spec.reactive_group)
+        events.append(
+            RingDecompositionEvent(
+                anchor_atom_indices=anchors,  # type: ignore[arg-type]
+                anchor_images=tuple(atom_images[atom_idx] for atom_idx in anchors),  # type: ignore[arg-type]
+            )
+        )
+        marked_bonds.update(ring_bonds)
+        used_atoms.update(ring)
+    return tuple(events), tuple(sorted(marked_bonds))
+
+
+def _matches_ring_decomposition_pattern(
+    mol,
+    ring: tuple[int, ...],
+    spec: RingDecompositionSpec,
+) -> bool:
+    if len(ring) != 6 or len(set(ring)) != 6:
+        return False
+    ring_set = set(ring)
+    expected = (spec.anchor_atomic_num, spec.hetero_atomic_num) * 3
+    atomic_nums = tuple(mol.GetAtomWithIdx(atom_idx).GetAtomicNum() for atom_idx in ring)
+    if atomic_nums not in {expected, tuple(reversed(expected))}:
+        return False
+    for atom_idx in ring:
+        atom = mol.GetAtomWithIdx(atom_idx)
+        ring_neighbors = sum(1 for neighbor in atom.GetNeighbors() if neighbor.GetIdx() in ring_set)
+        external_neighbors = atom.GetDegree() - ring_neighbors
+        if ring_neighbors != 2:
+            return False
+        if atom.GetAtomicNum() == spec.anchor_atomic_num and external_neighbors != 1:
+            return False
+        if atom.GetAtomicNum() == spec.hetero_atomic_num and external_neighbors != 0:
+            return False
+    return True
+
+
+def _unwrap_ring_atom_images(
+    ring: tuple[int, ...],
+    candidate_by_pair: Mapping[frozenset[int], BondCandidate],
+) -> dict[int, tuple[int, int, int]] | None:
+    images = {ring[0]: (0, 0, 0)}
+    for index in range(len(ring) - 1):
+        current = ring[index]
+        next_idx = ring[index + 1]
+        candidate = candidate_by_pair.get(frozenset((current, next_idx)))
+        step = (0, 0, 0) if candidate is None else _candidate_image_from_to(candidate, current, next_idx)
+        current_image = images[current]
+        images[next_idx] = tuple(current_image[axis] + step[axis] for axis in range(3))  # type: ignore[assignment]
+    closing_candidate = candidate_by_pair.get(frozenset((ring[-1], ring[0])))
+    closing_step = (
+        (0, 0, 0)
+        if closing_candidate is None
+        else _candidate_image_from_to(closing_candidate, ring[-1], ring[0])
+    )
+    closing_image = tuple(images[ring[-1]][axis] + closing_step[axis] for axis in range(3))
+    if closing_image != (0, 0, 0):
+        return None
+    return images
+
+
+def _candidate_image_from_to(
+    candidate: BondCandidate,
+    start_atom_idx: int,
+    end_atom_idx: int,
+) -> tuple[int, int, int]:
+    if (candidate.atom_idx_1, candidate.atom_idx_2) == (start_atom_idx, end_atom_idx):
+        return candidate.periodic_image
+    return _negate_image(candidate.periodic_image)
+
+
+def _repair_ring_fragment_to_monomer(
+    fragment,
+    spec: RingDecompositionSpec,
+) -> DecomposedMonomer | None:
+    endpoint_roles = {
+        atom.GetProp("cofkit_decompose_role")
+        for atom in fragment.GetAtoms()
+        if atom.HasProp("cofkit_decompose_role")
+    }
+    if endpoint_roles != {spec.reactive_group}:
+        return None
+    return _finalize_repaired_fragment(
+        spec.repairer(fragment),
+        spec.reactive_group,
+        connectivity_counter=_connectivity_count,
+    )
+
+
+def _ring_topology_graph(
+    events: tuple[RingDecompositionEvent, ...],
+    atom_to_fragment: Mapping[int, int],
+) -> tuple[LinkageTopologyGraph | None, int]:
+    incidences_by_fragment: dict[int, list[tuple[int, tuple[int, int, int]]]] = defaultdict(list)
+    for event_index, event in enumerate(events):
+        for atom_idx, image in zip(event.anchor_atom_indices, event.anchor_images):
+            fragment_idx = atom_to_fragment.get(atom_idx)
+            if fragment_idx is not None:
+                incidences_by_fragment[fragment_idx].append((event_index, image))
+    if not incidences_by_fragment:
+        return None, 0
+
+    retained_fragments = tuple(
+        sorted(fragment_idx for fragment_idx, incidences in incidences_by_fragment.items() if len(incidences) != 2)
+    )
+    fragment_node_by_id = {
+        fragment_idx: len(events) + offset
+        for offset, fragment_idx in enumerate(retained_fragments)
+    }
+    node_connectivities = [3] * len(events)
+    node_connectivities.extend(len(incidences_by_fragment[fragment_idx]) for fragment_idx in retained_fragments)
+    edges: list[tuple[int, int, tuple[int, int, int]]] = []
+
+    for fragment_idx, incidences in sorted(incidences_by_fragment.items()):
+        if len(incidences) == 2:
+            (first_event, first_image), (second_event, second_image) = incidences
+            image = tuple(first_image[axis] - second_image[axis] for axis in range(3))
+            start, end = first_event, second_event
+            if end < start:
+                start, end = end, start
+                image = _negate_image(image)  # type: ignore[arg-type]
+            edges.append((start, end, image))  # type: ignore[arg-type]
+            continue
+        fragment_node = fragment_node_by_id[fragment_idx]
+        for event_index, image in incidences:
+            edges.append((event_index, fragment_node, image))
+
+    if not edges:
+        return None, 0
+    graph = LinkageTopologyGraph(
+        node_connectivities=tuple(int(value) for value in node_connectivities),
+        gain_edges=tuple(sorted(edges)),
+        dimensionality_hint="2D" if all(image[2] == 0 for _, _, image in edges) else "3D",
+    )
+    return _collapse_equivalent_topology_components(graph)
+
+
+def _collapse_equivalent_topology_components(
+    graph: LinkageTopologyGraph,
+) -> tuple[LinkageTopologyGraph, int]:
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for start, end, _image in graph.gain_edges:
+        adjacency[start].add(end)
+        adjacency[end].add(start)
+    remaining = set(range(graph.node_count))
+    components: list[set[int]] = []
+    while remaining:
+        seed = min(remaining)
+        component: set[int] = set()
+        stack = [seed]
+        while stack:
+            node = stack.pop()
+            if node in component:
+                continue
+            component.add(node)
+            stack.extend(adjacency.get(node, ()))
+        remaining.difference_update(component)
+        components.append(component)
+    if len(components) <= 1:
+        return graph, len(components)
+
+    component_graphs = tuple(_topology_component_graph(graph, component) for component in components)
+    reference = component_graphs[0]
+    if all(_topology_components_are_equivalent(reference, candidate) for candidate in component_graphs[1:]):
+        return reference, len(component_graphs)
+    return graph, len(component_graphs)
+
+
+def _topology_components_are_equivalent(
+    reference: LinkageTopologyGraph,
+    candidate: LinkageTopologyGraph,
+) -> bool:
+    if (
+        reference.node_connectivities == candidate.node_connectivities
+        and _edge_counter(reference.gain_edges, compare_gains=False)
+        == _edge_counter(candidate.gain_edges, compare_gains=False)
+    ):
+        return True
+    return _periodic_graphs_match(reference, candidate, compare_gains=False)
+
+
+def _topology_component_graph(
+    graph: LinkageTopologyGraph,
+    component: set[int],
+) -> LinkageTopologyGraph:
+    node_map = {old: new for new, old in enumerate(sorted(component))}
+    edges: list[tuple[int, int, tuple[int, int, int]]] = []
+    for start, end, image in graph.gain_edges:
+        if start not in component or end not in component:
+            continue
+        new_start = node_map[start]
+        new_end = node_map[end]
+        if new_end < new_start:
+            new_start, new_end = new_end, new_start
+            image = _negate_image(image)
+        edges.append((new_start, new_end, image))
+    return LinkageTopologyGraph(
+        node_connectivities=tuple(graph.node_connectivities[old] for old in sorted(component)),
+        gain_edges=tuple(sorted(edges)),
+        dimensionality_hint=graph.dimensionality_hint,
+    )
+
+
 def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> BondedMolBuildResult:
     labels = tuple(atoms.info.get("_atom_site_label", ()))
     if len(labels) != len(atoms):
@@ -434,7 +791,7 @@ def detect_cif_topology(
     try:
         if details is None:
             atoms = atoms or read_periodic_cif_atoms(input_path)
-            details = _decompose_linkage_atoms(atoms, spec, bond_mode=bond_mode)
+            details = _decompose_atoms(atoms, spec, bond_mode=bond_mode)
     except Exception as exc:
         return TopologyDetectionResult(
             status="failed",
@@ -1151,6 +1508,21 @@ def _restore_boronic_acid_oxygens(fragment):
     return editable.GetMol()
 
 
+def _restore_nitrile_nitrogens(fragment):
+    editable = Chem.RWMol(fragment)
+    endpoint_indices = [
+        atom.GetIdx()
+        for atom in editable.GetAtoms()
+        if atom.HasProp("cofkit_decompose_role") and atom.GetProp("cofkit_decompose_role") == "nitrile"
+    ]
+    for carbon_idx in endpoint_indices:
+        carbon = editable.GetAtomWithIdx(carbon_idx)
+        carbon.SetIsAromatic(False)
+        nitrogen_idx = editable.AddAtom(Chem.Atom("N"))
+        editable.AddBond(carbon_idx, nitrogen_idx, Chem.BondType.TRIPLE)
+    return editable.GetMol()
+
+
 def _restore_double_oxygens(fragment, role: str):
     editable = Chem.RWMol(fragment)
     endpoint_indices = [
@@ -1343,7 +1715,7 @@ def _vinylene_aldehyde_score(atom) -> int:
     return score
 
 
-def _resolve_linkage_spec(linkage: str) -> LinkageDecompositionSpec | None:
+def _resolve_linkage_spec(linkage: str) -> DecompositionSpec | None:
     return _DECOMPOSITION_LINKAGE_ALIASES.get(str(linkage).strip().lower())
 
 
@@ -1401,7 +1773,25 @@ _VINYLENE_SPEC = LinkageDecompositionSpec(
     connectivity_counter=_connectivity_count,
 )
 
-_DECOMPOSITION_LINKAGE_ALIASES: Mapping[str, LinkageDecompositionSpec] = {
+_BOROXINE_SPEC = RingDecompositionSpec(
+    linkage_code="boroxine",
+    template_id="boroxine_trimerization",
+    reactive_group="boronic_acid",
+    anchor_atomic_num=5,
+    hetero_atomic_num=8,
+    repairer=_restore_boronic_acid_oxygens,
+)
+
+_TRIAZINE_SPEC = RingDecompositionSpec(
+    linkage_code="triazine",
+    template_id="triazine_trimerization",
+    reactive_group="nitrile",
+    anchor_atomic_num=6,
+    hetero_atomic_num=7,
+    repairer=_restore_nitrile_nitrogens,
+)
+
+_DECOMPOSITION_LINKAGE_ALIASES: Mapping[str, DecompositionSpec] = {
     "imine": _IMINE_SPEC,
     "imine_bridge": _IMINE_SPEC,
     "hydrazone": _HYDRAZONE_SPEC,
@@ -1417,6 +1807,10 @@ _DECOMPOSITION_LINKAGE_ALIASES: Mapping[str, LinkageDecompositionSpec] = {
     "keto_enamine_bridge": _KETO_ENAMINE_SPEC,
     "vinylene": _VINYLENE_SPEC,
     "vinylene_bridge": _VINYLENE_SPEC,
+    "boroxine": _BOROXINE_SPEC,
+    "boroxine_trimerization": _BOROXINE_SPEC,
+    "triazine": _TRIAZINE_SPEC,
+    "triazine_trimerization": _TRIAZINE_SPEC,
 }
 
 

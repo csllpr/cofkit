@@ -152,7 +152,7 @@ The older `run_imine_batch(...)` convenience method remains available and delega
 
 ## CIF Decomposition
 
-Use `decompose_cif_to_cofid` for supported binary-bridge atomistic CIFs. Pass `topology=` when you know the topology, or omit it to use conservative topology detection from an embedded COFid comment or the recovered periodic linkage graph. The default `bond_mode="auto"` prefers explicit CIF bonds and falls back to distance inference; use `bond_mode="distance"` to force distance-inferred connectivity.
+Use `decompose_cif_to_cofid` for supported binary-bridge and boroxine/triazine ring-forming atomistic CIFs. Pass `topology=` when you know the topology, or omit it to use conservative topology detection from an embedded COFid comment or the recovered periodic linkage graph. The default `bond_mode="auto"` prefers explicit CIF bonds and falls back to distance inference; use `bond_mode="distance"` to force distance-inferred connectivity.
 
 ```python
 from cofkit import decompose_cif_to_cofid, detect_cif_topology
@@ -167,4 +167,6 @@ else:
     print(result.reason)
 ```
 
-Topology detection only ranks topologies available in cofkit's local topology repository and remains scoped to the currently supported binary-bridge decomposition chemistries. Ambiguous cases return diagnostics instead of guessing; pass `topology="bex"` or another explicit topology when needed.
+For ring-forming structures, decomposition recognizes complete B3O3 or C3N3 product rings, restores the precursor reactive groups, and rebuilds the periodic net through virtual three-connected ring nodes. Equivalent components in named stacked bilayers are reduced to one layer graph before topology ranking.
+
+Topology detection only ranks topologies available in cofkit's local topology repository and remains scoped to the currently supported decomposition chemistries. Ambiguous cases return diagnostics instead of guessing; pass `topology="bex"` or another explicit topology when needed.

@@ -48,13 +48,15 @@ cofkit analyze decompose \
 
 Current scope:
 
-- input must be an atomistic CIF for one of the supported binary-bridge structures
+- input must be an atomistic CIF for one of the supported binary-bridge or ring-forming structures
 - explicit `_geom_bond_*` connectivity is preferred
 - if the bond loop is absent, `cofkit` falls back to periodic distance-based bond detection
 - use `--bond-mode distance` to force periodic distance-based bond detection even when explicit CIF bond rows are present
 - if bond labels are present but `_ccdc_geom_bond_type` / `_geom_bond_type` is absent, `cofkit` infers bond orders from local geometry
-- supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`
-- template-id aliases such as `hydrazone_bridge`, `boronate_ester_bridge`, and `keto_enamine_bridge` are accepted through `--linkage`
+- supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest`, `bken`, `vinylene`, `boroxine`, and `triazine`
+- template-id aliases such as `hydrazone_bridge`, `boronate_ester_bridge`, `boroxine_trimerization`, and `triazine_trimerization` are accepted through `--linkage`
+- boroxine and triazine decomposition recognizes complete six-membered product rings, restores the boronic-acid or nitrile precursor groups, and reconstructs the net through virtual three-connected ring nodes
+- equivalent disconnected layer graphs in named stacked ring-forming outputs are normalized before topology ranking
 - topology can be supplied through `--topology`; otherwise auto-detection is attempted against cofkit's available topology repository
 - auto-detection is conservative and may report ambiguity; special decorated routes such as `bex` may still need explicit `--topology bex`
 

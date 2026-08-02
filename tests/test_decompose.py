@@ -9,9 +9,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, CoarseValidationThresholds
+from cofkit.build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
+from cofkit.chem.rdkit import build_rdkit_monomer
+from cofkit.cif import CIFWriter
 from cofkit.cli import main as cli_main
+from cofkit.cofid import generate_cofid
 from cofkit.decompose import decompose_cif_to_cofid
 from cofkit.reactions import ReactionLibrary
+from cofkit.validate import validate_cif_against_cofid
 
 
 TAPB = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
@@ -586,6 +591,163 @@ class DecomposeRoundTripTests(unittest.TestCase):
             observed_connectivity_pairs,
             {(3, 3), (3, 2), (4, 2), (4, 4), (6, 2)},
         )
+
+
+class RingDecomposeRoundTripTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ring_cases = (
+            (
+                "boroxine_trimerization",
+                "boroxine",
+                build_rdkit_monomer(
+                    "cof1_precursor",
+                    "benzene-1,4-diboronic acid",
+                    "OB(O)c1ccc(B(O)O)cc1",
+                    "boronic_acid",
+                    num_conformers=1,
+                ),
+            ),
+            (
+                "triazine_trimerization",
+                "triazine",
+                build_rdkit_monomer(
+                    "ctf1_precursor",
+                    "terephthalonitrile",
+                    "N#Cc1ccc(C#N)cc1",
+                    "nitrile",
+                    num_conformers=1,
+                ),
+            ),
+        )
+
+    def _write_ring_candidate(
+        self,
+        root: Path,
+        template_id: str,
+        monomer,
+        *,
+        stacking_id: str | None = None,
+    ) -> tuple[Path, str]:
+        generator = RingFormingStructureGenerator(
+            RingFormationConfig(stacking_ids=() if stacking_id is None else (stacking_id,))
+        )
+        candidate = generator.generate(monomer, template_id)
+        cofid = generate_cofid(candidate, {monomer.id: monomer})
+        path = root / f"{template_id}{'' if stacking_id is None else f'__{stacking_id}'}.cif"
+        CIFWriter().write_candidate(
+            path,
+            candidate,
+            {monomer.id: monomer},
+            cofid=cofid,
+            cofid_comment_suffix=(
+                None if stacking_id is None else candidate.metadata["stacking"]["comment_suffix"]
+            ),
+        )
+        return path, cofid
+
+    def test_ring_decomposition_recovers_precursors_and_topology_without_comment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for template_id, linkage, monomer in self.ring_cases:
+                with self.subTest(linkage=linkage):
+                    cif_path, expected_cofid = self._write_ring_candidate(temp_path, template_id, monomer)
+                    input_cif = _without_cofid_comment(cif_path, temp_path / f"{linkage}_stripped.cif")
+
+                    result = decompose_cif_to_cofid(input_cif, linkage=linkage)
+
+                    self.assertTrue(result.ok, result.reason)
+                    self.assertEqual(result.cofid, expected_cofid)
+                    self.assertEqual(result.topology, "hcb")
+                    self.assertEqual(result.metadata["decomposition_strategy"], "ring")
+                    self.assertEqual(result.metadata[f"n_{linkage}_rings"], 2)
+                    self.assertEqual(result.metadata[f"n_{linkage}_ring_bonds"], 12)
+                    self.assertEqual(result.metadata["n_topology_components"], 1)
+                    self.assertEqual(result.metadata["topology_graph"]["node_connectivities"], [3, 3])
+                    self.assertEqual(result.monomers[0].amount, 3)
+
+    def test_ring_decomposition_works_without_bond_loop_or_instance_labels(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for template_id, linkage, monomer in self.ring_cases:
+                with self.subTest(linkage=linkage):
+                    cif_path, expected_cofid = self._write_ring_candidate(temp_path, template_id, monomer)
+                    no_bonds = _without_cif_bond_loop(cif_path, temp_path / f"{linkage}_no_bonds.cif")
+                    generic = _with_generic_atom_labels(no_bonds, temp_path / f"{linkage}_generic.cif")
+
+                    result = decompose_cif_to_cofid(generic, topology="hcb", linkage=template_id)
+
+                    self.assertTrue(result.ok, result.reason)
+                    self.assertEqual(result.cofid, expected_cofid)
+                    self.assertEqual(result.linkage, linkage)
+                    self.assertEqual(result.metadata["bond_source"], "distance_inferred")
+                    self.assertGreater(result.metadata["n_bond_orders_inferred"], 0)
+
+    def test_ring_decomposition_retains_higher_connected_precursor_nodes(self):
+        node_cases = (
+            (
+                "boroxine_trimerization",
+                "boroxine",
+                "OB(O)c1cc(B(O)O)cc(B(O)O)c1",
+                "boronic_acid",
+            ),
+            (
+                "triazine_trimerization",
+                "triazine",
+                "N#Cc1cc(C#N)cc(C#N)c1",
+                "nitrile",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for template_id, linkage, smiles, motif_kind in node_cases:
+                with self.subTest(linkage=linkage):
+                    monomer = build_rdkit_monomer(
+                        f"{linkage}_node",
+                        f"three-connected {linkage} precursor",
+                        smiles,
+                        motif_kind,
+                        num_conformers=1,
+                    )
+                    cif_path, expected_cofid = self._write_ring_candidate(temp_path, template_id, monomer)
+                    input_cif = _without_cofid_comment(cif_path, temp_path / f"{linkage}_node_stripped.cif")
+
+                    result = decompose_cif_to_cofid(input_cif, linkage=linkage)
+
+                    self.assertTrue(result.ok, result.reason)
+                    self.assertEqual(result.cofid, expected_cofid)
+                    self.assertEqual(result.monomers[0].connectivity, 3)
+                    self.assertEqual(result.metadata["topology_graph"]["node_connectivities"], [3, 3])
+                    self.assertEqual(result.metadata["topology_graph"]["n_edges"], 3)
+
+    def test_ring_decomposition_normalizes_all_stacked_layer_registries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for template_id, linkage, monomer in self.ring_cases:
+                for stacking_id in ("AA", "AB", "slipped"):
+                    with self.subTest(linkage=linkage, stacking=stacking_id):
+                        cif_path, expected_cofid = self._write_ring_candidate(
+                            temp_path,
+                            template_id,
+                            monomer,
+                            stacking_id=stacking_id,
+                        )
+                        input_cif = _without_cofid_comment(
+                            cif_path,
+                            temp_path / f"{linkage}_{stacking_id}_stripped.cif",
+                        )
+
+                        result = decompose_cif_to_cofid(input_cif, linkage=linkage)
+                        validation = validate_cif_against_cofid(expected_cofid, cif_path)
+
+                        self.assertTrue(result.ok, result.reason)
+                        self.assertEqual(result.cofid, expected_cofid)
+                        self.assertEqual(result.metadata[f"n_{linkage}_rings"], 4)
+                        self.assertEqual(result.metadata["n_topology_components"], 2)
+                        self.assertEqual(result.metadata["topology_graph"]["n_nodes"], 2)
+                        self.assertEqual(result.metadata["topology_graph"]["n_edges"], 3)
+                        self.assertEqual(result.monomers[0].amount, 6)
+                        self.assertTrue(validation.ok, validation.reason)
 
 
 if __name__ == "__main__":
