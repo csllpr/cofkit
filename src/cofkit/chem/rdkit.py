@@ -163,6 +163,7 @@ class RDKitMotifBuilder:
         builder.register_match_handler("catechol", _interpret_catechol_match)
         builder.register_match_handler("keto_aldehyde", _interpret_keto_aldehyde_match)
         builder.register_match_handler("activated_methylene", _interpret_activated_methylene_match)
+        builder.register_match_handler("nitrile", _interpret_nitrile_match)
         builder.register_postprocess_handler("keto_aldehyde", _postprocess_keto_aldehyde_matches)
         return builder
 
@@ -423,6 +424,23 @@ def _interpret_boronic_acid_match(molecule, conformer, match: tuple[int, ...], d
             "oxygen_atom_ids": (oxygen_atom_id_1, oxygen_atom_id_2),
             "hydrogen_atom_ids": hydrogen_atom_ids,
         },
+    )
+
+
+def _interpret_nitrile_match(molecule, conformer, match: tuple[int, ...], definition: MotifKindDefinition) -> _DetectedMotif:
+    del definition
+    anchor_atom_id, carbon_atom_id, nitrogen_atom_id = (
+        int(match[0]),
+        int(match[1]),
+        int(match[2]),
+    )
+    return _DetectedMotif(
+        reactive_atom_id=carbon_atom_id,
+        anchor_atom_id=anchor_atom_id,
+        atom_ids=(anchor_atom_id, carbon_atom_id, nitrogen_atom_id),
+        origin=_conformer_point(conformer, carbon_atom_id),
+        anchor=_conformer_point(conformer, anchor_atom_id),
+        metadata={"nitrogen_atom_id": nitrogen_atom_id},
     )
 
 

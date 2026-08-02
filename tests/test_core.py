@@ -199,6 +199,23 @@ class PlannerAndSolverTests(unittest.TestCase):
         self.assertEqual(plans[0].topology.id, "hcb")
         self.assertEqual(plans[0].topology.metadata["n_node_definitions"], 1)
 
+    def test_ring_planner_assigns_virtual_three_connected_topology(self):
+        precursor = MonomerSpec(
+            id="diboronic",
+            name="ditopic boronic precursor",
+            motifs=(
+                ReactiveMotif(id="b1", kind="boronic_acid", atom_ids=(0,), frame=Frame.xy()),
+                ReactiveMotif(id="b2", kind="boronic_acid", atom_ids=(1,), frame=Frame.xy()),
+            ),
+        )
+        template = ReactionLibrary.builtin().get("boroxine_trimerization")
+
+        plan = NetPlanner().propose((precursor,), (template,), "2D")[0]
+
+        self.assertEqual(plan.topology.id, "hcb")
+        self.assertEqual(plan.metadata["planning_mode"], "virtual-node-topology")
+        self.assertEqual(plan.metadata["product_node_connectivity"], 3)
+
 
 class EngineTests(unittest.TestCase):
     def test_imine_project_gets_topology_guided_candidate(self):
@@ -234,27 +251,40 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(best.metadata["net_plan"]["topology"], "car")
         self.assertNotIn("no_topology_hint", best.flags)
 
-    def test_ring_forming_project_bypasses_topology(self):
-        tri_boronic = MonomerSpec(
+    def test_ring_forming_project_uses_virtual_node_topology(self):
+        diboronic = MonomerSpec(
             id="boronic",
-            name="tri-boronic monomer",
+            name="di-boronic precursor",
             motifs=(
-                ReactiveMotif(id="b1", kind="boronic_acid", atom_ids=(1,), frame=Frame.xy()),
-                ReactiveMotif(id="b2", kind="boronic_acid", atom_ids=(2,), frame=Frame.yz()),
-                ReactiveMotif(id="b3", kind="boronic_acid", atom_ids=(3,), frame=Frame.zx()),
+                ReactiveMotif(
+                    id="b1",
+                    kind="boronic_acid",
+                    atom_ids=(0,),
+                    frame=Frame(origin=(-3.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                ),
+                ReactiveMotif(
+                    id="b2",
+                    kind="boronic_acid",
+                    atom_ids=(1,),
+                    frame=Frame(origin=(3.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                ),
             ),
+            atom_symbols=("B", "B"),
+            atom_positions=((-3.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
         )
         project = COFProject(
-            monomers=(tri_boronic,),
+            monomers=(diboronic,),
             allowed_reactions=("boroxine_trimerization",),
             target_dimensionality="2D",
         )
         engine = COFEngine()
         best = engine.run(project).top(1)[0]
 
-        self.assertEqual(len(best.events), 1)
+        self.assertEqual(len(best.events), 2)
+        self.assertTrue(all(len({ref.monomer_instance_id for ref in event.participants}) == 3 for event in best.events))
         self.assertIn("contains_ring_forming_event", best.flags)
-        self.assertIn("no_topology_hint", best.flags)
+        self.assertEqual(best.metadata["net_plan"]["topology"], "hcb")
+        self.assertNotIn("no_topology_hint", best.flags)
 
     def test_engine_supports_explicit_indexed_mixed_connectivity_topology(self):
         tetra_amine = MonomerSpec(

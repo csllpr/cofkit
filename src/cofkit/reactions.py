@@ -30,6 +30,9 @@ class ReactionLinkageProfile:
     geometry_profile_id: str | None = None
     validation_profile_id: str | None = None
     library_layout: str = "role_count_files"
+    ring_participant_motif_kind: str | None = None
+    ring_event_coordination: int | None = None
+    require_distinct_participant_copies: bool = False
 
     @property
     def supports_binary_bridge_pair_generation(self) -> bool:
@@ -40,8 +43,16 @@ class ReactionLinkageProfile:
         return self.event_realizer is not None
 
     @property
+    def supports_ring_forming_generation(self) -> bool:
+        return (
+            self.workflow_family == "ring_forming"
+            and self.ring_participant_motif_kind is not None
+            and self.ring_event_coordination == 3
+        )
+
+    @property
     def supports_topology_guided_generation(self) -> bool:
-        return self.topology_assignment_mode == "topology_guided"
+        return self.topology_assignment_mode in {"topology_guided", "virtual_node_topology"}
 
     def resolve_pair_order(self, first_kind: str, second_kind: str) -> BinaryBridgePairOrder:
         if len(self.binary_bridge_roles) != 2:
@@ -230,7 +241,7 @@ def topology_assignment_mode(
     if profile is not None:
         return profile.topology_assignment_mode
     if isinstance(template, ReactionTemplate) and template.topology_role == "ring":
-        return "topology_bypass"
+        return "virtual_node_topology"
     return "topology_guided"
 
 
@@ -393,21 +404,29 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
         ),
         ReactionLinkageProfile(
             template_id="boroxine_trimerization",
-            bridge_target_distance=1.45,
+            bridge_target_distance=1.38,
+            event_realizer="boroxine_trimerization",
             workflow_family="ring_forming",
-            topology_assignment_mode="topology_bypass",
+            topology_assignment_mode="virtual_node_topology",
             geometry_profile_id="boroxine_trimerization",
             validation_profile_id="boroxine_trimerization",
             library_layout="role_count_files",
+            ring_participant_motif_kind="boronic_acid",
+            ring_event_coordination=3,
+            require_distinct_participant_copies=True,
         ),
         ReactionLinkageProfile(
             template_id="triazine_trimerization",
-            bridge_target_distance=1.45,
+            bridge_target_distance=1.35,
+            event_realizer="triazine_trimerization",
             workflow_family="ring_forming",
-            topology_assignment_mode="topology_bypass",
+            topology_assignment_mode="virtual_node_topology",
             geometry_profile_id="triazine_trimerization",
             validation_profile_id="triazine_trimerization",
             library_layout="role_count_files",
+            ring_participant_motif_kind="nitrile",
+            ring_event_coordination=3,
+            require_distinct_participant_copies=True,
         ),
     )
 

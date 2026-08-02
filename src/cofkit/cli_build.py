@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Iterable
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
+from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
 from .chem.rdkit import build_rdkit_monomer
-from .cofid import cofid_to_build_request
+from .cif import CIFWriter
+from .cofid import cofid_to_build_request, try_generate_cofid
 from .lammps import LammpsOptimizationSettings
 from .monomer_library import MonomerRoleResolver
 from .reactions import ReactionLibrary
@@ -26,6 +28,7 @@ def add_build_group(subparsers) -> None:
 
     build_subparsers = parser.add_subparsers(dest="build_command")
     _add_single_pair_parser(build_subparsers)
+    _add_ring_forming_parser(build_subparsers)
     _add_batch_binary_bridge_parser(build_subparsers)
     _add_batch_all_binary_bridges_parser(build_subparsers)
     _add_default_library_parser(build_subparsers)
@@ -381,6 +384,165 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             summary.cif_path or "-",
         )
         _print_single_pair_geometry_repair_warning(summary)
+
+
+def _add_ring_forming_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "ring-forming",
+        help="Build a COF from a ditopic precursor by three-body ring formation.",
+        description="Build boroxine- or triazine-linked 2D COFs using virtual 3-connected product nodes.",
+    )
+    parser.add_argument("--cofid", default=None, help="One-precursor ring-forming COFid to build.")
+    parser.add_argument(
+        "--template-id",
+        choices=("boroxine_trimerization", "triazine_trimerization"),
+        default="boroxine_trimerization",
+    )
+    parser.add_argument("--smiles", default=None, help="SMILES for the ditopic precursor.")
+    parser.add_argument("--monomer-id", default="ring_precursor")
+    parser.add_argument("--monomer-name", default=None)
+    parser.add_argument("--motif-kind", choices=("boronic_acid", "nitrile"), default=None)
+    parser.add_argument("--topology", default="hcb", help="Three-connected product topology. Default: hcb.")
+    parser.add_argument("--num-conformers", type=int, default=4)
+    parser.add_argument("--layer-spacing", type=float, default=3.4)
+    parser.add_argument(
+        "--stacking",
+        action="append",
+        default=[],
+        help="Enumerate a named 2D bilayer registry (AA, AB, or slipped). Repeat for multiple variants.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(Path(__file__).resolve().parents[2] / "out" / "ring_forming_generation"),
+    )
+    parser.add_argument(
+        "--write-cif",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write the atomistic product CIF. Enabled by default.",
+    )
+    parser.set_defaults(func=_run_ring_forming)
+
+
+def _run_ring_forming(args: argparse.Namespace) -> None:
+    if args.cofid is not None and any(
+        value is not None for value in (args.smiles, args.motif_kind)
+    ):
+        raise SystemExit("--cofid cannot be combined with --smiles or --motif-kind")
+
+    requested_cofid = None
+    if args.cofid is not None:
+        request = cofid_to_build_request(args.cofid)
+        profile = ReactionLibrary.builtin().linkage_profile(request.template_id)
+        if profile is None or not profile.supports_ring_forming_generation:
+            raise SystemExit(f"COFid linkage {request.linkage_code!r} is not a ring-forming workflow")
+        requested_cofid = request.cofid
+        args = argparse.Namespace(**vars(args))
+        args.template_id = request.template_id
+        args.smiles = request.monomers[0].canonical_smiles
+        args.motif_kind = request.monomers[0].motif_kind
+        args.topology = request.topology
+        if args.monomer_id == "ring_precursor":
+            args.monomer_id = "cofid_m1"
+    elif args.smiles is None:
+        raise SystemExit("ring-forming requires either --cofid or --smiles")
+
+    library = ReactionLibrary.builtin()
+    profile = library.linkage_profile(args.template_id)
+    if profile is None or not profile.supports_ring_forming_generation:
+        raise SystemExit(f"template {args.template_id!r} does not support ring-forming generation")
+    motif_kind = args.motif_kind or profile.ring_participant_motif_kind
+    if motif_kind != profile.ring_participant_motif_kind:
+        raise SystemExit(
+            f"template {args.template_id!r} requires motif kind {profile.ring_participant_motif_kind!r}"
+        )
+    monomer = build_rdkit_monomer(
+        args.monomer_id,
+        args.monomer_name or args.monomer_id,
+        args.smiles,
+        motif_kind,
+        num_conformers=args.num_conformers,
+    )
+    generator = RingFormingStructureGenerator(
+        config=RingFormationConfig(
+            topology_id=args.topology,
+            layer_spacing=args.layer_spacing,
+            optimize_geometry=True,
+            stacking_ids=tuple(args.stacking),
+        ),
+        reaction_library=library,
+    )
+    candidates = generator.generate_candidates(monomer, args.template_id)
+    generated_cofid = try_generate_cofid(candidates[0], {monomer.id: monomer})
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result_rows: list[dict[str, object]] = []
+    for candidate in candidates:
+        candidate_cofid = try_generate_cofid(candidate, {monomer.id: monomer})
+        cif_path = None
+        export = None
+        if args.write_cif:
+            cif_path = output_dir / f"{candidate.id}.cif"
+            stacking = candidate.metadata.get("stacking")
+            comment_suffix = (
+                str(stacking.get("comment_suffix"))
+                if isinstance(stacking, dict) and stacking.get("comment_suffix") is not None
+                else None
+            )
+            export = CIFWriter().write_candidate(
+                cif_path,
+                candidate,
+                {monomer.id: monomer},
+                cofid=candidate_cofid,
+                cofid_comment_suffix=comment_suffix,
+            )
+        result_rows.append(
+            {
+                "candidate_id": candidate.id,
+                "generated_cofid": candidate_cofid,
+                "score": candidate.score,
+                "flags": list(candidate.flags),
+                "graph_summary": candidate.metadata["graph_summary"],
+                "ring_validation": candidate.metadata["ring_validation"],
+                "optimization": candidate.metadata["optimization"],
+                "stacking": candidate.metadata.get("stacking"),
+                "cell": candidate.state.cell,
+                "cif_path": None if cif_path is None else str(cif_path),
+                "cif_sites": None if export is None else export.n_sites,
+                "reaction_realization": None if export is None else export.metadata.get("reaction_realization"),
+            }
+        )
+    first_result = result_rows[0]
+    report = {
+        **({"requested_cofid": requested_cofid} if requested_cofid is not None else {}),
+        "generated_cofid": generated_cofid,
+        "template_id": args.template_id,
+        "topology_id": args.topology,
+        "stacking_requested": list(args.stacking),
+        "precursor": {
+            "id": monomer.id,
+            "motif_kind": motif_kind,
+            "motif_count": len(monomer.motifs),
+        },
+        **first_result,
+        "results": result_rows,
+    }
+    summary_path = output_dir / "summary.json"
+    summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print("template_id:", args.template_id)
+    print("topology_id:", args.topology)
+    print("precursor:", monomer.id, motif_kind, len(monomer.motifs))
+    print("variants:", len(candidates))
+    print("generated_cofid:", generated_cofid or "-")
+    for row in result_rows:
+        print(
+            "result:",
+            row["candidate_id"],
+            (row["stacking"] or {}).get("id", "unstacked") if isinstance(row["stacking"], dict) else "unstacked",
+            row["ring_validation"]["classification"],
+            row["cif_path"] or "-",
+        )
+    print("summary:", summary_path)
 
 
 def _resolve_single_pair_motif_kind(
@@ -804,6 +966,7 @@ def _run_list_templates(args: argparse.Namespace) -> None:
                 "reactant_motif_kinds": template.reactant_motif_kinds,
                 "workflow_family": None if profile is None else profile.workflow_family,
                 "supports_pair_generation": False if profile is None else profile.supports_binary_bridge_pair_generation,
+                "supports_ring_generation": False if profile is None else profile.supports_ring_forming_generation,
                 "supports_atomistic_realization": False if profile is None else profile.supports_atomistic_realization,
                 "supports_topology_guided_generation": False if profile is None else profile.supports_topology_guided_generation,
                 "topology_assignment_mode": None if profile is None else profile.topology_assignment_mode,
@@ -819,6 +982,7 @@ def _run_list_templates(args: argparse.Namespace) -> None:
             "arity=" + str(row["arity"]),
             "family=" + str(row["workflow_family"]),
             "pair_generation=" + str(row["supports_pair_generation"]).lower(),
+            "ring_generation=" + str(row["supports_ring_generation"]).lower(),
             "atomistic=" + str(row["supports_atomistic_realization"]).lower(),
             "topology_guided=" + str(row["supports_topology_guided_generation"]).lower(),
             "roles=" + ",".join(row["roles"]),

@@ -11,14 +11,18 @@ The base package now installs `rdkit`, `gemmi`, `openbabel`, `pandas`, and `pyma
 - topology repository/index support for RCSR CGD-style bundles, with bundled topology data preferred by default and builtin fallback hints
 - a discrete assignment layer for motif-to-reaction event matching
 - registry-backed motif metadata plus lightweight geometric motif detection for the currently supported fallback kinds
-- RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazine, hydrazide, boronic acid, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention in the standard install
+- RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazine, hydrazide, boronic acid, nitrile, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention in the standard install
 - initial linkage geometry helpers for bridge-forming reactions
 - initial periodic embedding for monomer instances from topology hints and motif/reaction heuristics, including oblique `hcb` cells for asymmetric `3+3` and `3+2` cases when a symmetric hexagonal metric is too restrictive
 - a dependency-free continuous optimization pass for seed cell/pose refinement after embedding
 - first-pass candidate scoring with event coverage, bridge geometry, topology bonuses, and unreacted penalties
 - candidate metadata carrying embedding provenance, optimizer metrics, and score breakdowns
 - legal P1 CIF export, with atomistic output when monomer coordinates are available and a coarse fallback otherwise, now including explicit `_ccdc_geom_bond_type` records for atomistic bond loops
-- registry-backed atomistic reaction realization for the currently implemented binary-bridge products: imine, hydrazone, azine, beta-ketoenamine, boronate ester, and vinylene
+- registry-backed atomistic reaction realization for the currently implemented binary-bridge products (imine, hydrazone, azine, beta-ketoenamine, boronate ester, and vinylene) and ring products (boroxine and triazine)
+- topology-creating ring-forming generation with virtual 3-connected product nodes, including ditopic hcb, trigonal hcb sublattice assignment, and compatible indexed mixed-connectivity layouts such as `3+6` kgd
+- ring-specific geometry fitting, scoring, lightweight optimization, and validation for participant radius, 120-degree incidence, planarity, distinct periodic precursor copies, and complete motif consumption
+- public `cofkit build ring-forming` and one-precursor COFid support for `boroxine` and `triazine`, with atom-balanced CIF realization (three-water loss for each boroxine event and atom-preserving nitrile-to-triazine bond-order rewriting)
+- named `AA`, `AB`, and slipped bilayer enumeration for 2D ring-forming candidates through both CLI `--stacking` and `COFProject.stacking_ids`, including product-aware layer thickness, duplicated ring events/realization, layer-shifted ring centers, and stacking-tagged COFid comments
 - periodic-image-safe imine atomistic realization, with the same bent-linkage motif-origin correction now applied across the supported `2D` and `3D` builder paths
 - reaction-aware batch binary-bridge generation over monomer libraries, with imine workflows as the primary documented path, including `3+3`, `3+2`, `4+4`, `4+2`, and `6+2` enumeration, manifest/summary writing, and CIF export enabled by default
 - automatic monomer-role detection for batch library loading, so generic `.txt` SMILES libraries can be regrouped by detected role/connectivity instead of relying only on `*_count_N.txt` filenames
@@ -48,11 +52,11 @@ The base package now installs `rdkit`, `gemmi`, `openbabel`, `pandas`, and `pyma
 
 ## Not implemented yet
 
-- broader SMARTS/rule-based motif detection beyond the current binary-bridge set, especially for ring-forming and cyclization chemistries
+- broader SMARTS/rule-based motif detection beyond the current binary-bridge, boronic-acid, and nitrile set, especially for other cyclization chemistries
 - symmetry reduction beyond raw indexed topology filtering
 - full general topology coverage beyond the current supported one-node families plus the present indexed-layout subset
 - torsion-aware or force-field-backed optimization beyond the current lightweight pass
-- stable ring-closure geometry models suitable for public CLI exposure
+- generalized ring-closure models beyond the current planar boroxine and triazine cyclotrimerizations, including non-planar products and arbitrary strained nets
 - a supported public benzothiazole conversion workflow; the current sulfur-enabled imine conversion prototype remains internal-only until its local geometry is more reliable
 - Zeo++ PSD histograms, grid outputs, ray analyses, ZeoVis exports, and broader hidden or specialized workflows beyond the current pore-summary wrapper
 - fuller LAMMPS force-field coverage beyond the current UFF / organic-core DREIDING paths, especially validated charge models, hydrogen-bond terms, and broader metal coverage
@@ -62,4 +66,4 @@ The base package now installs `rdkit`, `gemmi`, `openbabel`, `pandas`, and `pyma
 - CIF decomposition beyond the current buildable binary-bridge structures, including general-purpose net recognition and robust support for arbitrary third-party CIF bonding conventions beyond the current conservative topology detector
 - chemically faithful atomistic CIF generation for arbitrary monomers without fallback/pseudo-sites
 - semiempirical or quantum-chemistry cleanup beyond the current external-tool wrappers
-- engine-integrated stacking exploration, generalized multilayer registry search, or stacking-aware score terms beyond the current opt-in named bilayer export variants
+- open-ended engine stacking exploration, generalized multilayer registry search beyond named bilayers, or stacking-aware score terms; `COFProject.stacking_ids` currently covers ring-forming bilayers while binary-bridge variants remain batch/single-pair features

@@ -1,6 +1,6 @@
 # Building COFs
 
-`cofkit` currently focuses on binary-bridge COFs generated from one role-specific monomer on each side. The practical binary-bridge templates are:
+`cofkit` supports binary-bridge COFs generated from one role-specific monomer on each side and topology-creating cyclotrimerizations from a single precursor. The practical binary-bridge templates are:
 
 - `imine_bridge`
 - `hydrazone_bridge`
@@ -48,9 +48,48 @@ cofkit build single-pair \
 
 `--cofid` defines the monomers, topology, and linkage, so it cannot be combined with direct SMILES or topology overrides.
 
+## Ring-Forming Linkages
+
+Use `ring-forming` for boroxine or triazine cyclotrimerization. Three-connected product rings are represented as virtual topology nodes; real ditopic precursor molecules occupy the hcb edges. A primitive hcb build therefore contains three precursor instances and two three-participant ring events.
+
+```bash
+cofkit build ring-forming \
+  --template-id boroxine_trimerization \
+  --smiles 'OB(O)c1ccc(B(O)O)cc1' \
+  --topology hcb \
+  --output-dir out/cof1
+```
+
+For CTF-1-like chemistry:
+
+```bash
+cofkit build ring-forming \
+  --template-id triazine_trimerization \
+  --smiles 'N#Cc1ccc(C#N)cc1' \
+  --topology hcb \
+  --output-dir out/ctf1
+```
+
+The command writes `summary.json` and an atomistic CIF. Ring validation reports radial, angular, and planarity residuals. Boroxine realization removes three waters per ring event; triazine realization preserves atoms and rewrites the three nitrile bonds into alternating C–N ring bonds. One-precursor COFids using linkage codes `boroxine` and `triazine` are accepted through `--cofid`.
+
+Request explicit bilayer registries with repeatable `--stacking` options:
+
+```bash
+cofkit build ring-forming \
+  --template-id triazine_trimerization \
+  --smiles 'N#Cc1ccc(C#N)cc1' \
+  --stacking AA \
+  --stacking AB \
+  --output-dir out/ctf1_stacked
+```
+
+For hexagonal cells, `AA` uses no lateral shift, `AB` uses `(1/3, 1/3)`, and `slipped` uses `(1/2, 0)` in the fractional in-plane basis. Each output contains two explicit layers, duplicates the periodic reaction graph and atomistic ring realization, sets a product-aware bilayer `c` length, and embeds `stacking=<registry>` in the CIF COFid comment. Ring validation remains layer-aware.
+
+The Python builder also supports a trigonal precursor on one hcb sublattice and indexed mixed-connectivity nets whose other nodes are 3-connected virtual rings; `kgd` is the supported ideal `3+6` example. Less compatible net/precursor geometries are emitted with `ring_geometry_rejected` rather than accepted silently.
+
 ## Stacking Variants
 
-For eligible `2D` outputs, request named bilayer registries during export:
+For eligible binary-bridge `2D` outputs, request named bilayer registries during export:
 
 ```bash
 cofkit build single-pair \
@@ -126,6 +165,8 @@ Single-pair runs write:
 
 - `summary.json`
 - exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`
+
+Ring-forming runs write `summary.json` and, unless disabled, `ring-candidate-1.cif` directly under the selected output directory.
 
 Batch runs write:
 

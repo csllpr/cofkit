@@ -110,7 +110,8 @@ def _builtin_motif_kind_definitions() -> tuple[MotifKindDefinition, ...]:
         MotifKindDefinition(
             kind="nitrile",
             id_prefix="nit",
-            cif_symbol="N",
+            cif_symbol="C",
             allowed_reaction_templates=("triazine_trimerization",),
+            rdkit_smarts="[#6]-[CX2]#[NX1]",
         ),
     )

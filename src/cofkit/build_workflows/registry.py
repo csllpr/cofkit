@@ -77,18 +77,17 @@ class BuildWorkflowRegistry:
             BuildWorkflowDefinition(
                 id="ring_forming",
                 description=(
-                    "Reserved workflow family for ring-forming linkages that bypass the current binary-bridge "
-                    "pair-generation assumptions."
+                    "Topology-guided ring-forming assembly using virtual product nodes and precursor edge units."
                 ),
-                implementation_status="planned",
+                implementation_status="available",
                 builder_module="cofkit.build_workflows.ring_forming",
                 isolation_boundary=(
-                    "Requires separate event generation, realization, geometry priors, and validation so current "
-                    "binary-bridge behavior stays unchanged."
+                    "Owns arity-three event generation, ring realization, geometry fitting, and validation."
                 ),
                 template_workflow_family="ring_forming",
                 metadata={
-                    "topology_assignment_mode": "topology_bypass",
+                    "entrypoints": ("RingFormingStructureGenerator", "cofkit build ring-forming"),
+                    "topology_assignment_mode": "virtual_node_topology",
                 },
             ),
             BuildWorkflowDefinition(

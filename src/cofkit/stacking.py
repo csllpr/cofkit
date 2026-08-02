@@ -132,6 +132,13 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
     stacked_events: list[ReactionEvent] = []
     for event in candidate.events:
         for layer_index, layer_suffix in enumerate(_STACKING_LAYER_SUFFIXES):
+            event_metadata = {
+                **dict(event.metadata),
+                "layer_index": layer_index,
+                "stacking_registry": registry.id,
+            }
+            if "ring_center_fractional" in event.metadata:
+                event_metadata["ring_center_offset_cartesian"] = layer_offsets[layer_index]
             stacked_events.append(
                 ReactionEvent(
                     id=f"{event.id}{layer_suffix}",
@@ -144,11 +151,7 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
                         for participant in event.participants
                     ),
                     product_state=event.product_state,
-                    metadata={
-                        **dict(event.metadata),
-                        "layer_index": layer_index,
-                        "stacking_registry": registry.id,
-                    },
+                    metadata=event_metadata,
                 )
             )
 
@@ -183,7 +186,25 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
                 duplicated_metric["stacking_registry"] = registry.id
                 duplicated_metrics.append(duplicated_metric)
         score_metadata["bridge_event_metrics"] = tuple(duplicated_metrics)
+    ring_geometry = _mapping(score_metadata.get("ring_geometry"))
+    if ring_geometry:
+        score_metadata["ring_geometry"] = _duplicate_ring_geometry_metrics(ring_geometry, registry.id)
     score_metadata["stacking_considered"] = False
+
+    ring_validation = dict(_mapping(candidate.metadata.get("ring_validation")))
+    ring_validation_metrics = _mapping(ring_validation.get("metrics"))
+    if ring_validation_metrics:
+        ring_validation["metrics"] = _duplicate_ring_geometry_metrics(ring_validation_metrics, registry.id)
+    if ring_validation:
+        base_reasons = tuple(str(reason) for reason in ring_validation.get("reasons", ()))
+        if base_reasons:
+            ring_validation["reasons"] = tuple(
+                f"{layer_suffix}: {reason}"
+                for layer_suffix in _STACKING_LAYER_SUFFIXES
+                for reason in base_reasons
+            )
+        ring_validation["stacking_registry"] = registry.id
+        ring_validation["layer_count"] = 2
 
     flags = tuple(
         dict.fromkeys(
@@ -199,6 +220,7 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
         "instance_to_slot": stacked_instance_to_slot,
         "embedding": embedding,
         "score_metadata": score_metadata,
+        **({"ring_validation": ring_validation} if ring_validation else {}),
         "stacking_mode": "enumerated",
         "stacking": {
             **_stacking_metadata(registry),
@@ -281,6 +303,29 @@ def _stacking_metadata(registry: LayerRegistry) -> dict[str, object]:
         ),
         "layer_count": 2,
     }
+
+
+def _duplicate_ring_geometry_metrics(metrics: Mapping[str, object], registry_id: str) -> dict[str, object]:
+    event_metrics = tuple(item for item in metrics.get("events", ()) if isinstance(item, Mapping))
+    duplicated_events: list[dict[str, object]] = []
+    for layer_index, layer_suffix in enumerate(_STACKING_LAYER_SUFFIXES):
+        for metric in event_metrics:
+            duplicated = dict(metric)
+            event_id = duplicated.get("event_id")
+            if event_id is not None:
+                duplicated["event_id"] = f"{event_id}{layer_suffix}"
+            duplicated["layer_index"] = layer_index
+            duplicated["stacking_registry"] = registry_id
+            duplicated_events.append(duplicated)
+    result = dict(metrics)
+    result["events"] = tuple(duplicated_events)
+    total_residual = metrics.get("total_residual")
+    if total_residual is not None:
+        try:
+            result["total_residual"] = 2.0 * float(total_residual)
+        except (TypeError, ValueError):
+            pass
+    return result
 
 
 def _mapping(value: object) -> Mapping[str, object]:

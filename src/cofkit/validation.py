@@ -101,11 +101,21 @@ class CoarseStructureValidator:
 
         metadata = self._mapping(record.get("metadata"))
         score_metadata = self._mapping(metadata.get("score_metadata"))
+        ring_validation = self._mapping(metadata.get("ring_validation"))
         stacking_metadata = self._mapping(metadata.get("stacking"))
         n_unreacted_motifs = self._n_unreacted_motifs(record, score_metadata)
         metrics["n_unreacted_motifs"] = n_unreacted_motifs
         if n_unreacted_motifs > 0:
             hard_invalid_reasons.append("unreacted_motifs")
+
+        if ring_validation:
+            ring_classification = self._string(ring_validation.get("classification"))
+            ring_reasons = tuple(str(reason) for reason in ring_validation.get("reasons", ()))
+            metrics["ring_validation_classification"] = ring_classification
+            metrics["ring_validation_reasons"] = ring_reasons
+            metrics["ring_geometry"] = ring_validation.get("metrics", {})
+            if ring_classification not in {None, "accepted", "valid"}:
+                hard_invalid_reasons.append("ring_geometry_invalid")
 
         bridge_metrics = tuple(self._mapping(item) for item in score_metadata.get("bridge_event_metrics", ()))
         distance_residuals = tuple(self._distance_residual(item) for item in bridge_metrics)

@@ -1,6 +1,6 @@
 # cofkit
 
-`cofkit` is a reaction-aware periodic assembly toolkit for covalent organic frameworks (COFs). It combines monomer detection, binary-bridge reaction templates, topology-aware assembly, CIF export, coarse validation, and optional external-tool wrappers.
+`cofkit` is a reaction-aware periodic assembly toolkit for covalent organic frameworks (COFs). It combines monomer detection, binary-bridge and ring-forming reaction templates, topology-aware assembly, CIF export, coarse validation, and optional external-tool wrappers.
 
 ## Quick Start
 
@@ -45,6 +45,19 @@ uv run cofkit build single-pair \
 
 This autodetects the monomer roles, evaluates the default topology pool, writes `summary.json`, and exports CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`.
 
+Build a triazine-linked CTF from one ditopic nitrile precursor:
+
+```bash
+uv run cofkit build ring-forming \
+  --template-id triazine_trimerization \
+  --smiles 'N#Cc1ccc(C#N)cc1' \
+  --topology hcb \
+  --stacking AA \
+  --output-dir out/ctf1
+```
+
+Use `boroxine_trimerization` with a diboronic-acid SMILES for the corresponding boroxine workflow. Repeat `--stacking` to emit several bilayer registries, such as `--stacking AA --stacking AB`.
+
 ## Main CLI Groups
 
 ```bash
@@ -58,6 +71,7 @@ uv run cofkit build list-templates
 Common commands:
 
 - `cofkit build single-pair`
+- `cofkit build ring-forming`
 - `cofkit build batch-binary-bridge`
 - `cofkit build batch-all-binary-bridges`
 - `cofkit build default-library`

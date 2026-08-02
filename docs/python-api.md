@@ -33,7 +33,45 @@ best = COFEngine().run(project).top(1)[0]
 write_candidate_cif("out/tapb_tfb_hcb.cif", best, project.monomers)
 ```
 
-`COFEngine` / `COFProject.stacking_mode` should remain `"disabled"`. Current stacking support is the post-build registry enumeration path exposed by `BatchStructureGenerator` and CLI `--stacking`.
+`COFEngine` / `COFProject.stacking_mode` should remain `"disabled"`. For ring-forming projects, use `COFProject.stacking_ids=("AA", "AB")`; binary-bridge stacking remains the post-build registry path exposed by `BatchStructureGenerator` and CLI `--stacking`.
+
+## RingFormingStructureGenerator
+
+Use the dedicated builder for a single precursor whose functional groups cyclotrimerize into topology nodes:
+
+```python
+from cofkit import CIFWriter, RingFormingStructureGenerator, build_rdkit_monomer
+
+precursor = build_rdkit_monomer(
+    "ctf1_precursor",
+    "terephthalonitrile",
+    "N#Cc1ccc(C#N)cc1",
+    "nitrile",
+)
+candidate = RingFormingStructureGenerator().generate(
+    precursor,
+    "triazine_trimerization",
+    topology_id="hcb",
+)
+CIFWriter().write_candidate("out/ctf1.cif", candidate, {precursor.id: precursor})
+```
+
+`boroxine_trimerization` accepts boronic-acid motifs. The default hcb path requires a ditopic precursor; trigonal hcb and compatible indexed mixed-connectivity topologies are also supported. Inspect `candidate.metadata["ring_validation"]` before accepting a geometry.
+
+Enumerate explicit bilayers with:
+
+```python
+from cofkit import RingFormationConfig, RingFormingStructureGenerator
+
+generator = RingFormingStructureGenerator(
+    RingFormationConfig(stacking_ids=("AA", "AB", "slipped"))
+)
+stacked_candidates = generator.generate_candidates(
+    precursor,
+    "triazine_trimerization",
+    topology_id="hcb",
+)
+```
 
 ## BatchStructureGenerator
 

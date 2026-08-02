@@ -86,6 +86,8 @@ class ReactionEventRealizationRegistry:
         registry.register("keto_enamine_bridge", _dispatch_keto_enamine_bridge_event)
         registry.register("boronate_ester_bridge", _dispatch_boronate_ester_bridge_event)
         registry.register("vinylene_bridge", _dispatch_vinylene_bridge_event)
+        registry.register("boroxine_trimerization", _dispatch_boroxine_trimerization_event)
+        registry.register("triazine_trimerization", _dispatch_triazine_trimerization_event)
         return registry
 
 
@@ -2504,6 +2506,251 @@ class ReactionRealizer:
             ),
         )
 
+    def _realize_boroxine_trimerization(
+        self,
+        event: ReactionEvent,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+    ) -> EventRealization:
+        refs = self._ordered_ring_participants(event, "boronic_acid", monomer_specs)
+        center, normal, radius = self._ring_geometry(event, candidate, default_radius=1.38)
+        boron_worlds: list[Vec3] = []
+        boron_atom_ids: list[int] = []
+        motifs = []
+        specs = []
+        overrides: dict[str, dict[int, Vec3]] = defaultdict(dict)
+        removed: dict[str, set[int]] = defaultdict(set)
+
+        for ref in refs:
+            spec = monomer_specs[ref.monomer_id]
+            motif = spec.motif_by_id(ref.motif_id)
+            boron_atom_id = self._reactive_atom_id(motif)
+            current_boron = self._world_atom_position(candidate, ref, spec, boron_atom_id)
+            direction = self._ring_radial_direction(current_boron, center, normal)
+            target_boron = add(center, scale(direction, radius))
+            overrides[ref.monomer_instance_id][boron_atom_id] = self._local_position_from_world(
+                candidate.state.monomer_poses[ref.monomer_instance_id],
+                target_boron,
+                image_shift=self._periodic_offset(candidate.state.cell, ref.periodic_image),
+            )
+            boron_worlds.append(target_boron)
+            boron_atom_ids.append(boron_atom_id)
+            motifs.append(motif)
+            specs.append(spec)
+
+        retained_oxygen_atom_ids: list[int] = []
+        oxygen_worlds: list[Vec3] = []
+        for index, (ref, motif, spec) in enumerate(zip(refs, motifs, specs)):
+            next_boron = boron_worlds[(index + 1) % 3]
+            direction = normalize(
+                add(
+                    self._ring_radial_direction(boron_worlds[index], center, normal),
+                    self._ring_radial_direction(next_boron, center, normal),
+                )
+            )
+            target_oxygen = add(center, scale(direction, radius))
+            oxygen_atom_ids = self._motif_atom_ids_from_metadata(
+                motif,
+                "oxygen_atom_ids",
+                fallback_symbol="O",
+                monomer=spec,
+            )
+            if len(oxygen_atom_ids) != 2:
+                raise ValueError(f"event {event.id!r} requires two hydroxyl oxygen atoms per boronic-acid motif")
+            retained_oxygen_atom_id = min(
+                oxygen_atom_ids,
+                key=lambda atom_id: self._distance(
+                    self._world_atom_position(candidate, ref, spec, atom_id),
+                    target_oxygen,
+                ),
+            )
+            removed_oxygen_atom_id = next(atom_id for atom_id in oxygen_atom_ids if atom_id != retained_oxygen_atom_id)
+            retained_oxygen_atom_ids.append(retained_oxygen_atom_id)
+            oxygen_worlds.append(target_oxygen)
+            overrides[ref.monomer_instance_id][retained_oxygen_atom_id] = self._local_position_from_world(
+                candidate.state.monomer_poses[ref.monomer_instance_id],
+                target_oxygen,
+                image_shift=self._periodic_offset(candidate.state.cell, ref.periodic_image),
+            )
+            removed[ref.monomer_instance_id].add(removed_oxygen_atom_id)
+            removed[ref.monomer_instance_id].update(
+                self._hydrogen_atom_ids_for_atoms(spec, motif, oxygen_atom_ids)
+            )
+
+        bonds: list[RealizedBond] = []
+        for index, ref in enumerate(refs):
+            next_index = (index + 1) % 3
+            next_ref = refs[next_index]
+            image_delta = tuple(next_ref.periodic_image[axis] - ref.periodic_image[axis] for axis in range(3))
+            bonds.append(
+                RealizedBond(
+                    label_1=self.atom_label(
+                        ref.monomer_instance_id,
+                        specs[index].atom_symbols[retained_oxygen_atom_ids[index]],
+                        retained_oxygen_atom_ids[index],
+                    ),
+                    label_2=self.atom_label(
+                        next_ref.monomer_instance_id,
+                        specs[next_index].atom_symbols[boron_atom_ids[next_index]],
+                        boron_atom_ids[next_index],
+                    ),
+                    distance=self._distance(oxygen_worlds[index], boron_worlds[next_index]),
+                    symmetry_2=self._symmetry_code(image_delta),
+                    bond_order=1.0,
+                )
+            )
+        return EventRealization(
+            removed_atom_ids={instance_id: tuple(sorted(atom_ids)) for instance_id, atom_ids in removed.items()},
+            atom_position_overrides={instance_id: dict(values) for instance_id, values in overrides.items()},
+            bonds=tuple(bonds),
+            notes=(
+                "Boroxine realization condenses three boronic acids to a planar B3O3 ring, removing O3H6 (three waters) per event.",
+                "Each ring retains one precursor B-O bond and adds one cyclic inter-precursor O-B bond per participant.",
+            ),
+        )
+
+    def _realize_triazine_trimerization(
+        self,
+        event: ReactionEvent,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec],
+    ) -> EventRealization:
+        refs = self._ordered_ring_participants(event, "nitrile", monomer_specs)
+        center, normal, radius = self._ring_geometry(event, candidate, default_radius=1.35)
+        carbon_worlds: list[Vec3] = []
+        carbon_atom_ids: list[int] = []
+        nitrogen_atom_ids: list[int] = []
+        specs: list[MonomerSpec] = []
+        overrides: dict[str, dict[int, Vec3]] = defaultdict(dict)
+
+        for ref in refs:
+            spec = monomer_specs[ref.monomer_id]
+            motif = spec.motif_by_id(ref.motif_id)
+            carbon_atom_id = self._reactive_atom_id(motif)
+            nitrogen_atom_id = self._motif_atom_id_from_metadata(
+                motif,
+                "nitrogen_atom_id",
+                context=f"{event.id} nitrile nitrogen",
+            )
+            current_carbon = self._world_atom_position(candidate, ref, spec, carbon_atom_id)
+            direction = self._ring_radial_direction(current_carbon, center, normal)
+            target_carbon = add(center, scale(direction, radius))
+            overrides[ref.monomer_instance_id][carbon_atom_id] = self._local_position_from_world(
+                candidate.state.monomer_poses[ref.monomer_instance_id],
+                target_carbon,
+                image_shift=self._periodic_offset(candidate.state.cell, ref.periodic_image),
+            )
+            carbon_worlds.append(target_carbon)
+            carbon_atom_ids.append(carbon_atom_id)
+            nitrogen_atom_ids.append(nitrogen_atom_id)
+            specs.append(spec)
+
+        nitrogen_worlds: list[Vec3] = []
+        for index, ref in enumerate(refs):
+            next_carbon = carbon_worlds[(index + 1) % 3]
+            direction = normalize(
+                add(
+                    self._ring_radial_direction(carbon_worlds[index], center, normal),
+                    self._ring_radial_direction(next_carbon, center, normal),
+                )
+            )
+            target_nitrogen = add(center, scale(direction, radius))
+            nitrogen_worlds.append(target_nitrogen)
+            overrides[ref.monomer_instance_id][nitrogen_atom_ids[index]] = self._local_position_from_world(
+                candidate.state.monomer_poses[ref.monomer_instance_id],
+                target_nitrogen,
+                image_shift=self._periodic_offset(candidate.state.cell, ref.periodic_image),
+            )
+
+        bonds: list[RealizedBond] = []
+        for index, ref in enumerate(refs):
+            next_index = (index + 1) % 3
+            next_ref = refs[next_index]
+            # Replaces the precursor C#N entry in CIF bond deduplication.
+            bonds.append(
+                RealizedBond(
+                    label_1=self.atom_label(
+                        ref.monomer_instance_id,
+                        specs[index].atom_symbols[carbon_atom_ids[index]],
+                        carbon_atom_ids[index],
+                    ),
+                    label_2=self.atom_label(
+                        ref.monomer_instance_id,
+                        specs[index].atom_symbols[nitrogen_atom_ids[index]],
+                        nitrogen_atom_ids[index],
+                    ),
+                    distance=self._distance(carbon_worlds[index], nitrogen_worlds[index]),
+                    bond_order=1.0,
+                )
+            )
+            image_delta = tuple(next_ref.periodic_image[axis] - ref.periodic_image[axis] for axis in range(3))
+            bonds.append(
+                RealizedBond(
+                    label_1=self.atom_label(
+                        ref.monomer_instance_id,
+                        specs[index].atom_symbols[nitrogen_atom_ids[index]],
+                        nitrogen_atom_ids[index],
+                    ),
+                    label_2=self.atom_label(
+                        next_ref.monomer_instance_id,
+                        specs[next_index].atom_symbols[carbon_atom_ids[next_index]],
+                        carbon_atom_ids[next_index],
+                    ),
+                    distance=self._distance(nitrogen_worlds[index], carbon_worlds[next_index]),
+                    symmetry_2=self._symmetry_code(image_delta),
+                    bond_order=2.0,
+                )
+            )
+        return EventRealization(
+            atom_position_overrides={instance_id: dict(values) for instance_id, values in overrides.items()},
+            bonds=tuple(bonds),
+            notes=(
+                "Triazine realization cyclotrimerizes three nitriles into a planar C3N3 ring without atom loss.",
+                "Precursor C#N bonds are rewritten as alternating ring C-N single and double bonds in the CIF export.",
+            ),
+        )
+
+    def _ordered_ring_participants(
+        self,
+        event: ReactionEvent,
+        motif_kind: str,
+        monomer_specs: Mapping[str, MonomerSpec],
+    ) -> tuple[MotifRef, MotifRef, MotifRef]:
+        if len(event.participants) != 3:
+            raise ValueError(f"event {event.id!r} must have exactly three ring participants")
+        if len({(ref.monomer_instance_id, ref.periodic_image) for ref in event.participants}) != 3:
+            raise ValueError(f"event {event.id!r} must use three distinct periodic monomer copies")
+        if any(monomer_specs[ref.monomer_id].motif_by_id(ref.motif_id).kind != motif_kind for ref in event.participants):
+            raise ValueError(f"event {event.id!r} contains a non-{motif_kind} participant")
+        return event.participants  # type: ignore[return-value]
+
+    def _ring_geometry(
+        self,
+        event: ReactionEvent,
+        candidate: Candidate,
+        *,
+        default_radius: float,
+    ) -> tuple[Vec3, Vec3, float]:
+        raw_center = event.metadata.get("ring_center_fractional")
+        if not isinstance(raw_center, (tuple, list)) or len(raw_center) != 3:
+            raise ValueError(f"event {event.id!r} lacks ring_center_fractional metadata")
+        center = self._periodic_offset(candidate.state.cell, tuple(float(value) for value in raw_center))
+        raw_offset = event.metadata.get("ring_center_offset_cartesian", (0.0, 0.0, 0.0))
+        if not isinstance(raw_offset, (tuple, list)) or len(raw_offset) != 3:
+            raise ValueError(f"event {event.id!r} has invalid ring_center_offset_cartesian metadata")
+        center = add(center, tuple(float(value) for value in raw_offset))
+        raw_normal = event.metadata.get("ring_normal", (0.0, 0.0, 1.0))
+        normal = normalize(tuple(float(value) for value in raw_normal))
+        radius = float(event.metadata.get("ring_atom_bond_length", default_radius))
+        return center, normal, radius
+
+    def _ring_radial_direction(self, point: Vec3, center: Vec3, normal: Vec3) -> Vec3:
+        offset = sub(point, center)
+        projected = sub(offset, scale(normal, dot(offset, normal)))
+        if norm(projected) < 1e-8:
+            raise ValueError("ring participant lies on the ring normal and has no radial direction")
+        return normalize(projected)
+
     def _split_bridge_participants(
         self,
         event: ReactionEvent,
@@ -2900,6 +3147,30 @@ class ReactionRealizer:
                 (boronic_ref, boron_atom_id, catechol_ref, oxygen_atom_id)
                 for oxygen_atom_id in catechol_oxygen_atom_ids
             )
+        if realizer_id in {"boroxine_trimerization", "triazine_trimerization"}:
+            motif_kind = "boronic_acid" if realizer_id == "boroxine_trimerization" else "nitrile"
+            refs = self._ordered_ring_participants(event, motif_kind, monomer_specs)
+            pairs = []
+            for index, ref in enumerate(refs):
+                next_ref = refs[(index + 1) % 3]
+                motif = monomer_specs[ref.monomer_id].motif_by_id(ref.motif_id)
+                next_motif = monomer_specs[next_ref.monomer_id].motif_by_id(next_ref.motif_id)
+                first_atom_id = (
+                    self._motif_atom_ids_from_metadata(
+                        motif,
+                        "oxygen_atom_ids",
+                        fallback_symbol="O",
+                        monomer=monomer_specs[ref.monomer_id],
+                    )[0]
+                    if motif_kind == "boronic_acid"
+                    else self._motif_atom_id_from_metadata(
+                        motif,
+                        "nitrogen_atom_id",
+                        context=f"{event.id} nitrile nitrogen",
+                    )
+                )
+                pairs.append((ref, first_atom_id, next_ref, self._reactive_atom_id(next_motif)))
+            return tuple(pairs)
         return ()
 
     def _heavy_atom_world_positions(
@@ -3393,3 +3664,21 @@ def _dispatch_vinylene_bridge_event(
     monomer_specs: Mapping[str, MonomerSpec],
 ) -> EventRealization:
     return realizer._realize_vinylene_bridge(event, candidate, monomer_specs)
+
+
+def _dispatch_boroxine_trimerization_event(
+    realizer: ReactionRealizer,
+    event: ReactionEvent,
+    candidate: Candidate,
+    monomer_specs: Mapping[str, MonomerSpec],
+) -> EventRealization:
+    return realizer._realize_boroxine_trimerization(event, candidate, monomer_specs)
+
+
+def _dispatch_triazine_trimerization_event(
+    realizer: ReactionRealizer,
+    event: ReactionEvent,
+    candidate: Candidate,
+    monomer_specs: Mapping[str, MonomerSpec],
+) -> EventRealization:
+    return realizer._realize_triazine_trimerization(event, candidate, monomer_specs)

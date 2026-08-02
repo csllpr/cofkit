@@ -4,7 +4,14 @@ from .batch import (
     BatchStructureGenerator,
 )
 from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
-from .build_workflows import BuildWorkflowDefinition, BuildWorkflowRegistry, builtin_build_workflow_registry
+from .build_workflows import (
+    BuildWorkflowDefinition,
+    BuildWorkflowRegistry,
+    RingBuildResult,
+    RingFormationConfig,
+    RingFormingStructureGenerator,
+    builtin_build_workflow_registry,
+)
 from .cif import CIFExportResult, CIFWriter, candidate_to_cif, write_candidate_cif
 from .decompose import (
     CifDecompositionResult,
@@ -237,6 +244,9 @@ __all__ = [
     "load_packaged_guest_forcefield_metadata",
     "BuildWorkflowDefinition",
     "BuildWorkflowRegistry",
+    "RingBuildResult",
+    "RingFormationConfig",
+    "RingFormingStructureGenerator",
     "BinaryBridgeLibraryLoader",
     "BuiltBatchMonomer",
     "CIFExportResult",

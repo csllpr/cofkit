@@ -18,7 +18,7 @@ class BuildWorkflowRegistryTests(unittest.TestCase):
 
         self.assertEqual(tuple(workflows), ("binary_bridge", "ring_forming", "composite_topology_unit"))
         self.assertEqual(workflows["binary_bridge"].implementation_status, "available")
-        self.assertEqual(workflows["ring_forming"].implementation_status, "planned")
+        self.assertEqual(workflows["ring_forming"].implementation_status, "available")
         self.assertTrue(workflows["composite_topology_unit"].explicit_selection_required)
 
     def test_binary_bridge_templates_resolve_to_binary_bridge_workflow(self):

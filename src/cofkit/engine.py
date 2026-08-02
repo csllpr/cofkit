@@ -24,6 +24,7 @@ class COFProject:
     target_dimensionality: str = "2D"
     target_topologies: tuple[str, ...] = ()
     stacking_mode: str = "disabled"
+    stacking_ids: tuple[str, ...] = ()
     post_build_conversions: tuple[str, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
 
@@ -31,6 +32,7 @@ class COFProject:
 @dataclass(frozen=True)
 class COFEngineConfig:
     default_layer_spacing: float = 8.0
+    default_ring_layer_spacing: float = 3.4
     default_lateral_span: float = 30.0
     max_candidates: int = 16
     optimization_max_iterations: int = 8
@@ -70,6 +72,15 @@ class COFEngine:
         templates = self.reaction_library.selected(project.allowed_reactions, project.target_dimensionality)
         if not templates:
             raise ValueError("project selected no reaction templates")
+        if project.stacking_ids and not all(template.topology_role == "ring" for template in templates):
+            raise ValueError(
+                "COFProject.stacking_ids is currently supported by the ring-forming workflow; "
+                "use BatchStructureGenerator stacking_ids for binary-bridge projects"
+            )
+
+        ring_ensemble = self._run_ring_forming_project(project, templates)
+        if ring_ensemble is not None:
+            return ring_ensemble
 
         pair_ensemble = self._run_supported_single_node_pair_project(project, templates)
         if pair_ensemble is not None:
@@ -111,6 +122,62 @@ class COFEngine:
                     candidate_id=f"candidate-{candidate_index}",
                 )
                 ensemble.add(candidate)
+                if len(ensemble.candidates) >= self.config.max_candidates:
+                    return ensemble
+        return ensemble
+
+    def _run_ring_forming_project(
+        self,
+        project: COFProject,
+        templates: tuple[ReactionTemplate, ...],
+    ) -> CandidateEnsemble | None:
+        profiles = tuple(self.reaction_library.linkage_profile(template) for template in templates)
+        if not any(profile is not None and profile.workflow_family == "ring_forming" for profile in profiles):
+            return None
+        if len(templates) != 1 or profiles[0] is None or not profiles[0].supports_ring_forming_generation:
+            raise ValueError("ring-forming projects must select exactly one supported ring-forming template")
+        if len(project.monomers) != 1:
+            raise ValueError("ring-forming projects currently require exactly one precursor monomer")
+        if project.target_dimensionality != "2D":
+            raise ValueError("the current virtual-ring topology builder supports 2D structures")
+
+        from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
+
+        if project.target_topologies:
+            topology_ids = project.target_topologies
+        else:
+            precursor_connectivity = len(project.monomers[0].motifs)
+            default_topology = {2: "hcb", 3: "hcb", 6: "kgd"}.get(precursor_connectivity)
+            if default_topology is None:
+                raise ValueError(
+                    "ring-forming precursors with connectivity other than 2, 3, or 6 require an explicit "
+                    "mixed-connectivity --topology"
+                )
+            topology_ids = (default_topology,)
+        ensemble = CandidateEnsemble()
+        for index, topology_id in enumerate(topology_ids, start=1):
+            generator = RingFormingStructureGenerator(
+                config=RingFormationConfig(
+                    topology_id=topology_id,
+                    layer_spacing=self.config.default_ring_layer_spacing,
+                    optimize_geometry=True,
+                    stacking_ids=project.stacking_ids,
+                ),
+                reaction_library=self.reaction_library,
+            )
+            candidates = generator.generate_candidates(
+                project.monomers[0],
+                templates[0].id,
+                candidate_id=f"ring-candidate-{index}",
+            )
+            for candidate in candidates:
+                ensemble.add(
+                    annotate_post_build_conversions(
+                        candidate,
+                        {project.monomers[0].id: project.monomers[0]},
+                        project.post_build_conversions,
+                    )
+                )
                 if len(ensemble.candidates) >= self.config.max_candidates:
                     return ensemble
         return ensemble

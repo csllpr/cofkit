@@ -11,7 +11,7 @@ The long-term direction is:
 5. initial embedding followed by a lightweight continuous optimization pass over cell scale, rigid poses, and bridge geometry
 6. ranked candidate ensembles instead of a single structure
 
-For the current phase, engine-level stacking exploration is still out of scope. `COFProject.stacking_mode` must stay `"disabled"`; the engine still rejects other values rather than implying partial support. Current stacking support lives in the batch/single-pair layer as an opt-in post-build bilayer registry enumerator for eligible `2D` outputs.
+`COFProject.stacking_mode` remains `"disabled"`; open-ended stacking search is still out of scope. Named ring-forming bilayers can be requested through `COFProject.stacking_ids`, while binary-bridge stacking remains in the batch/single-pair layer. Both routes reuse the same opt-in post-build registry enumerator for eligible `2D` outputs.
 
 ## Topology repository
 
@@ -73,7 +73,7 @@ For the current single-node topology families, `cofkit` expands supported CGD ne
 - `BatchStructureGenerator.generate_monomer_pair_candidate(s)` now exposes the full supported one-node family directly for single-pair imine generation, and `COFEngine.run(...)` reaches the same builders for explicit one-node topology requests plus supported `3D` single-pair defaults such as `dia` / `pcu`
 - chemistry-compatible indexed topologies from the bundled repository can now also be requested explicitly in batch and direct single-pair flows, and the default selector includes a curated subset of those indexed nets when the current chemistry metadata and builder support agree
 
-The optimizer is intentionally modest. It only refines bridge-forming candidates through lateral cell scaling, monomer translation updates, and lightweight orientation cleanup when those steps reduce bridge-geometry residuals. Ring-forming reactions stay coarse, and stacking scoring remains out of scope; the current support only enumerates and exports named bilayer registries after the normal build.
+The optimizer is intentionally modest. Bridge-forming candidates use lateral cell scaling, monomer translation updates, and lightweight orientation cleanup. Ring-forming candidates use a separate virtual-node geometry profile and shared-precursor translation refinement, scored and validated against ring radius, 120-degree incidence, and planarity. Stacking scoring remains out of scope; named bilayer registries duplicate the validated layer graph and preserve ring-center offsets during atomistic realization.
 
 For the current imine realization path, two geometry details are now important enough to treat as part of the documented behavior:
 
@@ -86,7 +86,7 @@ The CIF exporter is deliberately honest as well: if a `MonomerSpec` carries atom
 
 `cofkit analyze decompose` is the first reverse path from an atomistic CIF back to COFid. The current implementation is deliberately narrow: it prefers explicit CIF bond loops, infers missing bond orders from local geometry when bond labels are present without type fields, falls back to periodic distance-based bond detection when bond loops are absent, identifies supported buildable binary-bridge linkages, cuts those bonds, repairs the recovered monomer classes back to canonical SMILES, and serializes the recovered monomer blocks with either a caller-supplied topology or a conservatively auto-detected topology.
 
-Supported linkage codes currently match the public binary-bridge build surface: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`. Template-id aliases such as `hydrazone_bridge` and `keto_enamine_bridge` resolve to the canonical COFid linkage code.
+COFid build input supports the binary-bridge linkage codes `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`, plus the one-precursor ring-forming codes `boroxine` and `triazine`. Reverse CIF decomposition remains limited to the binary-bridge set. Template-id aliases resolve to their canonical COFid linkage codes.
 
 Topology auto-detection first trusts embedded `# COFid:` comments, then ranks cofkit repository topologies against the recovered periodic linkage graph. It can operate without explicit CIF bond loops and without cofkit-style atom labels, but it is not a general net recognizer: it remains tied to the supported binary-bridge decomposition chemistry and to topologies available in cofkit's local topology repository. Ambiguous candidates are reported instead of guessed, and decorated special cases such as `bex` may still need an explicit `--topology`.
 

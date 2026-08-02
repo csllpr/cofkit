@@ -131,6 +131,9 @@ class CliTests(unittest.TestCase):
         self.assertTrue(imine["supports_atomistic_realization"])
         self.assertEqual(imine["workflow_family"], "binary_bridge")
         self.assertFalse(boroxine["supports_pair_generation"])
+        self.assertTrue(boroxine["supports_ring_generation"])
+        self.assertTrue(boroxine["supports_atomistic_realization"])
+        self.assertTrue(boroxine["supports_topology_guided_generation"])
         self.assertEqual(boroxine["workflow_family"], "ring_forming")
 
     def test_legacy_list_templates_alias_still_works(self):

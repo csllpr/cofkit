@@ -46,17 +46,30 @@ class NetPlanner:
         monomer_ids = tuple(m.id for m in monomers)
         reaction_ids = tuple(t.id for t in templates)
 
-        if self._contains_ring_forming_template(templates):
-            return (
+        if any(template.topology_role == "ring" for template in templates):
+            topology_ids = target_topologies or ("hcb",)
+            hints = tuple(self._resolve_requested_topologies(topology_ids))
+            compatible = tuple(
+                hint
+                for hint in hints
+                if hint.dimensionality == target_dimensionality and 3 in hint.node_coordination
+            )
+            if not compatible:
+                raise ValueError(
+                    "ring-forming planning requires a target topology with 3-connected virtual product nodes"
+                )
+            return tuple(
                 NetPlan(
-                    topology=None,
+                    topology=hint,
                     monomer_ids=monomer_ids,
                     reaction_ids=reaction_ids,
                     metadata={
-                        "planning_mode": "ring-forming",
-                        "reason": "ring-forming reactions currently bypass explicit topology assignment",
+                        "planning_mode": "virtual-node-topology",
+                        "precursor_connectivities": tuple(len(monomer.motifs) for monomer in monomers),
+                        "product_node_connectivity": 3,
                     },
-                ),
+                )
+                for hint in compatible
             )
 
         if target_topologies:
@@ -94,9 +107,6 @@ class NetPlanner:
                 },
             ),
         )
-
-    def _contains_ring_forming_template(self, templates: tuple[ReactionTemplate, ...]) -> bool:
-        return any(t.topology_role == "ring" for t in templates)
 
     def _resolve_requested_topologies(self, target_topologies: tuple[str, ...]) -> tuple[TopologyHint, ...]:
         repository = self._repository()

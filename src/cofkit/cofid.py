@@ -63,11 +63,15 @@ _LINKAGE_CODE_TO_TEMPLATE_ID: Mapping[str, str] = {
     "boest": "boronate_ester_bridge",
     "boronate_ester": "boronate_ester_bridge",
     "boronate_ester_bridge": "boronate_ester_bridge",
+    "boroxine": "boroxine_trimerization",
+    "boroxine_trimerization": "boroxine_trimerization",
     "hydrazone": "hydrazone_bridge",
     "hydrazone_bridge": "hydrazone_bridge",
     "imine": "imine_bridge",
     "imine_bridge": "imine_bridge",
     "keto_enamine_bridge": "keto_enamine_bridge",
+    "triazine": "triazine_trimerization",
+    "triazine_trimerization": "triazine_trimerization",
     "vinylene": "vinylene_bridge",
     "vinylene_bridge": "vinylene_bridge",
 }
@@ -75,9 +79,11 @@ _LINKAGE_CODE_TO_TEMPLATE_ID: Mapping[str, str] = {
 _TEMPLATE_ID_TO_LINKAGE_CODE: Mapping[str, str] = {
     "azine_bridge": "azine",
     "boronate_ester_bridge": "boest",
+    "boroxine_trimerization": "boroxine",
     "hydrazone_bridge": "hydrazone",
     "imine_bridge": "imine",
     "keto_enamine_bridge": "bken",
+    "triazine_trimerization": "triazine",
     "vinylene_bridge": "vinylene",
 }
 
@@ -165,15 +171,23 @@ def cofid_to_build_request(
     reaction_library: ReactionLibrary | None = None,
 ) -> COFidBuildRequest:
     parsed = parse_cofid(cofid)
-    if len(parsed.monomers) != 2:
-        raise ValueError("Current cofkit COFid input supports exactly 2 monomers.")
-
     template_id = _template_id_for_linkage(parsed.linkage)
     reaction_library = reaction_library or ReactionLibrary.builtin()
     template = reaction_library.get(template_id)
     profile = reaction_library.linkage_profile(template_id)
-    if profile is None or len(profile.binary_bridge_roles) != 2:
-        raise ValueError(f"COFid linkage {parsed.linkage!r} does not map to a supported binary-bridge build workflow.")
+    if profile is None:
+        raise ValueError(f"COFid linkage {parsed.linkage!r} does not map to a supported build workflow.")
+    if profile.supports_binary_bridge_pair_generation:
+        expected_monomer_count = 2
+    elif profile.supports_ring_forming_generation:
+        expected_monomer_count = 1
+    else:
+        raise ValueError(f"COFid linkage {parsed.linkage!r} does not map to a supported build workflow.")
+    if len(parsed.monomers) != expected_monomer_count:
+        raise ValueError(
+            f"COFid linkage {parsed.linkage!r} requires {expected_monomer_count} precursor monomer block(s), "
+            f"got {len(parsed.monomers)}."
+        )
 
     build_monomers = tuple(
         COFidBuildMonomer(
@@ -185,7 +199,11 @@ def cofid_to_build_request(
         for monomer in parsed.monomers
     )
 
-    expected_motif_kinds = Counter(role.motif_kind for role in profile.binary_bridge_roles)
+    expected_motif_kinds = (
+        Counter(role.motif_kind for role in profile.binary_bridge_roles)
+        if profile.supports_binary_bridge_pair_generation
+        else Counter((profile.ring_participant_motif_kind,))
+    )
     actual_motif_kinds = Counter(monomer.motif_kind for monomer in build_monomers)
     if actual_motif_kinds != expected_motif_kinds:
         raise ValueError(
