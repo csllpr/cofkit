@@ -126,7 +126,9 @@ def _add_decompose_parser(subparsers) -> None:
             "hydrazone_bridge and boroxine_trimerization are also accepted. Overlapping C=N "
             "bonds are assigned per bond through the azine > hydrazone > imine N-N branch "
             "or the bken > imine keto-enamine branch. Vinylene requires a C=C bond outside "
-            "five- and six-membered rings with distinguishable aldehyde and activated-methylene endpoints."
+            "five- and six-membered rings with distinguishable aldehyde and activated-methylene "
+            "endpoints, and yields to recognized boronate-ester or boroxine chemistry. "
+            "Recoverable imine or vinylene chemistry takes priority over triazine."
         ),
     )
     parser.add_argument(

@@ -35,6 +35,7 @@ PPD = "Nc1ccc(N)cc1"
 BDBA = "OB(O)c1ccc(B(O)O)cc1"
 HHTP = "OC1=C(O)C=C2C(=C1)C1=CC(O)=C(O)C=C1C1=CC(O)=C(O)C=C21"
 TMT = "Cc1nc(C)nc(C)n1"
+MELAMINE = "Nc1nc(N)nc(N)n1"
 BEX_D2H_ALDEHYDE = (
     "C1C=C(N(C2C=CC(C3C4C(=NON=4)C(C4C=CC(N(C5C=CC(C=O)=CC=5)C5C=CC(C=O)=CC=5)=CC=4)=CC=3)=CC=2)"
     "C2C=CC(C=O)=CC=2)C=CC=1C=O"
@@ -560,6 +561,83 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertEqual(unactivated_detection["accepted_bond_count"], 0)
         self.assertEqual(valid_detection["accepted_bond_count"], 1)
 
+    def test_recognized_boron_linkage_suppresses_vinylene_match(self):
+        cases = (
+            (
+                "boest",
+                "CC(=O)C=Cc1ccccc1.B(Oc1ccccc1)(Oc1ccccc1)c1ccccc1",
+            ),
+            (
+                "boroxine",
+                "CC(=O)C=Cc1ccccc1.c1ccc(B2OB(c3ccccc3)OB(c3ccccc3)O2)cc1",
+            ),
+        )
+        for expected_boron_linkage, smiles in cases:
+            with self.subTest(boron_linkage=expected_boron_linkage):
+                mol = Chem.MolFromSmiles(smiles)
+                self.assertIsNotNone(mol)
+                for atom in mol.GetAtoms():
+                    atom.SetProp("instance_id", "")
+
+                detection = _classify_vinylene_linkage_bonds(mol).to_metadata()
+
+                self.assertEqual(detection["recognized_boron_linkages"], [expected_boron_linkage])
+                self.assertTrue(detection["boron_linkage_override_applied"])
+                self.assertEqual(detection["boron_linkage_rejected_bond_count"], 1)
+                self.assertEqual(detection["accepted_bond_count"], 0)
+
+    def test_imine_and_vinylene_decompositions_suppress_triazine_match(self):
+        cases = (
+            (
+                "imine_bridge",
+                "imine",
+                _record("melamine", MELAMINE, "amine", 3),
+                _record("tfb", TFB, "aldehyde", 3),
+            ),
+            (
+                "vinylene_bridge",
+                "vinylene",
+                _record("tmt", TMT, "activated_methylene", 3),
+                _record("pda", PDA, "aldehyde", 2),
+            ),
+        )
+        for template_id, expected_linkage, first, second in cases:
+            with self.subTest(linkage=expected_linkage), tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                summary, _candidate = _generator(template_id).generate_pair_candidate(
+                    first,
+                    second,
+                    out_dir=temp_path,
+                    write_cif=True,
+                )
+                input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+
+                preferred = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    linkage=expected_linkage,
+                )
+                triazine = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    linkage="triazine",
+                )
+
+                self.assertTrue(preferred.ok, preferred.reason)
+                self.assertFalse(triazine.ok)
+                self.assertIn("higher-priority linkage chemistry", triazine.reason)
+                resolution = triazine.metadata["triazine_linkage_resolution"]
+                self.assertTrue(resolution["override_applied"])
+                self.assertEqual(
+                    resolution["recognized_higher_priority_linkages"],
+                    [expected_linkage],
+                )
+                self.assertEqual(
+                    resolution["evaluations"][expected_linkage]["status"],
+                    "recognized",
+                )
+                self.assertGreater(triazine.metadata["n_triazine_rings"], 0)
+
     def test_vinylene_decomposition_survives_generic_labels_with_explicit_bonds(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -808,6 +886,10 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                     self.assertEqual(result.metadata["n_topology_components"], 1)
                     self.assertEqual(result.metadata["topology_graph"]["node_connectivities"], [3, 3])
                     self.assertEqual(result.monomers[0].amount, 3)
+                    if linkage == "triazine":
+                        resolution = result.metadata["triazine_linkage_resolution"]
+                        self.assertFalse(resolution["override_applied"])
+                        self.assertEqual(resolution["recognized_higher_priority_linkages"], [])
 
     def test_ring_decomposition_works_without_bond_loop_or_instance_labels(self):
         with tempfile.TemporaryDirectory() as temp_dir:

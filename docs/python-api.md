@@ -156,7 +156,9 @@ Use `decompose_cif_to_cofid` for supported binary-bridge and boroxine/triazine r
 
 Nitrogen-containing C=N overlaps are resolved per bond, not per CIF. N-N environments use `azine > hydrazone > imine`, while keto-aldehyde-derived environments use the independent `bken > imine` branch. A more-specific bond is therefore unavailable to generic imine decomposition. Cross-branch matches are returned as ambiguous and exposed under `metadata["nitrogen_linkage_detection"]`.
 
-Vinylene matching is also conservative: formal C=C bonds in five- or six-membered rings are excluded, both alkene endpoints must have carbon anchors, and exactly one endpoint must resolve as the more strongly activated-methylene-derived side. Detection counts are exposed under `metadata["vinylene_linkage_detection"]`.
+Vinylene matching is also conservative: formal C=C bonds in five- or six-membered rings are excluded, both alkene endpoints must have carbon anchors, and exactly one endpoint must resolve as the more strongly activated-methylene-derived side. Recognized boronate-ester or boroxine chemistry in the same structure takes priority over an otherwise valid vinylene match. Detection and override counts are exposed under `metadata["vinylene_linkage_detection"]`.
+
+Triazine matching yields to independently recoverable imine or vinylene chemistry. This uses complete monomer recovery rather than raw C=N detection, avoiding promotion of the alternating formal C=N bonds intrinsic to a Kekule triazine ring. Resolution details are exposed under `metadata["triazine_linkage_resolution"]`.
 
 ```python
 from cofkit import decompose_cif_to_cofid, detect_cif_topology

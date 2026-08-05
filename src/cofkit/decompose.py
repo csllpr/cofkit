@@ -254,6 +254,8 @@ class VinyleneLinkageBondClassification:
     same_instance_rejected_bond_indices: tuple[int, ...]
     small_ring_rejected_bond_indices: tuple[int, ...]
     endpoint_rejected_bond_indices: tuple[int, ...]
+    boron_linkage_rejected_bond_indices: tuple[int, ...]
+    recognized_boron_linkages: tuple[str, ...]
     accepted_assignments: tuple[tuple[int, int, int], ...]
 
     @property
@@ -266,8 +268,12 @@ class VinyleneLinkageBondClassification:
             "same_instance_rejected_bond_count": len(self.same_instance_rejected_bond_indices),
             "small_ring_rejected_bond_count": len(self.small_ring_rejected_bond_indices),
             "endpoint_rejected_bond_count": len(self.endpoint_rejected_bond_indices),
+            "boron_linkage_rejected_bond_count": len(self.boron_linkage_rejected_bond_indices),
+            "recognized_boron_linkages": list(self.recognized_boron_linkages),
+            "boron_linkage_override_applied": bool(self.boron_linkage_rejected_bond_indices),
             "accepted_bond_count": len(self.accepted_assignments),
             "excluded_ring_sizes": [5, 6],
+            "linkage_priority": "recognized boest/boroxine > vinylene",
             "endpoint_requirement": (
                 "acyclic/exocyclic C=C with carbon anchors on both endpoints and exactly one "
                 "higher-scoring activated-methylene endpoint"
@@ -319,6 +325,35 @@ def decompose_cif_to_cofid(
                 reason = (
                     "nitrogen linkage classification is ambiguous across the "
                     "N-N and beta-ketoenamine priority branches"
+                )
+            vinylene_detection = metadata.get("vinylene_linkage_detection")
+            if (
+                isinstance(vinylene_detection, Mapping)
+                and int(vinylene_detection.get("boron_linkage_rejected_bond_count", 0)) > 0
+            ):
+                recognized_boron = ", ".join(
+                    str(linkage)
+                    for linkage in vinylene_detection.get("recognized_boron_linkages", ())
+                )
+                reason = (
+                    "vinylene linkage candidates were suppressed because recognized "
+                    f"boron linkage chemistry ({recognized_boron}) has priority"
+                )
+            triazine_resolution = metadata.get("triazine_linkage_resolution")
+            if (
+                isinstance(triazine_resolution, Mapping)
+                and bool(triazine_resolution.get("override_applied", False))
+            ):
+                higher_priority = ", ".join(
+                    str(linkage)
+                    for linkage in triazine_resolution.get(
+                        "recognized_higher_priority_linkages",
+                        (),
+                    )
+                )
+                reason = (
+                    "triazine linkage candidate was suppressed because recognized "
+                    f"higher-priority linkage chemistry ({higher_priority}) takes precedence"
                 )
             return CifDecompositionResult(
                 status="skipped",
@@ -502,6 +537,24 @@ def _decompose_ring_atoms(
             f"n_{spec.linkage_code}_ring_bonds": 0,
         })
 
+    triazine_resolution_metadata: dict[str, object] = {}
+    if spec.linkage_code == "triazine":
+        recognized_linkages, resolution = _classify_triazine_linkage_priority(
+            atoms,
+            bond_mode=bond_mode,
+        )
+        triazine_resolution_metadata = {"triazine_linkage_resolution": resolution}
+        if recognized_linkages:
+            return LinkageDecompositionDetails((), {
+                **dict(build_result.metadata),
+                **triazine_resolution_metadata,
+                "decomposition_strategy": "ring",
+                "n_atoms": mol.GetNumAtoms(),
+                "n_bonds": mol.GetNumBonds(),
+                spec.metadata_key: len(ring_events),
+                f"n_{spec.linkage_code}_ring_bonds": len(ring_bond_indices),
+            })
+
     editable = Chem.RWMol(mol)
     for bond_idx in sorted(ring_bond_indices, reverse=True):
         bond = editable.GetBondWithIdx(bond_idx)
@@ -546,6 +599,7 @@ def _decompose_ring_atoms(
     topology_graph, topology_component_count = _ring_topology_graph(ring_events, atom_to_fragment)
     metadata = {
         **dict(build_result.metadata),
+        **triazine_resolution_metadata,
         "decomposition_strategy": "ring",
         "n_atoms": mol.GetNumAtoms(),
         "n_bonds": mol.GetNumBonds(),
@@ -559,6 +613,49 @@ def _decompose_ring_atoms(
     if topology_graph is not None:
         metadata["topology_graph"] = topology_graph.to_metadata()
     return LinkageDecompositionDetails(monomers, metadata, topology_graph)
+
+
+def _classify_triazine_linkage_priority(
+    atoms: PeriodicCifAtoms,
+    *,
+    bond_mode: str,
+) -> tuple[tuple[str, ...], dict[str, object]]:
+    recognized: list[str] = []
+    evaluations: dict[str, object] = {}
+    for linkage, candidate_spec in (("imine", _IMINE_SPEC), ("vinylene", _VINYLENE_SPEC)):
+        try:
+            details = _decompose_linkage_atoms(atoms, candidate_spec, bond_mode=bond_mode)
+        except Exception as exc:
+            evaluations[linkage] = {
+                "status": "error",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            continue
+        is_recognized = bool(details.monomers)
+        evaluation: dict[str, object] = {
+            "status": "recognized" if is_recognized else "not_recognized",
+            "n_linkage_bonds": int(details.metadata.get(candidate_spec.metadata_key, 0)),
+            "n_unique_monomers": len(details.monomers),
+        }
+        if linkage == "vinylene":
+            vinylene_detection = details.metadata.get("vinylene_linkage_detection")
+            if isinstance(vinylene_detection, Mapping):
+                evaluation["boron_linkage_override_applied"] = bool(
+                    vinylene_detection.get("boron_linkage_override_applied", False)
+                )
+        evaluations[linkage] = evaluation
+        if is_recognized:
+            recognized.append(linkage)
+    recognized_linkages = tuple(recognized)
+    return recognized_linkages, {
+        "priority_branches": [
+            ["imine", "triazine"],
+            ["vinylene", "triazine"],
+        ],
+        "recognized_higher_priority_linkages": list(recognized_linkages),
+        "override_applied": bool(recognized_linkages),
+        "evaluations": evaluations,
+    }
 
 
 def _mark_ring_decomposition_events(
@@ -1636,7 +1733,7 @@ def _classify_vinylene_linkage_bonds(mol) -> VinyleneLinkageBondClassification:
     same_instance_rejected: list[int] = []
     small_ring_rejected: list[int] = []
     endpoint_rejected: list[int] = []
-    accepted: list[tuple[int, int, int]] = []
+    structurally_accepted: list[tuple[int, int, int]] = []
     small_ring_bond_indices = {
         int(bond_idx)
         for ring in mol.GetRingInfo().BondRings()
@@ -1676,13 +1773,23 @@ def _classify_vinylene_linkage_bonds(mol) -> VinyleneLinkageBondClassification:
             activated_idx, aldehyde_idx = first_idx, second_idx
         else:
             activated_idx, aldehyde_idx = second_idx, first_idx
-        accepted.append((bond_idx, aldehyde_idx, activated_idx))
+        structurally_accepted.append((bond_idx, aldehyde_idx, activated_idx))
+
+    recognized_boron_linkages = _recognized_boron_linkages(mol)
+    boron_linkage_rejected = (
+        tuple(sorted(assignment[0] for assignment in structurally_accepted))
+        if recognized_boron_linkages
+        else ()
+    )
+    accepted = () if recognized_boron_linkages else tuple(sorted(structurally_accepted))
     return VinyleneLinkageBondClassification(
         formal_cc_double_bond_indices=tuple(sorted(formal_cc_double_bonds)),
         same_instance_rejected_bond_indices=tuple(sorted(same_instance_rejected)),
         small_ring_rejected_bond_indices=tuple(sorted(small_ring_rejected)),
         endpoint_rejected_bond_indices=tuple(sorted(endpoint_rejected)),
-        accepted_assignments=tuple(sorted(accepted)),
+        boron_linkage_rejected_bond_indices=boron_linkage_rejected,
+        recognized_boron_linkages=recognized_boron_linkages,
+        accepted_assignments=accepted,
     )
 
 
@@ -1719,7 +1826,22 @@ def _vinylene_activation_score(mol, anchor_indices: tuple[int, ...], *, exclude_
     return best
 
 
-def _mark_boronate_ester_linkage_bonds(mol) -> tuple[int, ...]:
+def _boroxine_ring_bond_indices(mol) -> tuple[int, ...]:
+    Chem.GetSymmSSSR(mol)
+    bond_indices: set[int] = set()
+    for raw_ring in mol.GetRingInfo().AtomRings():
+        ring = tuple(int(atom_idx) for atom_idx in raw_ring)
+        if not _matches_ring_decomposition_pattern(mol, ring, _BOROXINE_SPEC):
+            continue
+        for index, atom_idx in enumerate(ring):
+            next_idx = ring[(index + 1) % len(ring)]
+            bond = mol.GetBondBetweenAtoms(atom_idx, next_idx)
+            if bond is not None:
+                bond_indices.add(int(bond.GetIdx()))
+    return tuple(sorted(bond_indices))
+
+
+def _boronate_ester_linkage_bond_indices(mol) -> tuple[int, ...]:
     bond_indices: list[int] = []
     for bond in mol.GetBonds():
         if abs(float(bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
@@ -1733,12 +1855,32 @@ def _mark_boronate_ester_linkage_bonds(mol) -> tuple[int, ...]:
         second_instance = second.GetProp("instance_id")
         if first_instance and second_instance and first_instance == second_instance:
             continue
+        bond_indices.append(bond.GetIdx())
+    return tuple(bond_indices)
+
+
+def _recognized_boron_linkages(mol) -> tuple[str, ...]:
+    boroxine_bonds = set(_boroxine_ring_bond_indices(mol))
+    boronate_ester_bonds = set(_boronate_ester_linkage_bond_indices(mol)) - boroxine_bonds
+    recognized: list[str] = []
+    if boronate_ester_bonds:
+        recognized.append("boest")
+    if boroxine_bonds:
+        recognized.append("boroxine")
+    return tuple(recognized)
+
+
+def _mark_boronate_ester_linkage_bonds(mol) -> tuple[int, ...]:
+    bond_indices = _boronate_ester_linkage_bond_indices(mol)
+    for bond_idx in bond_indices:
+        bond = mol.GetBondWithIdx(bond_idx)
+        first = bond.GetBeginAtom()
+        second = bond.GetEndAtom()
         boron = first if first.GetAtomicNum() == 5 else second
         oxygen = first if first.GetAtomicNum() == 8 else second
         boron.SetProp("cofkit_decompose_role", "boronic_acid")
         oxygen.SetProp("cofkit_decompose_role", "catechol")
-        bond_indices.append(bond.GetIdx())
-    return tuple(bond_indices)
+    return bond_indices
 
 
 def _repair_linkage_fragment_to_monomer(
