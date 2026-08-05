@@ -203,6 +203,79 @@ class LinkageDecompositionDetails:
 
 
 @dataclass(frozen=True)
+class NitrogenLinkageBondClassification:
+    raw_cn_bond_indices: tuple[int, ...]
+    azine_bond_indices: tuple[int, ...]
+    hydrazone_bond_indices: tuple[int, ...]
+    bken_bond_indices: tuple[int, ...]
+    imine_bond_indices: tuple[int, ...]
+    cross_branch_conflict_bond_indices: tuple[int, ...] = ()
+
+    def bond_indices_for(self, linkage: str) -> tuple[int, ...]:
+        return {
+            "azine": self.azine_bond_indices,
+            "hydrazone": self.hydrazone_bond_indices,
+            "bken": self.bken_bond_indices,
+            "imine": self.imine_bond_indices,
+        }.get(str(linkage), ())
+
+    def to_metadata(self) -> dict[str, object]:
+        assigned_counts = {
+            "azine": len(self.azine_bond_indices),
+            "hydrazone": len(self.hydrazone_bond_indices),
+            "bken": len(self.bken_bond_indices),
+            "imine": len(self.imine_bond_indices),
+        }
+        detected_families = [
+            linkage
+            for linkage, count in assigned_counts.items()
+            if count > 0
+        ]
+        return {
+            "branches": {
+                "nitrogen_nitrogen": ["azine", "hydrazone", "imine"],
+                "keto_enamine": ["bken", "imine"],
+            },
+            "raw_cn_bond_count": len(self.raw_cn_bond_indices),
+            "assigned_bond_counts": assigned_counts,
+            "detected_families": detected_families,
+            "cross_branch_conflict_bond_count": len(self.cross_branch_conflict_bond_indices),
+            "resolution_status": (
+                "cross_branch_ambiguous"
+                if self.cross_branch_conflict_bond_indices
+                else "resolved"
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class VinyleneLinkageBondClassification:
+    formal_cc_double_bond_indices: tuple[int, ...]
+    same_instance_rejected_bond_indices: tuple[int, ...]
+    small_ring_rejected_bond_indices: tuple[int, ...]
+    endpoint_rejected_bond_indices: tuple[int, ...]
+    accepted_assignments: tuple[tuple[int, int, int], ...]
+
+    @property
+    def accepted_bond_indices(self) -> tuple[int, ...]:
+        return tuple(assignment[0] for assignment in self.accepted_assignments)
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "formal_cc_double_bond_count": len(self.formal_cc_double_bond_indices),
+            "same_instance_rejected_bond_count": len(self.same_instance_rejected_bond_indices),
+            "small_ring_rejected_bond_count": len(self.small_ring_rejected_bond_indices),
+            "endpoint_rejected_bond_count": len(self.endpoint_rejected_bond_indices),
+            "accepted_bond_count": len(self.accepted_assignments),
+            "excluded_ring_sizes": [5, 6],
+            "endpoint_requirement": (
+                "acyclic/exocyclic C=C with carbon anchors on both endpoints and exactly one "
+                "higher-scoring activated-methylene endpoint"
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class RingDecompositionEvent:
     anchor_atom_indices: tuple[int, int, int]
     anchor_images: tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]
@@ -237,12 +310,22 @@ def decompose_cif_to_cofid(
         monomers = details.monomers
         metadata = dict(details.metadata)
         if not monomers:
+            reason = f"no {spec.linkage_code} monomers were recovered"
+            nitrogen_detection = metadata.get("nitrogen_linkage_detection")
+            if (
+                isinstance(nitrogen_detection, Mapping)
+                and int(nitrogen_detection.get("cross_branch_conflict_bond_count", 0)) > 0
+            ):
+                reason = (
+                    "nitrogen linkage classification is ambiguous across the "
+                    "N-N and beta-ketoenamine priority branches"
+                )
             return CifDecompositionResult(
                 status="skipped",
                 input_cif=str(input_path),
                 topology=topology,
                 linkage=spec.linkage_code,
-                reason=f"no {spec.linkage_code} monomers were recovered",
+                reason=reason,
                 metadata=metadata,
             )
         selected_topology = topology
@@ -302,10 +385,22 @@ def _decompose_linkage_atoms(
         raise RuntimeError("RDKit is required for CIF decomposition.")
     build_result = _build_bonded_mol(atoms, bond_mode=bond_mode)
     mol = build_result.mol
+    nitrogen_detection_metadata: dict[str, object] = {}
+    if spec.linkage_code in {"azine", "hydrazone", "bken", "imine"}:
+        nitrogen_detection_metadata = {
+            "nitrogen_linkage_detection": _classify_nitrogen_linkage_bonds(mol).to_metadata()
+        }
+    vinylene_detection_metadata: dict[str, object] = {}
+    if spec.linkage_code == "vinylene":
+        vinylene_detection_metadata = {
+            "vinylene_linkage_detection": _classify_vinylene_linkage_bonds(mol).to_metadata()
+        }
     linkage_bond_indices = spec.marker(mol)
     if not linkage_bond_indices:
         return LinkageDecompositionDetails((), {
             **dict(build_result.metadata),
+            **nitrogen_detection_metadata,
+            **vinylene_detection_metadata,
             "n_atoms": mol.GetNumAtoms(),
             "n_bonds": mol.GetNumBonds(),
             spec.metadata_key: 0,
@@ -362,6 +457,8 @@ def _decompose_linkage_atoms(
     )
     metadata = {
         **dict(build_result.metadata),
+        **nitrogen_detection_metadata,
+        **vinylene_detection_metadata,
         "n_atoms": mol.GetNumAtoms(),
         "n_bonds": mol.GetNumBonds(),
         spec.metadata_key: len(linkage_bond_indices),
@@ -1341,72 +1438,211 @@ def _apply_bond_order(mol, bond, order: float) -> None:
         bond.GetEndAtom().SetIsAromatic(True)
 
 
-def _mark_carbon_hetero_double_linkage_bonds(
-    mol,
-    *,
-    carbon_role: str,
-    hetero_role: str,
-    hetero_atomic_num: int,
-) -> tuple[int, ...]:
-    bond_indices: list[int] = []
+def _eligible_carbon_nitrogen_double_bonds(mol) -> dict[int, tuple[int, int]]:
+    eligible: dict[int, tuple[int, int]] = {}
     for bond in mol.GetBonds():
         if abs(float(bond.GetBondTypeAsDouble()) - 2.0) > 1.0e-6:
             continue
         first = bond.GetBeginAtom()
         second = bond.GetEndAtom()
-        atomic_nums = {first.GetAtomicNum(), second.GetAtomicNum()}
-        if atomic_nums != {6, hetero_atomic_num}:
+        if {first.GetAtomicNum(), second.GetAtomicNum()} != {6, 7}:
             continue
         first_instance = first.GetProp("instance_id")
         second_instance = second.GetProp("instance_id")
         if first_instance and second_instance and first_instance == second_instance:
             continue
         carbon = first if first.GetAtomicNum() == 6 else second
-        hetero = first if first.GetAtomicNum() == hetero_atomic_num else second
+        nitrogen = first if first.GetAtomicNum() == 7 else second
+        eligible[bond.GetIdx()] = (carbon.GetIdx(), nitrogen.GetIdx())
+    return eligible
+
+
+def _classify_nitrogen_linkage_bonds(mol) -> NitrogenLinkageBondClassification:
+    eligible = _eligible_carbon_nitrogen_double_bonds(mol)
+    eligible_by_nitrogen: dict[int, list[int]] = defaultdict(list)
+    for bond_idx, (_carbon_idx, nitrogen_idx) in eligible.items():
+        eligible_by_nitrogen[nitrogen_idx].append(bond_idx)
+
+    azine_candidates: set[int] = set()
+    hydrazone_candidates: set[int] = set()
+    bken_candidates: set[int] = set()
+    for bond_idx, (carbon_idx, nitrogen_idx) in eligible.items():
+        nitrogen = mol.GetAtomWithIdx(nitrogen_idx)
+        for neighbor in nitrogen.GetNeighbors():
+            if neighbor.GetAtomicNum() != 7:
+                continue
+            nn_bond = mol.GetBondBetweenAtoms(nitrogen_idx, neighbor.GetIdx())
+            if nn_bond is None or abs(float(nn_bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
+                continue
+            partner_cn_bonds = eligible_by_nitrogen.get(neighbor.GetIdx(), ())
+            if partner_cn_bonds:
+                azine_candidates.add(bond_idx)
+                azine_candidates.update(partner_cn_bonds)
+                continue
+            if _nitrogen_is_bonded_to_carbonyl(mol, neighbor.GetIdx(), exclude_atom_idx=nitrogen_idx):
+                hydrazone_candidates.add(bond_idx)
+
+        if _carbon_has_beta_ketoenamine_environment(mol, carbon_idx, exclude_atom_idx=nitrogen_idx):
+            bken_candidates.add(bond_idx)
+
+    assigned_azine: set[int] = set()
+    assigned_hydrazone: set[int] = set()
+    assigned_bken: set[int] = set()
+    assigned_imine: set[int] = set()
+    cross_branch_conflicts: set[int] = set()
+    for bond_idx in eligible:
+        nn_assignment = (
+            "azine"
+            if bond_idx in azine_candidates
+            else "hydrazone"
+            if bond_idx in hydrazone_candidates
+            else None
+        )
+        keto_assignment = "bken" if bond_idx in bken_candidates else None
+        if nn_assignment is not None and keto_assignment is not None:
+            cross_branch_conflicts.add(bond_idx)
+        elif nn_assignment == "azine":
+            assigned_azine.add(bond_idx)
+        elif nn_assignment == "hydrazone":
+            assigned_hydrazone.add(bond_idx)
+        elif keto_assignment == "bken":
+            assigned_bken.add(bond_idx)
+        else:
+            assigned_imine.add(bond_idx)
+
+    return NitrogenLinkageBondClassification(
+        raw_cn_bond_indices=tuple(sorted(eligible)),
+        azine_bond_indices=tuple(sorted(assigned_azine)),
+        hydrazone_bond_indices=tuple(sorted(assigned_hydrazone)),
+        bken_bond_indices=tuple(sorted(assigned_bken)),
+        imine_bond_indices=tuple(sorted(assigned_imine)),
+        cross_branch_conflict_bond_indices=tuple(sorted(cross_branch_conflicts)),
+    )
+
+
+def _nitrogen_is_bonded_to_carbonyl(mol, nitrogen_idx: int, *, exclude_atom_idx: int) -> bool:
+    nitrogen = mol.GetAtomWithIdx(nitrogen_idx)
+    for carbon in nitrogen.GetNeighbors():
+        if carbon.GetIdx() == exclude_atom_idx or carbon.GetAtomicNum() != 6:
+            continue
+        nc_bond = mol.GetBondBetweenAtoms(nitrogen_idx, carbon.GetIdx())
+        if nc_bond is None or abs(float(nc_bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
+            continue
+        if _atom_has_double_bonded_oxygen(mol, carbon.GetIdx(), exclude_atom_idx=nitrogen_idx):
+            return True
+    return False
+
+
+def _carbon_has_beta_ketoenamine_environment(mol, carbon_idx: int, *, exclude_atom_idx: int) -> bool:
+    carbon = mol.GetAtomWithIdx(carbon_idx)
+    for ring_anchor in carbon.GetNeighbors():
+        if ring_anchor.GetIdx() == exclude_atom_idx or ring_anchor.GetAtomicNum() != 6:
+            continue
+        anchor_bond = mol.GetBondBetweenAtoms(carbon_idx, ring_anchor.GetIdx())
+        if anchor_bond is None or abs(float(anchor_bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
+            continue
+        if not ring_anchor.IsInRing():
+            continue
+        for carbonyl in ring_anchor.GetNeighbors():
+            if carbonyl.GetIdx() == carbon_idx or carbonyl.GetAtomicNum() != 6:
+                continue
+            ring_bond = mol.GetBondBetweenAtoms(ring_anchor.GetIdx(), carbonyl.GetIdx())
+            if ring_bond is None or not ring_bond.IsInRing() or not carbonyl.IsInRing():
+                continue
+            if _atom_has_double_bonded_oxygen(mol, carbonyl.GetIdx(), exclude_atom_idx=ring_anchor.GetIdx()):
+                return True
+    return False
+
+
+def _atom_has_double_bonded_oxygen(mol, atom_idx: int, *, exclude_atom_idx: int) -> bool:
+    atom = mol.GetAtomWithIdx(atom_idx)
+    for oxygen in atom.GetNeighbors():
+        if oxygen.GetIdx() == exclude_atom_idx or oxygen.GetAtomicNum() != 8:
+            continue
+        bond = mol.GetBondBetweenAtoms(atom_idx, oxygen.GetIdx())
+        if bond is not None and abs(float(bond.GetBondTypeAsDouble()) - 2.0) <= 1.0e-6:
+            return True
+    return False
+
+
+def _mark_classified_nitrogen_linkage_bonds(
+    mol,
+    *,
+    linkage: str,
+    carbon_role: str,
+    nitrogen_role: str,
+) -> tuple[int, ...]:
+    classification = _classify_nitrogen_linkage_bonds(mol)
+    if classification.cross_branch_conflict_bond_indices:
+        return ()
+    bond_indices = classification.bond_indices_for(linkage)
+    for bond_idx in bond_indices:
+        bond = mol.GetBondWithIdx(bond_idx)
+        first = bond.GetBeginAtom()
+        second = bond.GetEndAtom()
+        carbon = first if first.GetAtomicNum() == 6 else second
+        hetero = first if first.GetAtomicNum() == 7 else second
         carbon.SetProp("cofkit_decompose_role", carbon_role)
-        hetero.SetProp("cofkit_decompose_role", hetero_role)
-        bond_indices.append(bond.GetIdx())
-    return tuple(bond_indices)
+        hetero.SetProp("cofkit_decompose_role", nitrogen_role)
+    return bond_indices
 
 
 def _mark_imine_linkage_bonds(mol) -> tuple[int, ...]:
-    return _mark_carbon_hetero_double_linkage_bonds(
+    return _mark_classified_nitrogen_linkage_bonds(
         mol,
+        linkage="imine",
         carbon_role="aldehyde",
-        hetero_role="amine",
-        hetero_atomic_num=7,
+        nitrogen_role="amine",
     )
 
 
 def _mark_hydrazone_linkage_bonds(mol) -> tuple[int, ...]:
-    return _mark_carbon_hetero_double_linkage_bonds(
+    return _mark_classified_nitrogen_linkage_bonds(
         mol,
+        linkage="hydrazone",
         carbon_role="aldehyde",
-        hetero_role="hydrazide",
-        hetero_atomic_num=7,
+        nitrogen_role="hydrazide",
     )
 
 
 def _mark_azine_linkage_bonds(mol) -> tuple[int, ...]:
-    return _mark_carbon_hetero_double_linkage_bonds(
+    return _mark_classified_nitrogen_linkage_bonds(
         mol,
+        linkage="azine",
         carbon_role="aldehyde",
-        hetero_role="hydrazine",
-        hetero_atomic_num=7,
+        nitrogen_role="hydrazine",
     )
 
 
 def _mark_keto_enamine_linkage_bonds(mol) -> tuple[int, ...]:
-    return _mark_carbon_hetero_double_linkage_bonds(
+    return _mark_classified_nitrogen_linkage_bonds(
         mol,
+        linkage="bken",
         carbon_role="keto_aldehyde",
-        hetero_role="amine",
-        hetero_atomic_num=7,
+        nitrogen_role="amine",
     )
 
 
 def _mark_vinylene_linkage_bonds(mol) -> tuple[int, ...]:
-    bond_indices: list[int] = []
+    classification = _classify_vinylene_linkage_bonds(mol)
+    for _bond_idx, aldehyde_idx, activated_idx in classification.accepted_assignments:
+        mol.GetAtomWithIdx(aldehyde_idx).SetProp("cofkit_decompose_role", "aldehyde")
+        mol.GetAtomWithIdx(activated_idx).SetProp("cofkit_decompose_role", "activated_methylene")
+    return classification.accepted_bond_indices
+
+
+def _classify_vinylene_linkage_bonds(mol) -> VinyleneLinkageBondClassification:
+    formal_cc_double_bonds: list[int] = []
+    same_instance_rejected: list[int] = []
+    small_ring_rejected: list[int] = []
+    endpoint_rejected: list[int] = []
+    accepted: list[tuple[int, int, int]] = []
+    small_ring_bond_indices = {
+        int(bond_idx)
+        for ring in mol.GetRingInfo().BondRings()
+        if len(ring) in {5, 6}
+        for bond_idx in ring
+    }
     for bond in mol.GetBonds():
         if abs(float(bond.GetBondTypeAsDouble()) - 2.0) > 1.0e-6:
             continue
@@ -1414,15 +1650,73 @@ def _mark_vinylene_linkage_bonds(mol) -> tuple[int, ...]:
         second = bond.GetEndAtom()
         if first.GetAtomicNum() != 6 or second.GetAtomicNum() != 6:
             continue
+        bond_idx = bond.GetIdx()
+        formal_cc_double_bonds.append(bond_idx)
         first_instance = first.GetProp("instance_id")
         second_instance = second.GetProp("instance_id")
         if first_instance and second_instance and first_instance == second_instance:
+            same_instance_rejected.append(bond_idx)
             continue
-        aldehyde, activated = _orient_vinylene_atoms(first, second)
-        aldehyde.SetProp("cofkit_decompose_role", "aldehyde")
-        activated.SetProp("cofkit_decompose_role", "activated_methylene")
-        bond_indices.append(bond.GetIdx())
-    return tuple(bond_indices)
+        if bond_idx in small_ring_bond_indices:
+            small_ring_rejected.append(bond_idx)
+            continue
+        first_idx = first.GetIdx()
+        second_idx = second.GetIdx()
+        first_anchors = _vinylene_carbon_anchor_indices(mol, first_idx, exclude_atom_idx=second_idx)
+        second_anchors = _vinylene_carbon_anchor_indices(mol, second_idx, exclude_atom_idx=first_idx)
+        if not first_anchors or not second_anchors:
+            endpoint_rejected.append(bond_idx)
+            continue
+        first_activation = _vinylene_activation_score(mol, first_anchors, exclude_atom_idx=first_idx)
+        second_activation = _vinylene_activation_score(mol, second_anchors, exclude_atom_idx=second_idx)
+        if max(first_activation, second_activation) <= 0 or first_activation == second_activation:
+            endpoint_rejected.append(bond_idx)
+            continue
+        if first_activation > second_activation:
+            activated_idx, aldehyde_idx = first_idx, second_idx
+        else:
+            activated_idx, aldehyde_idx = second_idx, first_idx
+        accepted.append((bond_idx, aldehyde_idx, activated_idx))
+    return VinyleneLinkageBondClassification(
+        formal_cc_double_bond_indices=tuple(sorted(formal_cc_double_bonds)),
+        same_instance_rejected_bond_indices=tuple(sorted(same_instance_rejected)),
+        small_ring_rejected_bond_indices=tuple(sorted(small_ring_rejected)),
+        endpoint_rejected_bond_indices=tuple(sorted(endpoint_rejected)),
+        accepted_assignments=tuple(sorted(accepted)),
+    )
+
+
+def _vinylene_carbon_anchor_indices(mol, atom_idx: int, *, exclude_atom_idx: int) -> tuple[int, ...]:
+    return tuple(
+        sorted(
+            neighbor.GetIdx()
+            for neighbor in mol.GetAtomWithIdx(atom_idx).GetNeighbors()
+            if neighbor.GetIdx() != exclude_atom_idx and neighbor.GetAtomicNum() == 6
+        )
+    )
+
+
+def _vinylene_activation_score(mol, anchor_indices: tuple[int, ...], *, exclude_atom_idx: int) -> int:
+    best = 0
+    for anchor_idx in anchor_indices:
+        anchor = mol.GetAtomWithIdx(anchor_idx)
+        nitrogen_neighbors = sum(
+            neighbor.GetAtomicNum() == 7
+            for neighbor in anchor.GetNeighbors()
+            if neighbor.GetIdx() != exclude_atom_idx
+        )
+        if nitrogen_neighbors >= 2:
+            best = max(best, 4)
+        for bond in anchor.GetBonds():
+            neighbor = bond.GetOtherAtom(anchor)
+            if neighbor.GetIdx() == exclude_atom_idx:
+                continue
+            bond_order = float(bond.GetBondTypeAsDouble())
+            if bond_order >= 3.0 and neighbor.GetAtomicNum() == 7:
+                best = max(best, 4)
+            elif bond_order >= 2.0 and neighbor.GetAtomicNum() in {7, 8, 16}:
+                best = max(best, 3)
+    return best
 
 
 def _mark_boronate_ester_linkage_bonds(mol) -> tuple[int, ...]:
@@ -1689,30 +1983,6 @@ def _instance_id(label: str) -> str:
     if "_" not in label:
         return ""
     return label.rsplit("_", 1)[0]
-
-
-def _orient_vinylene_atoms(first, second):
-    first_score = _vinylene_aldehyde_score(first)
-    second_score = _vinylene_aldehyde_score(second)
-    if first_score > second_score:
-        return first, second
-    if second_score > first_score:
-        return second, first
-    first_instance = first.GetProp("instance_id")
-    second_instance = second.GetProp("instance_id")
-    return (first, second) if first_instance > second_instance else (second, first)
-
-
-def _vinylene_aldehyde_score(atom) -> int:
-    score = 0
-    for neighbor in atom.GetNeighbors():
-        if neighbor.GetAtomicNum() == 8:
-            score += 4
-        elif neighbor.GetAtomicNum() == 6 and neighbor.GetIsAromatic():
-            score += 2
-        elif neighbor.GetAtomicNum() in {7, 8, 15, 16}:
-            score -= 1
-    return score
 
 
 def _resolve_linkage_spec(linkage: str) -> DecompositionSpec | None:

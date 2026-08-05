@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from rdkit import Chem
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, CoarseValidationThresholds
@@ -14,7 +16,11 @@ from cofkit.chem.rdkit import build_rdkit_monomer
 from cofkit.cif import CIFWriter
 from cofkit.cli import main as cli_main
 from cofkit.cofid import generate_cofid
-from cofkit.decompose import decompose_cif_to_cofid
+from cofkit.decompose import (
+    _classify_nitrogen_linkage_bonds,
+    _classify_vinylene_linkage_bonds,
+    decompose_cif_to_cofid,
+)
 from cofkit.reactions import ReactionLibrary
 from cofkit.validate import validate_cif_against_cofid
 
@@ -116,6 +122,13 @@ ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES = (
         3,
     ),
 ) + ALL_BINARY_LINKAGE_ROUND_TRIP_CASES
+
+NITROGEN_LINKAGE_ROUND_TRIP_CASES = (
+    ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES[0],
+    ALL_BINARY_LINKAGE_ROUND_TRIP_CASES[0],
+    ALL_BINARY_LINKAGE_ROUND_TRIP_CASES[1],
+    ALL_BINARY_LINKAGE_ROUND_TRIP_CASES[2],
+)
 
 TOPOLOGY_ENABLED_ROUND_TRIP_POOL = (
     (
@@ -269,6 +282,7 @@ def _without_cif_bond_loop(source_path: str | Path, target_path: Path) -> Path:
 def _with_generic_atom_labels(source_path: str | Path, target_path: Path) -> Path:
     lines = Path(source_path).read_text(encoding="utf-8").splitlines()
     output: list[str] = []
+    label_map: dict[str, str] = {}
     index = 0
     while index < len(lines):
         if lines[index].strip() == "loop_":
@@ -291,9 +305,29 @@ def _with_generic_atom_labels(source_path: str | Path, target_path: Path) -> Pat
                 ):
                     row = lines[next_index].split()
                     symbol = row[type_index] if type_index is not None else "X"
+                    old_label = row[label_index]
                     row[label_index] = f"{symbol}{atom_index}"
+                    label_map[old_label] = row[label_index]
                     output.append(" ".join(row))
                     atom_index += 1
+                    next_index += 1
+                index = next_index
+                continue
+            if "_geom_bond_atom_site_label_1" in headers and "_geom_bond_atom_site_label_2" in headers:
+                first_label_index = headers.index("_geom_bond_atom_site_label_1")
+                second_label_index = headers.index("_geom_bond_atom_site_label_2")
+                output.append(lines[index])
+                output.extend(headers)
+                while (
+                    next_index < len(lines)
+                    and lines[next_index].strip()
+                    and lines[next_index].strip() != "loop_"
+                    and not lines[next_index].lstrip().startswith("_")
+                ):
+                    row = lines[next_index].split()
+                    row[first_label_index] = label_map.get(row[first_label_index], row[first_label_index])
+                    row[second_label_index] = label_map.get(row[second_label_index], row[second_label_index])
+                    output.append(" ".join(row))
                     next_index += 1
                 index = next_index
                 continue
@@ -439,6 +473,115 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 self.assertEqual(result.cofid, summary.metadata["cofid"])
                 self.assertEqual(result.metadata[f"n_{linkage}_linkage_bonds"], expected_linkage_bonds)
                 self.assertEqual(result.metadata["n_unique_monomers"], 2)
+                if linkage == "vinylene":
+                    detection = result.metadata["vinylene_linkage_detection"]
+                    self.assertEqual(detection["accepted_bond_count"], expected_linkage_bonds)
+                    self.assertEqual(detection["small_ring_rejected_bond_count"], 0)
+                    self.assertEqual(detection["endpoint_rejected_bond_count"], 0)
+
+    def test_nitrogen_linkage_priority_branches_make_generated_matches_exclusive(self):
+        requested_linkages = ("azine", "hydrazone", "bken", "imine")
+        for template_id, expected_linkage, first, second, expected_linkage_bonds in NITROGEN_LINKAGE_ROUND_TRIP_CASES:
+            with self.subTest(template_id=template_id), tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                summary, _candidate = _generator(template_id).generate_pair_candidate(
+                    first,
+                    second,
+                    out_dir=temp_path,
+                    write_cif=True,
+                )
+                input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+
+                for requested_linkage in requested_linkages:
+                    result = decompose_cif_to_cofid(
+                        input_cif,
+                        topology="hcb",
+                        linkage=requested_linkage,
+                    )
+                    detection = result.metadata["nitrogen_linkage_detection"]
+                    assigned_counts = detection["assigned_bond_counts"]
+                    self.assertEqual(detection["resolution_status"], "resolved")
+                    self.assertEqual(assigned_counts[expected_linkage], expected_linkage_bonds)
+                    self.assertEqual(sum(assigned_counts.values()), expected_linkage_bonds)
+                    if requested_linkage == expected_linkage:
+                        self.assertTrue(result.ok, result.reason)
+                        self.assertEqual(result.cofid, summary.metadata["cofid"])
+                    else:
+                        self.assertFalse(result.ok)
+                        self.assertEqual(result.metadata[f"n_{requested_linkage}_linkage_bonds"], 0)
+
+    def test_nitrogen_linkage_classifier_reports_cross_branch_conflict(self):
+        mol = Chem.MolFromSmiles("CC=NN=CC1C(=O)C=CC=C1")
+        self.assertIsNotNone(mol)
+        for atom in mol.GetAtoms():
+            atom.SetProp("instance_id", "")
+
+        classification = _classify_nitrogen_linkage_bonds(mol)
+        metadata = classification.to_metadata()
+
+        self.assertEqual(metadata["resolution_status"], "cross_branch_ambiguous")
+        self.assertEqual(metadata["cross_branch_conflict_bond_count"], 1)
+
+    def test_specific_nitrogen_motif_does_not_promote_separate_imine_bond(self):
+        mol = Chem.MolFromSmiles("CC=NN=CC.CC=NC")
+        self.assertIsNotNone(mol)
+        for atom in mol.GetAtoms():
+            atom.SetProp("instance_id", "")
+
+        metadata = _classify_nitrogen_linkage_bonds(mol).to_metadata()
+
+        self.assertEqual(metadata["resolution_status"], "resolved")
+        self.assertEqual(
+            metadata["assigned_bond_counts"],
+            {"azine": 2, "hydrazone": 0, "bken": 0, "imine": 1},
+        )
+
+    def test_vinylene_classifier_rejects_small_ring_and_unactivated_double_bonds(self):
+        benzene = Chem.MolFromSmiles("c1ccccc1")
+        Chem.Kekulize(benzene, clearAromaticFlags=True)
+        cyclohexene = Chem.MolFromSmiles("C1=CCCCC1")
+        unactivated = Chem.MolFromSmiles("CC=CC")
+        valid = Chem.MolFromSmiles("CC(=O)C=Cc1ccccc1")
+        for mol in (benzene, cyclohexene, unactivated, valid):
+            self.assertIsNotNone(mol)
+            for atom in mol.GetAtoms():
+                atom.SetProp("instance_id", "")
+
+        benzene_detection = _classify_vinylene_linkage_bonds(benzene).to_metadata()
+        cyclohexene_detection = _classify_vinylene_linkage_bonds(cyclohexene).to_metadata()
+        unactivated_detection = _classify_vinylene_linkage_bonds(unactivated).to_metadata()
+        valid_detection = _classify_vinylene_linkage_bonds(valid).to_metadata()
+
+        self.assertEqual(benzene_detection["small_ring_rejected_bond_count"], 3)
+        self.assertEqual(benzene_detection["accepted_bond_count"], 0)
+        self.assertEqual(cyclohexene_detection["small_ring_rejected_bond_count"], 1)
+        self.assertEqual(cyclohexene_detection["accepted_bond_count"], 0)
+        self.assertEqual(unactivated_detection["endpoint_rejected_bond_count"], 1)
+        self.assertEqual(unactivated_detection["accepted_bond_count"], 0)
+        self.assertEqual(valid_detection["accepted_bond_count"], 1)
+
+    def test_vinylene_decomposition_survives_generic_labels_with_explicit_bonds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = _generator("vinylene_bridge").generate_pair_candidate(
+                _record("tmt", TMT, "activated_methylene", 3),
+                _record("pda", PDA, "aldehyde", 2),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+            generic_labels = _with_generic_atom_labels(input_cif, temp_path / "generic_labels.cif")
+
+            result = decompose_cif_to_cofid(
+                generic_labels,
+                topology="hcb",
+                linkage="vinylene",
+            )
+
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.cofid, summary.metadata["cofid"])
+        self.assertEqual(result.metadata["bond_source"], "explicit_cif")
+        self.assertEqual(result.metadata["vinylene_linkage_detection"]["accepted_bond_count"], 6)
 
     def test_decompose_infers_bond_orders_when_cif_bond_type_column_is_absent(self):
         for template_id, linkage, first, second, expected_linkage_bonds in ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES:

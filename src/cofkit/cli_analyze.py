@@ -123,7 +123,10 @@ def _add_decompose_parser(subparsers) -> None:
         help=(
             "Linkage token to analyze. Supported canonical values: imine, hydrazone, azine, "
             "boest, bken, vinylene, boroxine, triazine. Template-id aliases such as "
-            "hydrazone_bridge and boroxine_trimerization are also accepted."
+            "hydrazone_bridge and boroxine_trimerization are also accepted. Overlapping C=N "
+            "bonds are assigned per bond through the azine > hydrazone > imine N-N branch "
+            "or the bken > imine keto-enamine branch. Vinylene requires a C=C bond outside "
+            "five- and six-membered rings with distinguishable aldehyde and activated-methylene endpoints."
         ),
     )
     parser.add_argument(

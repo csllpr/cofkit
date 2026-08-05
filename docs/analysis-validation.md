@@ -54,6 +54,9 @@ Current scope:
 - use `--bond-mode distance` to force periodic distance-based bond detection even when explicit CIF bond rows are present
 - if bond labels are present but `_ccdc_geom_bond_type` / `_geom_bond_type` is absent, `cofkit` infers bond orders from local geometry
 - supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest`, `bken`, `vinylene`, `boroxine`, and `triazine`
+- overlapping nitrogen-containing C=N bonds are classified per bond through two independent branches: `azine > hydrazone > imine` for N-N environments and `bken > imine` for the keto-enamine environment; azine requires `C=N-N=C`, hydrazone requires `C=N-N-C(=O)`, and beta-ketoenamine requires the keto-aldehyde-derived ring-carbonyl environment
+- a C=N bond claimed by a more specific branch is excluded from generic imine decomposition; a bond matching both independent branches is reported as cross-branch ambiguous instead of being assigned by a global priority
+- vinylene decomposition rejects C=C bonds in five- or six-membered rings, requires carbon anchors at both endpoints, and requires exactly one endpoint to have the stronger activated-methylene environment (a carbon anchor activated by multiple nitrogens or a multiple bond to N/O/S); the raw and rejected C=C counts are reported under `metadata["vinylene_linkage_detection"]`
 - template-id aliases such as `hydrazone_bridge`, `boronate_ester_bridge`, `boroxine_trimerization`, and `triazine_trimerization` are accepted through `--linkage`
 - boroxine and triazine decomposition recognizes complete six-membered product rings, restores the boronic-acid or nitrile precursor groups, and reconstructs the net through virtual three-connected ring nodes
 - equivalent disconnected layer graphs in named stacked ring-forming outputs are normalized before topology ranking

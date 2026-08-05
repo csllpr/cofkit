@@ -154,6 +154,10 @@ The older `run_imine_batch(...)` convenience method remains available and delega
 
 Use `decompose_cif_to_cofid` for supported binary-bridge and boroxine/triazine ring-forming atomistic CIFs. Pass `topology=` when you know the topology, or omit it to use conservative topology detection from an embedded COFid comment or the recovered periodic linkage graph. The default `bond_mode="auto"` prefers explicit CIF bonds and falls back to distance inference; use `bond_mode="distance"` to force distance-inferred connectivity.
 
+Nitrogen-containing C=N overlaps are resolved per bond, not per CIF. N-N environments use `azine > hydrazone > imine`, while keto-aldehyde-derived environments use the independent `bken > imine` branch. A more-specific bond is therefore unavailable to generic imine decomposition. Cross-branch matches are returned as ambiguous and exposed under `metadata["nitrogen_linkage_detection"]`.
+
+Vinylene matching is also conservative: formal C=C bonds in five- or six-membered rings are excluded, both alkene endpoints must have carbon anchors, and exactly one endpoint must resolve as the more strongly activated-methylene-derived side. Detection counts are exposed under `metadata["vinylene_linkage_detection"]`.
+
 ```python
 from cofkit import decompose_cif_to_cofid, detect_cif_topology
 

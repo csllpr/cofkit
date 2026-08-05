@@ -9,6 +9,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 ### Fixed
 
 - LAMMPS optimization and MD runs now stage relative data and trajectory filenames and execute from their run directory, allowing input, output, and executable paths that contain spaces
+- CIF decomposition now assigns overlapping nitrogen-containing C=N bonds through independent per-bond priority branches: `azine > hydrazone > imine` for N-N environments and `bken > imine` for keto-enamine environments; cross-branch matches are reported as ambiguous instead of being globally promoted
+- vinylene CIF decomposition now excludes formal C=C bonds in five- and six-membered rings and requires carbon-anchored endpoints with a uniquely identifiable activated-methylene side, preventing Kekule aromatic and ordinary cyclic/unactivated alkene bonds from being treated as vinylene linkages
 
 ## 2026.7.20 (2026-07-20)
 
