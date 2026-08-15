@@ -2316,7 +2316,18 @@ class ReactionRealizer:
             keto_aldehyde_motif,
             tautomer_oxygen_atom_id,
         )
+        linkage_anchor_atom_id = self._motif_atom_id_from_metadata(
+            keto_aldehyde_motif,
+            "anchor_atom_id",
+            context=f"{event.id} keto-enamine linkage anchor",
+        )
         carbon_world = self._world_atom_position(candidate, keto_aldehyde_ref, keto_aldehyde_spec, carbon_atom_id)
+        linkage_anchor_world = self._world_atom_position(
+            candidate,
+            keto_aldehyde_ref,
+            keto_aldehyde_spec,
+            linkage_anchor_atom_id,
+        )
         hydrogen_atom_id = self._select_hydrogens(
             candidate,
             amine_ref,
@@ -2358,6 +2369,20 @@ class ReactionRealizer:
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
                     symmetry_2=self._symmetry_code(amine_ref.periodic_image),
+                    bond_order=1.0,
+                ),
+                RealizedBond(
+                    label_1=self.atom_label(
+                        keto_aldehyde_ref.monomer_instance_id,
+                        keto_aldehyde_spec.atom_symbols[carbon_atom_id],
+                        carbon_atom_id,
+                    ),
+                    label_2=self.atom_label(
+                        keto_aldehyde_ref.monomer_instance_id,
+                        keto_aldehyde_spec.atom_symbols[linkage_anchor_atom_id],
+                        linkage_anchor_atom_id,
+                    ),
+                    distance=self._distance(carbon_world, linkage_anchor_world),
                     bond_order=2.0,
                 ),
                 RealizedBond(
@@ -2380,7 +2405,7 @@ class ReactionRealizer:
             ),
             notes=(
                 "Beta-ketoenamine realization removes one amine hydrogen, the aldehydic oxygen, and the ortho-hydroxyl hydrogen per reacting pair.",
-                "The exported product keeps the tautomerized ortho oxygen and shortens its local C=O distance to a carbonyl-like value.",
+                "The exported product writes the keto-enamine C-N/C=C tautomer, keeps the tautomerized ortho oxygen, and shortens its local C=O distance to a carbonyl-like value.",
             ),
         )
 

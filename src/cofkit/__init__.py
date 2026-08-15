@@ -21,6 +21,13 @@ from .decompose import (
     decompose_cif_to_cofid,
     detect_cif_topology,
 )
+from .decompose_events import (
+    EventDetectionResult,
+    LinkageEvent,
+    ReconstructedRole,
+    ReconstructionHypothesis,
+    detect_linkage_events,
+)
 from .decompose_cif import PeriodicCifAtoms, prepare_periodic_cif_atoms, read_periodic_cif_atoms
 from .forcefields import (
     FORCEFIELD_METADATA_SCHEMA_VERSION,
@@ -261,6 +268,10 @@ __all__ = [
     "COFidValidationResult",
     "ContinuousOptimizer",
     "DecomposedMonomer",
+    "EventDetectionResult",
+    "LinkageEvent",
+    "ReconstructedRole",
+    "ReconstructionHypothesis",
     "TopologyDetectionCandidate",
     "TopologyDetectionResult",
     "DEFAULT_LAMMPS_BINARY",
@@ -400,6 +411,7 @@ __all__ = [
     "default_topology_repository",
     "decompose_cif_to_cofid",
     "detect_cif_topology",
+    "detect_linkage_events",
     "discover_rcsr_archives",
     "find_latest_gcmc_movie_snapshot",
     "get_topology_hint",

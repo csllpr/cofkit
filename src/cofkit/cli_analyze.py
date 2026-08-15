@@ -106,9 +106,10 @@ def _add_decompose_parser(subparsers) -> None:
         "decompose",
         help="Decompose one atomistic CIF and emit a COFid when supported.",
         description=(
-            "Decompose one atomistic CIF into COFid monomer blocks. Current support covers "
+            "Decompose one P1-expanded atomistic CIF into COFid monomer blocks. Current support covers "
             "the buildable binary-bridge and ring-forming linkages. When --topology is omitted, cofkit attempts "
-            "to infer the topology from embedded COFid metadata or the recovered periodic linkage graph."
+            "to infer the topology from embedded COFid metadata or the recovered periodic linkage graph. "
+            "Success requires a complete linkage-specific precursor role set."
         ),
     )
     parser.add_argument("cif_path", help="Input CIF file to decompose.")
@@ -119,16 +120,18 @@ def _add_decompose_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--linkage",
-        default="imine",
+        default="auto",
         help=(
-            "Linkage token to analyze. Supported canonical values: imine, hydrazone, azine, "
+            "Linkage token to analyze. Default: auto evaluates every supported family and requires "
+            "one unique periodic match. Supported canonical values: imine, hydrazone, azine, "
             "boest, bken, vinylene, boroxine, triazine. Template-id aliases such as "
-            "hydrazone_bridge and boroxine_trimerization are also accepted. Overlapping C=N "
+            "hydrazone_bridge and boroxine_trimerization are also accepted. Overlapping C-N/C=N "
             "bonds are assigned per bond through the azine > hydrazone > imine N-N branch "
             "or the bken > imine keto-enamine branch. Vinylene requires a C=C bond outside "
             "five- and six-membered rings with distinguishable aldehyde and activated-methylene "
-            "endpoints, and yields to recognized boronate-ester or boroxine chemistry. "
-            "Recoverable imine or vinylene chemistry takes priority over triazine."
+            "endpoints; coexisting boron motifs are reported without suppressing it. A triazine "
+            "assignment is withheld as ambiguous only when a complete competing periodic imine "
+            "or vinylene decomposition is recovered."
         ),
     )
     parser.add_argument(
@@ -136,6 +139,15 @@ def _add_decompose_parser(subparsers) -> None:
         choices=("auto", "distance"),
         default="auto",
         help="Bond source for decomposition. Default: auto uses explicit CIF bonds when present and distance inference otherwise.",
+    )
+    parser.add_argument(
+        "--decomposition-mode",
+        choices=("legacy", "event"),
+        default="legacy",
+        help=(
+            "Decomposition engine. Default: legacy preserves the established per-family pipeline; "
+            "event enables the experimental event/hypothesis pipeline for side-by-side benchmarking."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -151,6 +163,7 @@ def _run_decompose(args: argparse.Namespace) -> None:
         topology=args.topology,
         linkage=args.linkage,
         bond_mode=args.bond_mode,
+        decomposition_mode=args.decomposition_mode,
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))

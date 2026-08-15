@@ -231,6 +231,7 @@ def _atoms_from_gemmi_block(block, *, source_path: Path) -> PeriodicCifAtoms:
 def _collect_cif_info(block) -> dict[str, tuple[str, ...]]:
     tags = (
         "_atom_site_label",
+        "_atom_site_pdbx_formal_charge",
         "_space_group_symop_operation_xyz",
         "_symmetry_equiv_pos_as_xyz",
         "_geom_bond_atom_site_label_1",
@@ -246,6 +247,16 @@ def _collect_cif_info(block) -> dict[str, tuple[str, ...]]:
         values = _optional_loop(block, tag)
         if values:
             info[tag] = tuple(_normalize_cif_value(value) for value in values)
+    for tag in (
+        "_space_group_IT_number",
+        "_symmetry_Int_Tables_number",
+        "_space_group_name_H-M_alt",
+        "_symmetry_space_group_name_H-M",
+    ):
+        raw_value = block.find_value(tag)
+        value = "" if raw_value is None else _normalize_cif_value(raw_value)
+        if value and value not in {".", "?"}:
+            info[tag] = (value,)
     return info
 
 

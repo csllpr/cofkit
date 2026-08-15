@@ -96,6 +96,7 @@ Start with the task page that matches what you are doing:
 - [Getting started](docs/getting-started.md): install, verification, first commands
 - [Building COFs](docs/building.md): single-pair, batch, topology, stacking, default libraries
 - [Analysis and validation](docs/analysis-validation.md): classify, decompose, validate, Zeo++
+- [Experimental event decomposition](docs/event-decomposition.md): opt-in event/hypothesis mode and benchmark contract
 - [Calculations](docs/calculations.md): LAMMPS, EQeq, gRASPA/RASPA2, hybrid MD/MC
 - [Python API](docs/python-api.md): `COFEngine` and `BatchStructureGenerator`
 - [External tools](docs/external-tools.md): Zeo++, LAMMPS, EQeq, gRASPA, RASPA2 setup

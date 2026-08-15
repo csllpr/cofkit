@@ -6,13 +6,21 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ## Unreleased
 
+### Added
+
+- opt-in event-based CIF decomposition through `decomposition_mode="event"` and `cofkit analyze decompose --decomposition-mode event`, with immutable linkage events, atomic azine/boronate/ring handling, bounded reconstruction hypotheses, global endpoint/framework/topology validation, generalized triazine motif classification, and structured benchmark diagnostics; the existing legacy engine remains the default pending evaluation on an independent labelled test set
+
 ### Fixed
 
 - LAMMPS optimization and MD runs now stage relative data and trajectory filenames and execute from their run directory, allowing input, output, and executable paths that contain spaces
-- CIF decomposition now assigns overlapping nitrogen-containing C=N bonds through independent per-bond priority branches: `azine > hydrazone > imine` for N-N environments and `bken > imine` for keto-enamine environments; cross-branch matches are reported as ambiguous instead of being globally promoted
+- CIF decomposition now assigns overlapping nitrogen-containing C-N/C=N bonds through independent per-bond priority branches: `azine > hydrazone > imine` for N-N environments and `bken > imine` for keto-enamine environments; conventional beta-ketoenamine C-N/C=C products are recognized, and cross-branch matches are reported as ambiguous instead of being globally promoted
 - vinylene CIF decomposition now excludes formal C=C bonds in five- and six-membered rings and requires carbon-anchored endpoints with a uniquely identifiable activated-methylene side, preventing Kekule aromatic and ordinary cyclic/unactivated alkene bonds from being treated as vinylene linkages
-- vinylene CIF decomposition now yields to recognized boronate-ester or boroxine chemistry in the same structure; suppressed C=C candidates and the winning boron linkage family are retained in detection metadata
-- triazine CIF decomposition now yields to independently recoverable imine or vinylene chemistry in the same structure; raw C=N bonds in the triazine ring do not count as an imine override
+- recognized boronate-ester or boroxine chemistry is retained in vinylene diagnostics without suppressing a separate structurally valid C=C linkage candidate
+- triazine CIF decomposition reports ambiguity only when an independently recoverable imine or vinylene decomposition also has a rank-2 or rank-3 periodic backbone; raw C=N bonds in the triazine ring do not count as competition
+- linkage auto-detection is now the default and requires exactly one supported family to pass precursor, periodic-rank, and topology compatibility checks
+- CIF decomposition now validates the complete precursor-role set, exact motif-derived connectivity, supplied topology compatibility, periodic gain rank, and emitted COFid before reporting success; it keeps unrelated nitrogen linkage bonds when another bond is cross-branch ambiguous and reports malformed inputs as errors rather than chemical no-matches
+- distance-inferred decomposition now uses a triclinic-safe nearest-lattice-image search; explicit periodic bond rows preserve distinct image gains while reverse duplicates are collapsed, and unsupported non-`P1` / self-image inputs are rejected with an actionable diagnostic instead of being interpreted incorrectly
+- topology recovery now unwraps finite precursor fragments before assigning linkage-edge gains, derives dimensionality from exact periodic cycle-gain rank, rejects rank-0/rank-1 molecular or chain-like impostors, and compares gains across vertex-representative changes and integer unimodular crystallographic-basis transformations
 
 ## 2026.7.20 (2026-07-20)
 

@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import random
 import sys
 import tempfile
@@ -7,20 +8,35 @@ import unittest
 from pathlib import Path
 
 from rdkit import Chem
+from rdkit.Chem import rdDepictor
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, CoarseValidationThresholds
 from cofkit.build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
+from cofkit.bond_types import bond_order_to_cif_type
 from cofkit.chem.rdkit import build_rdkit_monomer
 from cofkit.cif import CIFWriter
 from cofkit.cli import main as cli_main
 from cofkit.cofid import generate_cofid
 from cofkit.decompose import (
+    BondedMolBuildResult,
+    DecomposedMonomer,
+    _IMINE_SPEC,
     _classify_nitrogen_linkage_bonds,
     _classify_vinylene_linkage_bonds,
+    _explicit_bond_candidates,
+    _finalize_repaired_fragment,
+    _mark_imine_linkage_bonds,
+    _minimum_image_bond_geometry,
+    _periodic_dimension_hint,
+    _periodic_edge_gains_match,
+    _validate_recovered_precursors,
+    _validate_supported_cif_periodicity,
     decompose_cif_to_cofid,
 )
+from cofkit.decompose_events import EVENT_STATUS_TRIAZINE_MOTIF, detect_linkage_events
+from cofkit.decompose_cif import PeriodicCifAtoms
 from cofkit.reactions import ReactionLibrary
 from cofkit.validate import validate_cif_against_cofid
 
@@ -337,7 +353,340 @@ def _with_generic_atom_labels(source_path: str | Path, target_path: Path) -> Pat
     return _write_cif_lines(output, target_path)
 
 
+def _write_molecular_probe_cif(smiles: str, target_path: Path) -> Path:
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"invalid molecular probe SMILES: {smiles!r}")
+    rdDepictor.Compute2DCoords(mol)
+    conformer = mol.GetConformer()
+    labels = tuple(
+        f"{atom.GetSymbol()}{atom.GetIdx() + 1}"
+        for atom in mol.GetAtoms()
+    )
+    lines = [
+        "data_molecular_probe",
+        "_space_group_name_H-M_alt 'P 1'",
+        "_space_group_IT_number 1",
+        "_cell_length_a 30.0",
+        "_cell_length_b 30.0",
+        "_cell_length_c 30.0",
+        "_cell_angle_alpha 90.0",
+        "_cell_angle_beta 90.0",
+        "_cell_angle_gamma 90.0",
+        "",
+        "loop_",
+        "_space_group_symop_operation_xyz",
+        "'x,y,z'",
+        "",
+        "loop_",
+        "_atom_site_label",
+        "_atom_site_type_symbol",
+        "_atom_site_fract_x",
+        "_atom_site_fract_y",
+        "_atom_site_fract_z",
+        "_atom_site_occupancy",
+    ]
+    for atom, label in zip(mol.GetAtoms(), labels):
+        position = conformer.GetAtomPosition(atom.GetIdx())
+        lines.append(
+            f"{label} {atom.GetSymbol()} "
+            f"{(position.x + 10.0) / 30.0:.8f} "
+            f"{(position.y + 10.0) / 30.0:.8f} 0.33333333 1.00"
+        )
+    lines.extend([
+        "",
+        "loop_",
+        "_geom_bond_atom_site_label_1",
+        "_geom_bond_atom_site_label_2",
+        "_geom_bond_distance",
+        "_geom_bond_site_symmetry_1",
+        "_geom_bond_site_symmetry_2",
+        "_ccdc_geom_bond_type",
+    ])
+    for bond in mol.GetBonds():
+        first = conformer.GetAtomPosition(bond.GetBeginAtomIdx())
+        second = conformer.GetAtomPosition(bond.GetEndAtomIdx())
+        distance = ((first.x - second.x) ** 2 + (first.y - second.y) ** 2) ** 0.5
+        lines.append(
+            f"{labels[bond.GetBeginAtomIdx()]} {labels[bond.GetEndAtomIdx()]} "
+            f"{distance:.6f} . . {bond_order_to_cif_type(bond.GetBondTypeAsDouble())}"
+        )
+    return _write_cif_lines(lines, target_path)
+
+
 class DecomposeRoundTripTests(unittest.TestCase):
+    def test_precursor_validation_rejects_incomplete_or_same_role_binary_output(self):
+        amine = DecomposedMonomer(1, "amine", "CN")
+        aldehyde = DecomposedMonomer(1, "aldehyde", "CC=O")
+
+        for monomers in ((amine,), (aldehyde, aldehyde), (amine, aldehyde, aldehyde)):
+            with self.subTest(roles=tuple(monomer.reactive_group for monomer in monomers)):
+                reason, metadata = _validate_recovered_precursors(monomers, _IMINE_SPEC)
+                self.assertIsNotNone(reason)
+                self.assertEqual(metadata["status"], "incomplete")
+
+        reason, metadata = _validate_recovered_precursors((amine, aldehyde), _IMINE_SPEC)
+        self.assertIsNone(reason)
+        self.assertEqual(metadata["status"], "valid")
+
+        invalid_amine = DecomposedMonomer(1, "amine", "N")
+        reason, metadata = _validate_recovered_precursors((invalid_amine, aldehyde), _IMINE_SPEC)
+        self.assertIn("connectivity mismatch", reason)
+        self.assertEqual(metadata["status"], "chemically_invalid")
+
+    def test_nitrogen_cross_branch_conflict_only_withholds_conflicting_bond(self):
+        mol = Chem.MolFromSmiles("CC=NN=CC1C(=O)C=CC=C1.CC=NC")
+        self.assertIsNotNone(mol)
+        for atom in mol.GetAtoms():
+            atom.SetProp("instance_id", "")
+
+        classification = _classify_nitrogen_linkage_bonds(mol)
+        marked = _mark_imine_linkage_bonds(mol)
+
+        self.assertEqual(len(classification.cross_branch_conflict_bond_indices), 1)
+        self.assertEqual(marked, classification.imine_bond_indices)
+        self.assertEqual(len(marked), 1)
+
+    def test_minimum_image_search_handles_skew_cell(self):
+        basis = (
+            (3.0, 0.0, 0.0),
+            (-1.5, 2.598076211, 0.0),
+            (0.0, 0.0, 10.0),
+        )
+        fractional = ((0.0, 0.49, 0.0), (0.49, 0.0, 0.0))
+
+        def cartesian(position):
+            return tuple(
+                sum(position[axis] * basis[axis][component] for axis in range(3))
+                for component in range(3)
+            )
+
+        atoms = PeriodicCifAtoms(
+            symbols=("C", "C"),
+            fractional_positions=fractional,
+            cartesian_positions=tuple(cartesian(position) for position in fractional),
+            cell_basis=basis,
+            info={"_atom_site_label": ("C1", "C2")},
+        )
+
+        image, distance = _minimum_image_bond_geometry(atoms, 0, 1)
+
+        self.assertEqual(image, (0, 1, 0))
+        self.assertAlmostEqual(distance, 1.50089973, places=6)
+
+    def test_explicit_bond_candidates_preserve_distinct_periodic_images(self):
+        basis = ((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0))
+        atoms = PeriodicCifAtoms(
+            symbols=("C", "N"),
+            fractional_positions=((0.0, 0.0, 0.0), (0.13, 0.0, 0.0)),
+            cartesian_positions=((0.0, 0.0, 0.0), (1.3, 0.0, 0.0)),
+            cell_basis=basis,
+            info={
+                "_geom_bond_distance": ("1.3", "1.3", "1.3"),
+                "_ccdc_geom_bond_type": ("D", "D", "D"),
+                "_geom_bond_site_symmetry_1": (".", ".", "."),
+                "_geom_bond_site_symmetry_2": (".", "1_655", "1_455"),
+            },
+        )
+
+        candidates, _missing = _explicit_bond_candidates(
+            atoms,
+            {"C1": 0, "N1": 1},
+            ("C1", "C1", "N1"),
+            ("N1", "N1", "C1"),
+        )
+
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual({candidate.periodic_image for candidate in candidates}, {(0, 0, 0), (1, 0, 0)})
+
+    def test_non_p1_periodicity_is_rejected_explicitly(self):
+        atoms = PeriodicCifAtoms(
+            symbols=("C",),
+            fractional_positions=((0.1, 0.2, 0.3),),
+            cartesian_positions=((1.0, 2.0, 3.0),),
+            cell_basis=((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0)),
+            info={"_space_group_symop_operation_xyz": ("x,y,z", "-x,-y,-z")},
+        )
+
+        with self.assertRaisesRegex(ValueError, "P1-expanded"):
+            _validate_supported_cif_periodicity(atoms)
+
+    def test_fragment_finalization_preserves_formal_charge(self):
+        fragment = Chem.MolFromSmiles("[NH4+]")
+        self.assertIsNotNone(fragment)
+        fragment.GetAtomWithIdx(0).SetProp("cofkit_decompose_role", "amine")
+
+        monomer = _finalize_repaired_fragment(fragment, "amine")
+
+        self.assertIsNotNone(monomer)
+        self.assertEqual(monomer.canonical_smiles, "[NH4+]")
+
+    def test_periodic_dimension_uses_cycle_gain_rank_not_z_axis(self):
+        rotated_2d_edges = (
+            (0, 0, (0, 1, 0)),
+            (0, 0, (0, 0, 1)),
+        )
+        three_dimensional_edges = rotated_2d_edges + ((0, 0, (1, 0, 0)),)
+
+        self.assertEqual(_periodic_dimension_hint(1, rotated_2d_edges), "2D")
+        self.assertEqual(_periodic_dimension_hint(1, three_dimensional_edges), "3D")
+        self.assertIsNone(_periodic_dimension_hint(1, ()))
+        self.assertIsNone(_periodic_dimension_hint(1, ((0, 0, (1, 0, 0)),)))
+
+    def test_molecular_motifs_cannot_masquerade_as_periodic_frameworks(self):
+        cases = (
+            ("CC=NC", "imine"),
+            ("CC(=O)C=Cc1ccccc1", "vinylene"),
+            ("B1(OCCO1)c1ccccc1", "boest"),
+            (TMT, "triazine"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for index, (smiles, linkage) in enumerate(cases):
+                with self.subTest(linkage=linkage):
+                    cif_path = _write_molecular_probe_cif(
+                        smiles,
+                        temp_path / f"probe_{index}.cif",
+                    )
+
+                    result = decompose_cif_to_cofid(
+                        cif_path,
+                        topology="hcb",
+                        linkage=linkage,
+                    )
+
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.status, "skipped")
+                    if linkage in {"imine", "triazine"}:
+                        self.assertEqual(
+                            result.metadata["topology_validation"]["observed_periodic_rank"],
+                            0,
+                        )
+                    else:
+                        self.assertEqual(
+                            result.metadata["precursor_recovery_validation"]["status"],
+                            "chemically_invalid",
+                        )
+
+    def test_conventional_beta_ketoenamine_bond_orders_are_classified_as_bken(self):
+        mol = Chem.MolFromSmiles("CNC=C1C(=O)C=CC=C1")
+        self.assertIsNotNone(mol)
+        for atom in mol.GetAtoms():
+            atom.SetProp("instance_id", "")
+
+        metadata = _classify_nitrogen_linkage_bonds(mol).to_metadata()
+
+        self.assertEqual(metadata["beta_ketoenamine_single_bond_count"], 1)
+        self.assertEqual(metadata["assigned_bond_counts"]["bken"], 1)
+        self.assertEqual(metadata["assigned_bond_counts"]["imine"], 0)
+
+    def test_periodic_gain_matching_allows_vertex_switching_and_axis_permutation(self):
+        expected = (
+            (0, 1, (0, 0, 0)),
+            (0, 1, (1, 0, 0)),
+            (0, 1, (0, 1, 0)),
+        )
+        observed = (
+            (0, 1, (3, -2, 0)),
+            (0, 1, (3, -1, 0)),
+            (0, 1, (3, -2, 1)),
+        )
+        sheared = (
+            (0, 1, (0, 0, 0)),
+            (0, 1, (1, 0, 0)),
+            (0, 1, (-1, 1, 0)),
+        )
+        expected_simple = (
+            (0, 1, (0, 0, 0)),
+            (0, 2, (0, 0, 0)),
+            (0, 3, (0, 0, 0)),
+            (1, 2, (1, 0, 0)),
+            (1, 3, (0, 1, 0)),
+            (2, 3, (1, 1, 0)),
+        )
+        sheared_simple = (
+            (0, 1, (0, 0, 0)),
+            (0, 2, (0, 0, 0)),
+            (0, 3, (0, 0, 0)),
+            (1, 2, (1, 0, 0)),
+            (1, 3, (-1, 1, 0)),
+            (2, 3, (0, 1, 0)),
+        )
+        non_unimodular = (
+            (0, 1, (0, 0, 0)),
+            (0, 1, (2, 0, 0)),
+            (0, 1, (0, 1, 0)),
+        )
+
+        self.assertTrue(_periodic_edge_gains_match(observed, expected))
+        self.assertTrue(_periodic_edge_gains_match(sheared, expected))
+        self.assertTrue(_periodic_edge_gains_match(sheared_simple, expected_simple))
+        self.assertFalse(_periodic_edge_gains_match(non_unimodular, expected))
+
+    def test_decompose_normalizes_known_topology_and_rejects_invalid_token(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = _generator().generate_pair_candidate(
+                _record("tapb", TAPB, "amine", 3),
+                _record("tfb", TFB, "aldehyde", 3),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+
+            normalized = decompose_cif_to_cofid(input_cif, topology=" HCB ")
+            invalid = decompose_cif_to_cofid(input_cif, topology="bad&&token")
+
+        self.assertTrue(normalized.ok, normalized.reason)
+        self.assertEqual(normalized.topology, "hcb")
+        self.assertEqual(invalid.status, "error")
+        self.assertFalse(invalid.ok)
+
+    def test_supplied_topology_must_match_recovered_graph_and_connectivities(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = _generator().generate_pair_candidate(
+                _record("tapb", TAPB, "amine", 3),
+                _record("tfb", TFB, "aldehyde", 3),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+
+            result = decompose_cif_to_cofid(
+                input_cif,
+                topology="sql",
+                linkage="imine",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.metadata["topology_validation"]["status"], "incompatible")
+
+    def test_incompatible_embedded_topology_falls_back_to_periodic_graph(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = _generator().generate_pair_candidate(
+                _record("tapb", TAPB, "amine", 3),
+                _record("tfb", TFB, "aldehyde", 3),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            lines = Path(summary.cif_path).read_text(encoding="utf-8").splitlines()
+            self.assertTrue(lines[0].startswith("# COFid: "))
+            lines[0] = lines[0].replace("&&hcb&&", "&&sql&&")
+            input_cif = _write_cif_lines(lines, temp_path / "wrong_comment.cif")
+
+            result = decompose_cif_to_cofid(input_cif, linkage="imine")
+
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.topology, "hcb")
+        detection = result.metadata["topology_detection"]
+        self.assertEqual(detection["metadata"]["source"], "periodic_linkage_graph")
+        self.assertEqual(
+            detection["metadata"]["embedded_cofid_comment"]["status"],
+            "rejected",
+        )
+
     def test_decompose_generated_hcb_three_three_imine_returns_original_inputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -392,6 +741,8 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertEqual(result.cofid, summary.metadata["cofid"])
         self.assertEqual(result.metadata["n_imine_linkage_bonds"], 6)
         self.assertEqual(result.metadata["n_unique_monomers"], 2)
+        self.assertEqual(result.metadata["topology_graph"]["periodic_rank"], 2)
+        self.assertEqual(result.metadata["linkage_detection"]["successful_linkages"], ["imine"])
 
     def test_decompose_generated_decorated_bex_imine_recovers_monomers(self):
         generator = BatchStructureGenerator(
@@ -456,6 +807,37 @@ class DecomposeRoundTripTests(unittest.TestCase):
 
         self.assertEqual(buffer.getvalue().strip(), summary.metadata["cofid"])
 
+    def test_analyze_decompose_cli_exposes_event_mode_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = _generator().generate_pair_candidate(
+                _record("tapb", TAPB, "amine", 3),
+                _record("tfb", TFB, "aldehyde", 3),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli_main(
+                    [
+                        "analyze",
+                        "decompose",
+                        str(input_cif),
+                        "--topology",
+                        "hcb",
+                        "--decomposition-mode",
+                        "event",
+                        "--json",
+                    ]
+                )
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["cofid"], summary.metadata["cofid"])
+        self.assertEqual(payload["metadata"]["decomposition_mode"], "event")
+        self.assertEqual(payload["metadata"]["event_status"], "SUCCESS_COMPLETE")
+
     def test_decompose_generated_hcb_cofs_for_all_build_binary_linkages(self):
         for template_id, linkage, first, second, expected_linkage_bonds in ALL_BINARY_LINKAGE_ROUND_TRIP_CASES:
             with self.subTest(template_id=template_id), tempfile.TemporaryDirectory() as temp_dir:
@@ -479,6 +861,114 @@ class DecomposeRoundTripTests(unittest.TestCase):
                     self.assertEqual(detection["accepted_bond_count"], expected_linkage_bonds)
                     self.assertEqual(detection["small_ring_rejected_bond_count"], 0)
                     self.assertEqual(detection["endpoint_rejected_bond_count"], 0)
+
+    def test_event_mode_round_trips_all_buildable_binary_linkages(self):
+        for template_id, linkage, first, second, expected_linkage_bonds in ALL_BUILD_BINARY_LINKAGE_ROUND_TRIP_CASES:
+            with self.subTest(template_id=template_id), tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                summary, _candidate = _generator(template_id).generate_pair_candidate(
+                    first,
+                    second,
+                    out_dir=temp_path,
+                    write_cif=True,
+                )
+                input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+
+                legacy_result = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    linkage=linkage,
+                )
+                event_result = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    linkage=linkage,
+                    decomposition_mode="event",
+                )
+                automatic_event_result = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    decomposition_mode="event",
+                )
+
+                self.assertTrue(legacy_result.ok, legacy_result.reason)
+                self.assertNotIn("decomposition_mode", legacy_result.metadata)
+                self.assertTrue(event_result.ok, event_result.reason)
+                self.assertEqual(event_result.cofid, summary.metadata["cofid"])
+                self.assertEqual(event_result.metadata["decomposition_mode"], "event")
+                self.assertEqual(event_result.metadata["event_status"], "SUCCESS_COMPLETE")
+                self.assertTrue(automatic_event_result.ok, automatic_event_result.reason)
+                self.assertEqual(automatic_event_result.linkage, linkage)
+                self.assertEqual(automatic_event_result.cofid, summary.metadata["cofid"])
+                family_events = [
+                    event
+                    for event in event_result.metadata["event_detection"]["events"]
+                    if event["family"] == linkage
+                ]
+                expected_event_count = (
+                    expected_linkage_bonds // 2
+                    if linkage in {"azine", "boest"}
+                    else expected_linkage_bonds
+                )
+                self.assertEqual(len(family_events), expected_event_count)
+                if linkage in {"azine", "boest"}:
+                    self.assertTrue(all(len(event["cut_bonds"]) == 2 for event in family_events))
+
+    def test_event_detector_branches_tied_vinylene_orientations(self):
+        mol = Chem.MolFromSmiles("CC=CC")
+        self.assertIsNotNone(mol)
+        for atom in mol.GetAtoms():
+            atom.SetProp("instance_id", "")
+
+        detection = detect_linkage_events(BondedMolBuildResult(mol=mol))
+        vinylene_events = [event for event in detection.events if event.family == "vinylene"]
+
+        self.assertEqual(len(vinylene_events), 2)
+        self.assertEqual(len({event.site_id for event in vinylene_events}), 1)
+        self.assertEqual({event.confidence for event in vinylene_events}, {"low"})
+        self.assertEqual(
+            detection.diagnostics["detectors"]["vinylene"]["ambiguous_orientation_site_count"],
+            1,
+        )
+
+    def test_event_mode_globally_classifies_triazine_as_an_intact_imine_monomer_motif(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = _generator("imine_bridge").generate_pair_candidate(
+                _record("melamine", MELAMINE, "amine", 3),
+                _record("tfb", TFB, "aldehyde", 3),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
+
+            automatic = decompose_cif_to_cofid(
+                input_cif,
+                topology="hcb",
+                decomposition_mode="event",
+            )
+            triazine = decompose_cif_to_cofid(
+                input_cif,
+                topology="hcb",
+                linkage="triazine",
+                decomposition_mode="event",
+            )
+
+        self.assertTrue(automatic.ok, automatic.reason)
+        self.assertEqual(automatic.linkage, "imine")
+        self.assertFalse(triazine.ok)
+        self.assertEqual(triazine.metadata["event_status"], EVENT_STATUS_TRIAZINE_MOTIF)
+        self.assertIn("intact monomer motif", triazine.reason)
+
+    def test_event_mode_is_explicit_and_invalid_modes_are_rejected(self):
+        result = decompose_cif_to_cofid(
+            "unused.cif",
+            decomposition_mode="not-a-mode",
+        )
+
+        self.assertEqual(result.status, "error")
+        self.assertIn("legacy", result.reason)
+        self.assertIn("event", result.reason)
 
     def test_nitrogen_linkage_priority_branches_make_generated_matches_exclusive(self):
         requested_linkages = ("azine", "hydrazone", "bken", "imine")
@@ -561,7 +1051,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertEqual(unactivated_detection["accepted_bond_count"], 0)
         self.assertEqual(valid_detection["accepted_bond_count"], 1)
 
-    def test_recognized_boron_linkage_suppresses_vinylene_match(self):
+    def test_recognized_boron_linkage_does_not_suppress_separate_vinylene_match(self):
         cases = (
             (
                 "boest",
@@ -582,11 +1072,11 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 detection = _classify_vinylene_linkage_bonds(mol).to_metadata()
 
                 self.assertEqual(detection["recognized_boron_linkages"], [expected_boron_linkage])
-                self.assertTrue(detection["boron_linkage_override_applied"])
-                self.assertEqual(detection["boron_linkage_rejected_bond_count"], 1)
-                self.assertEqual(detection["accepted_bond_count"], 0)
+                self.assertFalse(detection["boron_linkage_override_applied"])
+                self.assertEqual(detection["boron_linkage_rejected_bond_count"], 0)
+                self.assertEqual(detection["accepted_bond_count"], 1)
 
-    def test_imine_and_vinylene_decompositions_suppress_triazine_match(self):
+    def test_imine_and_vinylene_decompositions_make_triazine_assignment_ambiguous(self):
         cases = (
             (
                 "imine_bridge",
@@ -625,11 +1115,12 @@ class DecomposeRoundTripTests(unittest.TestCase):
 
                 self.assertTrue(preferred.ok, preferred.reason)
                 self.assertFalse(triazine.ok)
-                self.assertIn("higher-priority linkage chemistry", triazine.reason)
+                self.assertIn("assignment is ambiguous", triazine.reason)
                 resolution = triazine.metadata["triazine_linkage_resolution"]
-                self.assertTrue(resolution["override_applied"])
+                self.assertTrue(resolution["ambiguous"])
+                self.assertFalse(resolution["override_applied"])
                 self.assertEqual(
-                    resolution["recognized_higher_priority_linkages"],
+                    resolution["coexisting_linkages"],
                     [expected_linkage],
                 )
                 self.assertEqual(
@@ -802,6 +1293,18 @@ class DecomposeRoundTripTests(unittest.TestCase):
 
                     result = decompose_cif_to_cofid(input_cif, topology=topology, linkage=template_id)
 
+                    if case_name == "sql_4_4_imine":
+                        self.assertFalse(result.ok)
+                        self.assertIn("periodic rank 3", result.reason)
+                        self.assertEqual(
+                            result.metadata["topology_validation"]["expected_periodic_rank"],
+                            2,
+                        )
+                        self.assertEqual(
+                            result.metadata["topology_validation"]["observed_periodic_rank"],
+                            3,
+                        )
+                        continue
                     self.assertTrue(result.ok, result.reason)
                     self.assertEqual(result.cofid, summary.metadata["cofid"])
                     observed_connectivity_pairs.add(
@@ -890,6 +1393,47 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                         resolution = result.metadata["triazine_linkage_resolution"]
                         self.assertFalse(resolution["override_applied"])
                         self.assertEqual(resolution["recognized_higher_priority_linkages"], [])
+
+    def test_event_mode_round_trips_ring_linkages_with_atomic_events(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for template_id, linkage, monomer in self.ring_cases:
+                with self.subTest(linkage=linkage):
+                    cif_path, expected_cofid = self._write_ring_candidate(temp_path, template_id, monomer)
+                    input_cif = _without_cofid_comment(
+                        cif_path,
+                        temp_path / f"{linkage}_event_stripped.cif",
+                    )
+
+                    result = decompose_cif_to_cofid(
+                        input_cif,
+                        linkage=linkage,
+                        decomposition_mode="event",
+                    )
+                    automatic = decompose_cif_to_cofid(
+                        input_cif,
+                        decomposition_mode="event",
+                    )
+
+                    self.assertTrue(result.ok, result.reason)
+                    self.assertEqual(result.cofid, expected_cofid)
+                    self.assertTrue(automatic.ok, automatic.reason)
+                    self.assertEqual(automatic.linkage, linkage)
+                    self.assertEqual(automatic.cofid, expected_cofid)
+                    self.assertEqual(result.metadata["event_status"], "SUCCESS_COMPLETE")
+                    family_events = [
+                        event
+                        for event in result.metadata["event_detection"]["events"]
+                        if event["family"] == linkage
+                    ]
+                    if linkage == "boroxine":
+                        self.assertEqual(len(family_events), 2)
+                        self.assertTrue(all(len(event["cut_bonds"]) == 6 for event in family_events))
+                    else:
+                        self.assertEqual(len(family_events), 4)
+                        self.assertEqual(len({event["site_id"] for event in family_events}), 2)
+                        self.assertTrue(all(len(event["cut_bonds"]) == 3 for event in family_events))
+                        self.assertIn("N#C", result.monomers[0].canonical_smiles)
 
     def test_ring_decomposition_works_without_bond_loop_or_instance_labels(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -152,13 +152,15 @@ The older `run_imine_batch(...)` convenience method remains available and delega
 
 ## CIF Decomposition
 
-Use `decompose_cif_to_cofid` for supported binary-bridge and boroxine/triazine ring-forming atomistic CIFs. Pass `topology=` when you know the topology, or omit it to use conservative topology detection from an embedded COFid comment or the recovered periodic linkage graph. The default `bond_mode="auto"` prefers explicit CIF bonds and falls back to distance inference; use `bond_mode="distance"` to force distance-inferred connectivity.
+Use `decompose_cif_to_cofid` for supported binary-bridge and boroxine/triazine ring-forming atomistic CIFs expanded in `P1`. The default `linkage="auto"` evaluates every supported family and succeeds only when one produces a complete periodic precursor decomposition. Pass an explicit linkage to test one family. Pass `topology=` when you know the topology, or omit it to use conservative topology detection from a validated embedded COFid comment or the recovered periodic linkage graph. The default `bond_mode="auto"` prefers explicit CIF bonds and falls back to distance inference; use `bond_mode="distance"` to force distance-inferred connectivity. Distance inference is triclinic-safe, and explicit atom pairs may retain more than one periodic edge when their image gains differ.
 
-Nitrogen-containing C=N overlaps are resolved per bond, not per CIF. N-N environments use `azine > hydrazone > imine`, while keto-aldehyde-derived environments use the independent `bken > imine` branch. A more-specific bond is therefore unavailable to generic imine decomposition. Cross-branch matches are returned as ambiguous and exposed under `metadata["nitrogen_linkage_detection"]`.
+The established engine remains the default through `decomposition_mode="legacy"`. Pass `decomposition_mode="event"` to opt into the experimental event/hypothesis engine. Event mode normalizes the graph once, detects atomic local linkage events, branches alternative site interpretations, and selects only globally validated reconstruction hypotheses. It returns the same `CifDecompositionResult` type, with event and hypothesis diagnostics under `metadata`. See [event-decomposition.md](event-decomposition.md) for its status model, limitations, and benchmark contract.
 
-Vinylene matching is also conservative: formal C=C bonds in five- or six-membered rings are excluded, both alkene endpoints must have carbon anchors, and exactly one endpoint must resolve as the more strongly activated-methylene-derived side. Recognized boronate-ester or boroxine chemistry in the same structure takes priority over an otherwise valid vinylene match. Detection and override counts are exposed under `metadata["vinylene_linkage_detection"]`.
+Nitrogen-containing C-N/C=N overlaps are resolved per bond, not per CIF. N-N environments use `azine > hydrazone > imine`, while keto-aldehyde-derived environments use the independent `bken > imine` branch. The beta-ketoenamine detector accepts the conventional product tautomer with a C-N linkage bond and adjacent C=C bond. A more-specific bond is therefore unavailable to generic imine decomposition. Cross-branch matches are returned as ambiguous and exposed under `metadata["nitrogen_linkage_detection"]`.
 
-Triazine matching yields to independently recoverable imine or vinylene chemistry. This uses complete monomer recovery rather than raw C=N detection, avoiding promotion of the alternating formal C=N bonds intrinsic to a Kekule triazine ring. Resolution details are exposed under `metadata["triazine_linkage_resolution"]`.
+Vinylene matching is also conservative: formal C=C bonds in five- or six-membered rings are excluded, both alkene endpoints must have carbon anchors, and exactly one endpoint must resolve as the more strongly activated-methylene-derived side. Recognized boronate-ester or boroxine chemistry is reported in `metadata["vinylene_linkage_detection"]` without suppressing a separate valid vinylene candidate.
+
+Triazine matching is withheld as ambiguous only when imine or vinylene independently recovers valid precursor motifs and a rank-2 or rank-3 periodic backbone. This avoids treating the alternating formal C=N bonds intrinsic to a Kekule triazine ring as competing chemistry. Resolution details are exposed under `metadata["triazine_linkage_resolution"]`.
 
 ```python
 from cofkit import decompose_cif_to_cofid, detect_cif_topology
@@ -166,12 +168,21 @@ from cofkit import decompose_cif_to_cofid, detect_cif_topology
 detection = detect_cif_topology("out/tapb_tfb.cif", linkage="imine")
 print(detection.status, detection.selected_topology, detection.confidence)
 
-result = decompose_cif_to_cofid("out/tapb_tfb.cif", linkage="imine", bond_mode="auto")
+result = decompose_cif_to_cofid("out/tapb_tfb.cif", linkage="auto", bond_mode="auto")
 if result.ok:
     print(result.cofid)
 else:
-    print(result.reason)
+    print(result.status, result.reason)
+
+event_result = decompose_cif_to_cofid(
+    "out/tapb_tfb.cif",
+    linkage="auto",
+    decomposition_mode="event",
+)
+print(event_result.metadata["event_status"])
 ```
+
+`status="skipped"` denotes unsupported, incomplete, chemically inconsistent, or nonperiodic recovery; `status="ambiguous"` means automatic linkage detection found more than one valid family. `status="error"` denotes malformed CIF, periodicity, bond, or topology input. A successful result has the complete linkage-specific precursor role set, exact motif-derived connectivity, a periodic rank compatible with its topology, and has passed the forward build-input validator.
 
 For ring-forming structures, decomposition recognizes complete B3O3 or C3N3 product rings, restores the precursor reactive groups, and rebuilds the periodic net through virtual three-connected ring nodes. Equivalent components in named stacked bilayers are reduced to one layer graph before topology ranking.
 

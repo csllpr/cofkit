@@ -190,6 +190,36 @@ def build_rdkit_monomer(
     )
 
 
+def detect_rdkit_motif_count(
+    smiles: str,
+    motif_kind: str,
+    *,
+    motif_registry: MotifKindRegistry | None = None,
+    builder: RDKitMotifBuilder | None = None,
+) -> int:
+    """Return the number of buildable motifs without generating a conformer.
+
+    Decomposition uses this lightweight path to verify that a repaired precursor
+    really exposes the role and connectivity written to its COFid.  Motif match
+    handlers need a conformer for their geometry payloads, but motif acceptance
+    itself is graph-based, so a zero-coordinate conformer is sufficient here.
+    """
+
+    if Chem is None:
+        raise RuntimeError("RDKit is required for motif detection")
+    effective_builder = builder or RDKitMotifBuilder.builtin(motif_registry=motif_registry)
+    definition = effective_builder.motif_registry.get(motif_kind)
+    if definition.rdkit_smarts is None:
+        raise ValueError(f"motif kind {motif_kind!r} has no RDKit SMARTS configuration")
+    base = Chem.MolFromSmiles(smiles)
+    if base is None:
+        raise ValueError(f"RDKit could not parse SMILES {smiles!r}")
+    molecule = Chem.AddHs(base)
+    conformer = Chem.Conformer(molecule.GetNumAtoms())
+    molecule.AddConformer(conformer, assignId=True)
+    return len(effective_builder._detect_motifs(molecule, conformer, definition))
+
+
 def _embed_conformers(molecule, *, num_conformers: int, random_seed: int) -> tuple[int, ...]:
     params = AllChem.ETKDGv3()
     params.randomSeed = random_seed

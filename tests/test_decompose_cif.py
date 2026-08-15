@@ -65,6 +65,7 @@ class DecomposeCifExtractionTests(unittest.TestCase):
         self.assertEqual(atoms.info["_geom_bond_atom_site_label_1"], ("C1",))
         self.assertEqual(atoms.info["_geom_bond_atom_site_label_2"], ("N1",))
         self.assertEqual(atoms.info["_ccdc_geom_bond_type"], ("S",))
+        self.assertEqual(atoms.info["_space_group_name_H-M_alt"], ("P 1",))
         self.assertTrue(atoms_have_explicit_cif_bonds(atoms))
         self.assertAlmostEqual(atoms.get_positions()[1][0], 1.5, places=6)
 
