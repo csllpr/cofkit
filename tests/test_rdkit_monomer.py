@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import CIFWriter, COFEngine, COFProject, build_rdkit_monomer
+from cofkit.chem.rdkit import detect_rdkit_motif_count
 from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 from cofkit.reaction_realization import ReactionRealizer
 
@@ -169,6 +170,23 @@ class RDKitMonomerTests(unittest.TestCase):
 
         self.assertEqual(len(monomer.motifs), 3)
         self.assertTrue(all(motif.kind == "activated_methylene" for motif in monomer.motifs))
+
+    def test_activated_methylene_detection_accepts_conjugated_aza_and_nitrile_donors(self):
+        self.assertEqual(
+            detect_rdkit_motif_count(
+                "Cc1c(C#N)c(C)c(C#N)c(C)c1C#N",
+                "activated_methylene",
+            ),
+            3,
+        )
+        self.assertEqual(
+            detect_rdkit_motif_count("Cc1cc(C)nc(C)c1", "activated_methylene"),
+            3,
+        )
+        self.assertEqual(
+            detect_rdkit_motif_count("Cc1ccccc1", "activated_methylene"),
+            0,
+        )
 
     def test_rdkit_hcb_case_keeps_bipartite_periodic_images_and_atomistic_export(self):
         tapb = build_rdkit_monomer(

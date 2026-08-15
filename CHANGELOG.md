@@ -8,10 +8,17 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Added
 
-- opt-in event-based CIF decomposition through `decomposition_mode="event"` and `cofkit analyze decompose --decomposition-mode event`, with immutable linkage events, atomic azine/boronate/ring handling, bounded reconstruction hypotheses, global endpoint/framework/topology validation, generalized triazine motif classification, and structured benchmark diagnostics; the existing legacy engine remains the default pending evaluation on an independent labelled test set
+- event-based CIF decomposition with immutable linkage events, atomic azine/boronate/ring handling, bounded reconstruction hypotheses, global endpoint/framework/topology validation, generalized triazine motif classification, and structured benchmark diagnostics
+
+### Changed
+
+- event-based decomposition is now the API and CLI default after outperforming legacy on the largest available inspected CoRE-COFs linkage-label set; the previous per-family engine remains available explicitly through `decomposition_mode="legacy"` and `--decomposition-mode legacy`
 
 ### Fixed
 
+- event decomposition now recognizes keto-tautomerized azine and acylhydrazone N-N environments before the overlapping beta-ketoenamine interpretation, and restores the aldehyde precursor tautomer after cutting
+- precursor reconstruction now removes malformed/disordered explicit CIF hydrogens before sanitization and restores a missing positive charge on locally unambiguous tetravalent nitrogen atoms
+- activated-methylene detection now accepts methyl groups conjugated to aza-aromatic or cyano-aromatic rings while retaining the rejection of unactivated methylbenzene donors
 - LAMMPS optimization and MD runs now stage relative data and trajectory filenames and execute from their run directory, allowing input, output, and executable paths that contain spaces
 - CIF decomposition now assigns overlapping nitrogen-containing C-N/C=N bonds through independent per-bond priority branches: `azine > hydrazone > imine` for N-N environments and `bken > imine` for keto-enamine environments; conventional beta-ketoenamine C-N/C=C products are recognized, and cross-branch matches are reported as ambiguous instead of being globally promoted
 - vinylene CIF decomposition now excludes formal C=C bonds in five- and six-membered rings and requires carbon-anchored endpoints with a uniquely identifiable activated-methylene side, preventing Kekule aromatic and ordinary cyclic/unactivated alkene bonds from being treated as vinylene linkages

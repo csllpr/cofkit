@@ -1,7 +1,7 @@
-"""Experimental event-based CIF decomposition.
+"""Event-based CIF decomposition.
 
-This module deliberately lives beside :mod:`cofkit.decompose` instead of
-replacing it.  It shares the established CIF graph construction, precursor
+This module lives beside the retained legacy implementation in
+:mod:`cofkit.decompose`.  It shares the established CIF graph construction, precursor
 validation, topology matching, and COFid serialization primitives, but changes
 the decision model:
 
@@ -11,10 +11,8 @@ the decision model:
 4. validate each complete hypothesis globally;
 5. select a result only after chemical and topological validation.
 
-The public entry point is reached with
-``decompose_cif_to_cofid(..., decomposition_mode="event")``.  Legacy mode
-remains the default until the two implementations have been benchmarked on an
-independent labelled corpus.
+The public entry point uses this pipeline by default.  Pass
+``decomposition_mode="legacy"`` to use the compatibility implementation.
 """
 
 from __future__ import annotations
@@ -189,7 +187,7 @@ def decompose_cif_to_cofid_event(
     linkage: str = "auto",
     bond_mode: str = "auto",
 ) -> legacy.CifDecompositionResult:
-    """Run the experimental event/hypothesis decomposition pipeline."""
+    """Run the event/hypothesis decomposition pipeline."""
 
     input_path = Path(cif_path)
     normalized_linkage = str(linkage).strip().lower()
@@ -429,11 +427,129 @@ def _detect_nitrogen_events(mol) -> tuple[tuple[LinkageEvent, ...], Mapping[str,
     double_by_nitrogen: defaultdict[int, list[int]] = defaultdict(list)
     for bond_idx, (_carbon_idx, nitrogen_idx) in eligible_double.items():
         double_by_nitrogen[nitrogen_idx].append(bond_idx)
+    single_by_nitrogen: defaultdict[int, list[int]] = defaultdict(list)
+    for bond_idx, (_carbon_idx, nitrogen_idx) in eligible_bken_single.items():
+        single_by_nitrogen[nitrogen_idx].append(bond_idx)
 
     events: list[LinkageEvent] = []
     claimed_azine: set[int] = set()
     claimed_hydrazone: set[int] = set()
     rejected_endpoint = 0
+    tautomerized_azine_count = 0
+    tautomerized_hydrazone_count = 0
+
+    # Enol-to-keto tautomerization changes the linkage-side C=N bond into C-N,
+    # which also satisfies the local beta-ketoenamine detector.  Resolve that
+    # overlap from the N-N context before emitting generic bken events: paired
+    # C-N endpoints around N-N are an azine, while an acylated partner nitrogen
+    # identifies an acylhydrazone.
+    for bond_idx, (carbon_idx, nitrogen_idx) in sorted(eligible_bken_single.items()):
+        if bond_idx in claimed_azine:
+            continue
+        nitrogen = mol.GetAtomWithIdx(nitrogen_idx)
+        partner_event: LinkageEvent | None = None
+        for partner_nitrogen in nitrogen.GetNeighbors():
+            partner_n_idx = int(partner_nitrogen.GetIdx())
+            if partner_nitrogen.GetAtomicNum() != 7:
+                continue
+            nn_bond = mol.GetBondBetweenAtoms(nitrogen_idx, partner_n_idx)
+            if nn_bond is None or abs(float(nn_bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
+                continue
+            partner_bonds = [
+                candidate
+                for candidate in single_by_nitrogen.get(partner_n_idx, ())
+                if candidate != bond_idx and candidate not in claimed_azine
+            ]
+            if len(partner_bonds) == 1:
+                partner_bond_idx = partner_bonds[0]
+                partner_carbon_idx, _ = eligible_bken_single[partner_bond_idx]
+                if (
+                    _is_neutral_imine_nitrogen(
+                        mol,
+                        nitrogen_idx,
+                        carbon_idx,
+                        required_external_element=7,
+                    )
+                    and _is_neutral_imine_nitrogen(
+                        mol,
+                        partner_n_idx,
+                        partner_carbon_idx,
+                        required_external_element=7,
+                    )
+                ):
+                    pair = tuple(sorted((bond_idx, partner_bond_idx)))
+                    partner_event = _event(
+                        mol,
+                        event_id=f"azine:{pair[0]}-{pair[1]}:keto_tautomer",
+                        family="azine",
+                        atoms=(carbon_idx, nitrogen_idx, partner_n_idx, partner_carbon_idx),
+                        bonds=(bond_idx, int(nn_bond.GetIdx()), partner_bond_idx),
+                        cut_bonds=pair,
+                        confidence="high",
+                        endpoint_roles=(
+                            (carbon_idx, "aldehyde"),
+                            (partner_carbon_idx, "aldehyde"),
+                            (nitrogen_idx, "hydrazine"),
+                            (partner_n_idx, "hydrazine"),
+                        ),
+                        site_id=f"azine:{pair[0]}-{pair[1]}",
+                        metadata={
+                            "representation": "keto_tautomer",
+                            "event_stoichiometry": "2 aldehyde sites + 1 hydrazine unit",
+                        },
+                    )
+                    claimed_azine.update(pair)
+                    tautomerized_azine_count += 1
+                    break
+
+            if not partner_bonds and _is_acylhydrazone_partner(
+                mol,
+                partner_n_idx,
+                nitrogen_idx,
+            ):
+                if _is_neutral_imine_nitrogen(
+                    mol,
+                    nitrogen_idx,
+                    carbon_idx,
+                    required_external_element=7,
+                ):
+                    carbonyl_idx = _hydrazide_carbonyl_neighbor(
+                        mol,
+                        partner_n_idx,
+                        nitrogen_idx,
+                    )
+                    atoms = [carbon_idx, nitrogen_idx, partner_n_idx]
+                    bonds = [bond_idx, int(nn_bond.GetIdx())]
+                    if carbonyl_idx is not None:
+                        atoms.append(carbonyl_idx)
+                        nc_bond = mol.GetBondBetweenAtoms(partner_n_idx, carbonyl_idx)
+                        if nc_bond is not None:
+                            bonds.append(int(nc_bond.GetIdx()))
+                    partner_event = _event(
+                        mol,
+                        event_id=f"hydrazone:{bond_idx}:keto_tautomer",
+                        family="hydrazone",
+                        atoms=atoms,
+                        bonds=bonds,
+                        cut_bonds=(bond_idx,),
+                        confidence="high",
+                        endpoint_roles=(
+                            (carbon_idx, "aldehyde"),
+                            (nitrogen_idx, "hydrazide"),
+                        ),
+                        site_id=f"hydrazone:{bond_idx}",
+                        metadata={
+                            "internal_family": "acylhydrazone",
+                            "representation": "keto_tautomer",
+                        },
+                    )
+                    claimed_hydrazone.add(bond_idx)
+                    tautomerized_hydrazone_count += 1
+                    break
+        if partner_event is not None and partner_event.event_id not in {
+            event.event_id for event in events
+        }:
+            events.append(partner_event)
 
     for bond_idx, (carbon_idx, nitrogen_idx) in sorted(eligible_double.items()):
         if bond_idx in claimed_azine:
@@ -561,6 +677,8 @@ def _detect_nitrogen_events(mol) -> tuple[tuple[LinkageEvent, ...], Mapping[str,
         )
 
     for bond_idx, (carbon_idx, nitrogen_idx) in sorted(eligible_bken_single.items()):
+        if bond_idx in claimed_azine or bond_idx in claimed_hydrazone:
+            continue
         events.append(_make_bken_event(mol, bond_idx, carbon_idx, nitrogen_idx, representation="keto_enamine"))
 
     counts = Counter(event.family for event in events)
@@ -571,6 +689,8 @@ def _detect_nitrogen_events(mol) -> tuple[tuple[LinkageEvent, ...], Mapping[str,
             set(legacy._eligible_carbon_nitrogen_double_bonds(mol)).intersection(small_ring_bonds)
         ),
         "strict_endpoint_rejected_count": rejected_endpoint,
+        "tautomerized_azine_event_count": tautomerized_azine_count,
+        "tautomerized_hydrazone_event_count": tautomerized_hydrazone_count,
         "event_counts": dict(sorted(counts.items())),
     }
 
@@ -1405,7 +1525,7 @@ def _cut_and_reconstruct(
                 metadata={"fragment_role_atoms": dict(fragment_role_atoms)},
             )
         role = next(iter(fragment_role_atoms))
-        monomer = _repair_event_fragment(fragment, spec, events[0].family)
+        monomer = _repair_event_fragment(fragment, spec, events)
         if monomer is None:
             return _CutReconstructionResult(
                 status=EVENT_STATUS_ENDPOINT,
@@ -1513,8 +1633,9 @@ def _allowed_linkage_residue_atoms(mol, events: tuple[LinkageEvent, ...]) -> set
 def _repair_event_fragment(
     fragment,
     spec: legacy.DecompositionSpec,
-    family: str,
+    events: tuple[LinkageEvent, ...],
 ) -> legacy.DecomposedMonomer | None:
+    family = events[0].family
     if family == "triazine":
         endpoint_roles = {
             atom.GetProp("cofkit_decompose_role")
@@ -1530,6 +1651,24 @@ def _repair_event_fragment(
         )
     if isinstance(spec, legacy.RingDecompositionSpec):
         return legacy._repair_ring_fragment_to_monomer(fragment, spec)
+    if family in {"azine", "hydrazone"} and any(
+        event.metadata.get("representation") == "keto_tautomer" for event in events
+    ):
+        endpoint_roles = {
+            atom.GetProp("cofkit_decompose_role")
+            for atom in fragment.GetAtoms()
+            if atom.HasProp("cofkit_decompose_role")
+        }
+        if endpoint_roles == {"aldehyde"}:
+            repaired = legacy._restore_keto_aldehyde_fragment(
+                fragment,
+                endpoint_role="aldehyde",
+            )
+            return legacy._finalize_repaired_fragment(
+                repaired,
+                "aldehyde",
+                connectivity_counter=spec.connectivity_counter,
+            )
     return legacy._repair_linkage_fragment_to_monomer(fragment, spec)
 
 
@@ -1686,14 +1825,19 @@ def _select_event_result(
         "hypothesis_generation": dict(generation_metadata),
         "hypotheses": [hypothesis.to_dict() for hypothesis in hypotheses],
         "benchmark_contract": {
-            "legacy_default_unchanged": True,
+            "default_mode": "event",
+            "legacy_mode_available": True,
             "selection_unit": "globally validated reconstruction hypothesis",
-            "external_labelled_benchmark_pending": True,
+            "promotion_basis": "CoRE-COFs_1242-v7.0 inspected linkage labels",
         },
     }
     requested_linkage = requested_family or "auto"
     if len(complete) == 1:
         selected = complete[0]
+        # Preserve the common decomposition diagnostics at the result level.
+        # This keeps consumers such as ``cofkit validate`` independent of the
+        # selected engine while the full hypothesis record remains available.
+        metadata.update(dict(selected.metadata))
         metadata.update({
             "event_status": EVENT_STATUS_COMPLETE,
             "selected_hypothesis_id": selected.hypothesis_id,

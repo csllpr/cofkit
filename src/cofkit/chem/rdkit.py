@@ -735,6 +735,8 @@ def _is_electron_withdrawing_anchor(atom, excluded_neighbor_id: int) -> bool:
         )
         if aromatic_nitrogen_neighbors >= 2:
             return True
+        if _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id):
+            return True
     for bond in atom.GetBonds():
         other = bond.GetOtherAtom(atom)
         if other.GetIdx() == excluded_neighbor_id:
@@ -744,6 +746,46 @@ def _is_electron_withdrawing_anchor(atom, excluded_neighbor_id: int) -> bool:
             return True
         if bond_order >= 3.0 and other.GetAtomicNum() == 7:
             return True
+    return False
+
+
+def _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id: int) -> bool:
+    """Recognize methyl donors activated through an aromatic ring.
+
+    Vinylene COFs commonly use methylated aza-heterocycles or
+    cyano-substituted aromatic donors.  The withdrawing atom need not be a
+    direct neighbor of the methyl-bearing ring carbon, but it must belong to
+    the same five- or six-membered aromatic conjugation path.
+    """
+
+    molecule = atom.GetOwningMol()
+    Chem.GetSymmSSSR(molecule)
+    atom_idx = int(atom.GetIdx())
+    for raw_ring in molecule.GetRingInfo().AtomRings():
+        ring = {int(candidate) for candidate in raw_ring}
+        if atom_idx not in ring or len(ring) not in {5, 6}:
+            continue
+        if not all(molecule.GetAtomWithIdx(candidate).GetIsAromatic() for candidate in ring):
+            continue
+        if any(
+            molecule.GetAtomWithIdx(candidate).GetAtomicNum() in {7, 8, 16}
+            for candidate in ring
+        ):
+            return True
+        for candidate in ring:
+            ring_atom = molecule.GetAtomWithIdx(candidate)
+            for substituent in ring_atom.GetNeighbors():
+                substituent_idx = int(substituent.GetIdx())
+                if substituent_idx in ring or substituent_idx == excluded_neighbor_id:
+                    continue
+                if substituent.GetAtomicNum() != 6:
+                    continue
+                if any(
+                    float(bond.GetBondTypeAsDouble()) >= 3.0
+                    and bond.GetOtherAtom(substituent).GetAtomicNum() == 7
+                    for bond in substituent.GetBonds()
+                ):
+                    return True
     return False
 
 

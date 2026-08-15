@@ -46,16 +46,16 @@ cofkit analyze decompose \
   --json
 ```
 
-The established per-family engine remains the default. Use the experimental event/hypothesis engine explicitly for side-by-side evaluation:
+The event/hypothesis engine is the default. Use the retained per-family engine explicitly when compatibility or side-by-side evaluation is needed:
 
 ```bash
 cofkit analyze decompose \
   out/cli_single_pair/cifs/valid/tapb__tfb__hcb.cif \
-  --decomposition-mode event \
+  --decomposition-mode legacy \
   --json
 ```
 
-Event mode emits structured local events and globally validated reconstruction hypotheses under `metadata["event_detection"]` and `metadata["hypotheses"]`. It has not replaced legacy mode because the independent labelled benchmark set is still pending. See [event-decomposition.md](event-decomposition.md).
+Default event mode emits structured local events and globally validated reconstruction hypotheses under `metadata["event_detection"]` and `metadata["hypotheses"]`. See [event-decomposition.md](event-decomposition.md).
 
 Current scope:
 
@@ -68,12 +68,11 @@ Current scope:
 - periodic distances are evaluated with a triclinic-safe nearest-lattice-image search, and distinct explicit bonds between the same atom labels are retained when their periodic image gains differ
 - supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest`, `bken`, `vinylene`, `boroxine`, and `triazine`
 - `--linkage auto` is the default; all supported families are evaluated and success requires exactly one complete periodic precursor decomposition
-- `--decomposition-mode legacy` is the default; `--decomposition-mode event` opts into the experimental event/hypothesis engine without changing legacy behavior
-- overlapping nitrogen-containing C-N/C=N bonds are classified per bond through two independent branches: `azine > hydrazone > imine` for N-N environments and `bken > imine` for the keto-enamine environment; azine requires `C=N-N=C`, hydrazone requires `C=N-N-C(=O)`, and beta-ketoenamine accepts the conventional C-N/C=C keto-enamine tautomer next to the keto-aldehyde-derived ring-carbonyl environment
-- a C=N bond claimed by a more specific branch is excluded from generic imine decomposition; a bond matching both independent branches is reported as cross-branch ambiguous instead of being assigned by a global priority
-- vinylene decomposition rejects C=C bonds in five- or six-membered rings, requires carbon anchors at both endpoints, and requires exactly one endpoint to have the stronger activated-methylene environment (a carbon anchor activated by multiple nitrogens or a multiple bond to N/O/S); the raw and rejected C=C counts are reported under `metadata["vinylene_linkage_detection"]`
+- `--decomposition-mode event` is the default; `--decomposition-mode legacy` selects the retained per-family compatibility engine
+- default event mode resolves nitrogen overlaps locally, including conventional and keto-tautomerized azine/acylhydrazone N-N products before an overlapping beta-ketoenamine interpretation; the retained legacy engine exposes its independent `azine > hydrazone > imine` and `bken > imine` per-bond branches under `metadata["nitrogen_linkage_detection"]`
+- vinylene decomposition rejects C=C bonds in five- or six-membered rings, requires carbon anchors at both endpoints, and supports activated methyl groups through direct withdrawing groups or conjugated aza/cyano aromatic systems; event mode branches tied orientations for global validation
 - recognized boronate-ester or boroxine chemistry is reported under `metadata["vinylene_linkage_detection"]` but does not suppress a separate structurally valid vinylene candidate
-- triazine assignment is reported as ambiguous only when an imine or vinylene strategy independently recovers valid precursor motifs and a rank-2 or rank-3 periodic backbone; the evaluations and coexisting linkage families are reported under `metadata["triazine_linkage_resolution"]`
+- default event mode treats a detected triazine ring as a monomer motif when another complete supported-family reconstruction retains it intact; explicit legacy mode retains its narrower imine/vinylene competition rule
 - template-id aliases such as `hydrazone_bridge`, `boronate_ester_bridge`, `boroxine_trimerization`, and `triazine_trimerization` are accepted through `--linkage`
 - boroxine and triazine decomposition recognizes complete six-membered product rings, restores the boronic-acid or nitrile precursor groups, and reconstructs the net through virtual three-connected ring nodes
 - equivalent disconnected layer graphs in named stacked ring-forming outputs are normalized before topology ranking

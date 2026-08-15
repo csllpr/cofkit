@@ -306,15 +306,15 @@ def decompose_cif_to_cofid(
     topology: str | None = None,
     linkage: str = "auto",
     bond_mode: str = "auto",
-    decomposition_mode: str = "legacy",
+    decomposition_mode: str = "event",
 ) -> CifDecompositionResult:
     input_path = Path(cif_path)
     normalized_decomposition_mode = str(decomposition_mode).strip().lower()
     if normalized_decomposition_mode == "event":
         # Imported lazily so the event pipeline can reuse the stable graph,
         # precursor, and topology primitives in this module without creating an
-        # import cycle.  The legacy path remains the default until corpus-level
-        # benchmarking establishes that event mode is superior.
+        # import cycle.  Event mode is the default after its CoRE-COFs labelled
+        # benchmark; callers can still request the compatibility path explicitly.
         from .decompose_events import decompose_cif_to_cofid_event
 
         return decompose_cif_to_cofid_event(
@@ -506,6 +506,7 @@ def _decompose_cif_with_auto_linkage(
             topology=topology,
             linkage=candidate_linkage,
             bond_mode=bond_mode,
+            decomposition_mode="legacy",
         )
         for candidate_linkage in canonical_linkages
     )
@@ -3067,13 +3068,13 @@ def _restore_aldehyde_oxygens(fragment):
     return _restore_double_oxygens(fragment, "aldehyde")
 
 
-def _restore_keto_aldehyde_fragment(fragment):
+def _restore_keto_aldehyde_fragment(fragment, *, endpoint_role: str = "keto_aldehyde"):
     editable = Chem.RWMol(fragment)
     endpoint_indices = [
         atom.GetIdx()
         for atom in editable.GetAtoms()
         if atom.HasProp("cofkit_decompose_role")
-        and atom.GetProp("cofkit_decompose_role") == "keto_aldehyde"
+        and atom.GetProp("cofkit_decompose_role") == endpoint_role
     ]
     rings_to_rearomatize: set[frozenset[int]] = set()
     Chem.GetSymmSSSR(editable)
@@ -3112,7 +3113,7 @@ def _restore_keto_aldehyde_fragment(fragment):
             if bond.GetBeginAtomIdx() in ring and bond.GetEndAtomIdx() in ring:
                 bond.SetBondType(Chem.BondType.AROMATIC)
                 bond.SetIsAromatic(True)
-    return _restore_double_oxygens(editable.GetMol(), "keto_aldehyde")
+    return _restore_double_oxygens(editable.GetMol(), endpoint_role)
 
 
 def _restore_boronic_acid_oxygens(fragment):
@@ -3184,8 +3185,39 @@ def _finalize_repaired_fragment(
             atom.ClearProp("cif_label")
         if atom.HasProp("instance_id"):
             atom.ClearProp("instance_id")
-    Chem.SanitizeMol(mol)
-    mol = Chem.RemoveHs(mol)
+    # CIFs commonly carry explicit hydrogens on linkage atoms.  Bond cutting
+    # and precursor-group restoration change the heavy-atom valence first, so
+    # sanitizing while those product-state hydrogens are still attached can
+    # raise a spurious valence error (for example N(4), O(3), or C(5)).  Remove
+    # them without sanitization and let RDKit assign precursor-state implicit
+    # hydrogens during the single final sanitization.
+    # Remove malformed bridging hydrogens explicitly.  RDKit intentionally
+    # preserves degree-two H atoms, but in a distance-bonded CIF graph these
+    # are almost always duplicated/disordered proton positions rather than
+    # covalent framework bridges.
+    editable = Chem.RWMol(mol)
+    for atom_idx in sorted(
+        (
+            atom.GetIdx()
+            for atom in editable.GetAtoms()
+            if atom.GetAtomicNum() == 1 and atom.GetDegree() != 1
+        ),
+        reverse=True,
+    ):
+        editable.RemoveAtom(atom_idx)
+    mol = Chem.RemoveHs(editable.GetMol(), sanitize=False)
+    # CIF formal-charge fields are frequently absent even when the normalized
+    # bond graph contains a conventional tetravalent iminium/pyridinium N.
+    # Restoring the charge is deterministic from that local valence and avoids
+    # rejecting an otherwise valid precursor for N(4).
+    for atom in mol.GetAtoms():
+        explicit_valence = sum(float(bond.GetBondTypeAsDouble()) for bond in atom.GetBonds())
+        if (
+            atom.GetAtomicNum() == 7
+            and atom.GetFormalCharge() == 0
+            and 3.9 <= explicit_valence <= 4.1
+        ):
+            atom.SetFormalCharge(1)
     Chem.SanitizeMol(mol)
     return DecomposedMonomer(
         connectivity=endpoint_count,

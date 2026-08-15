@@ -154,13 +154,13 @@ The older `run_imine_batch(...)` convenience method remains available and delega
 
 Use `decompose_cif_to_cofid` for supported binary-bridge and boroxine/triazine ring-forming atomistic CIFs expanded in `P1`. The default `linkage="auto"` evaluates every supported family and succeeds only when one produces a complete periodic precursor decomposition. Pass an explicit linkage to test one family. Pass `topology=` when you know the topology, or omit it to use conservative topology detection from a validated embedded COFid comment or the recovered periodic linkage graph. The default `bond_mode="auto"` prefers explicit CIF bonds and falls back to distance inference; use `bond_mode="distance"` to force distance-inferred connectivity. Distance inference is triclinic-safe, and explicit atom pairs may retain more than one periodic edge when their image gains differ.
 
-The established engine remains the default through `decomposition_mode="legacy"`. Pass `decomposition_mode="event"` to opt into the experimental event/hypothesis engine. Event mode normalizes the graph once, detects atomic local linkage events, branches alternative site interpretations, and selects only globally validated reconstruction hypotheses. It returns the same `CifDecompositionResult` type, with event and hypothesis diagnostics under `metadata`. See [event-decomposition.md](event-decomposition.md) for its status model, limitations, and benchmark contract.
+The event/hypothesis engine is the default. It normalizes the graph once, detects atomic local linkage events, branches alternative site interpretations, and selects only globally validated reconstruction hypotheses. Pass `decomposition_mode="legacy"` to use the retained per-family compatibility engine. Both return the same `CifDecompositionResult` type; the default event result includes event and hypothesis diagnostics under `metadata`. See [event-decomposition.md](event-decomposition.md) for its status model, limitations, and benchmark results.
 
-Nitrogen-containing C-N/C=N overlaps are resolved per bond, not per CIF. N-N environments use `azine > hydrazone > imine`, while keto-aldehyde-derived environments use the independent `bken > imine` branch. The beta-ketoenamine detector accepts the conventional product tautomer with a C-N linkage bond and adjacent C=C bond. A more-specific bond is therefore unavailable to generic imine decomposition. Cross-branch matches are returned as ambiguous and exposed under `metadata["nitrogen_linkage_detection"]`.
+In default event mode, nitrogen-containing C-N/C=N overlaps are resolved locally before hypotheses are evaluated globally. N-N context recognizes azine and acylhydrazone products in both their conventional and keto-tautomerized representations before an overlapping beta-ketoenamine interpretation. The beta-ketoenamine detector accepts the conventional product tautomer with a C-N linkage bond and adjacent C=C bond. Event decisions and suppressed overlaps are exposed under `metadata["event_detection"]`; the explicit legacy engine retains its per-bond classifier diagnostics under `metadata["nitrogen_linkage_detection"]`.
 
-Vinylene matching is also conservative: formal C=C bonds in five- or six-membered rings are excluded, both alkene endpoints must have carbon anchors, and exactly one endpoint must resolve as the more strongly activated-methylene-derived side. Recognized boronate-ester or boroxine chemistry is reported in `metadata["vinylene_linkage_detection"]` without suppressing a separate valid vinylene candidate.
+Vinylene matching is also conservative: formal C=C bonds in five- or six-membered rings are excluded, both alkene endpoints must have carbon anchors, and candidate orientations are ranked by the activated-methylene-derived environment. Conjugated aza-aromatic and cyano-aromatic donors are supported while unactivated methylbenzene is rejected. Tied orientations branch into separate hypotheses for global validation.
 
-Triazine matching is withheld as ambiguous only when imine or vinylene independently recovers valid precursor motifs and a rank-2 or rank-3 periodic backbone. This avoids treating the alternating formal C=N bonds intrinsic to a Kekule triazine ring as competing chemistry. Resolution details are exposed under `metadata["triazine_linkage_resolution"]`.
+Triazine is resolved globally. If another complete supported-family reconstruction retains every detected triazine ring inside a recovered monomer, event mode classifies that ring as a monomer motif instead of a linkage. This avoids treating the alternating formal C=N bonds intrinsic to a Kekule triazine ring as competing chemistry. Legacy-only resolution details remain available under `metadata["triazine_linkage_resolution"]` when that engine is requested.
 
 ```python
 from cofkit import decompose_cif_to_cofid, detect_cif_topology
@@ -174,12 +174,12 @@ if result.ok:
 else:
     print(result.status, result.reason)
 
-event_result = decompose_cif_to_cofid(
+legacy_result = decompose_cif_to_cofid(
     "out/tapb_tfb.cif",
     linkage="auto",
-    decomposition_mode="event",
+    decomposition_mode="legacy",
 )
-print(event_result.metadata["event_status"])
+print(result.metadata["event_status"])
 ```
 
 `status="skipped"` denotes unsupported, incomplete, chemically inconsistent, or nonperiodic recovery; `status="ambiguous"` means automatic linkage detection found more than one valid family. `status="error"` denotes malformed CIF, periodicity, bond, or topology input. A successful result has the complete linkage-specific precursor role set, exact motif-derived connectivity, a periodic rank compatible with its topology, and has passed the forward build-input validator.

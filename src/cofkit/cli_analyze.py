@@ -125,13 +125,10 @@ def _add_decompose_parser(subparsers) -> None:
             "Linkage token to analyze. Default: auto evaluates every supported family and requires "
             "one unique periodic match. Supported canonical values: imine, hydrazone, azine, "
             "boest, bken, vinylene, boroxine, triazine. Template-id aliases such as "
-            "hydrazone_bridge and boroxine_trimerization are also accepted. Overlapping C-N/C=N "
-            "bonds are assigned per bond through the azine > hydrazone > imine N-N branch "
-            "or the bken > imine keto-enamine branch. Vinylene requires a C=C bond outside "
-            "five- and six-membered rings with distinguishable aldehyde and activated-methylene "
-            "endpoints; coexisting boron motifs are reported without suppressing it. A triazine "
-            "assignment is withheld as ambiguous only when a complete competing periodic imine "
-            "or vinylene decomposition is recovered."
+            "hydrazone_bridge and boroxine_trimerization are also accepted. The default event "
+            "engine resolves local C-N/C=N overlaps before globally validating complete precursor, "
+            "periodic, and topology hypotheses; vinylene requires a supported activated donor, and "
+            "a triazine ring retained inside another complete precursor is treated as a monomer motif."
         ),
     )
     parser.add_argument(
@@ -143,10 +140,10 @@ def _add_decompose_parser(subparsers) -> None:
     parser.add_argument(
         "--decomposition-mode",
         choices=("legacy", "event"),
-        default="legacy",
+        default="event",
         help=(
-            "Decomposition engine. Default: legacy preserves the established per-family pipeline; "
-            "event enables the experimental event/hypothesis pipeline for side-by-side benchmarking."
+            "Decomposition engine. Default: event uses globally validated event/hypothesis "
+            "reconstruction; legacy retains the established per-family compatibility pipeline."
         ),
     )
     parser.add_argument(

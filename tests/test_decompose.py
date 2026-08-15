@@ -553,6 +553,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
                         cif_path,
                         topology="hcb",
                         linkage=linkage,
+                        decomposition_mode="legacy",
                     )
 
                     self.assertFalse(result.ok)
@@ -579,6 +580,18 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertEqual(metadata["beta_ketoenamine_single_bond_count"], 1)
         self.assertEqual(metadata["assigned_bond_counts"]["bken"], 1)
         self.assertEqual(metadata["assigned_bond_counts"]["imine"], 0)
+
+    def test_repaired_precursor_restores_missing_tetravalent_nitrogen_charge(self):
+        mol = Chem.MolFromSmiles("C[N+](C)=C")
+        self.assertIsNotNone(mol)
+        nitrogen = next(atom for atom in mol.GetAtoms() if atom.GetAtomicNum() == 7)
+        nitrogen.SetFormalCharge(0)
+        nitrogen.SetProp("cofkit_decompose_role", "amine")
+
+        monomer = _finalize_repaired_fragment(mol, "amine")
+
+        self.assertIsNotNone(monomer)
+        self.assertIn("[N+]", monomer.canonical_smiles)
 
     def test_periodic_gain_matching_allows_vertex_switching_and_axis_permutation(self):
         expected = (
@@ -657,6 +670,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 input_cif,
                 topology="sql",
                 linkage="imine",
+                decomposition_mode="legacy",
             )
 
         self.assertFalse(result.ok)
@@ -676,7 +690,11 @@ class DecomposeRoundTripTests(unittest.TestCase):
             lines[0] = lines[0].replace("&&hcb&&", "&&sql&&")
             input_cif = _write_cif_lines(lines, temp_path / "wrong_comment.cif")
 
-            result = decompose_cif_to_cofid(input_cif, linkage="imine")
+            result = decompose_cif_to_cofid(
+                input_cif,
+                linkage="imine",
+                decomposition_mode="legacy",
+            )
 
         self.assertTrue(result.ok, result.reason)
         self.assertEqual(result.topology, "hcb")
@@ -698,7 +716,11 @@ class DecomposeRoundTripTests(unittest.TestCase):
             )
             input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
 
-            result = decompose_cif_to_cofid(input_cif, topology="hcb")
+            result = decompose_cif_to_cofid(
+                input_cif,
+                topology="hcb",
+                decomposition_mode="legacy",
+            )
 
         self.assertTrue(result.ok, result.reason)
         self.assertEqual(result.cofid, summary.metadata["cofid"])
@@ -715,7 +737,10 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 write_cif=True,
             )
 
-            result = decompose_cif_to_cofid(summary.cif_path)
+            result = decompose_cif_to_cofid(
+                summary.cif_path,
+                decomposition_mode="legacy",
+            )
 
         self.assertTrue(result.ok, result.reason)
         self.assertEqual(result.topology, "hcb")
@@ -735,7 +760,11 @@ class DecomposeRoundTripTests(unittest.TestCase):
             )
             input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
 
-            result = decompose_cif_to_cofid(input_cif, topology="hcb")
+            result = decompose_cif_to_cofid(
+                input_cif,
+                topology="hcb",
+                decomposition_mode="legacy",
+            )
 
         self.assertTrue(result.ok, result.reason)
         self.assertEqual(result.cofid, summary.metadata["cofid"])
@@ -766,7 +795,11 @@ class DecomposeRoundTripTests(unittest.TestCase):
             )
             input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped_bex.cif")
 
-            result = decompose_cif_to_cofid(input_cif, topology="bex")
+            result = decompose_cif_to_cofid(
+                input_cif,
+                topology="bex",
+                decomposition_mode="legacy",
+            )
 
         self.assertTrue(result.ok, result.reason)
         self.assertEqual(result.cofid, summary.metadata["cofid"])
@@ -807,7 +840,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
 
         self.assertEqual(buffer.getvalue().strip(), summary.metadata["cofid"])
 
-    def test_analyze_decompose_cli_exposes_event_mode_json(self):
+    def test_analyze_decompose_cli_defaults_to_event_mode_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             summary, _candidate = _generator().generate_pair_candidate(
@@ -827,8 +860,6 @@ class DecomposeRoundTripTests(unittest.TestCase):
                         str(input_cif),
                         "--topology",
                         "hcb",
-                        "--decomposition-mode",
-                        "event",
                         "--json",
                     ]
                 )
@@ -850,7 +881,12 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 )
                 input_cif = _without_cofid_comment(summary.cif_path, temp_path / "stripped.cif")
 
-                result = decompose_cif_to_cofid(input_cif, topology="hcb", linkage=linkage)
+                result = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    linkage=linkage,
+                    decomposition_mode="legacy",
+                )
 
                 self.assertTrue(result.ok, result.reason)
                 self.assertEqual(result.cofid, summary.metadata["cofid"])
@@ -878,6 +914,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
                     input_cif,
                     topology="hcb",
                     linkage=linkage,
+                    decomposition_mode="legacy",
                 )
                 event_result = decompose_cif_to_cofid(
                     input_cif,
@@ -888,7 +925,6 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 automatic_event_result = decompose_cif_to_cofid(
                     input_cif,
                     topology="hcb",
-                    decomposition_mode="event",
                 )
 
                 self.assertTrue(legacy_result.ok, legacy_result.reason)
@@ -898,6 +934,11 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 self.assertEqual(event_result.metadata["decomposition_mode"], "event")
                 self.assertEqual(event_result.metadata["event_status"], "SUCCESS_COMPLETE")
                 self.assertTrue(automatic_event_result.ok, automatic_event_result.reason)
+                self.assertEqual(automatic_event_result.metadata["decomposition_mode"], "event")
+                self.assertEqual(automatic_event_result.metadata["bond_source"], "explicit_cif")
+                benchmark_contract = automatic_event_result.metadata["benchmark_contract"]
+                self.assertEqual(benchmark_contract["default_mode"], "event")
+                self.assertTrue(benchmark_contract["legacy_mode_available"])
                 self.assertEqual(automatic_event_result.linkage, linkage)
                 self.assertEqual(automatic_event_result.cofid, summary.metadata["cofid"])
                 family_events = [
@@ -931,6 +972,34 @@ class DecomposeRoundTripTests(unittest.TestCase):
             1,
         )
 
+    def test_event_detector_prioritizes_tautomerized_azine_over_beta_ketoenamine(self):
+        mol = Chem.MolFromSmiles("O=C1C=CC=CC1=CNNC=C1C=CC=CC1=O")
+        self.assertIsNotNone(mol)
+        for atom in mol.GetAtoms():
+            atom.SetProp("instance_id", "")
+
+        detection = detect_linkage_events(BondedMolBuildResult(mol=mol))
+        azine_events = [event for event in detection.events if event.family == "azine"]
+
+        self.assertEqual(len(azine_events), 1)
+        self.assertEqual(len(azine_events[0].cut_bonds), 2)
+        self.assertEqual(azine_events[0].metadata["representation"], "keto_tautomer")
+        self.assertFalse(any(event.family == "bken" for event in detection.events))
+
+    def test_event_detector_prioritizes_tautomerized_hydrazone_over_beta_ketoenamine(self):
+        mol = Chem.MolFromSmiles("CC(=O)NNC=C1C(=O)C=CC=C1")
+        self.assertIsNotNone(mol)
+        for atom in mol.GetAtoms():
+            atom.SetProp("instance_id", "")
+
+        detection = detect_linkage_events(BondedMolBuildResult(mol=mol))
+        hydrazone_events = [event for event in detection.events if event.family == "hydrazone"]
+
+        self.assertEqual(len(hydrazone_events), 1)
+        self.assertEqual(len(hydrazone_events[0].cut_bonds), 1)
+        self.assertEqual(hydrazone_events[0].metadata["representation"], "keto_tautomer")
+        self.assertFalse(any(event.family == "bken" for event in detection.events))
+
     def test_event_mode_globally_classifies_triazine_as_an_intact_imine_monomer_motif(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -960,7 +1029,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertEqual(triazine.metadata["event_status"], EVENT_STATUS_TRIAZINE_MOTIF)
         self.assertIn("intact monomer motif", triazine.reason)
 
-    def test_event_mode_is_explicit_and_invalid_modes_are_rejected(self):
+    def test_invalid_decomposition_modes_are_rejected(self):
         result = decompose_cif_to_cofid(
             "unused.cif",
             decomposition_mode="not-a-mode",
@@ -988,6 +1057,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
                         input_cif,
                         topology="hcb",
                         linkage=requested_linkage,
+                        decomposition_mode="legacy",
                     )
                     detection = result.metadata["nitrogen_linkage_detection"]
                     assigned_counts = detection["assigned_bond_counts"]
@@ -1106,11 +1176,13 @@ class DecomposeRoundTripTests(unittest.TestCase):
                     input_cif,
                     topology="hcb",
                     linkage=expected_linkage,
+                    decomposition_mode="legacy",
                 )
                 triazine = decompose_cif_to_cofid(
                     input_cif,
                     topology="hcb",
                     linkage="triazine",
+                    decomposition_mode="legacy",
                 )
 
                 self.assertTrue(preferred.ok, preferred.reason)
@@ -1145,6 +1217,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 generic_labels,
                 topology="hcb",
                 linkage="vinylene",
+                decomposition_mode="legacy",
             )
 
         self.assertTrue(result.ok, result.reason)
@@ -1164,7 +1237,12 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 )
                 input_cif = _without_cif_bond_type_column(summary.cif_path, temp_path / "without_bond_type.cif")
 
-                result = decompose_cif_to_cofid(input_cif, topology="hcb", linkage=linkage)
+                result = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    linkage=linkage,
+                    decomposition_mode="legacy",
+                )
 
                 self.assertTrue(result.ok, result.reason)
                 self.assertEqual(result.cofid, summary.metadata["cofid"])
@@ -1185,7 +1263,12 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 )
                 input_cif = _without_cif_bond_loop(summary.cif_path, temp_path / "without_bond_loop.cif")
 
-                result = decompose_cif_to_cofid(input_cif, topology="hcb", linkage=linkage)
+                result = decompose_cif_to_cofid(
+                    input_cif,
+                    topology="hcb",
+                    linkage=linkage,
+                    decomposition_mode="legacy",
+                )
 
                 self.assertTrue(result.ok, result.reason)
                 self.assertEqual(result.cofid, summary.metadata["cofid"])
@@ -1206,7 +1289,10 @@ class DecomposeRoundTripTests(unittest.TestCase):
             no_bonds = _without_cif_bond_loop(summary.cif_path, temp_path / "without_bond_loop.cif")
             generic_labels = _with_generic_atom_labels(no_bonds, temp_path / "generic_labels.cif")
 
-            result = decompose_cif_to_cofid(generic_labels)
+            result = decompose_cif_to_cofid(
+                generic_labels,
+                decomposition_mode="legacy",
+            )
 
         self.assertTrue(result.ok, result.reason)
         self.assertEqual(result.topology, "hcb")
@@ -1291,7 +1377,12 @@ class DecomposeRoundTripTests(unittest.TestCase):
                         temp_path / case_name / "stripped.cif",
                     )
 
-                    result = decompose_cif_to_cofid(input_cif, topology=topology, linkage=template_id)
+                    result = decompose_cif_to_cofid(
+                        input_cif,
+                        topology=topology,
+                        linkage=template_id,
+                        decomposition_mode="legacy",
+                    )
 
                     if case_name == "sql_4_4_imine":
                         self.assertFalse(result.ok)
@@ -1378,7 +1469,11 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                     cif_path, expected_cofid = self._write_ring_candidate(temp_path, template_id, monomer)
                     input_cif = _without_cofid_comment(cif_path, temp_path / f"{linkage}_stripped.cif")
 
-                    result = decompose_cif_to_cofid(input_cif, linkage=linkage)
+                    result = decompose_cif_to_cofid(
+                        input_cif,
+                        linkage=linkage,
+                        decomposition_mode="legacy",
+                    )
 
                     self.assertTrue(result.ok, result.reason)
                     self.assertEqual(result.cofid, expected_cofid)
@@ -1412,7 +1507,6 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                     )
                     automatic = decompose_cif_to_cofid(
                         input_cif,
-                        decomposition_mode="event",
                     )
 
                     self.assertTrue(result.ok, result.reason)
@@ -1444,7 +1538,12 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                     no_bonds = _without_cif_bond_loop(cif_path, temp_path / f"{linkage}_no_bonds.cif")
                     generic = _with_generic_atom_labels(no_bonds, temp_path / f"{linkage}_generic.cif")
 
-                    result = decompose_cif_to_cofid(generic, topology="hcb", linkage=template_id)
+                    result = decompose_cif_to_cofid(
+                        generic,
+                        topology="hcb",
+                        linkage=template_id,
+                        decomposition_mode="legacy",
+                    )
 
                     self.assertTrue(result.ok, result.reason)
                     self.assertEqual(result.cofid, expected_cofid)
@@ -1481,7 +1580,11 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                     cif_path, expected_cofid = self._write_ring_candidate(temp_path, template_id, monomer)
                     input_cif = _without_cofid_comment(cif_path, temp_path / f"{linkage}_node_stripped.cif")
 
-                    result = decompose_cif_to_cofid(input_cif, linkage=linkage)
+                    result = decompose_cif_to_cofid(
+                        input_cif,
+                        linkage=linkage,
+                        decomposition_mode="legacy",
+                    )
 
                     self.assertTrue(result.ok, result.reason)
                     self.assertEqual(result.cofid, expected_cofid)
@@ -1506,7 +1609,11 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                             temp_path / f"{linkage}_{stacking_id}_stripped.cif",
                         )
 
-                        result = decompose_cif_to_cofid(input_cif, linkage=linkage)
+                        result = decompose_cif_to_cofid(
+                            input_cif,
+                            linkage=linkage,
+                            decomposition_mode="legacy",
+                        )
                         validation = validate_cif_against_cofid(expected_cofid, cif_path)
 
                         self.assertTrue(result.ok, result.reason)
