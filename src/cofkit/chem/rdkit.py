@@ -752,10 +752,11 @@ def _is_electron_withdrawing_anchor(atom, excluded_neighbor_id: int) -> bool:
 def _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id: int) -> bool:
     """Recognize methyl donors activated through an aromatic ring.
 
-    Vinylene COFs commonly use methylated aza-heterocycles or
-    cyano-substituted aromatic donors.  The withdrawing atom need not be a
-    direct neighbor of the methyl-bearing ring carbon, but it must belong to
-    the same five- or six-membered aromatic conjugation path.
+    Vinylene COFs commonly use methylated aza-heterocycles,
+    cyano-substituted aromatic donors, or phenyl methyl groups conjugated to
+    an aza-heterocycle.  The withdrawing atom need not be a direct neighbor
+    of the methyl-bearing ring carbon, but it must belong to the same aromatic
+    ring or to a directly attached five- or six-membered aromatic heterocycle.
     """
 
     molecule = atom.GetOwningMol()
@@ -786,6 +787,34 @@ def _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id: int) ->
                     for bond in substituent.GetBonds()
                 ):
                     return True
+                if substituent.GetIsAromatic() and _belongs_to_aromatic_heterocycle(
+                    molecule,
+                    substituent_idx,
+                    excluded_ring=ring,
+                ):
+                    return True
+    return False
+
+
+def _belongs_to_aromatic_heterocycle(
+    molecule,
+    atom_id: int,
+    *,
+    excluded_ring: set[int],
+) -> bool:
+    """Return whether an aromatic atom belongs to an attached heterocycle."""
+
+    for raw_ring in molecule.GetRingInfo().AtomRings():
+        ring = {int(candidate) for candidate in raw_ring}
+        if ring == excluded_ring or atom_id not in ring or len(ring) not in {5, 6}:
+            continue
+        if not all(molecule.GetAtomWithIdx(candidate).GetIsAromatic() for candidate in ring):
+            continue
+        if any(
+            molecule.GetAtomWithIdx(candidate).GetAtomicNum() in {7, 8, 16}
+            for candidate in ring
+        ):
+            return True
     return False
 
 

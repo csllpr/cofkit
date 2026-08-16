@@ -50,6 +50,16 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertTrue(all("imine_bridge" in motif.allowed_reaction_templates for motif in monomer.motifs))
         self.assertEqual(len(monomer.atom_symbols), len(monomer.atom_positions))
 
+    def test_primary_amine_detection_rejects_resonance_deactivated_nitrogens(self):
+        self.assertEqual(detect_rdkit_motif_count("Nc1ccc(N)cc1", "amine"), 2)
+        self.assertEqual(detect_rdkit_motif_count("NC(=O)N", "amine"), 0)
+        self.assertEqual(detect_rdkit_motif_count("NC(=S)N", "amine"), 0)
+        self.assertEqual(
+            detect_rdkit_motif_count("NC(=S)Nc1ccc(NC(N)=S)cc1", "amine"),
+            0,
+        )
+        self.assertEqual(detect_rdkit_motif_count("NS(=O)(=O)c1ccccc1", "amine"), 0)
+
     def test_build_rdkit_monomer_detects_tfb_contextual_aldehydes(self):
         monomer = build_rdkit_monomer(
             "tfb",
@@ -184,7 +194,21 @@ class RDKitMonomerTests(unittest.TestCase):
             3,
         )
         self.assertEqual(
+            detect_rdkit_motif_count(
+                "Cc1ccc(-c2nc(-c3ccc(C)cc3)nc(-c3ccc(C)cc3)n2)cc1",
+                "activated_methylene",
+            ),
+            3,
+        )
+        self.assertEqual(
             detect_rdkit_motif_count("Cc1ccccc1", "activated_methylene"),
+            0,
+        )
+        self.assertEqual(
+            detect_rdkit_motif_count(
+                "Cc1ccc(-c2ccccc2)cc1",
+                "activated_methylene",
+            ),
             0,
         )
 

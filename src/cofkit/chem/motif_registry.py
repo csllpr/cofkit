@@ -56,7 +56,11 @@ def _builtin_motif_kind_definitions() -> tuple[MotifKindDefinition, ...]:
             id_prefix="ami",
             cif_symbol="N",
             allowed_reaction_templates=("imine_bridge", "keto_enamine_bridge"),
-            rdkit_smarts="[NX3;H2;!$(N[C,S]=O)]-[#6]",
+            # Amide, thioamide, sulfonamide, and thiosulfonamide nitrogens are
+            # resonance-deactivated and are not primary-amine builders.  Keep
+            # this exclusion graph-local so ordinary anilines and alkylamines
+            # remain eligible regardless of the rest of the precursor.
+            rdkit_smarts="[NX3;H2;!$(N[C](=[O,S]));!$(NS(=[O,S]))]-[#6]",
         ),
         MotifKindDefinition(
             kind="aldehyde",

@@ -9,7 +9,7 @@ Use this directory as the canonical documentation set for `cofkit`.
 - [Building COFs](building.md): single-pair generation, batch generation, all binary bridges, default library rebuilds, topology and stacking options
 - [Analysis and validation](analysis-validation.md): output classification, CIF-to-COFid decomposition, COFid validation, Zeo++ pore analysis
 - [Event decomposition](event-decomposition.md): default event/hypothesis architecture, diagnostics, limitations, legacy compatibility, and benchmark results
-- [Decomposition visual atlas](decomposition-visual.html): illustrated CIF-to-COFid flow, per-linkage chemistry, conflict resolution, and topology recovery
+- [Decomposition visual atlas](decomposition-visual.html): illustrated event-to-hypothesis CIF decomposition flow, per-linkage chemistry, global validation, conflict resolution, and topology recovery
 - [Calculations](calculations.md): LAMMPS optimization, EQeq charge staging, gRASPA/RASPA2 Widom/isotherm/mixture workflows, hybrid MD/MC
 - [Python API](python-api.md): practical `COFEngine` and `BatchStructureGenerator` examples
 - [External tools](external-tools.md): recommended Zeo++, LAMMPS, EQeq, gRASPA, and RASPA2 installs

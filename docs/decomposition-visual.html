@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="An implementation-aligned visual guide to COFKit CIF decomposition, linkage recognition, conflict resolution, precursor repair, and topology recovery.">
+  <meta name="description" content="An implementation-aligned visual guide to COFKit's event-based CIF decomposition, immutable linkage events, bounded reconstruction hypotheses, global validation, and topology recovery.">
   <title>COFKit Decomposition Atlas</title>
   <style>
     :root {
@@ -274,6 +274,7 @@
     }
 
     .status-mini .ok { color: var(--green); }
+    .status-mini .ambiguous { color: var(--blue); }
     .status-mini .skip { color: #a87400; }
     .status-mini .error { color: var(--coral); }
 
@@ -322,7 +323,7 @@
 
     .pipeline {
       display: grid;
-      grid-template-columns: repeat(7, minmax(138px, 1fr));
+      grid-template-columns: repeat(8, minmax(136px, 1fr));
       overflow-x: auto;
       padding: 26px 18px 30px;
       scrollbar-color: var(--cyan) transparent;
@@ -415,6 +416,204 @@
     .invariant span {
       color: #c3d0d3;
       font-size: 0.77rem;
+    }
+
+    .mode-split {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.4fr);
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .mode-card {
+      position: relative;
+      overflow: hidden;
+      padding: 19px 21px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--paper-bright);
+    }
+
+    .mode-card.default { border-color: rgba(63, 152, 124, 0.5); }
+    .mode-card.legacy { background: rgba(255, 253, 247, 0.52); }
+
+    .mode-card::before {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 5px;
+      background: var(--green);
+      content: "";
+    }
+
+    .mode-card.legacy::before { background: var(--line); }
+
+    .mode-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 7px;
+    }
+
+    .mode-label code { color: var(--green); font-weight: 800; }
+    .mode-card.legacy .mode-label code { color: var(--muted); }
+
+    .default-badge {
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: #245f4d;
+      background: var(--green-soft);
+      font-size: 0.61rem;
+      font-weight: 850;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .mode-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.76rem;
+    }
+
+    .evidence-section {
+      padding-top: 18px;
+    }
+
+    .object-flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 28px;
+      margin-bottom: 18px;
+    }
+
+    .object-card {
+      position: relative;
+      min-height: 312px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--paper-bright);
+      box-shadow: 0 10px 25px rgba(25, 36, 39, 0.07);
+    }
+
+    .object-card::after {
+      position: absolute;
+      z-index: 3;
+      top: 48%;
+      right: -22px;
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--coral);
+      background: var(--paper-bright);
+      content: "→";
+      font-size: 1.05rem;
+      font-weight: 800;
+    }
+
+    .object-card:last-child::after { display: none; }
+
+    .object-type {
+      display: inline-flex;
+      margin-bottom: 14px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      color: var(--navy);
+      background: var(--cyan-soft);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.67rem;
+      font-weight: 800;
+    }
+
+    .object-card:nth-child(2) .object-type { background: var(--yellow-soft); }
+    .object-card:nth-child(3) .object-type { background: var(--green-soft); }
+
+    .object-card > p {
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .field-list {
+      display: grid;
+      gap: 6px;
+      padding: 0;
+      margin: 17px 0 0;
+      list-style: none;
+    }
+
+    .field-list li {
+      display: grid;
+      grid-template-columns: minmax(94px, auto) 1fr;
+      gap: 9px;
+      padding-top: 6px;
+      border-top: 1px dashed var(--line);
+      color: var(--muted);
+      font-size: 0.69rem;
+    }
+
+    .field-list code { color: var(--blue); font-weight: 750; }
+
+    .variant-demo {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 7px;
+      margin-top: 17px;
+    }
+
+    .variant {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--paper);
+      font-size: 0.66rem;
+      text-align: center;
+    }
+
+    .variant-demo > span { color: var(--coral); font-weight: 900; }
+
+    .validation-ladder {
+      display: grid;
+      gap: 5px;
+      margin-top: 16px;
+    }
+
+    .validation-ladder span {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: 7px;
+      align-items: center;
+      padding: 6px 8px;
+      border-radius: 7px;
+      color: var(--muted);
+      background: var(--paper);
+      font-size: 0.67rem;
+    }
+
+    .validation-ladder b { color: var(--green); }
+
+    .bounded-note {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 13px;
+      align-items: center;
+      padding: 17px 20px;
+      border: 1px solid rgba(71, 126, 168, 0.35);
+      border-radius: var(--radius-md);
+      background: var(--blue-soft);
+      font-size: 0.77rem;
+    }
+
+    .bounded-note strong {
+      color: var(--blue);
+      font-family: Georgia, serif;
+      font-size: 1.65rem;
+      font-style: italic;
     }
 
     .atlas-section {
@@ -605,22 +804,6 @@
       background: var(--paper-bright);
     }
 
-    .resolver {
-      display: grid;
-      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
-      gap: 18px;
-      margin-bottom: 18px;
-    }
-
-    .resolver-board,
-    .guardrail-board,
-    .precedence-board {
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      background: var(--paper);
-      box-shadow: 0 10px 25px rgba(25, 36, 39, 0.07);
-    }
-
     .board-title {
       display: flex;
       align-items: start;
@@ -643,183 +826,62 @@
       font-style: italic;
     }
 
-    .branch-start {
-      margin: 23px auto 17px;
-      width: max-content;
-      max-width: calc(100% - 28px);
-      padding: 10px 17px;
-      border: 1px solid var(--navy);
-      border-radius: 999px;
-      background: var(--navy);
-      color: white;
-      font-size: 0.78rem;
-      font-weight: 760;
-      text-align: center;
-    }
-
-    .branch-grid {
+    .policy-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      position: relative;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 14px;
-      padding: 23px 21px 18px;
     }
 
-    .branch-grid::before {
-      position: absolute;
-      top: 0;
-      right: 25%;
-      left: 25%;
-      height: 18px;
-      border-top: 1px solid var(--line);
-      border-right: 1px solid var(--line);
-      border-left: 1px solid var(--line);
-      content: "";
+    .policy-card {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--paper);
+      box-shadow: 0 10px 25px rgba(25, 36, 39, 0.07);
     }
 
-    .branch {
-      min-width: 0;
-      padding: 14px;
-      border-radius: 12px;
-      background: var(--paper-bright);
-    }
+    .policy-card .board-title { min-height: 112px; }
 
-    .branch.nn { border-top: 4px solid var(--blue); }
-    .branch.keto { border-top: 4px solid var(--purple); }
-
-    .branch h3 { font-size: 0.91rem; }
-
-    .branch ol {
+    .policy-body {
       display: grid;
-      gap: 7px;
-      padding: 0;
-      margin: 13px 0 0;
-      list-style: none;
-      counter-reset: priority;
-    }
-
-    .branch li {
-      display: grid;
-      grid-template-columns: 22px 1fr;
       gap: 8px;
+      padding: 18px 20px 21px;
+    }
+
+    .policy-step {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      gap: 9px;
       align-items: start;
       color: var(--muted);
       font-size: 0.73rem;
-      counter-increment: priority;
     }
 
-    .branch li::before {
+    .policy-step b {
       display: grid;
-      width: 20px;
-      height: 20px;
+      width: 22px;
+      height: 22px;
       place-items: center;
       border-radius: 50%;
       color: white;
       background: var(--navy);
-      content: counter(priority);
       font-size: 0.62rem;
-      font-weight: 800;
     }
 
-    .ambiguity {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 10px;
-      align-items: center;
-      margin: 0 21px 22px;
-      padding: 12px 14px;
-      border: 1px solid #e5a898;
-      border-radius: 10px;
-      background: var(--coral-soft);
-      font-size: 0.73rem;
-    }
-
-    .ambiguity strong {
-      display: grid;
-      width: 27px;
-      height: 27px;
-      place-items: center;
-      border-radius: 50%;
-      color: white;
-      background: var(--coral);
-      font-size: 0.9rem;
-    }
-
-    .decision-stack {
-      display: grid;
-      gap: 9px;
-      padding: 20px;
-    }
-
-    .decision-row {
-      display: grid;
-      grid-template-columns: 28px 1fr auto;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 11px;
-      border-radius: 10px;
-      background: var(--paper-bright);
-      font-size: 0.72rem;
-    }
-
-    .decision-row .check {
-      display: grid;
-      width: 25px;
-      height: 25px;
-      place-items: center;
-      border-radius: 7px;
-      color: var(--green);
+    .policy-outcome {
+      margin: 5px 20px 20px;
+      padding: 10px 12px;
+      border-radius: 9px;
+      color: #245f4d;
       background: var(--green-soft);
-      font-weight: 900;
-    }
-
-    .decision-row .outcome {
-      color: var(--muted);
-      font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 0.62rem;
-    }
-
-    .decision-row.reject .check {
-      color: var(--coral);
-      background: var(--coral-soft);
-    }
-
-    .precedence-board { margin-top: 18px; }
-
-    .precedence-flow {
-      display: grid;
-      grid-template-columns: 1fr auto 1fr auto 1fr;
-      align-items: stretch;
-      gap: 12px;
-      padding: 24px 21px;
-    }
-
-    .family {
-      display: flex;
-      min-height: 118px;
-      flex-direction: column;
-      justify-content: space-between;
-      padding: 16px;
-      border-radius: 13px;
-      background: var(--paper-bright);
-    }
-
-    .family .family-code {
-      color: var(--muted);
       font-family: "SFMono-Regular", Consolas, monospace;
       font-size: 0.65rem;
+      font-weight: 750;
     }
 
-    .family strong { font-family: Georgia, serif; font-size: 1.22rem; }
-
-    .family small { color: var(--muted); font-size: 0.68rem; }
-
-    .precedence-arrow {
-      display: grid;
-      place-items: center;
-      color: var(--coral);
-      font-size: 1.35rem;
-      font-weight: 800;
+    .policy-card.global .policy-outcome {
+      color: #6f5300;
+      background: var(--yellow-soft);
     }
 
     .topology-section { overflow: hidden; }
@@ -923,7 +985,7 @@
 
     .outcome-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 14px;
     }
 
@@ -946,6 +1008,7 @@
     }
 
     .outcome-card.success .outcome-icon { background: var(--green); }
+    .outcome-card.ambiguous .outcome-icon { background: var(--blue); }
     .outcome-card.skipped .outcome-icon { background: var(--yellow); color: var(--ink); }
     .outcome-card.error .outcome-icon { background: var(--coral); }
 
@@ -954,6 +1017,8 @@
       color: var(--muted);
       font-size: 0.78rem;
     }
+
+    .outcome-card .detail-label { overflow-wrap: anywhere; }
 
     .callout {
       display: grid;
@@ -1013,9 +1078,13 @@
     @media (max-width: 900px) {
       .hero-grid,
       .section-head,
-      .resolver { grid-template-columns: 1fr; }
+      .mode-split { grid-template-columns: 1fr; }
 
       .hero-note { max-width: 520px; transform: none; }
+      .object-flow,
+      .policy-grid { grid-template-columns: 1fr; }
+      .object-card { min-height: auto; }
+      .object-card::after { top: auto; right: 50%; bottom: -22px; transform: translateX(50%) rotate(90deg); }
       .linkage-grid { grid-template-columns: 1fr; }
       .topology-plate { grid-template-columns: 1fr; }
       .topology-step { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -1033,11 +1102,7 @@
       section { padding: 68px 0; }
       h1 { font-size: clamp(3rem, 17vw, 5.2rem); }
       .card-body,
-      .branch-grid,
-      .precedence-flow,
       .outcome-grid { grid-template-columns: 1fr; }
-      .branch-grid::before { display: none; }
-      .precedence-arrow { transform: rotate(90deg); }
       .implementation-strip { grid-template-columns: 1fr; }
       .reaction { grid-template-columns: 1fr; }
       .reaction-arrow { transform: rotate(90deg); }
@@ -1073,8 +1138,9 @@
       </a>
       <nav class="nav-links" aria-label="Page sections">
         <a href="#overview">Overview</a>
+        <a href="#evidence">Evidence model</a>
         <a href="#linkages">Linkages</a>
-        <a href="#conflicts">Conflict logic</a>
+        <a href="#conflicts">Resolution</a>
         <a href="#topology">Topology</a>
         <a href="#outcomes">Outcomes</a>
       </nav>
@@ -1085,11 +1151,12 @@
     <section class="hero" aria-labelledby="hero-title">
       <div class="shell hero-grid">
         <div>
-          <p class="eyebrow">Reverse structure interpretation</p>
+          <p class="eyebrow">Event-based reverse structure interpretation</p>
           <h1 id="hero-title">Crystal in.<br>Precursors out.</h1>
-          <p class="lede">How COFKit turns a periodic, atomistic CIF into a complete and buildable COFid—without mistaking every plausible bond for the synthesis that made it.</p>
+          <p class="lede">How COFKit turns one normalized periodic graph into immutable linkage events, bounded reconstruction hypotheses, and—only after global proof—a buildable COFid.</p>
           <div class="status-mini" aria-label="Possible decomposition outcomes">
             <span class="ok"><i aria-hidden="true"></i> success · complete &amp; buildable</span>
+            <span class="ambiguous"><i aria-hidden="true"></i> ambiguous · multiple complete</span>
             <span class="skip"><i aria-hidden="true"></i> skipped · unsupported or incomplete</span>
             <span class="error"><i aria-hidden="true"></i> error · malformed input</span>
           </div>
@@ -1102,7 +1169,8 @@
             &nbsp;&nbsp;<span class="str">"framework.cif"</span>,<br>
             &nbsp;&nbsp;topology=<span class="str">None</span>,<br>
             &nbsp;&nbsp;linkage=<span class="str">"auto"</span>,<br>
-            &nbsp;&nbsp;bond_mode=<span class="str">"auto"</span><br>
+            &nbsp;&nbsp;bond_mode=<span class="str">"auto"</span>,<br>
+            &nbsp;&nbsp;decomposition_mode=<span class="str">"event"</span><br>
             )
           </div>
           <div class="contract-line">
@@ -1111,7 +1179,7 @@
           </div>
           <div class="contract-line">
             <span>OUTPUT</span>
-            <span>status + COFid + monomers + diagnostics</span>
+            <span>status + selected hypothesis + full diagnostics</span>
           </div>
         </aside>
       </div>
@@ -1121,67 +1189,145 @@
       <div class="shell">
         <div class="section-head">
           <div>
-            <p class="eyebrow">01 · General mechanism</p>
-            <h2 id="overview-title">A guarded reverse pipeline</h2>
-            <p class="lede">The module is not a generic retrosynthesis engine. It recognizes one requested linkage family, repairs the precise precursor endpoints, then refuses to serialize unless the recovered role set is complete.</p>
+            <p class="eyebrow">01 · Default workflow</p>
+            <h2 id="overview-title">Detect broadly. Prove globally.</h2>
+            <p class="lede">Event mode detects all eight supported families on the same graph. It delays the final linkage decision until every competing reconstruction has passed—or failed—the same chemical, periodic, topology, and COFid checks.</p>
           </div>
-          <p class="section-note">The chemistry and the periodic graph travel together. Molecular fragments recover precursor identity; periodic edge gains recover the net.</p>
+          <p class="section-note">With <code>linkage="auto"</code>, uniqueness is tested across families. A requested family filters only final selection; the diagnostic record still retains every evaluated hypothesis.</p>
         </div>
 
         <div class="pipeline-wrap">
           <div class="pipeline-header">
-            <strong>DECOMPOSITION / DATAFLOW</strong>
-            <span class="mode">bond_mode = "auto" | "distance"</span>
+            <strong>EVENT DECOMPOSITION / DATAFLOW</strong>
+            <span class="mode">default · decomposition_mode = "event"</span>
           </div>
-          <div class="pipeline" aria-label="Seven stage decomposition flow">
+          <div class="pipeline" aria-label="Eight stage event decomposition flow">
             <article class="stage">
               <div class="stage-no">01</div>
-              <h3>Validate CIF</h3>
-              <p>Resolve the linkage alias, check topology, load with gemmi, and require a P1-expanded structure.</p>
-              <span class="stage-tag">read_periodic_cif_atoms</span>
+              <h3>Normalize once</h3>
+              <p>Validate mode, topology and P1 periodicity. Build one RDKit graph from explicit CIF bonds or triclinic-safe distances.</p>
+              <span class="stage-tag">PeriodicCifAtoms → bonded mol</span>
             </article>
             <article class="stage">
               <div class="stage-no">02</div>
-              <h3>Build graph</h3>
-              <p>Prefer explicit bond loops; infer absent orders. Otherwise use triclinic-safe nearest-image distances.</p>
-              <span class="stage-tag">_build_bonded_mol</span>
+              <h3>Detect events</h3>
+              <p>Run nitrogen, vinylene, boronate-ester, boroxine and triazine detectors; emit immutable local interpretations.</p>
+              <span class="stage-tag">LinkageEvent</span>
             </article>
             <article class="stage">
               <div class="stage-no">03</div>
-              <h3>Classify motifs</h3>
-              <p>Find eligible linkage bonds or strict six-membered product rings for the requested family.</p>
-              <span class="stage-tag">marker / classifier</span>
+              <h3>Resolve locally</h3>
+              <p>Let N–N context claim azine or acylhydrazone sites first; suppress vinylene only where it overlaps canonical β-ketoenamine.</p>
+              <span class="stage-tag">suppressed_events</span>
             </article>
             <article class="stage">
               <div class="stage-no">04</div>
-              <h3>Resolve conflicts</h3>
-              <p>Apply local specificity and cross-family precedence before any cut is accepted.</p>
-              <span class="stage-tag">diagnostic metadata</span>
+              <h3>Branch by site</h3>
+              <p>Group alternative orientations or ring matchings under one <code>site_id</code>; enumerate their Cartesian product per family.</p>
+              <span class="stage-tag">≤ 256 / family</span>
             </article>
             <article class="stage">
               <div class="stage-no">05</div>
-              <h3>Cut + repair</h3>
-              <p>Remove marked bonds, split fragments, and restore aldehyde, boronic-acid, keto or nitrile endpoints.</p>
-              <span class="stage-tag">repairers</span>
+              <h3>Cut atomically</h3>
+              <p>Apply the complete event set together. Split and unwrap fragments; repair aldehyde, keto, boronic-acid or nitrile endpoints.</p>
+              <span class="stage-tag">event hypothesis</span>
             </article>
             <article class="stage">
               <div class="stage-no">06</div>
-              <h3>Prove completeness</h3>
-              <p>Canonicalize and deduplicate. Require exactly the expected precursor-role blocks.</p>
-              <span class="stage-tag">_validate_recovered_precursors</span>
+              <h3>Account + validate</h3>
+              <p>Require unambiguous endpoint ownership, no unexplained framework fragments, exact role counts and motif connectivity.</p>
+              <span class="stage-tag">endpoint → chemical</span>
             </article>
             <article class="stage">
               <div class="stage-no">07</div>
-              <h3>Recover net + emit</h3>
-              <p>Use supplied or detected topology, serialize COFid, parse it, then validate it as a build request.</p>
-              <span class="stage-tag">serialize → parse → build</span>
+              <h3>Prove the net</h3>
+              <p>Validate a supplied topology or detect one from the periodic gain graph; serialize, parse and rebuild the candidate COFid.</p>
+              <span class="stage-tag">topology → COFid</span>
+            </article>
+            <article class="stage">
+              <div class="stage-no">08</div>
+              <h3>Resolve + select</h3>
+              <p>Reclassify intact triazine rings as monomer motifs when proved by another reconstruction. Emit only one unique complete result.</p>
+              <span class="stage-tag">complete = 1</span>
             </article>
           </div>
           <div class="invariant-band">
-            <div class="invariant"><b>A</b><span>Explicit periodic edges keep distinct image gains; reverse duplicate rows are canonicalized.</span></div>
-            <div class="invariant"><b>B</b><span>A partial chemical match never becomes a successful COFid.</span></div>
-            <div class="invariant"><b>C</b><span>Unknown symmetry expansion and self-image quotient bonds fail loudly.</span></div>
+            <div class="invariant"><b>A</b><span>Detection evidence is immutable: variants branch instead of mutating a shared molecule or overwriting one another.</span></div>
+            <div class="invariant"><b>B</b><span>Every family faces the same global gates. A local motif or partial cut never becomes a successful COFid.</span></div>
+            <div class="invariant"><b>C</b><span>Multiple distinct complete family/COFid pairs return ambiguity; score orders evidence but never breaks that tie.</span></div>
           </div>
+        </div>
+
+        <div class="mode-split" aria-label="Available decomposition modes">
+          <article class="mode-card default">
+            <div class="mode-label"><code>event</code><span class="default-badge">default</span></div>
+            <p>One normalized graph, cross-family event detection, bounded alternatives, uniform global validation, structured failure stages, and conservative unique-result selection.</p>
+          </article>
+          <article class="mode-card legacy">
+            <div class="mode-label"><code>legacy</code><span class="mono">explicit opt-in</span></div>
+            <p>The retained per-family compatibility engine. Use <code>decomposition_mode="legacy"</code> for regression comparison, not as an automatic fallback.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="evidence" class="evidence-section" aria-labelledby="evidence-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">02 · Evidence model</p>
+            <h2 id="evidence-title">Event → site → hypothesis</h2>
+            <p class="lede">The refactor separates what was observed locally from what can reconstruct the entire periodic framework. That separation is the core protection against premature linkage assignment.</p>
+          </div>
+          <p class="section-note">A site may carry alternatives. A hypothesis chooses one event per site for one family. Only a hypothesis can become complete.</p>
+        </div>
+
+        <div class="object-flow">
+          <article class="object-card">
+            <span class="object-type">LinkageEvent</span>
+            <h3>Immutable local evidence</h3>
+            <p>One indivisible chemical interpretation with all atoms, bonds, cuts and precursor endpoint roles needed to replay it.</p>
+            <ul class="field-list">
+              <li><code>event_id</code><span>stable diagnostic identity</span></li>
+              <li><code>family</code><span>one of eight supported families</span></li>
+              <li><code>cut_bonds</code><span>applied together, never partially</span></li>
+              <li><code>endpoint_roles</code><span>reactive atom → precursor role</span></li>
+              <li><code>confidence</code><span>hypothesis score contribution</span></li>
+            </ul>
+          </article>
+
+          <article class="object-card">
+            <span class="object-type">site_id</span>
+            <h3>Alternative interpretations</h3>
+            <p>Events sharing a site are mutually exclusive variants. The engine preserves both until reconstruction proves which orientation works.</p>
+            <div class="variant-demo" aria-label="Two variants grouped at one site">
+              <div class="variant"><strong>variant A</strong><br>vinylene orientation<br>or triazine matching</div>
+              <span>⊕</span>
+              <div class="variant"><strong>variant B</strong><br>same structural site<br>different endpoint roles</div>
+            </div>
+            <ul class="field-list">
+              <li><code>group</code><span>one choice per detected site</span></li>
+              <li><code>product</code><span>Cartesian product across sites</span></li>
+              <li><code>truncate</code><span>recorded when the cap is reached</span></li>
+            </ul>
+          </article>
+
+          <article class="object-card">
+            <span class="object-type">ReconstructionHypothesis</span>
+            <h3>Globally testable claim</h3>
+            <p>A same-family event set is cut and repaired as one transaction, then advanced through explicit validation states.</p>
+            <div class="validation-ladder" aria-label="Hypothesis validation gates">
+              <span><b>1</b> endpoint ownership + fragment accounting</span>
+              <span><b>2</b> precursor roles + RDKit motif connectivity</span>
+              <span><b>3</b> periodic rank + topology compatibility</span>
+              <span><b>4</b> COFid serialize → parse → build request</span>
+            </div>
+          </article>
+        </div>
+
+        <div class="bounded-note">
+          <strong>256</strong>
+          <span><b>Bounded search, explicit diagnostics.</b> Enumeration is capped per family. Non-overlapping family pairs are reported for future mixed-linkage serialization, but the current COFid contract still carries one linkage family.</span>
         </div>
       </div>
     </section>
@@ -1190,7 +1336,7 @@
       <div class="shell">
         <div class="section-head">
           <div>
-            <p class="eyebrow">02 · Linkage atlas</p>
+            <p class="eyebrow">03 · Linkage atlas</p>
             <h2 id="linkages-title">Eight strategies, two shapes</h2>
             <p class="lede">Six binary bridges cut bonds between precursor instances. Two ring-forming strategies open a strict product ring and reconstruct one precursor class.</p>
           </div>
@@ -1209,8 +1355,8 @@
             <div class="card-top"><div><div class="card-kicker">Binary · C=N family</div><h3>Imine</h3></div><span class="linkage-code">imine</span></div>
             <div class="reaction"><div class="motif">R–CH<span class="cut-bond">=N</span>–R′</div><div class="reaction-arrow">→</div><div class="precursors">R–CHO &nbsp;+&nbsp; H₂N–R′</div></div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>Eligible inter-instance formal C=N left after the more-specific nitrogen classifiers.</p></div>
-              <div><span class="detail-label">Repair + required roles</span><p>Add C=O at aldehyde anchors; amine hydrogens remain implicit.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">amine</span></div></div>
+              <div><span class="detail-label">Event recognition</span><p>Acyclic aldehyde-derived C=N with neutral carbon-substituted N, after paired azine, acylhydrazone and β-ketoenamine contexts claim their sites.</p></div>
+              <div><span class="detail-label">Repair + required roles</span><p>Restore C=O and validate genuine primary-amine motifs; amide, thioamide, sulfonamide and thiourea N are excluded.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">amine</span></div></div>
             </div>
           </article>
 
@@ -1218,8 +1364,8 @@
             <div class="card-top"><div><div class="card-kicker">Binary · N–N branch</div><h3>Hydrazone</h3></div><span class="linkage-code">hydrazone</span></div>
             <div class="reaction"><div class="motif">R–CH<span class="cut-bond">=N</span>–NH–C(O)R′</div><div class="reaction-arrow">→</div><div class="precursors">R–CHO &nbsp;+&nbsp; hydrazide</div></div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>C=N nitrogen has a single N–N neighbor whose far N is bonded to a carbonyl carbon.</p></div>
-              <div><span class="detail-label">Repair + required roles</span><p>Restore aldehyde C=O; retain the carbonyl-bearing hydrazide fragment.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">hydrazide</span></div></div>
+              <div><span class="detail-label">Atomic event</span><p>C=N–N–C(=O) or its keto-tautomerized C–N representation; the N–N/acyl context claims the site before generic β-ketoenamine.</p></div>
+              <div><span class="detail-label">Repair + required roles</span><p>Restore the aldehyde tautomer and retain the carbonyl-bearing hydrazide fragment.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">hydrazide</span></div></div>
             </div>
           </article>
 
@@ -1227,8 +1373,8 @@
             <div class="card-top"><div><div class="card-kicker">Binary · N–N branch</div><h3>Azine</h3></div><span class="linkage-code">azine</span></div>
             <div class="reaction"><div class="motif">R–CH<span class="cut-bond">=N</span>–N<span class="cut-bond">=CH</span>–R′</div><div class="reaction-arrow">→</div><div class="precursors">aldehyde &nbsp;+&nbsp; hydrazine</div></div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>Paired eligible C=N bonds connected through a single N–N bond: C=N–N=C.</p></div>
-              <div><span class="detail-label">Repair + required roles</span><p>Mark both C=N cuts and restore aldehyde oxygens on recovered carbon anchors.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">hydrazine</span></div></div>
+              <div><span class="detail-label">Atomic event</span><p>Paired C=N–N=C bonds—or paired keto-tautomerized C–N endpoints—are one event with two cuts and shared stoichiometry.</p></div>
+              <div><span class="detail-label">Repair + required roles</span><p>Cut both endpoints together and restore both aldehyde tautomers around one hydrazine unit.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">hydrazine</span></div></div>
             </div>
           </article>
 
@@ -1236,8 +1382,8 @@
             <div class="card-top"><div><div class="card-kicker">Binary · boron chemistry</div><h3>Boronate ester</h3></div><span class="linkage-code">boest</span></div>
             <div class="reaction"><div class="motif">Ar–B<span class="cut-bond">–O</span>–Ar′–O–</div><div class="reaction-arrow">→</div><div class="precursors">B(OH)₂ &nbsp;+&nbsp; catechol</div></div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>Single inter-instance B–O bonds, excluding B–O edges already belonging to boroxine rings.</p></div>
-              <div><span class="detail-label">Repair + required roles</span><p>Restore each boron to two O neighbors; pair marked catechol oxygens for connectivity.</p><div class="role-row"><span class="role">boronic_acid</span><span class="role">catechol</span></div></div>
+              <div><span class="detail-label">Atomic event</span><p>A complete five-membered B–O–C–C–O site contributes both B–O cuts; isolated or malformed partial boron sites are rejected.</p></div>
+              <div><span class="detail-label">Repair + required roles</span><p>Restore boronic acid at B and the paired vicinal-diol/catechol oxygens on the carbon fragment.</p><div class="role-row"><span class="role">boronic_acid</span><span class="role">catechol</span></div></div>
             </div>
           </article>
 
@@ -1245,8 +1391,8 @@
             <div class="card-top"><div><div class="card-kicker">Binary · keto branch</div><h3>β-ketoenamine</h3></div><span class="linkage-code">bken</span></div>
             <div class="reaction"><div class="motif">O=C–(ring)–C=C<span class="cut-bond">–NH</span>–R</div><div class="reaction-arrow">→</div><div class="precursors">keto-aldehyde &nbsp;+&nbsp; amine</div></div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>Conventional C–N/C=C product tautomer next to a ring anchor and adjacent ring carbonyl.</p></div>
-              <div><span class="detail-label">Repair + required roles</span><p>Normalize the carbonyl tautomer and restore the missing aldehyde oxygens.</p><div class="role-row"><span class="role">keto_aldehyde</span><span class="role">amine</span></div></div>
+              <div><span class="detail-label">Event recognition</span><p>Enol-imine C=N or keto-enamine C–N representation next to a ring anchor and adjacent ring carbonyl.</p></div>
+              <div><span class="detail-label">Repair + required roles</span><p>Normalize the keto-aldehyde tautomer, restore aldehydes and require a non-resonance-deactivated primary amine.</p><div class="role-row"><span class="role">keto_aldehyde</span><span class="role">amine</span></div></div>
             </div>
           </article>
 
@@ -1254,8 +1400,8 @@
             <div class="card-top"><div><div class="card-kicker">Binary · C=C family</div><h3>Vinylene</h3></div><span class="linkage-code">vinylene</span></div>
             <div class="reaction"><div class="motif">Ar–CH<span class="cut-bond">=CH</span>–Ar′</div><div class="reaction-arrow">→</div><div class="precursors">aldehyde &nbsp;+&nbsp; activated methylene</div></div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>Formal C=C outside 5/6 rings, carbon anchors on both ends, and exactly one more-activated endpoint.</p></div>
-              <div><span class="detail-label">Activation + repair</span><p>Anchor sees ≥2 N neighbors, C≡N, or another multiple bond to N/O/S; restore aldehyde C=O.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">activated_methylene</span></div></div>
+              <div><span class="detail-label">Variant recognition</span><p>Acyclic/exocyclic formal C=C with carbon anchors. Activation ranks endpoint orientation; tied orientations remain alternative events at one site.</p></div>
+              <div><span class="detail-label">Activation + repair</span><p>Accept direct multiple-bond, cyano/aza-ring, or directly conjugated heteroaromatic activation; restore aldehyde C=O.</p><div class="role-row"><span class="role">aldehyde</span><span class="role">activated_methylene</span></div></div>
             </div>
           </article>
 
@@ -1270,8 +1416,8 @@
               <div class="reaction-arrow">→</div><div class="precursors">boronic-acid precursor</div>
             </div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>Strict alternating B₃O₃ six-ring; every B has one external neighbor and every O has none.</p></div>
-              <div><span class="detail-label">Repair + required role</span><p>Cut all six ring bonds, mark three B anchors, and restore two O neighbors per boron.</p><div class="role-row"><span class="role">boronic_acid</span></div></div>
+              <div><span class="detail-label">Atomic ring event</span><p>Strict alternating B₃O₃ six-ring with valid periodic closure; every B has one external neighbor and every O has none.</p></div>
+              <div><span class="detail-label">Repair + required role</span><p>Cut all six ring bonds as one event, mark three B anchors and restore two O neighbors per boron.</p><div class="role-row"><span class="role">boronic_acid</span></div></div>
             </div>
           </article>
 
@@ -1286,8 +1432,8 @@
               <div class="reaction-arrow">→</div><div class="precursors">nitrile precursor</div>
             </div>
             <div class="card-body">
-              <div><span class="detail-label">Recognition</span><p>Strict alternating C₃N₃ six-ring; every C has one external neighbor and every N has none.</p></div>
-              <div><span class="detail-label">Repair + required role</span><p>Cut the ring and append one triple-bonded N to every marked carbon anchor.</p><div class="role-row"><span class="role">nitrile</span></div></div>
+              <div><span class="detail-label">Two site variants</span><p>Each strict, periodically closed C₃N₃ ring emits its two alternating three-cut matchings under one site.</p></div>
+              <div><span class="detail-label">Repair + global policy</span><p>Restore nitriles; later suppress triazine if another complete reconstruction contains every ring intact inside a precursor.</p><div class="role-row"><span class="role">nitrile</span></div></div>
             </div>
           </article>
         </div>
@@ -1298,60 +1444,49 @@
       <div class="shell">
         <div class="section-head">
           <div>
-            <p class="eyebrow">03 · Conflict resolution</p>
-            <h2 id="conflicts-title">Specificity before cutting</h2>
-            <p class="lede">Conflict resolution is conservative at two scales: per-bond classification for overlapping C–N/C=N motifs, then complete periodic-hypothesis checks where one family can masquerade as another.</p>
+            <p class="eyebrow">04 · Resolution policy</p>
+            <h2 id="conflicts-title">Local facts first. Global policy last.</h2>
+            <p class="lede">The engine resolves only overlaps that chemistry can settle locally. Structural alternatives become branches, while family-wide decisions wait until complete periodic reconstructions can be compared.</p>
           </div>
-          <p class="section-note">Local ambiguity withholds only the implicated bond; a complete competing periodic decomposition withholds the triazine assignment.</p>
+          <p class="section-note">Confidence contributes to hypothesis score, but score never chooses between distinct complete family/COFid results. Those remain explicitly ambiguous.</p>
         </div>
 
-        <div class="resolver">
-          <article class="resolver-board">
-            <div class="board-title"><div><h3>Nitrogen linkage resolver</h3><p>Every eligible inter-instance C–N/C=N is evaluated independently.</p></div><span class="board-number">A</span></div>
-            <div class="branch-start">eligible C–N/C=N bond</div>
-            <div class="branch-grid">
-              <div class="branch nn">
-                <h3>N–N environment branch</h3>
-                <ol>
-                  <li><span><strong>C=N–N=C?</strong><br>Assign azine to the paired eligible bonds.</span></li>
-                  <li><span><strong>C=N–N–C(=O)?</strong><br>Assign hydrazone.</span></li>
-                  <li><span><strong>Neither?</strong><br>Fall back to generic imine.</span></li>
-                </ol>
-              </div>
-              <div class="branch keto">
-                <h3>Keto-enamine branch</h3>
-                <ol>
-                  <li><span><strong>Ring-adjacent carbonyl?</strong><br>Assign β-ketoenamine.</span></li>
-                  <li><span><strong>No keto environment?</strong><br>Fall back to generic imine.</span></li>
-                </ol>
-              </div>
+        <div class="policy-grid">
+          <article class="policy-card">
+            <div class="board-title"><div><h3>Specific nitrogen context</h3><p>Context claims endpoints before generic interpretations are emitted.</p></div><span class="board-number">A</span></div>
+            <div class="policy-body">
+              <div class="policy-step"><b>1</b><span>Pair formal or keto-tautomerized endpoints around N–N as one azine event.</span></div>
+              <div class="policy-step"><b>2</b><span>Recognize carbonyl-bearing partner N as acylhydrazone.</span></div>
+              <div class="policy-step"><b>3</b><span>Then classify remaining C=N/C–N sites as β-ketoenamine or strict imine.</span></div>
             </div>
-            <div class="ambiguity"><strong>!</strong><span>If one bond satisfies a specific N–N assignment <em>and</em> the β-ketoenamine branch, it is <b>cross-branch ambiguous</b>. Withhold that bond only; keep unrelated assignments.</span></div>
+            <div class="policy-outcome">azine / hydrazone &gt; generic overlap</div>
           </article>
 
-          <article class="guardrail-board">
-            <div class="board-title"><div><h3>Vinylene guardrail</h3><p>A narrowing funnel for formal C=C candidates.</p></div><span class="board-number">B</span></div>
-            <div class="decision-stack">
-              <div class="decision-row"><span class="check">✓</span><span>Formal C=C between carbon endpoints</span><span class="outcome">keep</span></div>
-              <div class="decision-row reject"><span class="check">×</span><span>Same labelled precursor instance</span><span class="outcome">reject</span></div>
-              <div class="decision-row reject"><span class="check">×</span><span>Bond lies in a 5- or 6-ring</span><span class="outcome">reject</span></div>
-              <div class="decision-row"><span class="check">✓</span><span>Carbon anchor exists at each endpoint</span><span class="outcome">continue</span></div>
-              <div class="decision-row"><span class="check">✓</span><span>Exactly one endpoint is more activated</span><span class="outcome">assign roles</span></div>
-              <div class="decision-row"><span class="check">i</span><span>Recognized boest or boroxine elsewhere</span><span class="outcome">report; keep</span></div>
+          <article class="policy-card">
+            <div class="board-title"><div><h3>Local overlap only</h3><p>One event can suppress another only where their claimed chemistry overlaps.</p></div><span class="board-number">B</span></div>
+            <div class="policy-body">
+              <div class="policy-step"><b>1</b><span>Canonical β-ketoenamine claims its C–N/C=C context.</span></div>
+              <div class="policy-step"><b>2</b><span>A vinylene event cutting an overlapping bond is recorded as locally suppressed.</span></div>
+              <div class="policy-step"><b>3</b><span>Unrelated vinylene and boron events remain eligible; there is no structure-wide veto.</span></div>
             </div>
+            <div class="policy-outcome">bken &gt; overlapping vinylene only</div>
+          </article>
+
+          <article class="policy-card global">
+            <div class="board-title"><div><h3>Global triazine classification</h3><p>Run only after every family’s hypotheses have completed validation.</p></div><span class="board-number">C</span></div>
+            <div class="policy-body">
+              <div class="policy-step"><b>1</b><span>Find a complete non-triazine reconstruction.</span></div>
+              <div class="policy-step"><b>2</b><span>Check that every detected C₃N₃ ring stays wholly inside one recovered precursor fragment.</span></div>
+              <div class="policy-step"><b>3</b><span>If so, retain the evidence but remove triazine from complete candidates.</span></div>
+            </div>
+            <div class="policy-outcome">SUPPRESSED_TRIAZINE_MOTIF</div>
           </article>
         </div>
 
-        <article class="precedence-board">
-          <div class="board-title"><div><h3>Cross-family ambiguity</h3><p>These checks require complete chemistry and a periodic backbone, not merely raw bond types.</p></div><span class="board-number">C</span></div>
-          <div class="precedence-flow">
-            <div class="family"><span class="family-code">boest · boroxine</span><strong>Boron chemistry</strong><small>Reported without a structure-wide vinylene veto</small></div>
-            <div class="precedence-arrow" aria-label="coexists independently">·</div>
-            <div class="family"><span class="family-code">vinylene</span><strong>Eligible C=C</strong><small>Accepted by its own local environment</small></div>
-            <div class="precedence-arrow" aria-label="complete periodic competition is ambiguous">?</div>
-            <div class="family"><span class="family-code">triazine</span><strong>C₃N₃ ring</strong><small>Withheld only for complete periodic imine/vinylene competition</small></div>
-          </div>
-        </article>
+        <div class="callout">
+          <b>≠</b>
+          <p><strong>Not provenance inference:</strong> when several chemically complete reconstructions remain, event mode returns <code>AMBIGUOUS_MULTIPLE_DECOMPOSITIONS</code>. It does not guess synthesis history from a score or from a dataset-specific name.</p>
+        </div>
       </div>
     </section>
 
@@ -1359,11 +1494,11 @@
       <div class="shell">
         <div class="section-head">
           <div>
-            <p class="eyebrow">04 · Topology recovery</p>
+            <p class="eyebrow">05 · Topology recovery</p>
             <h2 id="topology-title">Fragments become a periodic gain graph</h2>
-            <p class="lede">Cut chemistry defines the nodes and incidences. CIF image offsets become integer edge gains; their independent cycle rank supplies the dimensionality hint used for conservative topology matching.</p>
+            <p class="lede">Each hypothesis carries its own cut chemistry into topology validation. Fragments define nodes and incidences; CIF image offsets become integer edge gains whose independent cycle rank supplies the dimensionality constraint.</p>
           </div>
-          <p class="section-note">Ring-forming products need an extra abstraction: each recovered B₃O₃ or C₃N₃ event becomes a virtual 3-connected topology node.</p>
+          <p class="section-note">A supplied topology is validated against the recovered roles and gain graph. Without one, the same graph enters conservative topology auto-detection.</p>
         </div>
 
         <div class="topology-plate">
@@ -1426,21 +1561,27 @@
       <div class="shell">
         <div class="section-head">
           <div>
-            <p class="eyebrow">05 · Result contract</p>
-            <h2 id="outcomes-title">Only one path emits a COFid</h2>
+            <p class="eyebrow">06 · Result contract</p>
+            <h2 id="outcomes-title">Count complete reconstructions</h2>
           </div>
-          <p class="section-note">A plausible cut is intermediate evidence. Success additionally requires complete roles, a resolved topology, and a COFid that parses into a valid build request.</p>
+          <p class="section-note">Candidates are deduplicated by <code>(family, COFid)</code>. Requested linkage filters apply here; no requested family means all supported families compete.</p>
         </div>
 
         <div class="outcome-grid">
-          <article class="outcome-card success"><div class="outcome-icon">✓</div><h3><code>success</code></h3><p>Every expected precursor role was recovered exactly once as a unique monomer block; topology resolved; serialized COFid passed parse and build validation.</p></article>
-          <article class="outcome-card skipped"><div class="outcome-icon">–</div><h3><code>skipped</code></h3><p>Unsupported linkage, no eligible chemistry, locally ambiguous requested bonds, incomplete role recovery, precedence suppression, or unresolved topology.</p></article>
-          <article class="outcome-card error"><div class="outcome-icon">!</div><h3><code>error</code></h3><p>Malformed CIF, unsupported non-P1 symmetry, self-image quotient bonding, invalid bond mode, unknown topology, or another structural exception.</p></article>
+          <article class="outcome-card success"><div class="outcome-icon">1</div><h3><code>success</code></h3><span class="detail-label">SUCCESS_COMPLETE</span><p>Exactly one complete family/COFid pair remains. Its monomers, topology and common diagnostics are promoted to the result.</p></article>
+          <article class="outcome-card ambiguous"><div class="outcome-icon">2+</div><h3><code>ambiguous</code></h3><span class="detail-label">AMBIGUOUS_MULTIPLE_DECOMPOSITIONS</span><p>Several distinct complete reconstructions survive. All successful hypothesis IDs remain in metadata; none is chosen arbitrarily.</p></article>
+          <article class="outcome-card skipped"><div class="outcome-icon">0</div><h3><code>skipped</code></h3><span class="detail-label">FAILED_* / UNSUPPORTED_LINKAGE</span><p>No complete result remains. The furthest-progressing failure supplies the reason: topology, chemistry, unexplained framework, endpoint accounting or unsupported chemistry.</p></article>
+          <article class="outcome-card error"><div class="outcome-icon">!</div><h3><code>error</code></h3><span class="detail-label">graph normalization / detection</span><p>Malformed CIF, unsupported non-P1 symmetry, self-image quotient bonding, invalid bond mode, unknown topology, or another structural exception.</p></article>
         </div>
 
         <div class="callout">
           <b>i</b>
-          <p><strong>Scope boundary:</strong> the module targets COFKit’s eight buildable linkage strategies and conservative topology repository. It does not expand arbitrary asymmetric units or infer unrestricted third-party reaction history.</p>
+          <p><strong>Diagnostics are first-class output:</strong> <code>event_detection</code> stores accepted and locally suppressed events; <code>hypothesis_generation</code> records counts and truncation; <code>hypotheses</code> stores every validation state; <code>event_status</code> states the final classification.</p>
+        </div>
+
+        <div class="callout">
+          <b>i</b>
+          <p><strong>Scope boundary:</strong> the module targets COFKit’s eight buildable linkage strategies and conservative topology repository. It does not serialize mixed-linkage COFids, expand arbitrary asymmetric units, or infer unrestricted third-party reaction history.</p>
         </div>
       </div>
     </section>
@@ -1449,7 +1590,7 @@
   <footer>
     <div class="shell footer-row">
       <span>COFKit decomposition atlas · implementation-aligned visual reference</span>
-      <span class="mono">src/cofkit/decompose.py · 2026-08-09</span>
+      <span class="mono">src/cofkit/decompose_events.py + decompose.py · 2026-08-16</span>
     </div>
   </footer>
 

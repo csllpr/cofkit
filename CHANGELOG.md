@@ -16,6 +16,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- precursor validation no longer treats resonance-deactivated thioamide or thiourea nitrogens as primary-amine builders, preventing thiourea-linked frameworks from being accepted as beta-ketoenamines
+- activated-methylene detection now follows direct aromatic conjugation from a methyl-bearing phenyl ring into an attached five- or six-membered heteroaromatic acceptor, while still rejecting unactivated biaryl methyl groups
 - event decomposition now recognizes keto-tautomerized azine and acylhydrazone N-N environments before the overlapping beta-ketoenamine interpretation, and restores the aldehyde precursor tautomer after cutting
 - precursor reconstruction now removes malformed/disordered explicit CIF hydrogens before sanitization and restores a missing positive charge on locally unambiguous tetravalent nitrogen atoms
 - activated-methylene detection now accepts methyl groups conjugated to aza-aromatic or cyano-aromatic rings while retaining the rejection of unactivated methylbenzene donors
