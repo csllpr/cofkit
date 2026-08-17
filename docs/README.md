@@ -17,6 +17,7 @@ Use this directory as the canonical documentation set for `cofkit`.
 ## Reference
 
 - [CURRENT_SCOPE.md](CURRENT_SCOPE.md): implemented capabilities and current limitations
+- [KNOWN_ISSUES.md](KNOWN_ISSUES.md): tracked technical issues from the 2026-08-17 engineering audit, by severity, with fix directions
 - [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md): design notes, topology repository details, and pipeline structure
 - [COARSE_VALIDATION.md](COARSE_VALIDATION.md): validation buckets and current thresholds
 - [COFid_Specification_v1.2.md](COFid_Specification_v1.2.md): COFid format reference

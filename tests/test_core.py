@@ -311,6 +311,31 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(best.metadata["graph_summary"]["n_monomer_instances"], 30)
         self.assertEqual(best.metadata["graph_summary"]["n_reaction_events"], 72)
 
+    def test_engine_supports_3d_node_node_project_without_explicit_topology(self):
+        # Regression: the 3D node-node path used to reference an unbound
+        # `connectivity` local and crash with NameError.
+        tri_amine = MonomerSpec(
+            id="tri_amine",
+            name="triamine",
+            motifs=trigonal_motifs("n", "amine", radius=4.5),
+        )
+        tri_aldehyde = MonomerSpec(
+            id="tri_aldehyde",
+            name="trialdehyde",
+            motifs=trigonal_motifs("c", "aldehyde", radius=2.4),
+        )
+        project = COFProject(
+            monomers=(tri_amine, tri_aldehyde),
+            allowed_reactions=("imine_bridge",),
+            target_dimensionality="3D",
+        )
+
+        ensemble = COFEngine().run(project)
+
+        self.assertTrue(ensemble.candidates)
+        for candidate in ensemble.candidates:
+            self.assertIsInstance(candidate.metadata["net_plan"]["topology"], str)
+
 
 class GenericBinaryBridgeBatchTests(unittest.TestCase):
     def test_batch_generator_handles_non_imine_binary_bridge_template(self):

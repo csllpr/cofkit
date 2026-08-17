@@ -1749,5 +1749,94 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         )
 
 
+@unittest.skipIf(Chem is None, "RDKit is not available")
+class BatchProcessPoolFallbackTests(unittest.TestCase):
+    def _write_tiny_library(self, root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "amines_count_3.txt").write_text(f"smiles\n{TAPB}\n{TAPB}\n", encoding="utf-8")
+        (root / "aldehydes_count_3.txt").write_text(f"smiles\n{TFB}\n{TFB}\n", encoding="utf-8")
+
+    def _make_generator(self) -> BatchStructureGenerator:
+        return BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                write_cif=False,
+                max_workers=2,
+                single_node_topology_ids=("hcb",),
+            )
+        )
+
+    def _manifest_structure_ids(self, output_dir: Path) -> list[str]:
+        manifest_path = output_dir / "manifest.jsonl"
+        return [
+            json.loads(line)["structure_id"]
+            for line in manifest_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_process_pool_construction_failure_falls_back_to_threads(self):
+        import cofkit.batch as batch_module
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator()
+
+            with patch(
+                "cofkit.batch.ProcessPoolExecutor",
+                side_effect=batch_module.BrokenProcessPool("boom"),
+            ):
+                summary = generator.run_binary_bridge_batch(
+                    root / "input",
+                    root / "output",
+                    write_cif=False,
+                )
+
+            self.assertEqual(summary.attempted_pairs, 4)
+            self.assertEqual(summary.successful_pairs, 4)
+            structure_ids = self._manifest_structure_ids(root / "output")
+            self.assertEqual(len(structure_ids), len(set(structure_ids)))
+
+    def test_mid_run_process_pool_failure_does_not_duplicate_results(self):
+        import cofkit.batch as batch_module
+
+        class _ExplodingExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def map(self, fn, tasks):
+                tasks = tuple(tasks)
+                yield fn(tasks[0])
+                raise OSError("simulated mid-run pool failure")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator()
+
+            batch_module._init_batch_process_worker(generator.config, generator.reaction_library)
+            try:
+                with patch("cofkit.batch.ProcessPoolExecutor", _ExplodingExecutor):
+                    summary = generator.run_binary_bridge_batch(
+                        root / "input",
+                        root / "output",
+                        write_cif=False,
+                    )
+            finally:
+                batch_module._PROCESS_BATCH_GENERATOR = None
+
+            self.assertEqual(summary.attempted_pairs, 4)
+            self.assertEqual(summary.successful_pairs, 4)
+            structure_ids = self._manifest_structure_ids(root / "output")
+            self.assertEqual(len(structure_ids), 4)
+            self.assertEqual(len(structure_ids), len(set(structure_ids)))
+
+
 if __name__ == "__main__":
     unittest.main()

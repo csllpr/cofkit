@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
 from itertools import permutations, product
 from math import atan2, cos, pi, sin
@@ -796,62 +797,21 @@ class BatchStructureGenerator:
 
         with manifest_path.open("w", encoding="utf-8") as manifest, geometry_repair_failures_path.open("w", encoding="utf-8") as repair_failures:
             if parallelize_pairs:
-                if self._supports_process_pair_pool():
-                    try:
-                        with ProcessPoolExecutor(
-                            max_workers=self.config.max_workers,
-                            initializer=_init_batch_process_worker,
-                            initargs=(self.config, self.reaction_library),
-                        ) as executor:
-                            pair_results = executor.map(_run_batch_pair_task_in_process, pair_tasks)
-                            for summaries, pair_attempted_structures in pair_results:
-                                successful_pairs += self._record_batch_pair_results(
-                                    manifest=manifest,
-                                    summaries=summaries,
-                                    top_results=top_results,
-                                    mode_counts=mode_counts,
-                                    topology_counts=topology_counts,
-                                    geometry_repair_counts=geometry_repair_counts,
-                                    geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
-                                    geometry_repair_failures=repair_failures,
-                                )
-                                attempted_structures += pair_attempted_structures
-                                successful_structures += sum(1 for summary in summaries if summary.status == "ok")
-                                cifs_written += sum(1 for summary in summaries if summary.cif_path is not None)
-                    except (NotImplementedError, PermissionError, OSError):
-                        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
-                            pair_results = executor.map(self._run_batch_pair_task, pair_tasks)
-                            for summaries, pair_attempted_structures in pair_results:
-                                successful_pairs += self._record_batch_pair_results(
-                                    manifest=manifest,
-                                    summaries=summaries,
-                                    top_results=top_results,
-                                    mode_counts=mode_counts,
-                                    topology_counts=topology_counts,
-                                    geometry_repair_counts=geometry_repair_counts,
-                                    geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
-                                    geometry_repair_failures=repair_failures,
-                                )
-                                attempted_structures += pair_attempted_structures
-                                successful_structures += sum(1 for summary in summaries if summary.status == "ok")
-                                cifs_written += sum(1 for summary in summaries if summary.cif_path is not None)
-                else:
-                    with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
-                        pair_results = executor.map(self._run_batch_pair_task, pair_tasks)
-                        for summaries, pair_attempted_structures in pair_results:
-                            successful_pairs += self._record_batch_pair_results(
-                                manifest=manifest,
-                                summaries=summaries,
-                                top_results=top_results,
-                                mode_counts=mode_counts,
-                                topology_counts=topology_counts,
-                                geometry_repair_counts=geometry_repair_counts,
-                                geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
-                                geometry_repair_failures=repair_failures,
-                            )
-                            attempted_structures += pair_attempted_structures
-                            successful_structures += sum(1 for summary in summaries if summary.status == "ok")
-                            cifs_written += sum(1 for summary in summaries if summary.cif_path is not None)
+                pair_results = self._collect_parallel_pair_results(pair_tasks)
+                for summaries, pair_attempted_structures in pair_results:
+                    successful_pairs += self._record_batch_pair_results(
+                        manifest=manifest,
+                        summaries=summaries,
+                        top_results=top_results,
+                        mode_counts=mode_counts,
+                        topology_counts=topology_counts,
+                        geometry_repair_counts=geometry_repair_counts,
+                        geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
+                        geometry_repair_failures=repair_failures,
+                    )
+                    attempted_structures += pair_attempted_structures
+                    successful_structures += sum(1 for summary in summaries if summary.status == "ok")
+                    cifs_written += sum(1 for summary in summaries if summary.cif_path is not None)
             else:
                 for pair_task in pair_tasks:
                     summaries, pair_attempted_structures = self._run_batch_pair_task(
@@ -908,6 +868,31 @@ class BatchStructureGenerator:
 
     def _supports_process_pair_pool(self) -> bool:
         return self.smiles_monomer_builder is build_rdkit_monomer
+
+    def _collect_parallel_pair_results(
+        self,
+        pair_tasks: tuple[_BatchPairTask, ...],
+    ) -> tuple[tuple[tuple[BatchPairSummary, ...], int], ...]:
+        """Run pair tasks in a process pool, falling back to a thread pool.
+
+        Results are fully buffered before returning. If the process pool
+        fails partway through (for example a worker dies and raises
+        ``BrokenProcessPool``), the partially computed results are discarded
+        and every task is re-executed exactly once in the thread pool, so
+        callers never record the same pair twice.
+        """
+        if self._supports_process_pair_pool():
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=self.config.max_workers,
+                    initializer=_init_batch_process_worker,
+                    initargs=(self.config, self.reaction_library),
+                ) as executor:
+                    return tuple(executor.map(_run_batch_pair_task_in_process, pair_tasks))
+            except (NotImplementedError, PermissionError, OSError, BrokenProcessPool):
+                pass
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            return tuple(executor.map(self._run_batch_pair_task, pair_tasks))
 
     def _iter_batch_pairs(
         self,

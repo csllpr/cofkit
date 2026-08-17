@@ -237,6 +237,7 @@ class COFEngine:
 
         connectivities = tuple(len(monomer.motifs) for monomer in project.monomers)
         if connectivities[0] >= 3 and connectivities[1] >= 3:
+            connectivity = connectivities[0]
             pair_mode = "node-node"
         elif min(connectivities) == 2 and max(connectivities) >= 3:
             connectivity = max(connectivities)

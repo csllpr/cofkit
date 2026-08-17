@@ -18,6 +18,21 @@ from .monomer_library import MonomerRoleResolver
 from .reactions import ReactionLibrary
 
 
+def _default_repo_path(*parts: str) -> str:
+    """Resolve a built-in default path for CLI arguments.
+
+    In a source checkout, the bundled ``examples/`` and generated ``out/``
+    directories live at the repository root (two levels above this file).
+    For an installed package there is no repository root; fall back to
+    paths relative to the current working directory instead of pointing
+    inside the Python installation.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / "pyproject.toml").is_file() and (repo_root / "src" / "cofkit").is_dir():
+        return str(repo_root.joinpath(*parts))
+    return str(Path(*parts))
+
+
 def add_build_group(subparsers) -> None:
     parser = subparsers.add_parser(
         "build",
@@ -188,7 +203,7 @@ def _add_single_pair_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(Path(__file__).resolve().parents[2] / "out" / "single_pair_generation"),
+        default=_default_repo_path("out", "single_pair_generation"),
         help="Directory for the single-pair summary and CIF outputs.",
     )
     parser.add_argument(
@@ -413,7 +428,7 @@ def _add_ring_forming_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(Path(__file__).resolve().parents[2] / "out" / "ring_forming_generation"),
+        default=_default_repo_path("out", "ring_forming_generation"),
     )
     parser.add_argument(
         "--write-cif",
@@ -663,12 +678,14 @@ def _add_batch_binary_bridge_parser(subparsers) -> None:
     parser.set_defaults(func=_run_batch_binary_bridge)
     _add_common_batch_generation_arguments(parser)
     parser.set_defaults(
-        input_dir=str(Path(__file__).resolve().parents[2] / "examples" / "batch_test_monomers"),
-        output_dir=str(Path(__file__).resolve().parents[2] / "out" / "binary_bridge_generation"),
+        input_dir=_default_repo_path("examples", "batch_test_monomers"),
+        output_dir=_default_repo_path("out", "binary_bridge_generation"),
     )
 
 
 def _run_batch_binary_bridge(args: argparse.Namespace) -> None:
+    if not Path(args.input_dir).is_dir():
+        raise SystemExit(f"input directory does not exist: {args.input_dir}")
     generator = _configure_generator(args, template_id=args.template_id)
     summary = generator.run_binary_bridge_batch(
         args.input_dir,
@@ -696,8 +713,8 @@ def _add_batch_all_binary_bridges_parser(subparsers) -> None:
     )
     parser.set_defaults(
         func=_run_batch_all_binary_bridges,
-        input_dir=str(Path(__file__).resolve().parents[2] / "examples" / "default_monomers_library"),
-        output_dir=str(Path(__file__).resolve().parents[2] / "out" / "available_binary_bridge_batches"),
+        input_dir=_default_repo_path("examples", "default_monomers_library"),
+        output_dir=_default_repo_path("out", "available_binary_bridge_batches"),
         num_conformers=2,
     )
 
@@ -705,6 +722,8 @@ def _add_batch_all_binary_bridges_parser(subparsers) -> None:
 def _run_batch_all_binary_bridges(args: argparse.Namespace) -> None:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
+    if not input_dir.is_dir():
+        raise SystemExit(f"input directory does not exist: {input_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     discovery = BatchStructureGenerator(BatchGenerationConfig(max_workers=max(1, args.max_workers)))
@@ -786,22 +805,52 @@ def _add_default_library_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--input-dir",
-        default=str(Path(__file__).resolve().parents[2] / "examples" / "batch_test_monomers"),
+        default=_default_repo_path("examples", "batch_test_monomers"),
     )
     parser.add_argument(
         "--output-dir",
-        default=str(Path(__file__).resolve().parents[2] / "examples" / "default_monomers_library"),
+        default=_default_repo_path("examples", "default_monomers_library"),
     )
     parser.add_argument("--num-conformers", type=int, default=2)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow replacing a non-empty output directory that was not created by this command.",
+    )
     parser.set_defaults(func=_run_default_library)
+
+
+_DEFAULT_LIBRARY_MARKER = ".cofkit-default-library"
+
+
+def _prepare_default_library_output_dir(output_dir: Path, *, force: bool) -> None:
+    """Reset the default-library output directory without deleting foreign data.
+
+    The directory is only removed when it is empty, was created by a previous
+    run of this command (marker file present), or the user explicitly passed
+    ``--force``.
+    """
+    if output_dir.exists() and not output_dir.is_dir():
+        raise SystemExit(f"output path exists and is not a directory: {output_dir}")
+    if output_dir.is_dir():
+        has_contents = any(output_dir.iterdir())
+        has_marker = (output_dir / _DEFAULT_LIBRARY_MARKER).is_file()
+        if has_contents and not has_marker and not force:
+            raise SystemExit(
+                "refusing to delete a non-empty directory that was not created by "
+                f"`cofkit build default-library`: {output_dir}\n"
+                "pass --force to replace it anyway"
+            )
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _run_default_library(args: argparse.Namespace) -> None:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not input_dir.is_dir():
+        raise SystemExit(f"input directory does not exist: {input_dir}")
+    _prepare_default_library_output_dir(output_dir, force=args.force)
 
     generator = BatchStructureGenerator(BatchGenerationConfig(rdkit_num_conformers=args.num_conformers))
     registered_records: list[dict[str, object]] = []
@@ -907,6 +956,10 @@ def _run_default_library(args: argparse.Namespace) -> None:
         )
     )
     (output_dir / "README.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    (output_dir / _DEFAULT_LIBRARY_MARKER).write_text(
+        "generated by `cofkit build default-library`; safe to regenerate\n",
+        encoding="utf-8",
+    )
 
     print("output_dir:", output_dir)
     print("registered_monomers:", len(registered_records))

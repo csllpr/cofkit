@@ -159,6 +159,8 @@ cofkit build default-library
 
 The generated library under `examples/default_monomers_library` contains grouped `*_count_N.txt` files, `registry.jsonl`, and `failures.jsonl`.
 
+The command resets its output directory before writing. As a safety guard, it refuses to delete a non-empty directory that was not created by a previous run of this command (previous runs leave a `.cofkit-default-library` marker file); pass `--force` to replace such a directory anyway.
+
 ## Outputs
 
 Single-pair runs write:

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from cofkit import __version__ as package_version
 from cofkit.batch_models import BatchPairSummary
 from cofkit.cli import main as cli_main
+from cofkit import cli_build
 
 try:
     from rdkit import Chem  # noqa: F401
@@ -49,6 +51,98 @@ class BatchSummaryCompatibilityTests(unittest.TestCase):
         self.assertEqual(summary.aldehyde_record_id, "di_aldehyde")
         self.assertEqual(summary.amine_connectivity, 3)
         self.assertEqual(summary.aldehyde_connectivity, 2)
+
+
+class DefaultRepoPathTests(unittest.TestCase):
+    def test_source_checkout_resolves_against_repo_root(self):
+        resolved = cli_build._default_repo_path("out", "single_pair_generation")
+
+        expected_root = Path(cli_build.__file__).resolve().parents[2]
+        self.assertEqual(resolved, str(expected_root / "out" / "single_pair_generation"))
+
+    def test_installed_package_falls_back_to_cwd_relative(self):
+        fake_installed_file = "/venv/lib/python3.11/site-packages/cofkit/cli_build.py"
+        with patch.object(cli_build, "__file__", fake_installed_file):
+            resolved = cli_build._default_repo_path("out", "single_pair_generation")
+
+        self.assertEqual(resolved, str(Path("out") / "single_pair_generation"))
+
+
+@unittest.skipIf(Chem is None, "RDKit is not available")
+class DefaultLibraryOutputGuardTests(unittest.TestCase):
+    def _make_input_dir(self, root: Path) -> Path:
+        input_dir = root / "input"
+        input_dir.mkdir()
+        (input_dir / "amines_count_2.txt").write_text(
+            "smiles\nNc1ccc(N)cc1\n",
+            encoding="utf-8",
+        )
+        return input_dir
+
+    def _run(self, input_dir: Path, output_dir: Path, *, force: bool = False) -> None:
+        args = SimpleNamespace(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            num_conformers=1,
+            force=force,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli_build._run_default_library(args)
+
+    def test_refuses_to_delete_foreign_non_empty_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = self._make_input_dir(root)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            sentinel = output_dir / "important.txt"
+            sentinel.write_text("do not delete", encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                self._run(input_dir, output_dir)
+
+            self.assertTrue(sentinel.is_file())
+
+    def test_force_replaces_foreign_directory_and_writes_marker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = self._make_input_dir(root)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            sentinel = output_dir / "important.txt"
+            sentinel.write_text("delete me", encoding="utf-8")
+
+            self._run(input_dir, output_dir, force=True)
+
+            self.assertFalse(sentinel.exists())
+            self.assertTrue((output_dir / cli_build._DEFAULT_LIBRARY_MARKER).is_file())
+
+    def test_rerun_without_force_succeeds_when_marker_present(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = self._make_input_dir(root)
+            output_dir = root / "output"
+
+            self._run(input_dir, output_dir)
+            self.assertTrue((output_dir / cli_build._DEFAULT_LIBRARY_MARKER).is_file())
+            # Second run must not raise even without --force.
+            self._run(input_dir, output_dir)
+
+            self.assertTrue((output_dir / "registry.jsonl").is_file())
+
+    def test_missing_input_dir_fails_with_clear_message(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = SimpleNamespace(
+                input_dir=str(root / "does-not-exist"),
+                output_dir=str(root / "output"),
+                num_conformers=1,
+                force=False,
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                cli_build._run_default_library(args)
+
+            self.assertIn("input directory does not exist", str(ctx.exception))
 
 
 class CliTests(unittest.TestCase):
