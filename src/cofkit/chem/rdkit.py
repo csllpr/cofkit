@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import atan2
+from math import atan2, isfinite
 from typing import Callable, Mapping
 
 from ..geometry import Frame, centroid, cross, dot, normalize, sub
@@ -10,10 +10,40 @@ from .motif_registry import MotifKindDefinition, MotifKindRegistry, default_moti
 
 try:
     from rdkit import Chem
-    from rdkit.Chem import AllChem
+    from rdkit.Chem import AllChem, rdDepictor
 except ImportError:  # pragma: no cover - handled at call sites
     Chem = None
     AllChem = None
+    rdDepictor = None
+
+
+_FALLBACK_FORCEFIELD_ATOM_LIMIT = 180
+_NONMETAL_ATOMIC_NUMBERS = frozenset(
+    {
+        1,  # H
+        2,  # He
+        5,  # B
+        6,  # C
+        7,  # N
+        8,  # O
+        9,  # F
+        10,  # Ne
+        14,  # Si
+        15,  # P
+        16,  # S
+        17,  # Cl
+        18,  # Ar
+        33,  # As
+        34,  # Se
+        35,  # Br
+        36,  # Kr
+        52,  # Te
+        53,  # I
+        54,  # Xe
+        85,  # At
+        86,  # Rn
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +54,26 @@ class _DetectedMotif:
     origin: tuple[float, float, float]
     anchor: tuple[float, float, float]
     metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _ConformerEmbeddingResult:
+    conformer_ids: tuple[int, ...]
+    method: str
+    attempts: tuple[Mapping[str, object], ...]
+
+    @property
+    def used_fallback(self) -> bool:
+        return self.method != "etkdg-v3"
+
+
+@dataclass(frozen=True)
+class _ConformerSelectionResult:
+    conformer_id: int
+    energy: float | None
+    forcefield: str
+    optimization_status: str
+    diagnostics: tuple[str, ...] = ()
 
 
 RDKitMatchHandler = Callable[[object, object, tuple[int, ...], MotifKindDefinition], _DetectedMotif | None]
@@ -71,9 +121,32 @@ class RDKitMotifBuilder:
         if base is None:
             raise ValueError(f"RDKit could not parse SMILES for {monomer_id!r}")
         molecule = Chem.AddHs(base)
-        conformer_ids = _embed_conformers(molecule, num_conformers=num_conformers, random_seed=random_seed)
-        best_conf_id, best_energy, forcefield = _optimize_conformers(molecule, conformer_ids)
-        conformer = molecule.GetConformer(best_conf_id)
+        try:
+            embedding = _embed_conformers(
+                molecule,
+                num_conformers=num_conformers,
+                random_seed=random_seed,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"RDKit conformer generation failed for monomer {monomer_id!r} "
+                f"from SMILES {smiles!r}: {exc}"
+            ) from exc
+        optimization_skip_reason = None
+        if embedding.method == "rdkit-2d":
+            optimization_skip_reason = "planar coordinate fallback is not force-field minimized"
+        elif embedding.used_fallback and molecule.GetNumAtoms() >= _FALLBACK_FORCEFIELD_ATOM_LIMIT:
+            optimization_skip_reason = (
+                f"fallback conformer has {molecule.GetNumAtoms()} atoms; "
+                f"force-field minimization is capped below {_FALLBACK_FORCEFIELD_ATOM_LIMIT} atoms"
+            )
+        selection = _optimize_conformers(
+            molecule,
+            embedding.conformer_ids,
+            allow_unoptimized=embedding.used_fallback,
+            skip_reason=optimization_skip_reason,
+        )
+        conformer = molecule.GetConformer(selection.conformer_id)
 
         detected = self._detect_motifs(molecule, conformer, definition)
         if not detected:
@@ -93,21 +166,31 @@ class RDKitMotifBuilder:
             id=monomer_id,
             name=name,
             motifs=motifs,
-            conformer_ids=(f"rdkit-conf-{best_conf_id}",),
+            conformer_ids=(f"rdkit-conf-{selection.conformer_id}",),
             atom_symbols=atom_symbols,
             atom_positions=atom_positions,
             bonds=bonds,
             metadata={
                 "source_smiles": smiles,
-                "geometry_mode": "rdkit-etkdg",
+                "geometry_mode": {
+                    "etkdg-v3": "rdkit-etkdg",
+                    "etkdg-v3-random": "rdkit-etkdg-random-coordinates",
+                    "etkdg-v2-random": "rdkit-etkdg-v2-random-coordinates",
+                    "rdkit-2d": "rdkit-2d-coordinate-fallback",
+                }[embedding.method],
+                "embedding_method": embedding.method,
+                "embedding_fallback": embedding.used_fallback,
+                "embedding_attempts": [dict(attempt) for attempt in embedding.attempts],
                 "motif_detection": f"rdkit-smarts:{definition.rdkit_smarts}",
                 "motif_kind": motif_kind,
                 "n_atoms": molecule.GetNumAtoms(),
                 "n_heavy_atoms": base.GetNumAtoms(),
-                "n_conformers": len(conformer_ids),
-                "selected_conformer_id": best_conf_id,
-                "forcefield": forcefield,
-                "selected_conformer_energy": best_energy,
+                "n_conformers": len(embedding.conformer_ids),
+                "selected_conformer_id": selection.conformer_id,
+                "forcefield": selection.forcefield,
+                "forcefield_optimization_status": selection.optimization_status,
+                "forcefield_diagnostics": selection.diagnostics,
+                "selected_conformer_energy": selection.energy,
                 "plane_normal": plane_normal,
             },
         )
@@ -220,45 +303,235 @@ def detect_rdkit_motif_count(
     return len(effective_builder._detect_motifs(molecule, conformer, definition))
 
 
-def _embed_conformers(molecule, *, num_conformers: int, random_seed: int) -> tuple[int, ...]:
-    params = AllChem.ETKDGv3()
-    params.randomSeed = random_seed
-    params.pruneRmsThresh = 0.2
-    params.useSmallRingTorsions = True
-    conf_ids = AllChem.EmbedMultipleConfs(molecule, numConfs=max(1, num_conformers), params=params)
-    if not conf_ids:
-        raise ValueError("RDKit conformer embedding failed")
-    return tuple(int(conf_id) for conf_id in conf_ids)
+def _embed_conformers(
+    molecule,
+    *,
+    num_conformers: int,
+    random_seed: int,
+) -> _ConformerEmbeddingResult:
+    attempts: list[Mapping[str, object]] = []
+    requested = max(1, num_conformers)
+    for method, parameter_factory, use_random_coords in (
+        ("etkdg-v3", AllChem.ETKDGv3, False),
+        ("etkdg-v3-random", AllChem.ETKDGv3, True),
+        ("etkdg-v2-random", AllChem.ETKDGv2, True),
+    ):
+        molecule.RemoveAllConformers()
+        params = parameter_factory()
+        params.randomSeed = random_seed
+        params.pruneRmsThresh = 0.2
+        if method != "etkdg-v2-random":
+            params.useSmallRingTorsions = True
+        params.useRandomCoords = use_random_coords
+        if use_random_coords:
+            # Bound the retry cost for giant precursors. ETKDGv2 is the next
+            # fallback when v3 exhausts these attempts.
+            params.maxIterations = 50
+        try:
+            raw_ids = AllChem.EmbedMultipleConfs(
+                molecule,
+                numConfs=requested,
+                params=params,
+            )
+            conformer_ids = tuple(int(conf_id) for conf_id in raw_ids)
+        except RuntimeError as exc:
+            attempts.append(
+                {
+                    "method": method,
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {str(exc).splitlines()[0]}",
+                }
+            )
+            continue
+        geometry_error = _conformer_coordinate_error(molecule, conformer_ids)
+        if conformer_ids and geometry_error is None:
+            attempts.append({"method": method, "status": "success", "n_conformers": len(conformer_ids)})
+            return _ConformerEmbeddingResult(conformer_ids, method, tuple(attempts))
+        attempts.append(
+            {
+                "method": method,
+                "status": "failed",
+                "error": geometry_error or "RDKit returned no conformers",
+            }
+        )
+
+    planar_fallback_error = _planar_coordinate_fallback_error(molecule)
+    if planar_fallback_error is not None:
+        attempts.append(
+            {
+                "method": "rdkit-2d",
+                "status": "skipped",
+                "error": planar_fallback_error,
+            }
+        )
+    else:
+        molecule.RemoveAllConformers()
+        try:
+            conformer_id = int(rdDepictor.Compute2DCoords(molecule))
+            conformer_ids = (conformer_id,)
+            geometry_error = _conformer_coordinate_error(molecule, conformer_ids)
+        except (RuntimeError, ValueError) as exc:
+            attempts.append(
+                {
+                    "method": "rdkit-2d",
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {str(exc).splitlines()[0]}",
+                }
+            )
+        else:
+            if geometry_error is None:
+                attempts.append({"method": "rdkit-2d", "status": "success", "n_conformers": 1})
+                return _ConformerEmbeddingResult(conformer_ids, "rdkit-2d", tuple(attempts))
+            attempts.append({"method": "rdkit-2d", "status": "failed", "error": geometry_error})
+
+    attempt_summary = "; ".join(
+        f"{attempt['method']}: {attempt.get('error', attempt['status'])}"
+        for attempt in attempts
+    )
+    raise ValueError(f"RDKit conformer embedding failed after all fallbacks ({attempt_summary})")
 
 
-def _optimize_conformers(molecule, conformer_ids: tuple[int, ...]) -> tuple[int, float, str]:
-    if AllChem.MMFFHasAllMoleculeParams(molecule):
-        props = AllChem.MMFFGetMoleculeProperties(molecule)
+def _planar_coordinate_fallback_error(molecule) -> str | None:
+    """Return why a last-resort 2D conformer would be unsafe, if applicable."""
+    atoms = tuple(molecule.GetAtoms())
+    has_coordination_or_charge = any(
+        atom.GetAtomicNum() not in _NONMETAL_ATOMIC_NUMBERS
+        or atom.GetFormalCharge() != 0
+        for atom in atoms
+    )
+    if not has_coordination_or_charge:
+        return "reserved for metal-containing or formally charged precursors"
+
+    allowed_hybridizations = {
+        Chem.HybridizationType.SP,
+        Chem.HybridizationType.SP2,
+    }
+    nonplanar_atoms = tuple(
+        atom.GetIdx()
+        for atom in atoms
+        if atom.GetAtomicNum() > 1
+        and atom.GetAtomicNum() in _NONMETAL_ATOMIC_NUMBERS
+        and not atom.GetIsAromatic()
+        and atom.GetHybridization() not in allowed_hybridizations
+    )
+    if nonplanar_atoms:
+        preview = ", ".join(str(index) for index in nonplanar_atoms[:5])
+        suffix = ", ..." if len(nonplanar_atoms) > 5 else ""
+        return f"non-planar heavy-atom hybridization at atom indices {preview}{suffix}"
+    return None
+
+
+def _conformer_coordinate_error(molecule, conformer_ids: tuple[int, ...]) -> str | None:
+    if not conformer_ids:
+        return "no conformers were generated"
+    for conformer_id in conformer_ids:
+        conformer = molecule.GetConformer(conformer_id)
+        positions = tuple(conformer.GetAtomPosition(index) for index in range(molecule.GetNumAtoms()))
+        if any(not all(isfinite(value) for value in (point.x, point.y, point.z)) for point in positions):
+            return f"conformer {conformer_id} contains non-finite coordinates"
+        if len(positions) > 1:
+            extent = max(
+                max(point.x for point in positions) - min(point.x for point in positions),
+                max(point.y for point in positions) - min(point.y for point in positions),
+                max(point.z for point in positions) - min(point.z for point in positions),
+            )
+            if extent < 1.0e-6:
+                return f"conformer {conformer_id} has collapsed coordinates"
+    return None
+
+
+def _optimize_conformers(
+    molecule,
+    conformer_ids: tuple[int, ...],
+    *,
+    allow_unoptimized: bool = False,
+    skip_reason: str | None = None,
+) -> _ConformerSelectionResult:
+    if skip_reason is not None:
+        return _ConformerSelectionResult(
+            conformer_id=conformer_ids[0],
+            energy=None,
+            forcefield="none",
+            optimization_status="skipped",
+            diagnostics=(skip_reason,),
+        )
+
+    diagnostics: list[str] = []
+    try:
+        has_mmff_parameters = bool(AllChem.MMFFHasAllMoleculeParams(molecule))
+    except (RuntimeError, ValueError) as exc:
+        diagnostics.append(f"MMFF parameter check failed: {type(exc).__name__}: {str(exc).splitlines()[0]}")
+        has_mmff_parameters = False
+    if has_mmff_parameters:
+        try:
+            props = AllChem.MMFFGetMoleculeProperties(molecule)
+        except (RuntimeError, ValueError) as exc:
+            diagnostics.append(
+                f"MMFF property generation failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
+            )
+            props = None
         if props is not None:
             best = None
             for conf_id in conformer_ids:
-                field = AllChem.MMFFGetMoleculeForceField(molecule, props, confId=conf_id)
-                if field is None:
+                try:
+                    field = AllChem.MMFFGetMoleculeForceField(molecule, props, confId=conf_id)
+                    if field is None:
+                        continue
+                    field.Minimize(maxIts=500)
+                    energy = float(field.CalcEnergy())
+                except (RuntimeError, ValueError) as exc:
+                    diagnostics.append(
+                        f"MMFF conformer {conf_id} failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
+                    )
                     continue
-                field.Minimize(maxIts=500)
-                energy = float(field.CalcEnergy())
-                if best is None or energy < best[1]:
-                    best = (conf_id, energy, "MMFF")
+                if isfinite(energy) and (best is None or energy < best[1]):
+                    best = (conf_id, energy)
             if best is not None:
-                return best
+                return _ConformerSelectionResult(
+                    best[0],
+                    best[1],
+                    "MMFF",
+                    "optimized",
+                    tuple(diagnostics),
+                )
 
     best = None
     for conf_id in conformer_ids:
-        field = AllChem.UFFGetMoleculeForceField(molecule, confId=conf_id)
-        if field is None:
+        try:
+            field = AllChem.UFFGetMoleculeForceField(molecule, confId=conf_id)
+            if field is None:
+                continue
+            field.Minimize(maxIts=500)
+            energy = float(field.CalcEnergy())
+        except (RuntimeError, ValueError) as exc:
+            diagnostics.append(
+                f"UFF conformer {conf_id} failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
+            )
             continue
-        field.Minimize(maxIts=500)
-        energy = float(field.CalcEnergy())
-        if best is None or energy < best[1]:
-            best = (conf_id, energy, "UFF")
-    if best is None:
-        raise ValueError("RDKit force-field optimization failed")
-    return best
+        if isfinite(energy) and (best is None or energy < best[1]):
+            best = (conf_id, energy)
+    if best is not None:
+        return _ConformerSelectionResult(
+            best[0],
+            best[1],
+            "UFF",
+            "optimized",
+            tuple(diagnostics),
+        )
+    if allow_unoptimized:
+        diagnostics.append("no supported force field produced a finite optimized conformer")
+        return _ConformerSelectionResult(
+            conformer_ids[0],
+            None,
+            "none",
+            "skipped",
+            tuple(diagnostics),
+        )
+    detail = "; ".join(diagnostics)
+    raise ValueError(
+        "RDKit force-field optimization failed"
+        + (f" ({detail})" if detail else "")
+    )
 
 
 def _build_geometry(

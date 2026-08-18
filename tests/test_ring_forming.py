@@ -313,10 +313,61 @@ class RingFormingWorkflowTests(unittest.TestCase):
                 )
             report = json.loads((Path(temporary_dir) / "summary.json").read_text())
 
+            self.assertEqual(report["attempted_structures"], 1)
+            self.assertEqual(report["successful_structures"], 1)
+            self.assertEqual(report["cifs_written"], 1)
+            self.assertEqual(report["precursor"]["geometry"]["embedding_method"], "etkdg-v3")
+            self.assertFalse(report["precursor"]["geometry"]["fallback"])
+            self.assertEqual(report["results"][0]["status"], "ok")
+            self.assertEqual(report["results"][0]["reaction_realization_status"], "completed")
+            self.assertIsNotNone(report["results"][0]["reaction_realization"])
             self.assertEqual(report["ring_validation"]["classification"], "accepted")
             self.assertEqual(report["graph_summary"]["n_reaction_events"], 2)
             self.assertEqual(report["cif_sites"], 42)
             self.assertTrue(Path(report["cif_path"]).is_file())
+
+    def test_ring_forming_cli_no_cif_still_reports_success(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_main(
+                    [
+                        "build",
+                        "ring-forming",
+                        "--cofid",
+                        "2:nitrile:N#Cc1ccc(C#N)cc1&&hcb&&triazine",
+                        "--num-conformers",
+                        "1",
+                        "--no-write-cif",
+                        "--output-dir",
+                        temporary_dir,
+                    ]
+                )
+            report = json.loads((Path(temporary_dir) / "summary.json").read_text())
+
+        self.assertEqual(report["attempted_structures"], 1)
+        self.assertEqual(report["successful_structures"], 1)
+        self.assertEqual(report["cifs_written"], 0)
+        self.assertEqual(report["results"][0]["status"], "ok")
+        self.assertEqual(report["results"][0]["reaction_realization_status"], "not_requested")
+        self.assertIsNone(report["results"][0]["reaction_realization"])
+
+    def test_long_ditopic_precursor_tolerates_topology_coordinate_rounding(self):
+        precursor = build_rdkit_monomer(
+            "ta_por",
+            "TA-Por-sp2-COF precursor",
+            "N#Cc1ccc(-c2c3nc(cc4ccc([nH]4)c(-c4ccc(C#N)cc4)c4nc(cc5ccc2[nH]5)C=C4)C=C3)cc1",
+            "nitrile",
+            num_conformers=1,
+        )
+
+        candidate = RingFormingStructureGenerator().generate(
+            precursor,
+            "triazine_trimerization",
+        )
+
+        placement = candidate.metadata["edge_placement"]
+        self.assertLessEqual(placement["max_residual"], placement["tolerance"])
+        self.assertEqual(candidate.metadata["ring_validation"]["classification"], "accepted")
 
     def test_ring_forming_cli_enumerates_multiple_stacking_registries(self):
         with tempfile.TemporaryDirectory() as temporary_dir:

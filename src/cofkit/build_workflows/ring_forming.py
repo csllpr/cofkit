@@ -147,15 +147,16 @@ class RingFormingStructureGenerator:
         precursor_span = norm(sub(second_motif.frame.origin, first_motif.frame.origin))
         if precursor_span < 1e-6:
             raise ValueError(f"monomer {monomer.id!r} has coincident reactive motif origins")
-        base_edge_lengths = tuple(norm(edge.base_vector) for edge in expanded.edge_sites)
-        base_edge_length = sum(base_edge_lengths) / len(base_edge_lengths)
         target_center_separation = precursor_span + 2.0 * ring_profile.participant_radius
-        lateral_scale = target_center_separation / base_edge_length
-        cell = (
-            scale(expanded.cell[0], lateral_scale),
-            scale(expanded.cell[1], lateral_scale),
-            (0.0, 0.0, self.config.layer_spacing),
-        )
+        target_edge_vectors = {
+            edge.id: scale(
+                edge.base_vector,
+                target_center_separation / norm(edge.base_vector),
+            )
+            for edge in expanded.edge_sites
+        }
+        cell = self._fit_planar_cell(expanded, target_edge_vectors)
+        placement_tolerance = max(2.0e-4, 2.0e-5 * target_center_separation)
 
         source_frame = Frame(
             origin=first_motif.frame.origin,
@@ -166,6 +167,7 @@ class RingFormingStructureGenerator:
         instances: list[MonomerInstance] = []
         poses: dict[str, Pose] = {}
         endpoint_refs: dict[str, MotifRef] = {}
+        edge_placement_residuals: dict[str, float] = {}
         for edge_index, edge in enumerate(expanded.edge_sites, start=1):
             instance_id = f"p{edge_index}"
             start_center = fractional_to_cartesian(node_by_id[edge.start_node_id].fractional_position, cell)
@@ -179,8 +181,14 @@ class RingFormingStructureGenerator:
             rotation = rotation_from_frame_to_axes(source_frame, direction, (0.0, 0.0, 1.0))
             translation = sub(target_first, matmul_vec(rotation, first_motif.frame.origin))
             placed_second = add(matmul_vec(rotation, second_motif.frame.origin), translation)
-            if norm(sub(placed_second, target_second)) > 2e-4:
-                raise ValueError("failed to place both precursor reactive sites on the virtual-node edge")
+            placement_residual = norm(sub(placed_second, target_second))
+            edge_placement_residuals[edge.id] = placement_residual
+            if placement_residual > placement_tolerance:
+                raise ValueError(
+                    f"failed to place monomer {monomer.id!r} on topology {selected_topology_id!r} "
+                    f"edge {edge.id!r}: endpoint residual {placement_residual:.6g} A exceeds "
+                    f"the scale-aware tolerance {placement_tolerance:.6g} A"
+                )
             instances.append(
                 MonomerInstance(
                     id=instance_id,
@@ -291,6 +299,13 @@ class RingFormingStructureGenerator:
                     "n_unreacted_motifs": 0,
                 },
                 "optimization": dict(optimization.metrics) if optimization is not None else {"enabled": False},
+                "edge_placement": {
+                    "method": "least_squares_equal_edge_fit",
+                    "target_center_separation": target_center_separation,
+                    "tolerance": placement_tolerance,
+                    "max_residual": max(edge_placement_residuals.values(), default=0.0),
+                    "residuals_by_edge": dict(sorted(edge_placement_residuals.items())),
+                },
                 "ring_validation": {
                     "classification": validation.classification,
                     "reasons": validation.reasons,

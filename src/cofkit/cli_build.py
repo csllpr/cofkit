@@ -391,8 +391,20 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         **({"requested_cofid": requested_cofid} if requested_cofid is not None else {}),
         "template_id": args.template_id,
         "target_dimensionality": args.target_dimensionality,
-        "first": {"id": args.first_id, "name": args.first_name or args.first_id, "motif_kind": first_kind, "motif_count": len(first.motifs)},
-        "second": {"id": args.second_id, "name": args.second_name or args.second_id, "motif_kind": second_kind, "motif_count": len(second.motifs)},
+        "first": {
+            "id": args.first_id,
+            "name": args.first_name or args.first_id,
+            "motif_kind": first_kind,
+            "motif_count": len(first.motifs),
+            "geometry": _monomer_geometry_summary(first),
+        },
+        "second": {
+            "id": args.second_id,
+            "name": args.second_name or args.second_id,
+            "motif_kind": second_kind,
+            "motif_count": len(second.motifs),
+            "geometry": _monomer_geometry_summary(second),
+        },
         "attempted_structures": attempted_structures,
         "successful_structures": sum(1 for summary in summaries if summary.status == "ok"),
         "cifs_written": sum(1 for summary in summaries if summary.cif_path is not None),
@@ -544,6 +556,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
             )
         result_rows.append(
             {
+                "status": "ok",
                 "candidate_id": candidate.id,
                 "generated_cofid": candidate_cofid,
                 "score": candidate.score,
@@ -556,6 +569,13 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
                 "cif_path": None if cif_path is None else str(cif_path),
                 "cif_sites": None if export is None else export.n_sites,
                 "reaction_realization": None if export is None else export.metadata.get("reaction_realization"),
+                "reaction_realization_status": (
+                    "not_requested"
+                    if export is None
+                    else "completed"
+                    if export.metadata.get("reaction_realization") is not None
+                    else "unavailable"
+                ),
             }
         )
     first_result = result_rows[0]
@@ -565,10 +585,14 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         "template_id": args.template_id,
         "topology_id": args.topology,
         "stacking_requested": list(args.stacking),
+        "attempted_structures": len(result_rows),
+        "successful_structures": sum(1 for row in result_rows if row["status"] == "ok"),
+        "cifs_written": sum(1 for row in result_rows if row["cif_path"] is not None),
         "precursor": {
             "id": monomer.id,
             "motif_kind": motif_kind,
             "motif_count": len(monomer.motifs),
+            "geometry": _monomer_geometry_summary(monomer),
         },
         **first_result,
         "results": result_rows,
@@ -612,6 +636,18 @@ def _resolve_single_pair_motif_kind(
         num_conformers=num_conformers,
     )
     return record.motif_kind
+
+
+def _monomer_geometry_summary(monomer) -> dict[str, object]:
+    metadata = monomer.metadata
+    return {
+        "mode": metadata.get("geometry_mode"),
+        "embedding_method": metadata.get("embedding_method"),
+        "fallback": bool(metadata.get("embedding_fallback", False)),
+        "attempts": metadata.get("embedding_attempts", ()),
+        "forcefield": metadata.get("forcefield"),
+        "forcefield_optimization_status": metadata.get("forcefield_optimization_status"),
+    }
 
 
 def _summary_to_single_pair_result(summary) -> dict[str, object]:

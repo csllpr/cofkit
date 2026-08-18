@@ -1,10 +1,12 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import CIFWriter, COFEngine, COFProject, build_rdkit_monomer
+from cofkit.chem import rdkit as rdkit_module
 from cofkit.chem.rdkit import detect_rdkit_motif_count
 from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 from cofkit.reaction_realization import ReactionRealizer
@@ -49,6 +51,109 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertTrue(all(motif.kind == "amine" for motif in monomer.motifs))
         self.assertTrue(all("imine_bridge" in motif.allowed_reaction_templates for motif in monomer.motifs))
         self.assertEqual(len(monomer.atom_symbols), len(monomer.atom_positions))
+
+    def test_build_rdkit_monomer_retries_embedding_with_random_coordinates(self):
+        original_embed = rdkit_module.AllChem.EmbedMultipleConfs
+
+        def fail_only_default_embedding(molecule, *, numConfs, params):
+            if not params.useRandomCoords:
+                return ()
+            return original_embed(molecule, numConfs=numConfs, params=params)
+
+        with patch.object(
+            rdkit_module.AllChem,
+            "EmbedMultipleConfs",
+            side_effect=fail_only_default_embedding,
+        ):
+            monomer = build_rdkit_monomer(
+                "tfb_fallback",
+                "1,3,5-benzenetricarbaldehyde",
+                "O=Cc1cc(C=O)cc(C=O)c1",
+                "aldehyde",
+                num_conformers=1,
+            )
+
+        self.assertEqual(monomer.metadata["embedding_method"], "etkdg-v3-random")
+        self.assertTrue(monomer.metadata["embedding_fallback"])
+        self.assertEqual(monomer.metadata["embedding_attempts"][0]["status"], "failed")
+        self.assertEqual(monomer.metadata["embedding_attempts"][1]["status"], "success")
+
+    def test_build_rdkit_monomer_uses_guarded_planar_fallback(self):
+        with patch.object(rdkit_module.AllChem, "EmbedMultipleConfs", return_value=()):
+            monomer = build_rdkit_monomer(
+                "charged_planar",
+                "charged planar nitrile",
+                "N#Cc1ccc(-[n+]2ccccc2)cc1",
+                "nitrile",
+                num_conformers=1,
+            )
+
+        self.assertEqual(monomer.metadata["embedding_method"], "rdkit-2d")
+        self.assertEqual(monomer.metadata["geometry_mode"], "rdkit-2d-coordinate-fallback")
+        self.assertTrue(monomer.metadata["embedding_fallback"])
+        self.assertEqual(monomer.metadata["forcefield"], "none")
+        self.assertEqual(monomer.metadata["forcefield_optimization_status"], "skipped")
+        self.assertIsNone(monomer.metadata["selected_conformer_energy"])
+
+    def test_build_rdkit_monomer_allows_planar_metal_fallback(self):
+        zinc_porphyrin = (
+            "Nc1ccc(C2=C3C=CC4=[N+]3[Zn]35[N+]6=C2C=CC6=C(c2ccc(N)cc2)"
+            "C2=[N+]3C(=C(c3ccc(N)cc3)C3=[N+]5C(=C4c4ccc(N)cc4)C=C3)C=C2)cc1"
+        )
+        with patch.object(rdkit_module.AllChem, "EmbedMultipleConfs", return_value=()):
+            monomer = build_rdkit_monomer(
+                "zn_por",
+                "zinc porphyrin tetraamine",
+                zinc_porphyrin,
+                "amine",
+                num_conformers=1,
+            )
+
+        self.assertEqual(len(monomer.motifs), 4)
+        self.assertEqual(monomer.metadata["embedding_method"], "rdkit-2d")
+        self.assertEqual(monomer.metadata["forcefield_optimization_status"], "skipped")
+
+    def test_build_rdkit_monomer_retries_with_etkdg_v2_before_2d(self):
+        original_embed = rdkit_module.AllChem.EmbedMultipleConfs
+
+        def fail_etkdg_v3(molecule, *, numConfs, params):
+            if params.useMacrocycle14config:
+                return ()
+            return original_embed(molecule, numConfs=numConfs, params=params)
+
+        with patch.object(
+            rdkit_module.AllChem,
+            "EmbedMultipleConfs",
+            side_effect=fail_etkdg_v3,
+        ):
+            monomer = build_rdkit_monomer(
+                "tfb_v2_fallback",
+                "1,3,5-benzenetricarbaldehyde",
+                "O=Cc1cc(C=O)cc(C=O)c1",
+                "aldehyde",
+                num_conformers=1,
+            )
+
+        self.assertEqual(monomer.metadata["embedding_method"], "etkdg-v2-random")
+        self.assertEqual(
+            [attempt["status"] for attempt in monomer.metadata["embedding_attempts"]],
+            ["failed", "failed", "success"],
+        )
+
+    def test_build_rdkit_monomer_rejects_unsafe_planar_fallback_with_context(self):
+        smiles = "N#CC[NH2+]CC"
+        with patch.object(rdkit_module.AllChem, "EmbedMultipleConfs", return_value=()):
+            with self.assertRaisesRegex(
+                ValueError,
+                "unsafe_fallback.*N#CC.*non-planar heavy-atom hybridization",
+            ):
+                build_rdkit_monomer(
+                    "unsafe_fallback",
+                    "charged non-planar nitrile",
+                    smiles,
+                    "nitrile",
+                    num_conformers=1,
+                )
 
     def test_primary_amine_detection_rejects_resonance_deactivated_nitrogens(self):
         self.assertEqual(detect_rdkit_motif_count("Nc1ccc(N)cc1", "amine"), 2)

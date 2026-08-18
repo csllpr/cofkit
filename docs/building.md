@@ -48,6 +48,8 @@ cofkit build single-pair \
 
 `--cofid` defines the monomers, topology, and linkage, so it cannot be combined with direct SMILES or topology overrides.
 
+The `first.geometry` and `second.geometry` objects in `summary.json` record the RDKit embedding method, whether a fallback was used, and force-field optimization status. Standard ETKDGv3 remains the primary path. If it fails, cofkit tries bounded random-coordinate ETKDGv3 and ETKDGv2 embeddings. A final 2D coordinate fallback is restricted to planar metal-containing or formally charged precursors, is not force-field minimized, and is labeled explicitly in the summary.
+
 ## Ring-Forming Linkages
 
 Use `ring-forming` for boroxine or triazine cyclotrimerization. Three-connected product rings are represented as virtual topology nodes; real ditopic precursor molecules occupy the hcb edges. A primitive hcb build therefore contains three precursor instances and two three-participant ring events.
@@ -70,7 +72,7 @@ cofkit build ring-forming \
   --output-dir out/ctf1
 ```
 
-The command writes `summary.json` and an atomistic CIF. Ring validation reports radial, angular, and planarity residuals. Boroxine realization removes three waters per ring event; triazine realization preserves atoms and rewrites the three nitrile bonds into alternating C–N ring bonds. One-precursor COFids using linkage codes `boroxine` and `triazine` are accepted through `--cofid`.
+The command writes `summary.json` and an atomistic CIF. Ring result rows use the same success contract as single-pair builds (`status: "ok"`), and the report includes attempted, successful, and CIF-written counters. Ring validation reports radial, angular, and planarity residuals. Boroxine realization removes three waters per ring event; triazine realization preserves atoms and rewrites the three nitrile bonds into alternating C–N ring bonds. One-precursor COFids using linkage codes `boroxine` and `triazine` are accepted through `--cofid`.
 
 Request explicit bilayer registries with repeatable `--stacking` options:
 
