@@ -624,10 +624,27 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertEqual(best.metadata["embedding"]["mode"], "topology-guided")
         self.assertIn("optimization", best.metadata)
         self.assertIn("final_residual", best.metadata["optimization"])
-        self.assertIn("bridge_geometry", best.metadata["score_breakdown"])
+        # Default mode: the legacy score breakdown is omitted; the residual
+        # metrics used for ranking and validation remain available.
+        self.assertIsNone(best.score)
+        self.assertNotIn("score_breakdown", best.metadata)
         self.assertIn("bridge_geometry_residual", best.metadata["score_metadata"])
         self.assertIn("normal_misalignment_residual", best.metadata["score_metadata"]["bridge_event_metrics"][0])
         self.assertFalse(best.metadata["score_metadata"]["stacking_considered"])
+
+    def test_engine_legacy_scoring_exposes_score_breakdown(self):
+        from cofkit import COFEngineConfig
+
+        specs, _, _ = build_imine_case()
+        project = COFProject(
+            monomers=tuple(specs.values()),
+            allowed_reactions=("imine_bridge",),
+            target_dimensionality="2D",
+        )
+        best = COFEngine(config=COFEngineConfig(enable_legacy_scoring=True)).run(project).top(1)[0]
+
+        self.assertIsNotNone(best.score)
+        self.assertIn("bridge_geometry", best.metadata["score_breakdown"])
 
     def test_engine_rejects_non_disabled_stacking_modes(self):
         specs, _, _ = build_imine_case()

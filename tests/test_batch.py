@@ -1750,6 +1750,58 @@ class BatchStructureGeneratorTests(unittest.TestCase):
 
 
 @unittest.skipIf(Chem is None, "RDKit is not available")
+class ScoringModeTests(unittest.TestCase):
+    """Default mode ranks by geometry residual; the legacy score is opt-in."""
+
+    def _generate(self, *, enable_legacy_scoring: bool):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                write_cif=False,
+                enable_legacy_scoring=enable_legacy_scoring,
+            )
+        )
+        first = generator.infer_monomer_record(TAPB, record_id="tapb")
+        second = generator.infer_monomer_record(TFB, record_id="tfb")
+        return generator.generate_pair_candidates(first, second, write_cif=False)
+
+    def test_default_disables_legacy_score_and_ranks_best_geometry_first(self):
+        summaries, candidates, _attempted = self._generate(enable_legacy_scoring=False)
+
+        self.assertTrue(candidates)
+        for candidate in candidates:
+            self.assertIsNone(candidate.score)
+            self.assertEqual(candidate.metadata["scoring_mode"], "residual")
+            self.assertNotIn("score_breakdown", candidate.metadata)
+        # TAPB+TFB: hcb has by far the best bridge geometry (mean per-event
+        # residual ~0.006) but the fewest reaction events; the legacy score
+        # ranked it last because it scales with unit-cell event count.
+        self.assertEqual(summaries[0].topology_id, "hcb")
+        self.assertIsNone(summaries[0].score)
+        mean_residuals = [
+            candidate.metadata["score_metadata"]["bridge_geometry_residual"]
+            / len(candidate.metadata["score_metadata"]["bridge_event_metrics"])
+            for candidate in candidates
+        ]
+        self.assertEqual(mean_residuals, sorted(mean_residuals))
+
+    def test_legacy_scoring_restores_event_count_score(self):
+        summaries, candidates, _attempted = self._generate(enable_legacy_scoring=True)
+
+        self.assertTrue(candidates)
+        for candidate in candidates:
+            self.assertIsNotNone(candidate.score)
+            self.assertEqual(candidate.metadata["scoring_mode"], "legacy")
+            self.assertIn("score_breakdown", candidate.metadata)
+        # Legacy behavior: the score grows with unit-cell event count, so the
+        # largest cell tops the ranking regardless of geometry quality.
+        self.assertEqual(summaries[0].topology_id, "fes")
+        self.assertGreater(summaries[0].score, 400.0)
+        scores = [candidate.score for candidate in candidates]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+
+@unittest.skipIf(Chem is None, "RDKit is not available")
 class BatchProcessPoolFallbackTests(unittest.TestCase):
     def _write_tiny_library(self, root: Path) -> None:
         root.mkdir(parents=True, exist_ok=True)

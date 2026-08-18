@@ -103,8 +103,12 @@ summaries, candidates, attempted = generator.generate_monomer_pair_candidates(
 
 print("attempted:", attempted)
 for summary in summaries:
-    print(summary.topology_id, summary.score, summary.cif_path)
+    # Summaries are returned best-first by mean bridge-geometry residual.
+    # summary.score is None unless legacy scoring is enabled.
+    print(summary.topology_id, summary.cif_path)
 ```
+
+Candidates and summaries carry `metadata["scoring_mode"]` (`"residual"` by default). The deprecated event-count heuristic score can be restored with `BatchGenerationConfig(enable_legacy_scoring=True)` or `--legacy-scoring` on the CLI; it then populates `summary.score` / `candidate.score` and drives ranking again.
 
 Restrict topology selection with:
 

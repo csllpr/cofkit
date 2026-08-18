@@ -229,3 +229,31 @@ Kept for reference; these are resolved and covered by regression tests:
    `BrokenProcessPool` and buffering results before recording
    (`src/cofkit/batch.py`, `_collect_parallel_pair_results`). Regression
    tests: `tests/test_batch.py::BatchProcessPoolFallbackTests`.
+
+## Resolved separately (2026-08-17): legacy candidate score disabled by default
+
+The `CandidateScorer` total score (`src/cofkit/scoring.py`) was a heuristic
+whose magnitude was dominated by the number of reaction events in the unit
+cell — measured correlation between score and event count was **1.0** on a
+TAPB+TFB all-topology run, so the ranking systematically preferred larger
+unit cells over better bridge geometry (the geometrically near-perfect `hcb`
+candidate ranked last). The score is now **disabled by default**:
+
+- `Candidate.score` / `BatchPairSummary.score` are `None` and outputs no
+  longer contain `score_breakdown`; candidate and summary metadata carry
+  `scoring_mode: "residual"`.
+- All ranking/selection (best-candidate selection, topology ordering,
+  top-results retention, ensemble ordering) uses the mean per-bridge-event
+  geometry residual (lower is better), via
+  `cofkit.model.candidate_ranking_key` / `order_candidates`.
+- Opt-in restore: `BatchGenerationConfig(enable_legacy_scoring=True)` /
+  `COFEngineConfig(enable_legacy_scoring=True)` /
+  `RingFormationConfig(enable_legacy_scoring=True)`, or `--legacy-scoring`
+  on the build CLIs, which re-attaches the score and restores score-based
+  ranking exactly as before.
+- Not affected: the coarse validator and the continuous optimizer never used
+  the total score — they consume the per-event bridge residuals, which are
+  still always computed in `score_metadata`.
+
+Regression tests: `tests/test_batch.py::ScoringModeTests`,
+`tests/test_core.py::EngineTests::test_imine_project_legacy_scoring_restores_total_score`.

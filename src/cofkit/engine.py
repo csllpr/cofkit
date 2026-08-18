@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .embedding import EmbeddingConfig, PeriodicEmbedder
-from .model import Candidate, CandidateEnsemble, MonomerSpec, ReactionTemplate
+from .model import Candidate, CandidateEnsemble, MonomerSpec, ReactionTemplate, order_candidates
 from .optimizer import ContinuousOptimizer, OptimizerConfig
 from .planner import NetPlanner
 from .product_graph import PeriodicProductGraph
@@ -36,6 +36,9 @@ class COFEngineConfig:
     default_lateral_span: float = 30.0
     max_candidates: int = 16
     optimization_max_iterations: int = 8
+    # Attach (and rank by) the legacy event-count heuristic score. Disabled by
+    # default: candidates get score=None and are ranked by geometry residual.
+    enable_legacy_scoring: bool = False
 
 
 class COFEngine:
@@ -162,6 +165,7 @@ class COFEngine:
                     layer_spacing=self.config.default_ring_layer_spacing,
                     optimize_geometry=True,
                     stacking_ids=project.stacking_ids,
+                    enable_legacy_scoring=self.config.enable_legacy_scoring,
                 ),
                 reaction_library=self.reaction_library,
             )
@@ -204,6 +208,7 @@ class COFEngine:
                 embedding_config=self.embedder.config,
                 engine_config=self.config,
                 optimizer_config=self.optimizer.config,
+                enable_legacy_scoring=self.config.enable_legacy_scoring,
             ),
             reaction_library=self.reaction_library,
         )
@@ -221,7 +226,7 @@ class COFEngine:
             raise ValueError("single-pair topology generation failed")
 
         ensemble = CandidateEnsemble()
-        for candidate in sorted(candidates, key=lambda candidate: candidate.score, reverse=True)[: self.config.max_candidates]:
+        for candidate in order_candidates(candidates)[: self.config.max_candidates]:
             ensemble.add(candidate)
         return ensemble
 
@@ -317,12 +322,13 @@ class COFEngine:
             },
             "embedding": dict(embedding.metadata),
             "optimization": dict(optimization.metrics),
-            "score_breakdown": dict(scoring.breakdown),
+            "scoring_mode": "legacy" if self.config.enable_legacy_scoring else "residual",
+            **({"score_breakdown": dict(scoring.breakdown)} if self.config.enable_legacy_scoring else {}),
             "score_metadata": dict(scoring.metadata),
         }
         candidate = Candidate(
             id=candidate_id,
-            score=scoring.total,
+            score=scoring.total if self.config.enable_legacy_scoring else None,
             state=optimization.state,
             events=outcome.events,
             flags=tuple(flags),

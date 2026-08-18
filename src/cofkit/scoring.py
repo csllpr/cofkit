@@ -41,7 +41,19 @@ class ScoreResult:
 
 
 class CandidateScorer:
-    """Computes first-pass candidate scores from discrete assignment and initial geometry."""
+    """Computes first-pass candidate scores from discrete assignment and initial geometry.
+
+    .. deprecated::
+        The ``total`` produced by :meth:`score` is a legacy heuristic whose
+        magnitude is dominated by the number of reaction events in the unit
+        cell (measured correlation with event count is 1.0), so it favors
+        larger unit cells over better geometry. It is only attached to
+        candidates when legacy scoring is explicitly enabled. Ranking uses the
+        mean per-bridge-event geometry residual (see
+        ``cofkit.model.candidate_ranking_key``). The per-event
+        :meth:`bridge_geometry_report` residuals remain the live metric: they
+        drive the continuous optimizer and the coarse structure validator.
+    """
 
     def score(
         self,

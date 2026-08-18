@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .geometry import Frame
 
@@ -135,11 +135,72 @@ class AssemblyState:
 @dataclass(frozen=True)
 class Candidate:
     id: str
-    score: float
+    # Legacy event-count heuristic score. ``None`` unless legacy scoring is
+    # explicitly enabled; ranking uses ``candidate_ranking_key`` instead.
+    score: float | None
     state: AssemblyState
     events: tuple[ReactionEvent, ...]
     flags: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+def residual_ranking_key(
+    score_metadata: object,
+    n_events: int,
+    tiebreak_id: str,
+) -> tuple[float, int, str]:
+    """Default residual-based ranking key (ascending; lower is better).
+
+    Ranks by the mean per-bridge-event geometry residual recorded in
+    ``score_metadata`` (falling back to the ring-geometry residual for
+    ring-forming candidates), then by fewest unreacted motifs, then by id
+    for determinism.
+    """
+    metadata = score_metadata if isinstance(score_metadata, Mapping) else {}
+    bridge_metrics = metadata.get("bridge_event_metrics") or ()
+    n_bridge_events = len(tuple(bridge_metrics))
+    if n_bridge_events:
+        total_residual = float(metadata.get("bridge_geometry_residual") or 0.0)
+        mean_residual = total_residual / n_bridge_events
+    else:
+        ring_geometry = metadata.get("ring_geometry")
+        ring_residual: float | None = None
+        if isinstance(ring_geometry, Mapping):
+            raw_residual = ring_geometry.get("total_residual")
+            if raw_residual is not None:
+                ring_residual = float(raw_residual)
+        mean_residual = (
+            ring_residual / max(1, n_events) if ring_residual is not None else 0.0
+        )
+    raw_unreacted = metadata.get("n_unreacted_motifs")
+    unreacted = int(raw_unreacted) if isinstance(raw_unreacted, (int, float)) else 0
+    return (mean_residual, unreacted, tiebreak_id)
+
+
+def candidate_ranking_key(candidate: Candidate) -> tuple[float, int, str]:
+    """Default best-first ranking key for a candidate (ascending order)."""
+    return residual_ranking_key(
+        candidate.metadata.get("score_metadata"),
+        len(candidate.events),
+        candidate.id,
+    )
+
+
+def _candidate_sort_key(candidate: Candidate) -> tuple[float, int, str]:
+    # Legacy mode attaches a total score (higher is better); the default mode
+    # ranks by ascending residual. Both map onto one ascending key.
+    if candidate.score is not None:
+        return (-candidate.score, 0, candidate.id)
+    return candidate_ranking_key(candidate)
+
+
+def order_candidates(candidates: Iterable[Candidate]) -> list[Candidate]:
+    """Return candidates best-first.
+
+    Uses the legacy total score when it is attached (legacy scoring enabled),
+    otherwise the residual-based ranking key.
+    """
+    return sorted(candidates, key=_candidate_sort_key)
 
 
 @dataclass
@@ -148,7 +209,7 @@ class CandidateEnsemble:
 
     def add(self, candidate: Candidate) -> None:
         self.candidates.append(candidate)
-        self.candidates.sort(key=lambda c: c.score, reverse=True)
+        self.candidates.sort(key=_candidate_sort_key)
 
     def top(self, n: int = 5) -> list[Candidate]:
         return list(self.candidates[:n])

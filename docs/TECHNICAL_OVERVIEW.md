@@ -44,7 +44,7 @@ The engine currently runs:
 4. product graph construction
 5. initial embedding
 6. dependency-free continuous optimization
-7. scoring
+7. bridge-geometry residual evaluation and residual-based candidate ranking (the deprecated event-count heuristic score is only attached when legacy scoring is explicitly enabled)
 8. optional post-generation coarse validation / triage over exported CIFs
 
 The batch binary-bridge pipeline builds on top of that:

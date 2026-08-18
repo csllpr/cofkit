@@ -15,8 +15,8 @@ The base package now installs `rdkit`, `gemmi`, `openbabel`, `pandas`, and `pyma
 - initial linkage geometry helpers for bridge-forming reactions
 - initial periodic embedding for monomer instances from topology hints and motif/reaction heuristics, including oblique `hcb` cells for asymmetric `3+3` and `3+2` cases when a symmetric hexagonal metric is too restrictive
 - a dependency-free continuous optimization pass for seed cell/pose refinement after embedding
-- first-pass candidate scoring with event coverage, bridge geometry, topology bonuses, and unreacted penalties
-- candidate metadata carrying embedding provenance, optimizer metrics, and score breakdowns
+- residual-based candidate ranking (mean per-bridge-event geometry residual, lower is better); the former event-count heuristic score is deprecated, disabled by default, and only re-attached when legacy scoring is explicitly enabled
+- candidate metadata carrying embedding provenance, optimizer metrics, and per-event bridge-geometry residuals (legacy score breakdowns only in legacy scoring mode)
 - legal P1 CIF export, with atomistic output when monomer coordinates are available and a coarse fallback otherwise, now including explicit `_ccdc_geom_bond_type` records for atomistic bond loops
 - registry-backed atomistic reaction realization for the currently implemented binary-bridge products (imine, hydrazone, azine, beta-ketoenamine, boronate ester, and vinylene) and ring products (boroxine and triazine)
 - topology-creating ring-forming generation with virtual 3-connected product nodes, including ditopic hcb, trigonal hcb sublattice assignment, and compatible indexed mixed-connectivity layouts such as `3+6` kgd

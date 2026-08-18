@@ -39,6 +39,9 @@ class RingFormationConfig:
     layer_spacing: float = 3.4
     optimize_geometry: bool = True
     stacking_ids: tuple[str, ...] = ()
+    # Attach the legacy heuristic score (20 - ring residual). Disabled by
+    # default: candidates get score=None and are ranked by ring residual.
+    enable_legacy_scoring: bool = False
 
 
 @dataclass(frozen=True)
@@ -271,7 +274,7 @@ class RingFormingStructureGenerator:
             flags.append("ring_geometry_rejected")
         candidate = Candidate(
             id=candidate_id,
-            score=20.0 - geometry.total_residual,
+            score=(20.0 - geometry.total_residual) if self.config.enable_legacy_scoring else None,
             state=state,
             events=tuple(events),
             flags=tuple(flags),
@@ -282,6 +285,7 @@ class RingFormingStructureGenerator:
                 "assignment": dict(assignment_plan.slot_to_monomer),
                 "instance_to_monomer": {instance.id: monomer.id for instance in instances},
                 "instance_metadata": {instance.id: dict(instance.metadata) for instance in instances},
+                "scoring_mode": "legacy" if self.config.enable_legacy_scoring else "residual",
                 "score_metadata": {
                     "ring_geometry": geometry.as_dict(),
                     "n_unreacted_motifs": 0,
@@ -494,7 +498,7 @@ class RingFormingStructureGenerator:
             flags.append("ring_geometry_rejected")
         candidate = Candidate(
             id=candidate_id,
-            score=20.0 - geometry.total_residual,
+            score=(20.0 - geometry.total_residual) if self.config.enable_legacy_scoring else None,
             state=state,
             events=tuple(events),
             flags=tuple(flags),
@@ -504,6 +508,7 @@ class RingFormingStructureGenerator:
                 "net_plan": {"topology": topology_id, "metadata": dict(net_plan.metadata)},
                 "assignment": dict(assignment_plan.slot_to_monomer),
                 "instance_to_monomer": {instance.id: monomer.id for instance in instances},
+                "scoring_mode": "legacy" if self.config.enable_legacy_scoring else "residual",
                 "score_metadata": {"ring_geometry": geometry.as_dict(), "n_unreacted_motifs": 0},
                 "optimization": dict(optimization.metrics) if optimization is not None else {"enabled": False},
                 "ring_validation": {

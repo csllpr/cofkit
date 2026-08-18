@@ -30,7 +30,7 @@ from .geometry import (
     scale,
     sub,
 )
-from .model import AssemblyState, Candidate, MonomerInstance, MonomerSpec, MotifRef, Pose, ReactionEvent, ReactionTemplate
+from .model import AssemblyState, Candidate, MonomerInstance, MonomerSpec, MotifRef, Pose, ReactionEvent, ReactionTemplate, order_candidates, residual_ranking_key
 from .monomer_library import BinaryBridgeLibraryLoader, MonomerRoleResolver
 from .optimizer import ContinuousOptimizer, OptimizerConfig
 from .planner import AssignmentPlan, NetPlan, NetPlanner
@@ -128,6 +128,9 @@ class BatchGenerationConfig:
     embedding_config: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     engine_config: COFEngineConfig = field(default_factory=COFEngineConfig)
     optimizer_config: OptimizerConfig = field(default_factory=OptimizerConfig)
+    # Attach (and rank by) the legacy event-count heuristic score. Disabled by
+    # default: candidates get score=None and are ranked by geometry residual.
+    enable_legacy_scoring: bool = False
 
 
 @dataclass(frozen=True)
@@ -522,7 +525,7 @@ class BatchStructureGenerator:
             raise ValueError("pair evaluation produced no summaries")
 
         if candidates:
-            best_candidate = max(candidates, key=lambda candidate: candidate.score)
+            best_candidate = order_candidates(candidates)[0]
             best_index = next(
                 index
                 for index, candidate in enumerate(candidates)
@@ -651,7 +654,7 @@ class BatchStructureGenerator:
             raise ValueError("pair evaluation produced no summaries")
 
         if candidates:
-            best_candidate = max(candidates, key=lambda candidate: candidate.score)
+            best_candidate = order_candidates(candidates)[0]
             best_index = next(
                 index
                 for index, candidate in enumerate(candidates)
@@ -954,10 +957,7 @@ class BatchStructureGenerator:
                 if summary.topology_id is not None:
                     topology_counts[summary.topology_id] = topology_counts.get(summary.topology_id, 0) + 1
                 top_results.append(summary)
-                top_results.sort(
-                    key=lambda item: item.score if item.score is not None else float("-inf"),
-                    reverse=True,
-                )
+                top_results.sort(key=self._summary_sort_key)
                 del top_results[self.config.retain_top_results :]
                 self._record_geometry_repair_summary(
                     summary,
@@ -967,6 +967,26 @@ class BatchStructureGenerator:
                 )
             manifest.write(json.dumps(self._json_safe(self._summary_to_dict(summary)), sort_keys=True) + "\n")
         return 1 if pair_had_success else 0
+
+    @staticmethod
+    def _summary_sort_key(summary: BatchPairSummary) -> tuple[float, int, str]:
+        """Best-first ordering for retained top results.
+
+        Legacy scoring attaches a total score (higher is better); otherwise
+        summaries are ranked by ascending mean bridge-geometry residual.
+        """
+        if summary.score is not None:
+            return (-summary.score, 0, summary.structure_id)
+        graph_summary = summary.metadata.get("graph_summary")
+        n_events = 0
+        if isinstance(graph_summary, Mapping):
+            raw_events = graph_summary.get("n_reaction_events")
+            n_events = int(raw_events) if isinstance(raw_events, (int, float)) else 0
+        return residual_ranking_key(
+            summary.metadata.get("score_metadata"),
+            n_events,
+            summary.structure_id,
+        )
 
     def _record_geometry_repair_summary(
         self,
@@ -1052,7 +1072,7 @@ class BatchStructureGenerator:
         )
         if not evaluation.candidates:
             raise ValueError(f"single-node node-node generation failed: {evaluation.failed_topologies}")
-        return max(evaluation.candidates, key=lambda candidate: candidate.score)
+        return order_candidates(evaluation.candidates)[0]
 
     def _run_three_plus_two_pair(self, first: MonomerSpec, second: MonomerSpec) -> Candidate:
         pair = self._resolve_binary_bridge_pair_context(
@@ -1069,7 +1089,7 @@ class BatchStructureGenerator:
         )
         if not evaluation.candidates:
             raise ValueError(f"single-node node-linker generation failed: {evaluation.failed_topologies}")
-        return max(evaluation.candidates, key=lambda candidate: candidate.score)
+        return order_candidates(evaluation.candidates)[0]
 
     def _evaluate_same_connectivity_topologies(
         self,
@@ -1494,7 +1514,7 @@ class BatchStructureGenerator:
             candidates.append(replace(candidate, metadata=candidate_metadata))
         if not candidates:
             raise ValueError(f"topology {request.topology.id!r} did not produce an indexed node-node assignment")
-        return max(candidates, key=lambda candidate: candidate.score)
+        return order_candidates(candidates)[0]
 
     def _build_decorated_bex_node_node_request(self, request: PairTopologyBuildRequest) -> Candidate:
         first, second = request.monomers
@@ -1535,7 +1555,7 @@ class BatchStructureGenerator:
             candidate_metadata = dict(candidate.metadata)
             candidate_metadata["decorated_bex_assignment_variant"] = variant_index
             candidates.append(replace(candidate, metadata=candidate_metadata))
-        return max(candidates, key=lambda candidate: candidate.score)
+        return order_candidates(candidates)[0]
 
     def _build_decorated_bex_node_node_outcome(
         self,
@@ -1816,7 +1836,7 @@ class BatchStructureGenerator:
         }
         temporary_candidate = Candidate(
             id="decorated_bex_layer_probe",
-            score=0.0,
+            score=None,
             state=state,
             events=outcome.events,
         )
@@ -3665,7 +3685,7 @@ class BatchStructureGenerator:
 
         candidate = Candidate(
             id=candidate_id,
-            score=scoring.total,
+            score=scoring.total if self.config.enable_legacy_scoring else None,
             state=optimization.state,
             events=outcome.events,
             flags=tuple(flags),
@@ -3689,7 +3709,12 @@ class BatchStructureGenerator:
                 },
                 "embedding": dict(embedding.metadata),
                 "optimization": dict(optimization.metrics),
-                "score_breakdown": dict(scoring.breakdown),
+                "scoring_mode": "legacy" if self.config.enable_legacy_scoring else "residual",
+                **(
+                    {"score_breakdown": dict(scoring.breakdown)}
+                    if self.config.enable_legacy_scoring
+                    else {}
+                ),
                 "score_metadata": dict(scoring.metadata),
             },
         )
@@ -4078,7 +4103,12 @@ class BatchStructureGenerator:
                 "graph_summary": dict(candidate.metadata["graph_summary"]),
                 "embedding": dict(candidate.metadata["embedding"]),
                 "optimization": dict(candidate.metadata["optimization"]),
-                "score_breakdown": dict(candidate.metadata["score_breakdown"]),
+                **(
+                    {"score_breakdown": dict(candidate.metadata["score_breakdown"])}
+                    if "score_breakdown" in candidate.metadata
+                    else {}
+                ),
+                "scoring_mode": str(candidate.metadata.get("scoring_mode", "residual")),
                 "score_metadata": dict(candidate.metadata["score_metadata"]),
                 "pair_mode": pair_mode,
                 "topology_rank": topology_rank,
@@ -4338,13 +4368,13 @@ class BatchStructureGenerator:
         local_cifs_written = 0
         expanded_candidates = tuple(
             stacked_candidate
-            for candidate in sorted(evaluation.candidates, key=lambda candidate: candidate.score, reverse=True)
+            for candidate in order_candidates(evaluation.candidates)
             for stacked_candidate in enumerate_candidate_stackings(
                 candidate,
                 registry_ids=self.config.stacking_ids,
             )
         )
-        ordered_candidates = tuple(sorted(expanded_candidates, key=lambda candidate: candidate.score, reverse=True))
+        ordered_candidates = tuple(order_candidates(expanded_candidates))
         if ordered_candidates:
             attempted_structures = max(attempted_structures, len(ordered_candidates))
         for topology_rank, candidate in enumerate(ordered_candidates, start=1):
@@ -5189,8 +5219,9 @@ class BatchStructureGenerator:
             lines.append("- No successful pairs were generated.")
         else:
             for result in summary.top_results[:10]:
+                score_text = f"{result.score:.6f}" if result.score is not None else "n/a (legacy scoring disabled)"
                 lines.append(
-                    f"- `{result.structure_id}` ({result.pair_mode}) score `{result.score:.6f}` topology `{result.topology_id}`"
+                    f"- `{result.structure_id}` ({result.pair_mode}) score `{score_text}` topology `{result.topology_id}`"
                 )
         if summary.build_failures:
             lines.extend(

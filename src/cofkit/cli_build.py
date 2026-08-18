@@ -124,6 +124,16 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         default=8,
         help="Worker budget for pair generation. Defaults to 8.",
     )
+    parser.add_argument(
+        "--legacy-scoring",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Attach the deprecated event-count heuristic score to outputs and rank candidates by it. "
+            "Disabled by default: outputs carry score=null and candidates are ranked by mean "
+            "bridge-geometry residual."
+        ),
+    )
     _add_geometry_repair_arguments(parser)
 
 
@@ -169,6 +179,7 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             repair_geometry=args.repair_geometry,
             repair_geometry_lmp_path=args.repair_lmp_path,
             repair_geometry_timeout_seconds=args.repair_timeout_seconds,
+            enable_legacy_scoring=getattr(args, "legacy_scoring", False),
             repair_geometry_settings=LammpsOptimizationSettings(
                 forcefield="dreiding",
                 charge_model="none",
@@ -258,6 +269,16 @@ def _add_single_pair_parser(subparsers) -> None:
         help="Optional maximum number of CIF files to export. Defaults to no limit.",
     )
     parser.add_argument("--max-workers", type=int, default=1, help="Worker budget. Defaults to 1 for single-pair mode.")
+    parser.add_argument(
+        "--legacy-scoring",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Attach the deprecated event-count heuristic score to outputs and rank candidates by it. "
+            "Disabled by default: outputs carry score=null and candidates are ranked by mean "
+            "bridge-geometry residual."
+        ),
+    )
     _add_geometry_repair_arguments(parser)
     parser.set_defaults(func=_run_single_pair)
 
@@ -436,6 +457,15 @@ def _add_ring_forming_parser(subparsers) -> None:
         default=True,
         help="Write the atomistic product CIF. Enabled by default.",
     )
+    parser.add_argument(
+        "--legacy-scoring",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Attach the deprecated heuristic score (20 - ring residual) to outputs. "
+            "Disabled by default: outputs carry score=null."
+        ),
+    )
     parser.set_defaults(func=_run_ring_forming)
 
 
@@ -484,6 +514,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
             layer_spacing=args.layer_spacing,
             optimize_geometry=True,
             stacking_ids=tuple(args.stacking),
+            enable_legacy_scoring=getattr(args, "legacy_scoring", False),
         ),
         reaction_library=library,
     )
