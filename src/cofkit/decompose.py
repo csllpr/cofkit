@@ -1537,20 +1537,34 @@ def _linkage_topology_graph(
     atom_to_fragment: Mapping[int, int],
     candidates: tuple[BondCandidate, ...],
 ) -> LinkageTopologyGraph | None:
-    candidates_by_pair: dict[frozenset[int], list[BondCandidate]] = defaultdict(list)
-    for candidate in candidates:
-        candidates_by_pair[frozenset((candidate.atom_idx_1, candidate.atom_idx_2))].append(candidate)
     atom_image_potentials = _fragment_atom_image_potentials(atom_to_fragment, candidates)
     if atom_image_potentials is None:
         return None
-    participating_fragments: set[int] = set()
+    raw_edges = _linkage_topology_raw_edges(
+        linkage_bond_atom_pairs,
+        atom_to_fragment,
+        candidates,
+        atom_image_potentials,
+    )
+    return _linkage_topology_graph_from_raw_edges(raw_edges)
+
+
+def _linkage_topology_raw_edges(
+    linkage_bond_atom_pairs: Iterable[tuple[int, int]],
+    atom_to_fragment: Mapping[int, int],
+    candidates: tuple[BondCandidate, ...],
+    atom_image_potentials: Mapping[int, tuple[int, int, int]],
+) -> tuple[tuple[int, int, tuple[int, int, int]], ...]:
+    """Resolve cut atom pairs into fragment edges with periodic gains."""
+    candidates_by_pair: dict[frozenset[int], list[BondCandidate]] = defaultdict(list)
+    for candidate in candidates:
+        candidates_by_pair[frozenset((candidate.atom_idx_1, candidate.atom_idx_2))].append(candidate)
     raw_edges: list[tuple[int, int, tuple[int, int, int]]] = []
     for atom_idx_1, atom_idx_2 in linkage_bond_atom_pairs:
         fragment_1 = atom_to_fragment.get(atom_idx_1)
         fragment_2 = atom_to_fragment.get(atom_idx_2)
         if fragment_1 is None or fragment_2 is None or fragment_1 == fragment_2:
             continue
-        participating_fragments.update((fragment_1, fragment_2))
         pair_candidates = candidates_by_pair.get(frozenset((atom_idx_1, atom_idx_2)), ())
         if not pair_candidates:
             image = tuple(
@@ -1571,10 +1585,21 @@ def _linkage_topology_graph(
                 for axis in range(3)
             )
             raw_edges.append((fragment_1, fragment_2, image))
+    return tuple(raw_edges)
 
+
+def _linkage_topology_graph_from_raw_edges(
+    raw_edges: Iterable[tuple[int, int, tuple[int, int, int]]],
+) -> LinkageTopologyGraph | None:
+    raw_edges = tuple(raw_edges)
     if not raw_edges:
         return None
 
+    participating_fragments = {
+        fragment_id
+        for fragment_1, fragment_2, _image in raw_edges
+        for fragment_id in (fragment_1, fragment_2)
+    }
     node_map = {fragment_id: index for index, fragment_id in enumerate(sorted(participating_fragments))}
     degrees: Counter[int] = Counter()
     edges: list[tuple[int, int, tuple[int, int, int]]] = []

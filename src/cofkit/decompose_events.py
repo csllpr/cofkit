@@ -1122,6 +1122,7 @@ def _detect_boronate_ester_events(mol) -> tuple[tuple[LinkageEvent, ...], Mappin
                         site_id=site_id,
                         metadata={
                             "ring_size": 5,
+                            "topology_edge_policy": "collapse_equivalent_cut_bonds",
                             "event_stoichiometry": (
                                 "2 B-O cuts + 1 boronic-acid site + 1 vicinal-diol site"
                             ),
@@ -1903,13 +1904,68 @@ def _event_topology_graph(
 ) -> tuple[legacy.LinkageTopologyGraph | None, Mapping[str, object]]:
     family = events[0].family
     if family not in {"boroxine", "triazine"}:
-        graph = legacy._linkage_topology_graph(
-            mol,
-            cut_pairs,
+        atom_image_potentials = legacy._fragment_atom_image_potentials(
             fragment_by_atom,
             candidates,
         )
-        return graph, {"strategy": "cut-edge linkage graph"}
+        if atom_image_potentials is None:
+            return None, {
+                "strategy": "event linkage graph",
+                "error": "precursor fragments could not be unwrapped consistently",
+            }
+        topology_edges: list[tuple[int, int, tuple[int, int, int]]] = []
+        collapsed_bond_edges = 0
+        policy_counts: Counter[str] = Counter()
+        for event in events:
+            event_pairs = []
+            for bond_idx in event.cut_bonds:
+                bond = mol.GetBondWithIdx(int(bond_idx))
+                event_pairs.append(
+                    (int(bond.GetBeginAtomIdx()), int(bond.GetEndAtomIdx()))
+                )
+            raw_event_edges = legacy._linkage_topology_raw_edges(
+                event_pairs,
+                fragment_by_atom,
+                candidates,
+                atom_image_potentials,
+            )
+            if not raw_event_edges:
+                return None, {
+                    "strategy": "event linkage graph",
+                    "error": f"event {event.event_id!r} did not produce a fragment edge",
+                }
+            edge_policy = str(event.metadata.get("topology_edge_policy", "per_cut_bond"))
+            policy_counts[edge_policy] += 1
+            if edge_policy == "collapse_equivalent_cut_bonds":
+                canonical_edges = {
+                    _canonical_fragment_edge(edge)
+                    for edge in raw_event_edges
+                }
+                if len(canonical_edges) != 1:
+                    return None, {
+                        "strategy": "event linkage graph",
+                        "error": (
+                            f"event {event.event_id!r} has equivalent cut bonds with "
+                            f"inconsistent fragment edges: {sorted(canonical_edges)!r}"
+                        ),
+                    }
+                topology_edges.append(next(iter(canonical_edges)))
+                collapsed_bond_edges += len(raw_event_edges) - 1
+            elif edge_policy == "per_cut_bond":
+                topology_edges.extend(raw_event_edges)
+            else:
+                return None, {
+                    "strategy": "event linkage graph",
+                    "error": f"event {event.event_id!r} has unknown topology edge policy {edge_policy!r}",
+                }
+        graph = legacy._linkage_topology_graph_from_raw_edges(topology_edges)
+        return graph, {
+            "strategy": "event linkage graph",
+            "edge_policy_counts": dict(sorted(policy_counts.items())),
+            "n_cut_bond_edges": len(cut_pairs),
+            "n_topology_edges": len(topology_edges),
+            "n_collapsed_equivalent_bond_edges": collapsed_bond_edges,
+        }
     ring_events: list[legacy.RingDecompositionEvent] = []
     for event in events:
         anchors = tuple(int(value) for value in event.metadata.get("anchor_atom_indices", ()))
@@ -1949,6 +2005,15 @@ def _event_topology_graph(
         "strategy": "virtual ring node",
         "n_topology_components": component_count,
     }
+
+
+def _canonical_fragment_edge(
+    edge: tuple[int, int, tuple[int, int, int]],
+) -> tuple[int, int, tuple[int, int, int]]:
+    fragment_1, fragment_2, image = edge
+    if fragment_2 < fragment_1:
+        return fragment_2, fragment_1, legacy._negate_image(image)
+    return edge
 
 
 def _apply_triazine_motif_policy(

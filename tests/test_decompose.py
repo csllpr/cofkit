@@ -20,6 +20,7 @@ from cofkit.cif import CIFWriter
 from cofkit.cli import main as cli_main
 from cofkit.cofid import generate_cofid
 from cofkit.decompose import (
+    BondCandidate,
     BondedMolBuildResult,
     DecomposedMonomer,
     LinkageTopologyGraph,
@@ -49,6 +50,7 @@ from cofkit.decompose_events import (
     ReconstructionHypothesis,
     _aggregate_event_monomers,
     _detect_probable_fragment_defect,
+    _event_topology_graph,
     _select_event_result,
     detect_linkage_events,
 )
@@ -1168,7 +1170,6 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 )
                 automatic_event_result = decompose_cif_to_cofid(
                     input_cif,
-                    topology="hcb",
                 )
 
                 self.assertTrue(legacy_result.ok, legacy_result.reason)
@@ -1184,6 +1185,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 self.assertEqual(benchmark_contract["default_mode"], "event")
                 self.assertTrue(benchmark_contract["legacy_mode_available"])
                 self.assertEqual(automatic_event_result.linkage, linkage)
+                self.assertEqual(automatic_event_result.topology, "hcb")
                 self.assertEqual(automatic_event_result.cofid, summary.metadata["cofid"])
                 family_events = [
                     event
@@ -1198,6 +1200,72 @@ class DecomposeRoundTripTests(unittest.TestCase):
                 self.assertEqual(len(family_events), expected_event_count)
                 if linkage in {"azine", "boest"}:
                     self.assertTrue(all(len(event["cut_bonds"]) == 2 for event in family_events))
+                event_topology = event_result.metadata["event_topology"]
+                if linkage == "boest":
+                    self.assertEqual(event_topology["n_cut_bond_edges"], expected_linkage_bonds)
+                    self.assertEqual(event_topology["n_topology_edges"], expected_linkage_bonds // 2)
+                    self.assertEqual(
+                        event_topology["n_collapsed_equivalent_bond_edges"],
+                        expected_linkage_bonds // 2,
+                    )
+                    self.assertEqual(
+                        event_result.metadata["topology_graph"]["n_edges"],
+                        expected_linkage_bonds // 2,
+                    )
+                elif linkage == "azine":
+                    self.assertEqual(event_topology["n_cut_bond_edges"], expected_linkage_bonds)
+                    self.assertEqual(event_topology["n_topology_edges"], expected_linkage_bonds)
+                    self.assertEqual(event_topology["n_collapsed_equivalent_bond_edges"], 0)
+
+    def test_event_topology_rejects_inconsistent_equivalent_boest_bond_gains(self):
+        mol = Chem.MolFromSmiles("OB(O)")
+        self.assertIsNotNone(mol)
+        boron_idx = next(atom.GetIdx() for atom in mol.GetAtoms() if atom.GetAtomicNum() == 5)
+        oxygen_indices = tuple(
+            atom.GetIdx()
+            for atom in mol.GetAtoms()
+            if atom.GetAtomicNum() == 8
+        )
+        cut_bonds = tuple(
+            mol.GetBondBetweenAtoms(boron_idx, oxygen_idx).GetIdx()
+            for oxygen_idx in oxygen_indices
+        )
+        event = LinkageEvent(
+            event_id="boest:test",
+            family="boest",
+            atoms=(boron_idx, *oxygen_indices),
+            bonds=cut_bonds,
+            cut_bonds=cut_bonds,
+            instance_ids=(None, None, None),
+            confidence="high",
+            endpoint_roles=(),
+            site_id="boest:test",
+            metadata={"topology_edge_policy": "collapse_equivalent_cut_bonds"},
+        )
+        candidates = tuple(
+            BondCandidate(
+                atom_idx_1=boron_idx,
+                atom_idx_2=oxygen_idx,
+                distance=1.4,
+                periodic_image=(index, 0, 0),
+            )
+            for index, oxygen_idx in enumerate(oxygen_indices)
+        )
+        fragment_by_atom = {
+            boron_idx: 0,
+            **{oxygen_idx: 1 for oxygen_idx in oxygen_indices},
+        }
+
+        graph, metadata = _event_topology_graph(
+            mol,
+            (event,),
+            [(boron_idx, oxygen_idx) for oxygen_idx in oxygen_indices],
+            fragment_by_atom,
+            candidates,
+        )
+
+        self.assertIsNone(graph)
+        self.assertIn("inconsistent fragment edges", metadata["error"])
 
     def test_event_detector_branches_tied_vinylene_orientations(self):
         mol = Chem.MolFromSmiles("CC=CC")

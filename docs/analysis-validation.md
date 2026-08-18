@@ -69,6 +69,7 @@ Current scope:
 - supported canonical linkage codes are `imine`, `hydrazone`, `azine`, `boest`, `bken`, `vinylene`, `boroxine`, and `triazine`
 - `--linkage auto` is the default; all supported families are evaluated and success requires exactly one complete periodic precursor decomposition
 - `--decomposition-mode event` is the default; `--decomposition-mode legacy` selects the retained per-family compatibility engine
+- topology reconstruction follows chemical event semantics: the two B-O cuts in one boronate-ester ring contribute one quotient-graph edge, while multi-cut events such as azine retain distinct precursor connections; inconsistent periodic gains within an equivalent-bond event are rejected
 - default event mode resolves nitrogen overlaps locally, including conventional and keto-tautomerized azine/acylhydrazone N-N products before an overlapping beta-ketoenamine interpretation; the retained legacy engine exposes its independent `azine > hydrazone > imine` and `bken > imine` per-bond branches under `metadata["nitrogen_linkage_detection"]`
 - vinylene decomposition rejects C=C bonds in five- or six-membered rings, requires carbon anchors at both endpoints, and supports activated methyl groups through direct withdrawing groups or conjugated aza/cyano aromatic systems; event mode branches tied orientations for global validation
 - recognized boronate-ester or boroxine chemistry is reported under `metadata["vinylene_linkage_detection"]` but does not suppress a separate structurally valid vinylene candidate
