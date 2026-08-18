@@ -58,7 +58,13 @@ class RDKitMonomerTests(unittest.TestCase):
             detect_rdkit_motif_count("NC(=S)Nc1ccc(NC(N)=S)cc1", "amine"),
             0,
         )
+        self.assertEqual(detect_rdkit_motif_count("NC(S)Nc1ccc(NC(N)S)cc1", "amine"), 0)
         self.assertEqual(detect_rdkit_motif_count("NS(=O)(=O)c1ccccc1", "amine"), 0)
+
+    def test_amine_detection_accepts_only_guanidinium_bound_terminal_hydrazino_sites(self):
+        self.assertEqual(detect_rdkit_motif_count("NN=C(NN)NN", "amine"), 3)
+        self.assertEqual(detect_rdkit_motif_count("NN", "amine"), 0)
+        self.assertEqual(detect_rdkit_motif_count("NNC(=O)c1ccccc1", "amine"), 0)
 
     def test_build_rdkit_monomer_detects_tfb_contextual_aldehydes(self):
         monomer = build_rdkit_monomer(
@@ -169,6 +175,26 @@ class RDKitMonomerTests(unittest.TestCase):
             for motif in monomer.motifs
         }
         self.assertEqual(len(hydroxyl_oxygen_ids), 3)
+
+    def test_build_rdkit_monomer_detects_beta_ketoenol_route(self):
+        monomer = build_rdkit_monomer(
+            "beta_ketoenol",
+            "tritopic beta-ketoenol precursor",
+            "O=CCC(=O)c1cc(C(=O)CC=O)cc(C(=O)CC=O)c1",
+            "keto_aldehyde",
+        )
+
+        self.assertEqual(len(monomer.motifs), 3)
+        self.assertTrue(
+            all(
+                motif.metadata["precursor_route"] == "beta_ketoenol_michael_addition"
+                for motif in monomer.motifs
+            )
+        )
+        self.assertTrue(
+            all("beta_keto_carbonyl_oxygen_atom_id" in motif.metadata for motif in monomer.motifs)
+        )
+        self.assertEqual(detect_rdkit_motif_count("O=CCC", "keto_aldehyde"), 0)
 
     def test_build_rdkit_monomer_detects_tmt_as_tritopic_activated_methylene(self):
         monomer = build_rdkit_monomer(

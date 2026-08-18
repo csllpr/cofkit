@@ -168,6 +168,38 @@ def _run_decompose(args: argparse.Namespace) -> None:
             raise SystemExit(2)
         return
     if not result.ok:
+        defect = result.metadata.get("defect_detection")
+        if isinstance(defect, dict) and defect.get("detected") is True:
+            print("status:", defect["classification"])
+            print("probable_linkage:", defect["candidate_linkage"])
+            print(
+                "fragment_agreement:",
+                f"{defect['matching_fragment_count']}/{defect['total_fragment_count']}",
+                f"({float(defect['agreement_percent']):.1f}%; "
+                f"threshold > {100.0 * float(defect['threshold']):.1f}%)",
+            )
+            print("dominant_monomers:")
+            for monomer in defect["dominant_monomer_combination"]:
+                print(
+                    " ",
+                    f"{monomer['connectivity']}:{monomer['reactive_group']}:"
+                    f"{monomer['canonical_smiles']}",
+                    f"(matching_fragments={monomer['matching_fragment_count']})",
+                )
+            print("glitches:")
+            for glitch in defect["glitches"]:
+                if glitch["type"] == "role_connectivity_outlier":
+                    print(
+                        " ",
+                        f"{glitch['role']}: expected {glitch['expected_reactive_site_count']} "
+                        f"reactive sites from dominant connectivity "
+                        f"{glitch['dominant_connectivity']}, observed "
+                        f"{glitch['observed_reactive_site_count']}",
+                    )
+                else:
+                    print(" ", glitch["type"])
+            print("reason:", result.reason)
+            raise SystemExit(2)
         raise SystemExit(f"error: {result.reason or 'decomposition did not produce a COFid'}")
     print(result.cofid)
 

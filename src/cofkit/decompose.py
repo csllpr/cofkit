@@ -1737,14 +1737,15 @@ def _rank_topology_candidates(
     *,
     topology_ids: frozenset[str] | None = None,
 ) -> tuple[TopologyDetectionCandidate, ...]:
+    ranking_graph = _contract_degree_two_linkers(graph) or graph
     repository = default_topology_repository()
-    entries = repository.list_index(dimensionality=graph.dimensionality_hint)
+    entries = repository.list_index(dimensionality=ranking_graph.dimensionality_hint)
     if not entries:
         entries = repository.list_index()
     if topology_ids is not None:
         entries = tuple(entry for entry in entries if entry.id in topology_ids)
 
-    observed_connectivities = tuple(sorted(set(graph.node_connectivities)))
+    observed_connectivities = tuple(sorted(set(ranking_graph.node_connectivities)))
     ranked: list[TopologyDetectionCandidate] = []
     for entry in entries:
         entry_connectivities = tuple(sorted(set(int(value) for value in entry.node_connectivities)))
@@ -1756,7 +1757,13 @@ def _rank_topology_candidates(
             "node_connectivities": list(entry.node_connectivities),
             "dimensionality": entry.dimensionality,
         }
-        if graph.dimensionality_hint == entry.dimensionality:
+        if ranking_graph is not graph:
+            metadata["degree_two_linker_contraction"] = {
+                "applied": True,
+                "input_graph": graph.to_metadata(),
+                "contracted_graph": ranking_graph.to_metadata(),
+            }
+        if ranking_graph.dimensionality_hint == entry.dimensionality:
             score += 0.10
             reasons.append("dimensionality hint matches")
         try:
@@ -1768,29 +1775,39 @@ def _rank_topology_candidates(
         confidence = "low"
         if topology_graph is not None:
             metadata["definition_graph"] = topology_graph.to_metadata()
-            if graph.node_count == topology_graph.node_count and graph.edge_count == topology_graph.edge_count:
-                if _periodic_graphs_match(graph, topology_graph, compare_gains=True):
+            if (
+                ranking_graph.node_count == topology_graph.node_count
+                and ranking_graph.edge_count == topology_graph.edge_count
+            ):
+                if _periodic_graphs_match(ranking_graph, topology_graph, compare_gains=True):
                     score += 0.55
                     confidence = "exact"
                     reasons.append("periodic quotient graph matches")
-                elif _periodic_graphs_match(graph, topology_graph, compare_gains=False):
+                elif _periodic_graphs_match(ranking_graph, topology_graph, compare_gains=False):
                     score += 0.45
                     confidence = "high"
                     reasons.append("quotient graph matches without periodic-gain comparison")
             else:
-                if topology_graph.node_count > 0 and graph.node_count % topology_graph.node_count == 0:
+                if (
+                    topology_graph.node_count > 0
+                    and ranking_graph.node_count % topology_graph.node_count == 0
+                ):
                     score += 0.10
                     reasons.append("observed node count is a topology supercell multiple")
-                if topology_graph.edge_count > 0 and graph.edge_count % topology_graph.edge_count == 0:
+                if (
+                    topology_graph.edge_count > 0
+                    and ranking_graph.edge_count % topology_graph.edge_count == 0
+                ):
                     score += 0.10
                     reasons.append("observed edge count is a topology supercell multiple")
-                if _degree_histogram_matches_supercell(graph, topology_graph):
+                if _degree_histogram_matches_supercell(ranking_graph, topology_graph):
                     score += 0.20
                     reasons.append("degree histogram is consistent with a topology supercell")
         if confidence == "low":
-            if score >= 0.85:
+            rounded_score = round(score, 6)
+            if rounded_score >= 0.85:
                 confidence = "high"
-            elif score >= 0.65:
+            elif rounded_score >= 0.65:
                 confidence = "medium"
         ranked.append(
             TopologyDetectionCandidate(
@@ -1802,6 +1819,77 @@ def _rank_topology_candidates(
             )
         )
     return tuple(sorted(ranked, key=lambda candidate: (-candidate.score, candidate.topology)))
+
+
+def _contract_degree_two_linkers(
+    graph: LinkageTopologyGraph,
+) -> LinkageTopologyGraph | None:
+    """Contract explicit 2-connected linker fragments for net matching.
+
+    Topology definitions encode the underlying node net, whereas decomposition
+    graphs include both node precursors and ditopic linker precursors.  This
+    gain-preserving contraction is applied only when every degree-two node lies
+    directly between two non-degree-two nodes; chains or all-linker graphs are
+    left untouched.
+    """
+
+    linker_nodes = {
+        index
+        for index, connectivity in enumerate(graph.node_connectivities)
+        if int(connectivity) == 2
+    }
+    retained_nodes = set(range(graph.node_count)) - linker_nodes
+    if not linker_nodes or not retained_nodes:
+        return None
+
+    adjacency: dict[int, list[tuple[int, tuple[int, int, int]]]] = defaultdict(list)
+    retained_edges: list[tuple[int, int, tuple[int, int, int]]] = []
+    for start, end, image in graph.gain_edges:
+        adjacency[start].append((end, image))
+        adjacency[end].append((start, _negate_image(image)))
+        if start in retained_nodes and end in retained_nodes:
+            retained_edges.append((start, end, image))
+
+    contracted_edges = list(retained_edges)
+    for linker in sorted(linker_nodes):
+        incidences = adjacency.get(linker, ())
+        if len(incidences) != 2:
+            return None
+        (first, first_step), (second, second_step) = incidences
+        if first not in retained_nodes or second not in retained_nodes:
+            return None
+        image = tuple(
+            second_step[axis] - first_step[axis]
+            for axis in range(3)
+        )
+        start, end = first, second
+        if end < start:
+            start, end = end, start
+            image = _negate_image(image)
+        contracted_edges.append((start, end, image))
+
+    node_map = {node: index for index, node in enumerate(sorted(retained_nodes))}
+    remapped_edges = tuple(
+        sorted(
+            (node_map[start], node_map[end], image)
+            for start, end, image in contracted_edges
+        )
+    )
+    degrees: Counter[int] = Counter()
+    for start, end, _image in remapped_edges:
+        degrees[start] += 1
+        degrees[end] += 1
+    contracted = LinkageTopologyGraph(
+        node_connectivities=tuple(degrees[index] for index in range(len(node_map))),
+        gain_edges=remapped_edges,
+        dimensionality_hint=_periodic_dimension_hint(len(node_map), remapped_edges),
+    )
+    if _periodic_gain_rank(contracted.node_count, contracted.gain_edges) != _periodic_gain_rank(
+        graph.node_count,
+        graph.gain_edges,
+    ):
+        return None
+    return contracted
 
 
 def _topology_definition_graph(definition) -> LinkageTopologyGraph:

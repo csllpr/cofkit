@@ -29,8 +29,10 @@ from .decompose_cif import PeriodicCifAtoms, read_periodic_cif_atoms
 
 try:
     from rdkit import Chem
+    from rdkit.Chem import rdMolHash
 except ImportError:  # pragma: no cover - project dependency guard
     Chem = None
+    rdMolHash = None
 
 
 EVENT_STATUS_COMPLETE = "SUCCESS_COMPLETE"
@@ -42,6 +44,7 @@ EVENT_STATUS_UNEXPLAINED = "FAILED_UNEXPLAINED_FRAMEWORK"
 EVENT_STATUS_UNSUPPORTED = "UNSUPPORTED_LINKAGE"
 EVENT_STATUS_SUPPRESSED = "SUPPRESSED_LOCAL_OVERLAP"
 EVENT_STATUS_TRIAZINE_MOTIF = "SUPPRESSED_TRIAZINE_MOTIF"
+EVENT_STATUS_PROBABLE_DEFECT = "DETECTED_PROBABLE_STRUCTURAL_DEFECT"
 
 _CANONICAL_FAMILIES = (
     "azine",
@@ -56,6 +59,7 @@ _CANONICAL_FAMILIES = (
 _CONFIDENCE_SCORE = {"low": 1.0, "medium": 2.0, "high": 3.0}
 _MAX_FAMILY_HYPOTHESES = 256
 _ORIGINAL_ATOM_INDEX_PROP = "cofkit_event_original_atom_idx"
+_DEFECT_DOMINANT_FRAGMENT_THRESHOLD = 0.75
 
 
 @dataclass(frozen=True)
@@ -232,7 +236,7 @@ def decompose_cif_to_cofid_event(
             bond_mode=bond_mode,
         )
         hypotheses = _apply_triazine_motif_policy(hypotheses, detection.events)
-        return _select_event_result(
+        primary_result = _select_event_result(
             input_path,
             requested_family=requested_family,
             topology=normalized_topology,
@@ -240,6 +244,83 @@ def decompose_cif_to_cofid_event(
             hypotheses=hypotheses,
             generation_metadata=generation_metadata,
         )
+        if (
+            bond_mode == "auto"
+            and build_result.metadata.get("bond_source") == "explicit_cif"
+            and _should_attempt_distance_fallback(primary_result)
+        ):
+            try:
+                distance_build = legacy._build_bonded_mol(atoms, bond_mode="distance")
+                distance_detection = detect_linkage_events(distance_build)
+                distance_hypotheses, distance_generation_metadata = _generate_and_validate_hypotheses(
+                    input_path,
+                    atoms,
+                    distance_build,
+                    distance_detection.events,
+                    topology=normalized_topology,
+                    bond_mode="distance",
+                )
+                distance_hypotheses = _apply_triazine_motif_policy(
+                    distance_hypotheses,
+                    distance_detection.events,
+                )
+                distance_result = _select_event_result(
+                    input_path,
+                    requested_family=requested_family,
+                    topology=normalized_topology,
+                    detection=distance_detection,
+                    hypotheses=distance_hypotheses,
+                    generation_metadata=distance_generation_metadata,
+                )
+            except Exception as exc:
+                return replace(
+                    primary_result,
+                    metadata={
+                        **dict(primary_result.metadata),
+                        "bond_graph_fallback": {
+                            "attempted": True,
+                            "applied": False,
+                            "policy": (
+                                "replace an unsuccessful explicit-CIF graph only when the "
+                                "independently distance-inferred graph produces exactly one "
+                                "globally validated decomposition"
+                            ),
+                            "primary_bond_source": "explicit_cif",
+                            "fallback_bond_source": "distance_inferred",
+                            "primary_status": primary_result.status,
+                            "primary_event_status": primary_result.metadata.get("event_status"),
+                            "primary_reason": primary_result.reason,
+                            "fallback_status": "error",
+                            "fallback_event_status": EVENT_STATUS_CHEMICAL,
+                            "fallback_reason": f"{type(exc).__name__}: {exc}",
+                        },
+                    },
+                )
+            fallback_report = {
+                "attempted": True,
+                "applied": distance_result.ok,
+                "policy": (
+                    "replace an unsuccessful explicit-CIF graph only when the independently "
+                    "distance-inferred graph produces exactly one globally validated decomposition"
+                ),
+                "primary_bond_source": "explicit_cif",
+                "fallback_bond_source": "distance_inferred",
+                "primary_status": primary_result.status,
+                "primary_event_status": primary_result.metadata.get("event_status"),
+                "primary_reason": primary_result.reason,
+                "fallback_status": distance_result.status,
+                "fallback_event_status": distance_result.metadata.get("event_status"),
+                "fallback_reason": distance_result.reason,
+            }
+            selected_result = distance_result if distance_result.ok else primary_result
+            return replace(
+                selected_result,
+                metadata={
+                    **dict(selected_result.metadata),
+                    "bond_graph_fallback": fallback_report,
+                },
+            )
+        return primary_result
     except Exception as exc:
         return legacy.CifDecompositionResult(
             status="error",
@@ -255,6 +336,36 @@ def decompose_cif_to_cofid_event(
                 "pipeline_stage": "graph_normalization_or_event_detection",
             },
         )
+
+
+def _should_attempt_distance_fallback(result: legacy.CifDecompositionResult) -> bool:
+    if int(result.metadata.get("successful_hypothesis_count", 0)) != 0:
+        return False
+    if result.metadata.get("event_status") not in {
+        EVENT_STATUS_CHEMICAL,
+        EVENT_STATUS_ENDPOINT,
+        EVENT_STATUS_UNEXPLAINED,
+    }:
+        return False
+    if result.metadata.get("event_status") != EVENT_STATUS_CHEMICAL or len(result.monomers) <= 2:
+        return True
+
+    # Several fully buildable species in one reaction role are much more likely
+    # to be a legitimate multivariate framework than a corrupt explicit bond
+    # graph.  Preserve that abstention without paying for or selecting a graph
+    # fallback.  No. 199 remains eligible because its over-cut explicit graph
+    # contains fragments whose declared reactive connectivity is not buildable.
+    for monomer in result.monomers:
+        try:
+            detected = legacy.detect_rdkit_motif_count(
+                monomer.canonical_smiles,
+                monomer.reactive_group,
+            )
+        except Exception:
+            return True
+        if detected != monomer.connectivity:
+            return True
+    return False
 
 
 def detect_linkage_events(build_result: legacy.BondedMolBuildResult) -> EventDetectionResult:
@@ -1481,10 +1592,7 @@ def _cut_and_reconstruct(
     }
     fragments = Chem.GetMolFrags(cut_mol, asMols=True, sanitizeFrags=False)
 
-    monomers_by_key: dict[
-        tuple[str, str, int],
-        tuple[legacy.DecomposedMonomer, int],
-    ] = {}
+    recovered_monomers: list[legacy.DecomposedMonomer] = []
     roles: list[ReconstructedRole] = []
     unexplained_fragments: list[dict[str, object]] = []
     ignored_guest_fragments = 0
@@ -1544,27 +1652,9 @@ def _cut_and_reconstruct(
                 validation_passed=True,
             )
         )
-        key = (monomer.reactive_group, monomer.canonical_smiles, monomer.connectivity)
-        previous = monomers_by_key.get(key)
-        if previous is None:
-            monomers_by_key[key] = (monomer, 1)
-        else:
-            monomers_by_key[key] = (previous[0], previous[1] + 1)
+        recovered_monomers.append(monomer)
 
-    monomers = tuple(
-        sorted(
-            (
-                legacy.DecomposedMonomer(
-                    connectivity=monomer.connectivity,
-                    reactive_group=monomer.reactive_group,
-                    canonical_smiles=monomer.canonical_smiles,
-                    amount=amount,
-                )
-                for monomer, amount in monomers_by_key.values()
-            ),
-            key=lambda monomer: (-monomer.connectivity, monomer.reactive_group, monomer.canonical_smiles),
-        )
-    )
+    monomers, identity_normalization = _aggregate_event_monomers(tuple(recovered_monomers))
     topology_graph, topology_metadata = _event_topology_graph(
         mol,
         events,
@@ -1581,6 +1671,7 @@ def _cut_and_reconstruct(
         "n_unique_monomers": len(monomers),
         "n_ignored_guest_fragments": ignored_guest_fragments,
         "n_unexplained_framework_fragments": len(unexplained_fragments),
+        "fragment_identity_normalization": identity_normalization,
         "event_topology": topology_metadata,
     }
     if topology_graph is not None:
@@ -1606,6 +1697,137 @@ def _cut_and_reconstruct(
         topology_graph=topology_graph,
         fragment_by_atom=fragment_by_atom,
         metadata=metadata,
+    )
+
+
+def _aggregate_event_monomers(
+    monomers: tuple[legacy.DecomposedMonomer, ...],
+) -> tuple[tuple[legacy.DecomposedMonomer, ...], Mapping[str, object]]:
+    """Aggregate exact and conservative bond-order-equivalent fragments.
+
+    CIF bond-order/H-placement inconsistencies can encode the same precursor as
+    several valence forms.  Formula plus RDKit's element graph preserves atom
+    identity and constitutional connectivity while ignoring bond order.  A
+    group is merged only when at least one member still exposes exactly the
+    reconstructed number of buildable motifs; constitutional isomers therefore
+    remain distinct.
+    """
+
+    exact_groups: defaultdict[
+        tuple[str, int, str],
+        list[legacy.DecomposedMonomer],
+    ] = defaultdict(list)
+    identity_groups: defaultdict[
+        tuple[str, int, str, str, int],
+        list[legacy.DecomposedMonomer],
+    ] = defaultdict(list)
+    unhashable: list[legacy.DecomposedMonomer] = []
+    for monomer in monomers:
+        identity = _bond_order_identity_key(monomer)
+        if identity is None:
+            unhashable.append(monomer)
+        else:
+            identity_groups[identity].append(monomer)
+
+    aggregated: list[legacy.DecomposedMonomer] = []
+    merged_groups: list[dict[str, object]] = []
+    for identity, members in sorted(identity_groups.items()):
+        smiles_counts: Counter[str] = Counter()
+        for monomer in members:
+            smiles_counts[monomer.canonical_smiles] += monomer.amount
+        connectivity = members[0].connectivity
+        reactive_group = members[0].reactive_group
+        buildable_forms = []
+        for smiles in sorted(smiles_counts):
+            try:
+                motif_count = legacy.detect_rdkit_motif_count(smiles, reactive_group)
+            except Exception:
+                continue
+            if motif_count == connectivity:
+                buildable_forms.append(smiles)
+        if len(smiles_counts) > 1 and buildable_forms:
+            representative = min(buildable_forms)
+            aggregated.append(
+                legacy.DecomposedMonomer(
+                    connectivity=connectivity,
+                    reactive_group=reactive_group,
+                    canonical_smiles=representative,
+                    amount=sum(smiles_counts.values()),
+                )
+            )
+            merged_groups.append({
+                "reactive_group": reactive_group,
+                "connectivity": connectivity,
+                "molecular_formula": identity[2],
+                "element_graph": identity[3],
+                "net_charge": identity[4],
+                "input_forms": dict(sorted(smiles_counts.items())),
+                "selected_buildable_form": representative,
+                "fragment_count": sum(smiles_counts.values()),
+            })
+            continue
+        for smiles, amount in sorted(smiles_counts.items()):
+            exact_groups[(reactive_group, connectivity, smiles)].append(
+                legacy.DecomposedMonomer(
+                    connectivity=connectivity,
+                    reactive_group=reactive_group,
+                    canonical_smiles=smiles,
+                    amount=amount,
+                )
+            )
+
+    for monomer in unhashable:
+        exact_groups[
+            (monomer.reactive_group, monomer.connectivity, monomer.canonical_smiles)
+        ].append(monomer)
+    for (reactive_group, connectivity, smiles), members in exact_groups.items():
+        aggregated.append(
+            legacy.DecomposedMonomer(
+                connectivity=connectivity,
+                reactive_group=reactive_group,
+                canonical_smiles=smiles,
+                amount=sum(monomer.amount for monomer in members),
+            )
+        )
+
+    return (
+        tuple(
+            sorted(
+                aggregated,
+                key=lambda monomer: (
+                    -monomer.connectivity,
+                    monomer.reactive_group,
+                    monomer.canonical_smiles,
+                ),
+            )
+        ),
+        {
+            "strategy": "molecular_formula_plus_element_graph",
+            "requires_buildable_representative": True,
+            "applied": bool(merged_groups),
+            "merged_group_count": len(merged_groups),
+            "merged_groups": merged_groups,
+        },
+    )
+
+
+def _bond_order_identity_key(
+    monomer: legacy.DecomposedMonomer,
+) -> tuple[str, int, str, str, int] | None:
+    if Chem is None or rdMolHash is None:
+        return None
+    mol = Chem.MolFromSmiles(monomer.canonical_smiles)
+    if mol is None:
+        return None
+    formula = str(rdMolHash.MolHash(mol, rdMolHash.HashFunction.MolFormula))
+    element_graph = str(rdMolHash.MolHash(mol, rdMolHash.HashFunction.ElementGraph))
+    net_charge = sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms())
+    return (
+        monomer.reactive_group,
+        monomer.connectivity,
+        formula,
+        element_graph,
+        net_charge,
     )
 
 
@@ -1789,6 +2011,243 @@ def _atoms_share_one_fragment(
     return None not in fragments and len(fragments) == 1
 
 
+def _detect_probable_fragment_defect(
+    hypothesis: ReconstructionHypothesis,
+    detection: EventDetectionResult,
+    *,
+    threshold: float = _DEFECT_DOMINANT_FRAGMENT_THRESHOLD,
+) -> Mapping[str, object] | None:
+    """Recognize a mostly regular binary decomposition with damaged outliers.
+
+    This is deliberately narrower than precursor validation.  A legitimate
+    multivariate framework may contain several monomers for one reaction role;
+    that alone is not a defect.  We require a unique dominant species for every
+    role, strict agreement above ``threshold``, and independent structural
+    evidence such as lost role connectivity or unexplained framework matter.
+    """
+
+    spec = legacy._resolve_linkage_spec(hypothesis.family)
+    if not isinstance(spec, legacy.LinkageDecompositionSpec):
+        return None
+    expected_roles = tuple(spec.roles)
+    if len(expected_roles) != len(set(expected_roles)) or not hypothesis.monomers:
+        return None
+
+    monomers_by_role: defaultdict[str, list[legacy.DecomposedMonomer]] = defaultdict(list)
+    for monomer in hypothesis.monomers:
+        monomers_by_role[monomer.reactive_group].append(monomer)
+    if set(monomers_by_role) != set(expected_roles):
+        return None
+
+    roles_by_name: defaultdict[str, list[ReconstructedRole]] = defaultdict(list)
+    for role in hypothesis.roles:
+        roles_by_name[role.role].append(role)
+    if set(roles_by_name) != set(expected_roles):
+        return None
+
+    dominant_by_role: dict[str, legacy.DecomposedMonomer] = {}
+    matching_fragment_count = 0
+    total_fragment_count = 0
+    for role_name in expected_roles:
+        candidates = sorted(
+            monomers_by_role[role_name],
+            key=lambda monomer: (
+                -monomer.amount,
+                -monomer.connectivity,
+                monomer.canonical_smiles,
+            ),
+        )
+        if len(candidates) > 1 and candidates[0].amount == candidates[1].amount:
+            # There is no evidence for one intended precursor over another.
+            # This is common in legitimate multivariate COFs.
+            return None
+        dominant = candidates[0]
+        dominant_by_role[role_name] = dominant
+        matching_fragment_count += dominant.amount
+        total_fragment_count += sum(monomer.amount for monomer in candidates)
+        if sum(monomer.amount for monomer in candidates) != len(roles_by_name[role_name]):
+            return None
+
+    if total_fragment_count <= 0:
+        return None
+    agreement_fraction = matching_fragment_count / total_fragment_count
+    if agreement_fraction <= threshold:
+        return None
+
+    glitches: list[dict[str, object]] = []
+    for role_name in expected_roles:
+        dominant = dominant_by_role[role_name]
+        role_fragments = tuple(sorted(roles_by_name[role_name], key=lambda role: role.fragment_id))
+        outliers = tuple(
+            role
+            for role in role_fragments
+            if role.connectivity != dominant.connectivity
+        )
+        if not outliers:
+            continue
+        expected_site_count = len(role_fragments) * dominant.connectivity
+        observed_site_count = sum(role.connectivity for role in role_fragments)
+        glitches.append({
+            "type": "role_connectivity_outlier",
+            "role": role_name,
+            "dominant_connectivity": dominant.connectivity,
+            "expected_reactive_site_count": expected_site_count,
+            "observed_reactive_site_count": observed_site_count,
+            "missing_reactive_site_count": max(0, expected_site_count - observed_site_count),
+            "outlier_fragments": [
+                {
+                    "fragment_id": role.fragment_id,
+                    "observed_connectivity": role.connectivity,
+                    "reactive_atoms": list(role.reactive_atoms),
+                }
+                for role in outliers
+            ],
+        })
+
+    unexplained_count = int(hypothesis.metadata.get("n_unexplained_framework_fragments", 0))
+    if unexplained_count > 0:
+        glitches.append({
+            "type": "unexplained_framework_fragments",
+            "fragment_count": unexplained_count,
+            "fragments": list(hypothesis.metadata.get("unexplained_framework_fragments", ())),
+        })
+    has_qualifying_glitch = any(
+        (
+            glitch.get("type") == "unexplained_framework_fragments"
+            or int(glitch.get("missing_reactive_site_count", 0)) > 0
+        )
+        for glitch in glitches
+    )
+    if not has_qualifying_glitch:
+        return None
+
+    detector_evidence: list[dict[str, object]] = []
+    detector_diagnostics = detection.diagnostics.get("detectors", {})
+    if isinstance(detector_diagnostics, Mapping):
+        nitrogen = detector_diagnostics.get("nitrogen", {})
+        if isinstance(nitrogen, Mapping):
+            rejected_count = int(nitrogen.get("strict_endpoint_rejected_count", 0))
+            if rejected_count > 0:
+                detector_evidence.append({
+                    "type": "rejected_nitrogen_linkage_endpoint",
+                    "count": rejected_count,
+                })
+
+    dominant_combination = sorted(
+        dominant_by_role.values(),
+        key=lambda monomer: (-monomer.connectivity, monomer.canonical_smiles),
+    )
+    minority_monomers = sorted(
+        (
+            monomer
+            for role_name in expected_roles
+            for monomer in monomers_by_role[role_name]
+            if monomer is not dominant_by_role[role_name]
+        ),
+        key=lambda monomer: (
+            -monomer.connectivity,
+            monomer.reactive_group,
+            monomer.canonical_smiles,
+        ),
+    )
+    return {
+        "detected": True,
+        "classification": "probable_structural_defect",
+        "candidate_linkage": hypothesis.family,
+        "hypothesis_id": hypothesis.hypothesis_id,
+        "threshold": threshold,
+        "threshold_comparison": "strictly_greater_than",
+        "matching_fragment_count": matching_fragment_count,
+        "total_fragment_count": total_fragment_count,
+        "agreement_fraction": agreement_fraction,
+        "agreement_percent": 100.0 * agreement_fraction,
+        "dominant_monomer_combination": [
+            {
+                "connectivity": monomer.connectivity,
+                "reactive_group": monomer.reactive_group,
+                "canonical_smiles": monomer.canonical_smiles,
+                "matching_fragment_count": monomer.amount,
+            }
+            for monomer in dominant_combination
+        ],
+        "minority_monomers": [
+            {
+                "connectivity": monomer.connectivity,
+                "reactive_group": monomer.reactive_group,
+                "canonical_smiles": monomer.canonical_smiles,
+                "fragment_count": monomer.amount,
+            }
+            for monomer in minority_monomers
+        ],
+        "glitches": glitches,
+        "supporting_detector_evidence": detector_evidence,
+        "policy": (
+            "report only when every binary-reaction role has a unique dominant "
+            "monomer, dominant fragments exceed the agreement threshold, and "
+            "minority reconstruction has independent structural glitches"
+        ),
+    }
+
+
+def _best_probable_fragment_defect(
+    hypotheses: tuple[ReconstructionHypothesis, ...],
+    detection: EventDetectionResult,
+) -> tuple[ReconstructionHypothesis, Mapping[str, object]] | None:
+    candidates: list[tuple[ReconstructionHypothesis, Mapping[str, object]]] = []
+    for hypothesis in hypotheses:
+        report = _detect_probable_fragment_defect(hypothesis, detection)
+        if report is not None:
+            candidates.append((hypothesis, report))
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda item: (
+            -float(item[1]["agreement_fraction"]),
+            -int(item[1]["matching_fragment_count"]),
+            -item[0].score,
+            item[0].family,
+            item[0].hypothesis_id,
+        )
+    )
+    selected = candidates[0]
+    if len(candidates) > 1:
+        selected_rank = (
+            selected[1]["agreement_fraction"],
+            selected[1]["matching_fragment_count"],
+            selected[0].score,
+        )
+        runner_up = candidates[1]
+        runner_up_rank = (
+            runner_up[1]["agreement_fraction"],
+            runner_up[1]["matching_fragment_count"],
+            runner_up[0].score,
+        )
+        if selected[0].family != runner_up[0].family and selected_rank == runner_up_rank:
+            return None
+    return selected
+
+
+def _probable_defect_reason(report: Mapping[str, object]) -> str:
+    glitches = report.get("glitches", ())
+    missing_sites = sum(
+        int(glitch.get("missing_reactive_site_count", 0))
+        for glitch in glitches
+        if isinstance(glitch, Mapping)
+    )
+    suffix = (
+        f"; reconstructed fragments indicate {missing_sites} missing reactive site(s)"
+        if missing_sites
+        else "; minority fragments contain structural glitches"
+    )
+    return (
+        f"probable defective {report['candidate_linkage']} framework: "
+        f"{report['matching_fragment_count']}/{report['total_fragment_count']} recovered "
+        f"fragments ({float(report['agreement_percent']):.1f}%) agree with one dominant "
+        f"precursor combination, above the {100.0 * float(report['threshold']):.1f}% threshold"
+        f"{suffix}; complete COFid withheld"
+    )
+
+
 def _select_event_result(
     input_path: Path,
     *,
@@ -1820,7 +2279,7 @@ def _select_event_result(
 
     metadata: dict[str, object] = {
         "decomposition_mode": "event",
-        "event_pipeline_version": 1,
+        "event_pipeline_version": 2,
         "event_detection": detection.to_dict(),
         "hypothesis_generation": dict(generation_metadata),
         "hypotheses": [hypothesis.to_dict() for hypothesis in hypotheses],
@@ -1868,6 +2327,26 @@ def _select_event_result(
             topology=topology,
             linkage=requested_linkage,
             reason=f"multiple complete event reconstructions remain: {labels}",
+            metadata=metadata,
+        )
+
+    probable_defect = _best_probable_fragment_defect(considered, detection)
+    if probable_defect is not None:
+        defect_hypothesis, defect_report = probable_defect
+        metadata.update({
+            "event_status": EVENT_STATUS_PROBABLE_DEFECT,
+            "best_failed_hypothesis_id": defect_hypothesis.hypothesis_id,
+            "probable_linkage": defect_hypothesis.family,
+            "defect_detection": dict(defect_report),
+            "successful_hypothesis_count": 0,
+        })
+        return legacy.CifDecompositionResult(
+            status="skipped",
+            input_cif=str(input_path),
+            topology=defect_hypothesis.topology or topology,
+            linkage=requested_linkage,
+            monomers=defect_hypothesis.monomers,
+            reason=_probable_defect_reason(defect_report),
             metadata=metadata,
         )
 
@@ -1933,6 +2412,7 @@ def _best_failed_hypothesis(
 
 
 __all__ = [
+    "EVENT_STATUS_PROBABLE_DEFECT",
     "EventDetectionResult",
     "LinkageEvent",
     "ReconstructedRole",

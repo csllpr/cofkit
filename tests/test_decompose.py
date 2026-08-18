@@ -26,18 +26,32 @@ from cofkit.decompose import (
     _IMINE_SPEC,
     _classify_nitrogen_linkage_bonds,
     _classify_vinylene_linkage_bonds,
+    _contract_degree_two_linkers,
     _explicit_bond_candidates,
     _finalize_repaired_fragment,
     _mark_imine_linkage_bonds,
     _minimum_image_bond_geometry,
     _periodic_dimension_hint,
     _periodic_edge_gains_match,
+    _rank_topology_candidates,
     _validate_recovered_precursors,
     _validate_selected_topology,
     _validate_supported_cif_periodicity,
     decompose_cif_to_cofid,
 )
-from cofkit.decompose_events import EVENT_STATUS_TRIAZINE_MOTIF, detect_linkage_events
+from cofkit.decompose_events import (
+    EVENT_STATUS_CHEMICAL,
+    EVENT_STATUS_PROBABLE_DEFECT,
+    EVENT_STATUS_TRIAZINE_MOTIF,
+    EventDetectionResult,
+    LinkageEvent,
+    ReconstructedRole,
+    ReconstructionHypothesis,
+    _aggregate_event_monomers,
+    _detect_probable_fragment_defect,
+    _select_event_result,
+    detect_linkage_events,
+)
 from cofkit.decompose_cif import PeriodicCifAtoms
 from cofkit.reactions import ReactionLibrary
 from cofkit.validate import validate_cif_against_cofid
@@ -65,6 +79,7 @@ TEREPHTHALALDEHYDE = "O=Cc1ccc(C=O)cc1"
 TETRA_AMINE = "Nc1ccc(C(c2ccc(N)cc2)(c2ccc(N)cc2)c2ccc(N)cc2)cc1"
 TETRA_ALDEHYDE = "O=Cc1ccc(C(c2ccc(C=O)cc2)(c2ccc(C=O)cc2)c2ccc(C=O)cc2)cc1"
 HEXA_AMINE = "Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N"
+CORE_COFS_DIR = Path(__file__).resolve().parents[1] / "files_for_reference" / "CoRE-COFs_1242-v7.0"
 
 
 def _generator(template_id: str = "imine_bridge") -> BatchStructureGenerator:
@@ -416,7 +431,115 @@ def _write_molecular_probe_cif(smiles: str, target_path: Path) -> Path:
     return _write_cif_lines(lines, target_path)
 
 
+def _probable_bken_defect_hypothesis(
+    monomers: tuple[DecomposedMonomer, ...],
+    role_connectivities: tuple[tuple[str, int], ...],
+) -> ReconstructionHypothesis:
+    event = LinkageEvent(
+        event_id="bken:test",
+        family="bken",
+        atoms=(0, 1),
+        bonds=(0,),
+        cut_bonds=(0,),
+        instance_ids=(None, None),
+        confidence="high",
+        endpoint_roles=((0, "keto_aldehyde"), (1, "amine")),
+        site_id="bken:test",
+    )
+    roles = tuple(
+        ReconstructedRole(
+            role=role,
+            fragment_id=fragment_id,
+            reactive_atoms=(fragment_id,),
+            connectivity=connectivity,
+            validation_passed=True,
+        )
+        for fragment_id, (role, connectivity) in enumerate(role_connectivities)
+    )
+    return ReconstructionHypothesis(
+        hypothesis_id="bken:test",
+        events=(event,),
+        monomers=monomers,
+        roles=roles,
+        score=50.0,
+        status=EVENT_STATUS_CHEMICAL,
+        validation_errors=("incomplete bken precursor recovery",),
+        metadata={"n_unexplained_framework_fragments": 0},
+    )
+
+
 class DecomposeRoundTripTests(unittest.TestCase):
+    def test_topology_ranking_contracts_explicit_degree_two_linkers(self):
+        graph = LinkageTopologyGraph(
+            node_connectivities=(3, 3, 2, 2, 2),
+            gain_edges=(
+                (0, 2, (0, 0, 0)),
+                (1, 2, (0, 0, 0)),
+                (0, 3, (0, 0, 0)),
+                (1, 3, (-1, 0, 0)),
+                (0, 4, (0, 0, 0)),
+                (1, 4, (0, -1, 0)),
+            ),
+            dimensionality_hint="2D",
+        )
+
+        contracted = _contract_degree_two_linkers(graph)
+        candidates = _rank_topology_candidates(graph)
+
+        self.assertIsNotNone(contracted)
+        assert contracted is not None
+        self.assertEqual(contracted.node_connectivities, (3, 3))
+        self.assertEqual(contracted.edge_count, 3)
+        self.assertEqual(candidates[0].topology, "hcb")
+        self.assertEqual(candidates[0].confidence, "exact")
+        self.assertTrue(candidates[0].metadata["degree_two_linker_contraction"]["applied"])
+
+    def test_event_fragment_identity_merges_only_buildable_bond_order_forms(self):
+        imine_form = "N=C1C=CC(c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)C=C1"
+        amine_form = "Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1"
+
+        merged, metadata = _aggregate_event_monomers((
+            DecomposedMonomer(3, "amine", imine_form),
+            DecomposedMonomer(3, "amine", amine_form),
+        ))
+        constitutional_isomers, constitutional_metadata = _aggregate_event_monomers((
+            DecomposedMonomer(2, "amine", "Nc1ccccc1N"),
+            DecomposedMonomer(2, "amine", "Nc1cccc(N)c1"),
+        ))
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].canonical_smiles, amine_form)
+        self.assertEqual(merged[0].amount, 2)
+        self.assertTrue(metadata["applied"])
+        self.assertEqual(len(constitutional_isomers), 2)
+        self.assertFalse(constitutional_metadata["applied"])
+
+    @unittest.skipUnless((CORE_COFS_DIR / "199.cif").exists(), "CoRE-COFs reference set is unavailable")
+    def test_core_cofs_general_bken_fix_regressions(self):
+        for number in (118, 119, 199, 586, 587, 588, 1211):
+            with self.subTest(number=number):
+                result = decompose_cif_to_cofid(CORE_COFS_DIR / f"{number}.cif")
+                self.assertTrue(result.ok, result.reason)
+                self.assertEqual(result.linkage, "bken")
+                self.assertEqual(result.topology, "hcb")
+        fallback = decompose_cif_to_cofid(CORE_COFS_DIR / "199.cif")
+        normalization = decompose_cif_to_cofid(CORE_COFS_DIR / "1211.cif")
+        self.assertTrue(fallback.metadata["bond_graph_fallback"]["applied"])
+        self.assertTrue(normalization.metadata["fragment_identity_normalization"]["applied"])
+
+    @unittest.skipUnless((CORE_COFS_DIR / "1099.cif").exists(), "CoRE-COFs reference set is unavailable")
+    def test_core_cofs_multivariate_bken_examples_remain_explicit_abstentions(self):
+        expected_amine_species = {618: 2, 1098: 3, 1099: 2}
+        for number, expected_count in expected_amine_species.items():
+            with self.subTest(number=number):
+                result = decompose_cif_to_cofid(CORE_COFS_DIR / f"{number}.cif")
+                self.assertFalse(result.ok)
+                self.assertNotIn("bond_graph_fallback", result.metadata)
+                self.assertEqual(
+                    sum(monomer.reactive_group == "amine" for monomer in result.monomers),
+                    expected_count,
+                )
+
     def test_topology_validation_canonicalizes_unequal_node_node_connectivities(self):
         graph = LinkageTopologyGraph(
             node_connectivities=(4, 3),
@@ -439,6 +562,129 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertEqual(metadata["status"], "valid")
         self.assertEqual(metadata["connectivity_mode"], "3+4")
         self.assertEqual(metadata["allowed_connectivity_modes"], ["3+4"])
+
+    def test_event_mode_reports_dominant_fragment_defect_above_threshold(self):
+        hypothesis = _probable_bken_defect_hypothesis(
+            (
+                DecomposedMonomer(3, "keto_aldehyde", TP, amount=3),
+                DecomposedMonomer(2, "amine", PPD, amount=5),
+                DecomposedMonomer(2, "keto_aldehyde", "O=CC(C=O)C=O", amount=1),
+                DecomposedMonomer(1, "amine", "CN", amount=1),
+            ),
+            (
+                ("keto_aldehyde", 3),
+                ("keto_aldehyde", 3),
+                ("keto_aldehyde", 3),
+                ("keto_aldehyde", 2),
+                ("amine", 2),
+                ("amine", 2),
+                ("amine", 2),
+                ("amine", 2),
+                ("amine", 2),
+                ("amine", 1),
+            ),
+        )
+        detection = EventDetectionResult(
+            events=hypothesis.events,
+            diagnostics={
+                "detectors": {
+                    "nitrogen": {"strict_endpoint_rejected_count": 1},
+                }
+            },
+        )
+
+        report = _detect_probable_fragment_defect(hypothesis, detection)
+        result = _select_event_result(
+            Path("damaged.cif"),
+            requested_family=None,
+            topology="hcb",
+            detection=detection,
+            hypotheses=(hypothesis,),
+            generation_metadata={},
+        )
+
+        self.assertIsNotNone(report)
+        assert report is not None
+        self.assertEqual(report["candidate_linkage"], "bken")
+        self.assertEqual(report["matching_fragment_count"], 8)
+        self.assertEqual(report["total_fragment_count"], 10)
+        self.assertAlmostEqual(report["agreement_fraction"], 0.8)
+        self.assertEqual(len(report["glitches"]), 2)
+        self.assertEqual(
+            sum(glitch["missing_reactive_site_count"] for glitch in report["glitches"]),
+            2,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.metadata["event_status"], EVENT_STATUS_PROBABLE_DEFECT)
+        self.assertEqual(result.metadata["probable_linkage"], "bken")
+        self.assertEqual(result.metadata["defect_detection"]["agreement_percent"], 80.0)
+        self.assertIn("probable defective bken framework", result.reason)
+        self.assertIn("8/10", result.reason)
+
+    def test_fragment_defect_detection_rejects_multivariate_and_unglitched_minorities(self):
+        empty_detection = EventDetectionResult(events=())
+        cases = {
+            "multivariate_tie": _probable_bken_defect_hypothesis(
+                (
+                    DecomposedMonomer(3, "keto_aldehyde", TP, amount=2),
+                    DecomposedMonomer(2, "amine", "CN", amount=1),
+                    DecomposedMonomer(2, "amine", "CCN", amount=1),
+                    DecomposedMonomer(2, "amine", "CCCN", amount=1),
+                ),
+                (
+                    ("keto_aldehyde", 3),
+                    ("keto_aldehyde", 3),
+                    ("amine", 2),
+                    ("amine", 2),
+                    ("amine", 2),
+                ),
+            ),
+            "same_connectivity_minority": _probable_bken_defect_hypothesis(
+                (
+                    DecomposedMonomer(3, "keto_aldehyde", TP, amount=4),
+                    DecomposedMonomer(2, "amine", PPD, amount=4),
+                    DecomposedMonomer(2, "amine", "NN", amount=2),
+                ),
+                (
+                    *(("keto_aldehyde", 3),) * 4,
+                    *(("amine", 2),) * 6,
+                ),
+            ),
+            "connectivity_excess_only": _probable_bken_defect_hypothesis(
+                (
+                    DecomposedMonomer(3, "keto_aldehyde", TP, amount=3),
+                    DecomposedMonomer(5, "keto_aldehyde", "O=CC=O", amount=1),
+                    DecomposedMonomer(2, "amine", PPD, amount=6),
+                ),
+                (
+                    ("keto_aldehyde", 3),
+                    ("keto_aldehyde", 3),
+                    ("keto_aldehyde", 3),
+                    ("keto_aldehyde", 5),
+                    *(("amine", 2),) * 6,
+                ),
+            ),
+            "exact_threshold": _probable_bken_defect_hypothesis(
+                (
+                    DecomposedMonomer(3, "keto_aldehyde", TP, amount=1),
+                    DecomposedMonomer(2, "amine", PPD, amount=2),
+                    DecomposedMonomer(1, "amine", "CN", amount=1),
+                ),
+                (
+                    ("keto_aldehyde", 3),
+                    ("amine", 2),
+                    ("amine", 2),
+                    ("amine", 1),
+                ),
+            ),
+        }
+
+        for name, hypothesis in cases.items():
+            with self.subTest(name=name):
+                self.assertIsNone(
+                    _detect_probable_fragment_defect(hypothesis, empty_detection)
+                )
 
     def test_precursor_validation_rejects_incomplete_or_same_role_binary_output(self):
         amine = DecomposedMonomer(1, "amine", "CN")

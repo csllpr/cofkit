@@ -2301,6 +2301,103 @@ class ReactionRealizer:
             "aldehyde_oxygen_atom_id",
             context=f"{event.id} keto-aldehyde oxygen",
         )
+        precursor_route = keto_aldehyde_motif.metadata.get(
+            "precursor_route",
+            "ortho_hydroxyl_tautomerization",
+        )
+        if precursor_route == "beta_ketoenol_michael_addition":
+            alpha_carbon_atom_id = self._motif_atom_id_from_metadata(
+                keto_aldehyde_motif,
+                "beta_ketoenol_alpha_carbon_atom_id",
+                context=f"{event.id} beta-ketoenol alpha carbon",
+            )
+            carbon_world = self._world_atom_position(
+                candidate,
+                keto_aldehyde_ref,
+                keto_aldehyde_spec,
+                carbon_atom_id,
+            )
+            alpha_carbon_world = self._world_atom_position(
+                candidate,
+                keto_aldehyde_ref,
+                keto_aldehyde_spec,
+                alpha_carbon_atom_id,
+            )
+            hydrogen_atom_id = self._select_hydrogens(
+                candidate,
+                amine_ref,
+                amine_spec,
+                self._hydrogen_atom_ids_for_atom(amine_spec, amine_motif, nitrogen_atom_id),
+                target=carbon_world,
+                count=1,
+                context="beta-ketoenamine formation from beta-ketoenol",
+            )[0]
+            nitrogen_world = self._world_atom_position(
+                candidate,
+                amine_ref,
+                amine_spec,
+                nitrogen_atom_id,
+            )
+            alpha_hydrogen_atom_id = self._select_hydrogens(
+                candidate,
+                keto_aldehyde_ref,
+                keto_aldehyde_spec,
+                self._hydrogen_atom_ids_for_atom(
+                    keto_aldehyde_spec,
+                    keto_aldehyde_motif,
+                    alpha_carbon_atom_id,
+                ),
+                target=nitrogen_world,
+                count=1,
+                context="beta-ketoenol elimination",
+            )[0]
+            return EventRealization(
+                removed_atom_ids={
+                    amine_ref.monomer_instance_id: (hydrogen_atom_id,),
+                    keto_aldehyde_ref.monomer_instance_id: (
+                        oxygen_atom_id,
+                        alpha_hydrogen_atom_id,
+                    ),
+                },
+                bonds=(
+                    RealizedBond(
+                        label_1=self.atom_label(
+                            keto_aldehyde_ref.monomer_instance_id,
+                            keto_aldehyde_spec.atom_symbols[carbon_atom_id],
+                            carbon_atom_id,
+                        ),
+                        label_2=self.atom_label(
+                            amine_ref.monomer_instance_id,
+                            amine_spec.atom_symbols[nitrogen_atom_id],
+                            nitrogen_atom_id,
+                        ),
+                        distance=self._distance(carbon_world, nitrogen_world),
+                        symmetry_1=".",
+                        symmetry_2=self._symmetry_code(amine_ref.periodic_image),
+                        bond_order=1.0,
+                    ),
+                    RealizedBond(
+                        label_1=self.atom_label(
+                            keto_aldehyde_ref.monomer_instance_id,
+                            keto_aldehyde_spec.atom_symbols[carbon_atom_id],
+                            carbon_atom_id,
+                        ),
+                        label_2=self.atom_label(
+                            keto_aldehyde_ref.monomer_instance_id,
+                            keto_aldehyde_spec.atom_symbols[alpha_carbon_atom_id],
+                            alpha_carbon_atom_id,
+                        ),
+                        distance=self._distance(carbon_world, alpha_carbon_world),
+                        bond_order=2.0,
+                    ),
+                ),
+                notes=(
+                    "Beta-ketoenol-route realization removes one amine hydrogen, one alpha "
+                    "hydrogen, and the aldehydic oxygen per reacting pair.",
+                    "The pre-existing beta carbonyl is retained while the former aldehyde "
+                    "carbon forms the C-N/C=C beta-ketoenamine segment.",
+                ),
+            )
         tautomer_oxygen_atom_id = self._motif_atom_id_from_metadata(
             keto_aldehyde_motif,
             "ortho_hydroxyl_oxygen_atom_id",

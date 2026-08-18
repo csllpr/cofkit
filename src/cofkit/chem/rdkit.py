@@ -537,23 +537,61 @@ def _interpret_keto_aldehyde_match(molecule, conformer, match: tuple[int, ...], 
     del definition
     reactive_atom_id, oxygen_atom_id, anchor_atom_id = (int(match[0]), int(match[1]), int(match[2]))
     ortho_hydroxyl = _find_ortho_hydroxyl(molecule, anchor_atom_id)
-    if ortho_hydroxyl is None:
+    if ortho_hydroxyl is not None:
+        hydroxyl_oxygen_atom_id, hydroxyl_hydrogen_atom_id, hydroxyl_anchor_atom_id = ortho_hydroxyl
+        atom_ids = [
+            reactive_atom_id,
+            oxygen_atom_id,
+            anchor_atom_id,
+            hydroxyl_oxygen_atom_id,
+            hydroxyl_hydrogen_atom_id,
+        ]
+        atom_ids.extend(_attached_hydrogen_ids(molecule, reactive_atom_id))
+        atom_ids = sorted(set(atom_ids))
+        return _DetectedMotif(
+            reactive_atom_id=reactive_atom_id,
+            anchor_atom_id=anchor_atom_id,
+            atom_ids=tuple(atom_ids),
+            origin=_conformer_point(conformer, reactive_atom_id),
+            anchor=_conformer_point(conformer, anchor_atom_id),
+            metadata={
+                "precursor_route": "ortho_hydroxyl_tautomerization",
+                "aldehyde_oxygen_atom_id": oxygen_atom_id,
+                "ortho_hydroxyl_oxygen_atom_id": hydroxyl_oxygen_atom_id,
+                "ortho_hydroxyl_hydrogen_atom_id": hydroxyl_hydrogen_atom_id,
+                "ortho_hydroxyl_anchor_atom_id": hydroxyl_anchor_atom_id,
+            },
+        )
+
+    beta_keto_carbonyl = _find_beta_ketoaldehyde_carbonyl(
+        molecule,
+        alpha_carbon_atom_id=anchor_atom_id,
+        aldehyde_carbon_atom_id=reactive_atom_id,
+    )
+    if beta_keto_carbonyl is None:
         return None
-    hydroxyl_oxygen_atom_id, hydroxyl_hydrogen_atom_id, hydroxyl_anchor_atom_id = ortho_hydroxyl
-    atom_ids = [reactive_atom_id, oxygen_atom_id, anchor_atom_id, hydroxyl_oxygen_atom_id, hydroxyl_hydrogen_atom_id]
-    atom_ids.extend(_attached_hydrogen_ids(molecule, reactive_atom_id))
-    atom_ids = sorted(set(atom_ids))
+    carbonyl_carbon_atom_id, carbonyl_oxygen_atom_id = beta_keto_carbonyl
+    atom_ids = {
+        reactive_atom_id,
+        oxygen_atom_id,
+        anchor_atom_id,
+        carbonyl_carbon_atom_id,
+        carbonyl_oxygen_atom_id,
+        *_attached_hydrogen_ids(molecule, reactive_atom_id),
+        *_attached_hydrogen_ids(molecule, anchor_atom_id),
+    }
     return _DetectedMotif(
         reactive_atom_id=reactive_atom_id,
         anchor_atom_id=anchor_atom_id,
-        atom_ids=tuple(atom_ids),
+        atom_ids=tuple(sorted(atom_ids)),
         origin=_conformer_point(conformer, reactive_atom_id),
         anchor=_conformer_point(conformer, anchor_atom_id),
         metadata={
+            "precursor_route": "beta_ketoenol_michael_addition",
             "aldehyde_oxygen_atom_id": oxygen_atom_id,
-            "ortho_hydroxyl_oxygen_atom_id": hydroxyl_oxygen_atom_id,
-            "ortho_hydroxyl_hydrogen_atom_id": hydroxyl_hydrogen_atom_id,
-            "ortho_hydroxyl_anchor_atom_id": hydroxyl_anchor_atom_id,
+            "beta_ketoenol_alpha_carbon_atom_id": anchor_atom_id,
+            "beta_keto_carbonyl_carbon_atom_id": carbonyl_carbon_atom_id,
+            "beta_keto_carbonyl_oxygen_atom_id": carbonyl_oxygen_atom_id,
         },
     )
 
@@ -564,7 +602,61 @@ def _postprocess_keto_aldehyde_matches(
     definition: MotifKindDefinition,
 ) -> tuple[_DetectedMotif, ...]:
     del definition
-    return _assign_unique_keto_aldehyde_hydroxyls(molecule, detected)
+    conventional_indices = tuple(
+        index
+        for index, motif in enumerate(detected)
+        if motif.metadata.get("precursor_route") == "ortho_hydroxyl_tautomerization"
+    )
+    if not conventional_indices:
+        return detected
+    conventional = tuple(detected[index] for index in conventional_indices)
+    resolved = _assign_unique_keto_aldehyde_hydroxyls(molecule, conventional)
+    resolved_by_index = dict(zip(conventional_indices, resolved))
+    return tuple(resolved_by_index.get(index, motif) for index, motif in enumerate(detected))
+
+
+def _find_beta_ketoaldehyde_carbonyl(
+    molecule,
+    *,
+    alpha_carbon_atom_id: int,
+    aldehyde_carbon_atom_id: int,
+) -> tuple[int, int] | None:
+    alpha_carbon = molecule.GetAtomWithIdx(alpha_carbon_atom_id)
+    if (
+        alpha_carbon.GetAtomicNum() != 6
+        or alpha_carbon.GetIsAromatic()
+        or len(_attached_hydrogen_ids(molecule, alpha_carbon_atom_id)) != 2
+    ):
+        return None
+    options: list[tuple[int, int]] = []
+    for carbonyl_carbon in alpha_carbon.GetNeighbors():
+        carbonyl_carbon_atom_id = int(carbonyl_carbon.GetIdx())
+        if carbonyl_carbon_atom_id == aldehyde_carbon_atom_id:
+            continue
+        if carbonyl_carbon.GetAtomicNum() != 6:
+            continue
+        connecting_bond = molecule.GetBondBetweenAtoms(
+            alpha_carbon_atom_id,
+            carbonyl_carbon_atom_id,
+        )
+        if connecting_bond is None or abs(float(connecting_bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
+            continue
+        oxygen_ids = tuple(
+            int(bond.GetOtherAtom(carbonyl_carbon).GetIdx())
+            for bond in carbonyl_carbon.GetBonds()
+            if (
+                bond.GetOtherAtom(carbonyl_carbon).GetAtomicNum() == 8
+                and abs(float(bond.GetBondTypeAsDouble()) - 2.0) <= 1.0e-6
+            )
+        )
+        carbon_neighbors = tuple(
+            neighbor
+            for neighbor in carbonyl_carbon.GetNeighbors()
+            if neighbor.GetAtomicNum() == 6 and neighbor.GetIdx() != alpha_carbon_atom_id
+        )
+        if len(oxygen_ids) == 1 and carbon_neighbors:
+            options.append((carbonyl_carbon_atom_id, oxygen_ids[0]))
+    return min(options) if options else None
 
 
 def _interpret_activated_methylene_match(molecule, conformer, match: tuple[int, ...], definition: MotifKindDefinition) -> _DetectedMotif | None:

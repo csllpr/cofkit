@@ -496,6 +496,96 @@ class ReactionRealizationTests(unittest.TestCase):
             hydrogen_atom_id=5,
         )
 
+    def test_beta_ketoenol_route_retains_preexisting_carbonyl(self):
+        amine = MonomerSpec(
+            id="amine",
+            name="minimal amine",
+            motifs=(
+                ReactiveMotif(
+                    id="ami1",
+                    kind="amine",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("keto_enamine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 1},
+                ),
+            ),
+            atom_symbols=("N", "C", "H", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.1, 1.0, 0.0), (0.1, -1.0, 0.0)),
+            bonds=((0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0)),
+        )
+        keto_aldehyde = MonomerSpec(
+            id="beta_ketoenol",
+            name="minimal beta-ketoenol route precursor",
+            motifs=(
+                ReactiveMotif(
+                    id="kal1",
+                    kind="keto_aldehyde",
+                    atom_ids=(0, 1, 2, 3, 4, 6, 7, 8),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("keto_enamine_bridge",),
+                    metadata={
+                        "precursor_route": "beta_ketoenol_michael_addition",
+                        "reactive_atom_id": 0,
+                        "anchor_atom_id": 2,
+                        "aldehyde_oxygen_atom_id": 1,
+                        "beta_ketoenol_alpha_carbon_atom_id": 2,
+                        "beta_keto_carbonyl_carbon_atom_id": 3,
+                        "beta_keto_carbonyl_oxygen_atom_id": 4,
+                    },
+                ),
+            ),
+            atom_symbols=("C", "O", "C", "C", "O", "C", "H", "H", "H"),
+            atom_positions=(
+                (0.0, 0.0, 0.0),
+                (0.0, 1.2, 0.0),
+                (1.3, 0.0, 0.0),
+                (2.6, 0.0, 0.0),
+                (2.6, 1.2, 0.0),
+                (3.9, 0.0, 0.0),
+                (-0.8, 0.0, 0.0),
+                (1.3, 0.9, 0.0),
+                (1.3, -0.9, 0.0),
+            ),
+            bonds=(
+                (0, 1, 2.0),
+                (0, 2, 1.0),
+                (0, 6, 1.0),
+                (2, 3, 1.0),
+                (2, 7, 1.0),
+                (2, 8, 1.0),
+                (3, 4, 2.0),
+                (3, 5, 1.0),
+            ),
+        )
+        candidate = _single_event_candidate(
+            "keto_enamine_bridge",
+            MotifRef(monomer_instance_id="m1", monomer_id="amine", motif_id="ami1"),
+            MotifRef(monomer_instance_id="m2", monomer_id="beta_ketoenol", motif_id="kal1"),
+            distance=1.36,
+        )
+
+        result = ReactionRealizer().realize(
+            candidate,
+            {"amine": amine, "beta_ketoenol": keto_aldehyde},
+            {"m1": "amine", "m2": "beta_ketoenol"},
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.metadata["removed_atom_symbols"], {"H": 2, "O": 1})
+        self.assertEqual(len(result.bonds), 2)
+        self.assertTrue(
+            any(
+                {bond.label_1, bond.label_2} == {"m2_C1", "m2_C3"}
+                and bond.bond_order == 2.0
+                for bond in result.bonds
+            )
+        )
+        retained_atoms = {atom.atom_id for atom in result.atoms_by_instance["m2"]}
+        self.assertNotIn(1, retained_atoms)
+        self.assertIn(4, retained_atoms)
+
     def test_boronate_ester_realization_removes_boronic_oxygens_and_four_hydrogens(self):
         boronic_acid = MonomerSpec(
             id="boronic_acid",

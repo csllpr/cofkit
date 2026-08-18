@@ -60,7 +60,15 @@ def _builtin_motif_kind_definitions() -> tuple[MotifKindDefinition, ...]:
             # resonance-deactivated and are not primary-amine builders.  Keep
             # this exclusion graph-local so ordinary anilines and alkylamines
             # remain eligible regardless of the rest of the precursor.
-            rdkit_smarts="[NX3;H2;!$(N[C](=[O,S]));!$(NS(=[O,S]))]-[#6]",
+            # Besides conventional C-bound primary amines, beta-ketoenamine
+            # COFs can use terminal hydrazino nitrogens on a guanidinium-like
+            # C(N)3 center.  The second branch is deliberately limited to
+            # that three-nitrogen carbon environment, so hydrazides and free
+            # hydrazine do not become generic amine building sites.
+            rdkit_smarts=(
+                "[NX3;H2;!$(N[C](~[O,S]));!$(NS(=[O,S]))]-"
+                "[$([#6]),$([N]~[C;$(C(~N)(~N)~N)])]"
+            ),
         ),
         MotifKindDefinition(
             kind="aldehyde",
@@ -102,7 +110,10 @@ def _builtin_motif_kind_definitions() -> tuple[MotifKindDefinition, ...]:
             id_prefix="kal",
             cif_symbol="C",
             allowed_reaction_templates=("keto_enamine_bridge",),
-            rdkit_smarts="[CX3H1](=[OX1])[c]",
+            # The graph handler distinguishes the conventional ortho-hydroxy
+            # aromatic aldehyde route from a beta-ketoaldehyde/
+            # beta-ketoenol Michael addition-elimination route.
+            rdkit_smarts="[CX3H1](=[OX1])-[#6]",
         ),
         MotifKindDefinition(
             kind="activated_methylene",
