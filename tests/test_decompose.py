@@ -1824,17 +1824,25 @@ class RingDecomposeRoundTripTests(unittest.TestCase):
                     cif_path, expected_cofid = self._write_ring_candidate(temp_path, template_id, monomer)
                     input_cif = _without_cofid_comment(cif_path, temp_path / f"{linkage}_node_stripped.cif")
 
-                    result = decompose_cif_to_cofid(
+                    legacy_result = decompose_cif_to_cofid(
                         input_cif,
                         linkage=linkage,
                         decomposition_mode="legacy",
                     )
+                    event_result = decompose_cif_to_cofid(
+                        input_cif,
+                        linkage=linkage,
+                    )
+                    validation = validate_cif_against_cofid(expected_cofid, cif_path)
 
-                    self.assertTrue(result.ok, result.reason)
-                    self.assertEqual(result.cofid, expected_cofid)
-                    self.assertEqual(result.monomers[0].connectivity, 3)
-                    self.assertEqual(result.metadata["topology_graph"]["node_connectivities"], [3, 3])
-                    self.assertEqual(result.metadata["topology_graph"]["n_edges"], 3)
+                    for result in (legacy_result, event_result):
+                        self.assertTrue(result.ok, result.reason)
+                        self.assertEqual(result.cofid, expected_cofid)
+                        self.assertEqual(result.monomers[0].connectivity, 3)
+                        self.assertEqual(result.metadata["topology_graph"]["node_connectivities"], [3, 3])
+                        self.assertEqual(result.metadata["topology_graph"]["n_edges"], 3)
+                    self.assertEqual(event_result.metadata["event_status"], "SUCCESS_COMPLETE")
+                    self.assertTrue(validation.ok, validation.reason)
 
     def test_ring_decomposition_normalizes_all_stacked_layer_registries(self):
         with tempfile.TemporaryDirectory() as temp_dir:

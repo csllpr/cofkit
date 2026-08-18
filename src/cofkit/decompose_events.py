@@ -1926,7 +1926,20 @@ def _event_topology_graph(
                 anchor_images=images,  # type: ignore[arg-type]
             )
         )
-    atom_image_potentials = legacy._fragment_atom_image_potentials(fragment_by_atom, candidates)
+    # Unwrap precursor fragments on the post-cut graph.  For a higher-connected
+    # triazine precursor, a cut ring bond's endpoints can still belong to the
+    # same fragment; retaining that candidate would reintroduce the product-ring
+    # periodic cycle and make the finite precursor appear periodic.
+    cut_pair_keys = {frozenset(pair) for pair in cut_pairs}
+    fragment_candidates = tuple(
+        candidate
+        for candidate in candidates
+        if frozenset((candidate.atom_idx_1, candidate.atom_idx_2)) not in cut_pair_keys
+    )
+    atom_image_potentials = legacy._fragment_atom_image_potentials(
+        fragment_by_atom,
+        fragment_candidates,
+    )
     graph, component_count = legacy._ring_topology_graph(
         tuple(ring_events),
         fragment_by_atom,
