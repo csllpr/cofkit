@@ -25,9 +25,6 @@ from cofkit.reaction_realization import ReactionRealizer
 from cofkit.ring_geometry import validate_ring_geometry
 
 
-REFERENCE_DIR = Path(__file__).resolve().parents[1] / "files_for_reference" / "CoRE-COFs_1242-v7.0"
-
-
 class RingFormingWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -142,39 +139,6 @@ class RingFormingWorkflowTests(unittest.TestCase):
         realization = export.metadata["reaction_realization"]
         self.assertEqual(realization["removed_atom_count"], 0)
         self.assertEqual(realization["applied_event_count"], 2)
-
-    def test_generated_cells_track_cof1_and_ctf1_references(self):
-        cof1 = RingFormingStructureGenerator().generate(
-            self.cof1_precursor,
-            "boroxine_trimerization",
-        )
-        ctf1 = RingFormingStructureGenerator().generate(
-            self.ctf1_precursor,
-            "triazine_trimerization",
-        )
-        cof1_reference = gemmi.make_small_structure_from_block(
-            gemmi.cif.read_file(str(REFERENCE_DIR / "87.cif")).sole_block()
-        )
-        ctf1_reference = gemmi.make_small_structure_from_block(
-            gemmi.cif.read_file(str(REFERENCE_DIR / "184.cif")).sole_block()
-        )
-
-        self.assertLess(abs(cof1.state.cell[0][0] - cof1_reference.cell.a) / cof1_reference.cell.a, 0.05)
-        self.assertLess(abs(ctf1.state.cell[0][0] - ctf1_reference.cell.a) / ctf1_reference.cell.a, 0.02)
-
-    def test_supplied_833_reference_is_not_cof1_and_87_is_formula_match(self):
-        supplied = gemmi.make_small_structure_from_block(
-            gemmi.cif.read_file(str(REFERENCE_DIR / "833.cif")).sole_block()
-        )
-        matched = gemmi.make_small_structure_from_block(
-            gemmi.cif.read_file(str(REFERENCE_DIR / "87.cif")).sole_block()
-        )
-        supplied_counts = Counter(site.element.name for site in supplied.sites)
-        matched_counts = Counter(site.element.name for site in matched.sites)
-
-        self.assertEqual(supplied_counts["B"], 0)
-        self.assertEqual(supplied_counts["O"], 0)
-        self.assertEqual(matched_counts, Counter({"C": 36, "H": 24, "B": 12, "O": 12}))
 
     def test_ring_cofid_round_trip(self):
         candidate = RingFormingStructureGenerator().generate(

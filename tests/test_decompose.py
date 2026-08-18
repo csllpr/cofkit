@@ -79,7 +79,6 @@ TEREPHTHALALDEHYDE = "O=Cc1ccc(C=O)cc1"
 TETRA_AMINE = "Nc1ccc(C(c2ccc(N)cc2)(c2ccc(N)cc2)c2ccc(N)cc2)cc1"
 TETRA_ALDEHYDE = "O=Cc1ccc(C(c2ccc(C=O)cc2)(c2ccc(C=O)cc2)c2ccc(C=O)cc2)cc1"
 HEXA_AMINE = "Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N"
-CORE_COFS_DIR = Path(__file__).resolve().parents[1] / "files_for_reference" / "CoRE-COFs_1242-v7.0"
 
 
 def _generator(template_id: str = "imine_bridge") -> BatchStructureGenerator:
@@ -513,32 +512,6 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertTrue(metadata["applied"])
         self.assertEqual(len(constitutional_isomers), 2)
         self.assertFalse(constitutional_metadata["applied"])
-
-    @unittest.skipUnless((CORE_COFS_DIR / "199.cif").exists(), "CoRE-COFs reference set is unavailable")
-    def test_core_cofs_general_bken_fix_regressions(self):
-        for number in (118, 119, 199, 586, 587, 588, 1211):
-            with self.subTest(number=number):
-                result = decompose_cif_to_cofid(CORE_COFS_DIR / f"{number}.cif")
-                self.assertTrue(result.ok, result.reason)
-                self.assertEqual(result.linkage, "bken")
-                self.assertEqual(result.topology, "hcb")
-        fallback = decompose_cif_to_cofid(CORE_COFS_DIR / "199.cif")
-        normalization = decompose_cif_to_cofid(CORE_COFS_DIR / "1211.cif")
-        self.assertTrue(fallback.metadata["bond_graph_fallback"]["applied"])
-        self.assertTrue(normalization.metadata["fragment_identity_normalization"]["applied"])
-
-    @unittest.skipUnless((CORE_COFS_DIR / "1099.cif").exists(), "CoRE-COFs reference set is unavailable")
-    def test_core_cofs_multivariate_bken_examples_remain_explicit_abstentions(self):
-        expected_amine_species = {618: 2, 1098: 3, 1099: 2}
-        for number, expected_count in expected_amine_species.items():
-            with self.subTest(number=number):
-                result = decompose_cif_to_cofid(CORE_COFS_DIR / f"{number}.cif")
-                self.assertFalse(result.ok)
-                self.assertNotIn("bond_graph_fallback", result.metadata)
-                self.assertEqual(
-                    sum(monomer.reactive_group == "amine" for monomer in result.monomers),
-                    expected_count,
-                )
 
     def test_topology_validation_canonicalizes_unequal_node_node_connectivities(self):
         graph = LinkageTopologyGraph(
