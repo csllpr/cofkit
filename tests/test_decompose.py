@@ -22,6 +22,7 @@ from cofkit.cofid import generate_cofid
 from cofkit.decompose import (
     BondedMolBuildResult,
     DecomposedMonomer,
+    LinkageTopologyGraph,
     _IMINE_SPEC,
     _classify_nitrogen_linkage_bonds,
     _classify_vinylene_linkage_bonds,
@@ -32,6 +33,7 @@ from cofkit.decompose import (
     _periodic_dimension_hint,
     _periodic_edge_gains_match,
     _validate_recovered_precursors,
+    _validate_selected_topology,
     _validate_supported_cif_periodicity,
     decompose_cif_to_cofid,
 )
@@ -415,6 +417,29 @@ def _write_molecular_probe_cif(smiles: str, target_path: Path) -> Path:
 
 
 class DecomposeRoundTripTests(unittest.TestCase):
+    def test_topology_validation_canonicalizes_unequal_node_node_connectivities(self):
+        graph = LinkageTopologyGraph(
+            node_connectivities=(4, 3),
+            gain_edges=(
+                (0, 1, (0, 0, 0)),
+                (0, 1, (1, 0, 0)),
+                (0, 1, (0, 1, 0)),
+                (0, 1, (0, 0, 1)),
+            ),
+            dimensionality_hint="3D",
+        )
+        monomers = (
+            DecomposedMonomer(4, "amine", TETRA_AMINE),
+            DecomposedMonomer(3, "aldehyde", TFB),
+        )
+
+        reason, metadata = _validate_selected_topology(graph, "ctn", monomers, _IMINE_SPEC)
+
+        self.assertIsNone(reason)
+        self.assertEqual(metadata["status"], "valid")
+        self.assertEqual(metadata["connectivity_mode"], "3+4")
+        self.assertEqual(metadata["allowed_connectivity_modes"], ["3+4"])
+
     def test_precursor_validation_rejects_incomplete_or_same_role_binary_output(self):
         amine = DecomposedMonomer(1, "amine", "CN")
         aldehyde = DecomposedMonomer(1, "aldehyde", "CC=O")

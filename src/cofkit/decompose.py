@@ -673,11 +673,15 @@ def _validate_selected_topology(
         compatibility_source = "periodic_graph"
     elif len(connectivities) == 2:
         high, low = connectivities
-        mode = f"{high}+{low}"
         if low == 2 and high >= 3:
+            mode = f"{high}+{low}"
             allowed_modes = tuple(str(value) for value in entry.metadata.get("two_monomer_node_linker_modes", ()))
             compatibility_source = "two_monomer_node_linker_modes"
         else:
+            # Node-node roles are interchangeable.  Topology metadata stores
+            # these modes in ascending order (for example ``3+4``), unlike
+            # node-linker modes where the node intentionally comes first.
+            mode = f"{low}+{high}"
             allowed_modes = tuple(str(value) for value in entry.metadata.get("two_monomer_node_node_modes", ()))
             compatibility_source = "two_monomer_node_node_modes"
         metadata["connectivity_mode"] = mode
