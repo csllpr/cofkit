@@ -186,7 +186,7 @@
       ],
       "mixing_rule_rows": [
         "O_o2_raspa lennard-jones 53.023 3.045 // RASPA2 ExampleMoleculeForceField; Martin-Calvo et al. (2011).",
-        "O_com_raspa none // RASPA2 ExampleMoleculeForceField; charge-only center site."
+        "O_com_raspa lennard-jones 0.0 0.0 // RASPA2 ExampleMoleculeForceField; charge-only center site encoded as zero LJ for gRASPA compatibility."
       ],
       "compatibility_note": "The framework force field is selected independently; validation of the chosen guest/framework combination remains the user's responsibility.",
       "provenance_note": "Imported from the RASPA2 example molecule and force-field files. Site labels were namespaced for cofkit without changing geometry or numerical parameters.",
@@ -238,7 +238,7 @@
       ],
       "mixing_rule_rows": [
         "N_n2_raspa lennard-jones 38.298 3.306 // RASPA2 ExampleMoleculeForceField; Martin-Calvo et al. (2011).",
-        "N_com_raspa none // RASPA2 ExampleMoleculeForceField; charge-only center site."
+        "N_com_raspa lennard-jones 0.0 0.0 // RASPA2 ExampleMoleculeForceField; charge-only center site encoded as zero LJ for gRASPA compatibility."
       ],
       "compatibility_note": "Alternative shifted-LJ N2 model for use with the RASPA example-molecule family; it does not replace cofkit's default truncated-LJ N2 model.",
       "provenance_note": "Imported from the RASPA2 example molecule and force-field files. Site labels and the selector were namespaced for cofkit without changing geometry or numerical parameters.",

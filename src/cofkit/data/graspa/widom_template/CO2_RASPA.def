@@ -1,7 +1,4 @@
-# Derived from RASPA2 molecules/ExampleDefinitions/CO2.def at commit
-# 6498ab1eec9c8e0f063dcd0d71dd7add372c529b (MIT). The selector and site labels
-# are namespaced for cofkit without changing the source geometry.
-# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]
+# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]; derived from RASPA2 molecules/ExampleDefinitions/CO2.def at commit 6498ab1eec9c8e0f063dcd0d71dd7add372c529b (MIT); the selector and site labels are namespaced for cofkit without changing the source geometry
 304.1282
 7377300.0
 0.22394

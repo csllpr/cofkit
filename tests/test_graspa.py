@@ -422,6 +422,38 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual([guest["name"] for guest in metadata["guests"]], ["CH4_RASPA", "CO2_RASPA"])
             self.assertTrue(all(guest["vdw_treatment"] == "shifted" for guest in metadata["guests"]))
 
+    def test_packaged_molecule_definitions_use_strict_graspa_header_layout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA:
+                with self.subTest(component=metadata.name):
+                    run_dir = temp_path / metadata.name
+                    run_dir.mkdir()
+                    _copy_widom_template_assets(
+                        run_dir,
+                        (metadata.name,),
+                        forcefield="dreiding",
+                    )
+
+                    lines = (run_dir / f"{metadata.name}.def").read_text(encoding="utf-8").splitlines()
+                    self.assertTrue(lines[0].startswith("#"))
+                    for line_index in (1, 2, 3):
+                        float(lines[line_index].split()[0])
+                    self.assertTrue(lines[4].startswith("#"))
+                    self.assertGreater(int(lines[5].strip()), 0)
+
+                    mixing_lines = (run_dir / "force_field_mixing_rules.def").read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    mixing_count = int(mixing_lines[5])
+                    interaction_rows = mixing_lines[7 : 7 + mixing_count]
+                    self.assertEqual(len(interaction_rows), mixing_count)
+                    for row in interaction_rows:
+                        terms = row.split("//", 1)[0].split()
+                        self.assertGreaterEqual(len(terms), 4)
+                        float(terms[2])
+                        float(terms[3])
+
     def test_raspa_example_binary_rejects_truncated_default_variant(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cif_path = Path(temp_dir) / "mixed_convention_framework.cif"
