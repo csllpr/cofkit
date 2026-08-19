@@ -45,6 +45,7 @@ EVENT_STATUS_UNSUPPORTED = "UNSUPPORTED_LINKAGE"
 EVENT_STATUS_SUPPRESSED = "SUPPRESSED_LOCAL_OVERLAP"
 EVENT_STATUS_TRIAZINE_MOTIF = "SUPPRESSED_TRIAZINE_MOTIF"
 EVENT_STATUS_PROBABLE_DEFECT = "DETECTED_PROBABLE_STRUCTURAL_DEFECT"
+EVENT_STATUS_MULTISPECIES = "UNSUPPORTED_MULTISPECIES_PRECURSORS"
 
 _CANONICAL_FAMILIES = (
     "azine",
@@ -244,10 +245,28 @@ def decompose_cif_to_cofid_event(
             hypotheses=hypotheses,
             generation_metadata=generation_metadata,
         )
+        source_framework_periodicity = _source_framework_periodicity(
+            build_result,
+            _diagnostic_events_for_result(
+                primary_result,
+                hypotheses,
+                detection.events,
+            ),
+        )
+        primary_result = replace(
+            primary_result,
+            metadata={
+                **dict(primary_result.metadata),
+                "source_framework_periodicity": source_framework_periodicity,
+            },
+        )
         if (
             bond_mode == "auto"
             and build_result.metadata.get("bond_source") == "explicit_cif"
-            and _should_attempt_distance_fallback(primary_result)
+            and _should_attempt_distance_fallback(
+                primary_result,
+                source_framework_periodicity=source_framework_periodicity,
+            )
         ):
             try:
                 distance_build = legacy._build_bonded_mol(atoms, bond_mode="distance")
@@ -272,6 +291,23 @@ def decompose_cif_to_cofid_event(
                     hypotheses=distance_hypotheses,
                     generation_metadata=distance_generation_metadata,
                 )
+                distance_source_framework_periodicity = _source_framework_periodicity(
+                    distance_build,
+                    _diagnostic_events_for_result(
+                        distance_result,
+                        distance_hypotheses,
+                        distance_detection.events,
+                    ),
+                )
+                distance_result = replace(
+                    distance_result,
+                    metadata={
+                        **dict(distance_result.metadata),
+                        "source_framework_periodicity": (
+                            distance_source_framework_periodicity
+                        ),
+                    },
+                )
             except Exception as exc:
                 return replace(
                     primary_result,
@@ -290,6 +326,9 @@ def decompose_cif_to_cofid_event(
                             "primary_status": primary_result.status,
                             "primary_event_status": primary_result.metadata.get("event_status"),
                             "primary_reason": primary_result.reason,
+                            "primary_source_framework_periodicity": (
+                                source_framework_periodicity
+                            ),
                             "fallback_status": "error",
                             "fallback_event_status": EVENT_STATUS_CHEMICAL,
                             "fallback_reason": f"{type(exc).__name__}: {exc}",
@@ -308,9 +347,13 @@ def decompose_cif_to_cofid_event(
                 "primary_status": primary_result.status,
                 "primary_event_status": primary_result.metadata.get("event_status"),
                 "primary_reason": primary_result.reason,
+                "primary_source_framework_periodicity": source_framework_periodicity,
                 "fallback_status": distance_result.status,
                 "fallback_event_status": distance_result.metadata.get("event_status"),
                 "fallback_reason": distance_result.reason,
+                "fallback_source_framework_periodicity": (
+                    distance_source_framework_periodicity
+                ),
             }
             selected_result = distance_result if distance_result.ok else primary_result
             return replace(
@@ -338,10 +381,22 @@ def decompose_cif_to_cofid_event(
         )
 
 
-def _should_attempt_distance_fallback(result: legacy.CifDecompositionResult) -> bool:
+def _should_attempt_distance_fallback(
+    result: legacy.CifDecompositionResult,
+    *,
+    source_framework_periodicity: Mapping[str, object] | None = None,
+) -> bool:
     if int(result.metadata.get("successful_hypothesis_count", 0)) != 0:
         return False
-    if result.metadata.get("event_status") not in {
+    event_status = result.metadata.get("event_status")
+    if event_status == EVENT_STATUS_TOPOLOGY:
+        source_rank = int((source_framework_periodicity or {}).get("periodic_rank", 0))
+        reason = result.reason or ""
+        graph_extraction_failed = reason == (
+            "could not extract a periodic linkage graph from the CIF"
+        ) or reason.startswith("recovered linkage graph has periodic rank 0")
+        return source_rank in {2, 3} and graph_extraction_failed
+    if event_status not in {
         EVENT_STATUS_CHEMICAL,
         EVENT_STATUS_ENDPOINT,
         EVENT_STATUS_UNEXPLAINED,
@@ -366,6 +421,101 @@ def _should_attempt_distance_fallback(result: legacy.CifDecompositionResult) -> 
         if detected != monomer.connectivity:
             return True
     return False
+
+
+def _source_framework_periodicity(
+    build_result: legacy.BondedMolBuildResult,
+    events: tuple[LinkageEvent, ...],
+) -> Mapping[str, object]:
+    """Describe periodicity of the event-bearing source graph components.
+
+    Rank is evaluated per covalently connected quotient-graph component.  This
+    avoids incorrectly promoting two unrelated one-dimensional components whose
+    translation directions happen to span a plane when combined.
+    """
+
+    mol = build_result.mol
+    framework_atoms = _event_framework_atoms(mol, events) if events else set()
+    selected_atoms = framework_atoms or set(range(mol.GetNumAtoms()))
+    ordered_atoms = tuple(sorted(selected_atoms))
+    atom_map = {atom_idx: index for index, atom_idx in enumerate(ordered_atoms)}
+    edges = tuple(
+        (
+            atom_map[candidate.atom_idx_1],
+            atom_map[candidate.atom_idx_2],
+            candidate.periodic_image,
+        )
+        for candidate in build_result.candidates
+        if candidate.atom_idx_1 in atom_map and candidate.atom_idx_2 in atom_map
+    )
+
+    adjacency: defaultdict[int, set[int]] = defaultdict(set)
+    for start, end, _image in edges:
+        adjacency[start].add(end)
+        adjacency[end].add(start)
+    components: list[tuple[int, ...]] = []
+    seen: set[int] = set()
+    for seed in range(len(ordered_atoms)):
+        if seed in seen:
+            continue
+        seen.add(seed)
+        stack = [seed]
+        component: list[int] = []
+        while stack:
+            node = stack.pop()
+            component.append(node)
+            for neighbor in adjacency.get(node, ()):
+                if neighbor in seen:
+                    continue
+                seen.add(neighbor)
+                stack.append(neighbor)
+        components.append(tuple(sorted(component)))
+
+    component_records: list[dict[str, object]] = []
+    for component in components:
+        component_set = set(component)
+        component_map = {node: index for index, node in enumerate(component)}
+        component_edges = tuple(
+            (component_map[start], component_map[end], image)
+            for start, end, image in edges
+            if start in component_set and end in component_set
+        )
+        rank = legacy._periodic_gain_rank(len(component), component_edges)
+        component_records.append({
+            "atom_count": len(component),
+            "bond_candidate_count": len(component_edges),
+            "periodic_rank": rank,
+        })
+
+    component_ranks = [int(record["periodic_rank"]) for record in component_records]
+    periodic_rank = max(component_ranks, default=0)
+    largest_component_size = max((len(component) for component in components), default=0)
+    return {
+        "scope": "event_bearing_covalent_components" if framework_atoms else "full_bond_graph",
+        "atom_count": len(ordered_atoms),
+        "bond_candidate_count": len(edges),
+        "component_count": len(components),
+        "largest_component_atom_fraction": (
+            largest_component_size / len(ordered_atoms) if ordered_atoms else 0.0
+        ),
+        "periodic_rank": periodic_rank,
+        "dimensionality_hint": {2: "2D", 3: "3D"}.get(periodic_rank),
+        "components": component_records,
+    }
+
+
+def _diagnostic_events_for_result(
+    result: legacy.CifDecompositionResult,
+    hypotheses: tuple[ReconstructionHypothesis, ...],
+    fallback_events: tuple[LinkageEvent, ...],
+) -> tuple[LinkageEvent, ...]:
+    hypothesis_id = result.metadata.get("selected_hypothesis_id") or result.metadata.get(
+        "best_failed_hypothesis_id"
+    )
+    for hypothesis in hypotheses:
+        if hypothesis.hypothesis_id == hypothesis_id:
+            return hypothesis.events
+    return fallback_events
 
 
 def detect_linkage_events(build_result: legacy.BondedMolBuildResult) -> EventDetectionResult:
@@ -1414,6 +1564,30 @@ def _reconstruct_and_validate_hypothesis(
             "precursor_recovery_validation": recovery_metadata,
         }
         if recovery_error is not None:
+            multispecies = _classify_buildable_multispecies_precursors(
+                cut_result.monomers,
+                spec,
+            )
+            if multispecies is not None:
+                hypothesis_metadata["precursor_recovery_validation"] = {
+                    **recovery_metadata,
+                    "status": "unsupported_multispecies",
+                    "motif_validation": list(multispecies["species"]),
+                }
+                hypothesis_metadata["multispecies_precursor_recovery"] = multispecies
+                role_counts = multispecies["species_counts_by_role"]
+                return replace(
+                    hypothesis,
+                    status=EVENT_STATUS_MULTISPECIES,
+                    validation_errors=(
+                        f"unsupported {spec.linkage_code} multispecies precursor composition: "
+                        f"recovered {len(cut_result.monomers)} individually buildable species "
+                        f"across roles {role_counts!r}; the current COFid build contract "
+                        "requires one unique species per reaction role",
+                    ),
+                    metadata=hypothesis_metadata,
+                    score=base_score + 50.0,
+                )
             return replace(
                 hypothesis,
                 status=EVENT_STATUS_CHEMICAL,
@@ -1812,6 +1986,81 @@ def _aggregate_event_monomers(
     )
 
 
+def _classify_buildable_multispecies_precursors(
+    monomers: tuple[legacy.DecomposedMonomer, ...],
+    spec: legacy.DecompositionSpec,
+) -> Mapping[str, object] | None:
+    """Recognize complete, individually buildable multi-species role sets.
+
+    This classification does not serialize or guess a binary COFid.  It only
+    separates a current representation limitation from chemically invalid
+    precursor recovery.
+    """
+
+    if not isinstance(spec, legacy.LinkageDecompositionSpec):
+        return None
+    expected_roles = tuple(spec.roles)
+    if (
+        len(expected_roles) != len(set(expected_roles))
+        or len(monomers) <= len(expected_roles)
+    ):
+        return None
+    monomers_by_role: defaultdict[str, list[legacy.DecomposedMonomer]] = defaultdict(list)
+    for monomer in monomers:
+        monomers_by_role[monomer.reactive_group].append(monomer)
+    if set(monomers_by_role) != set(expected_roles):
+        return None
+
+    species: list[dict[str, object]] = []
+    site_counts_by_role: dict[str, int] = {}
+    fragment_counts_by_role: dict[str, int] = {}
+    for role in expected_roles:
+        role_monomers = monomers_by_role[role]
+        site_counts_by_role[role] = sum(
+            monomer.connectivity * monomer.amount for monomer in role_monomers
+        )
+        fragment_counts_by_role[role] = sum(monomer.amount for monomer in role_monomers)
+        for monomer in role_monomers:
+            try:
+                detected_connectivity = legacy.detect_rdkit_motif_count(
+                    monomer.canonical_smiles,
+                    monomer.reactive_group,
+                )
+            except Exception:
+                return None
+            if detected_connectivity != monomer.connectivity:
+                return None
+            species.append({
+                "reactive_group": monomer.reactive_group,
+                "canonical_smiles": monomer.canonical_smiles,
+                "declared_connectivity": monomer.connectivity,
+                "detected_connectivity": detected_connectivity,
+                "fragment_count": monomer.amount,
+                "status": "valid",
+            })
+
+    if len(set(site_counts_by_role.values())) != 1:
+        return None
+
+    return {
+        "detected": True,
+        "classification": "unsupported_multispecies_precursors",
+        "linkage": spec.linkage_code,
+        "expected_roles": list(expected_roles),
+        "species_counts_by_role": {
+            role: len(monomers_by_role[role]) for role in expected_roles
+        },
+        "fragment_counts_by_role": fragment_counts_by_role,
+        "reactive_site_counts_by_role": site_counts_by_role,
+        "reactive_site_balance_valid": True,
+        "species": species,
+        "policy": (
+            "all distinct recovered species expose exactly their declared buildable motifs; "
+            "no species were merged or discarded and no binary COFid was guessed"
+        ),
+    }
+
+
 def _bond_order_identity_key(
     monomer: legacy.DecomposedMonomer,
 ) -> tuple[str, int, str, str, int] | None:
@@ -2103,6 +2352,9 @@ def _detect_probable_fragment_defect(
     role, strict agreement above ``threshold``, and independent structural
     evidence such as lost role connectivity or unexplained framework matter.
     """
+
+    if hypothesis.status == EVENT_STATUS_MULTISPECIES:
+        return None
 
     spec = legacy._resolve_linkage_spec(hypothesis.family)
     if not isinstance(spec, legacy.LinkageDecompositionSpec):
@@ -2451,6 +2703,7 @@ def _select_event_result(
         else "no event reconstruction passed global validation"
     )
     metadata.update({
+        **dict(best_failure.metadata),
         "event_status": best_failure.status,
         "best_failed_hypothesis_id": best_failure.hypothesis_id,
         "successful_hypothesis_count": 0,
@@ -2472,7 +2725,8 @@ def _best_failed_hypothesis(
     if not hypotheses:
         return None
     status_progress = {
-        EVENT_STATUS_TRIAZINE_MOTIF: 6,
+        EVENT_STATUS_TRIAZINE_MOTIF: 7,
+        EVENT_STATUS_MULTISPECIES: 6,
         EVENT_STATUS_TOPOLOGY: 5,
         EVENT_STATUS_CHEMICAL: 4,
         EVENT_STATUS_UNEXPLAINED: 3,
@@ -2490,6 +2744,7 @@ def _best_failed_hypothesis(
 
 
 __all__ = [
+    "EVENT_STATUS_MULTISPECIES",
     "EVENT_STATUS_PROBABLE_DEFECT",
     "EventDetectionResult",
     "LinkageEvent",

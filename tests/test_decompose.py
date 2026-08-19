@@ -22,6 +22,7 @@ from cofkit.cofid import generate_cofid
 from cofkit.decompose import (
     BondCandidate,
     BondedMolBuildResult,
+    CifDecompositionResult,
     DecomposedMonomer,
     LinkageTopologyGraph,
     _IMINE_SPEC,
@@ -42,16 +43,21 @@ from cofkit.decompose import (
 )
 from cofkit.decompose_events import (
     EVENT_STATUS_CHEMICAL,
+    EVENT_STATUS_MULTISPECIES,
     EVENT_STATUS_PROBABLE_DEFECT,
+    EVENT_STATUS_TOPOLOGY,
     EVENT_STATUS_TRIAZINE_MOTIF,
     EventDetectionResult,
     LinkageEvent,
     ReconstructedRole,
     ReconstructionHypothesis,
     _aggregate_event_monomers,
+    _classify_buildable_multispecies_precursors,
     _detect_probable_fragment_defect,
     _event_topology_graph,
     _select_event_result,
+    _should_attempt_distance_fallback,
+    _source_framework_periodicity,
     detect_linkage_events,
 )
 from cofkit.decompose_cif import PeriodicCifAtoms
@@ -514,6 +520,126 @@ class DecomposeRoundTripTests(unittest.TestCase):
         self.assertTrue(metadata["applied"])
         self.assertEqual(len(constitutional_isomers), 2)
         self.assertFalse(constitutional_metadata["applied"])
+
+    def test_source_periodicity_is_evaluated_per_covalent_component(self):
+        mol = Chem.MolFromSmiles("CC.CC")
+        self.assertIsNotNone(mol)
+        one_dimensional_components = BondedMolBuildResult(
+            mol=mol,
+            candidates=(
+                BondCandidate(0, 1, 1.5, periodic_image=(0, 0, 0)),
+                BondCandidate(0, 1, 1.5, periodic_image=(1, 0, 0)),
+                BondCandidate(2, 3, 1.5, periodic_image=(0, 0, 0)),
+                BondCandidate(2, 3, 1.5, periodic_image=(0, 1, 0)),
+            ),
+        )
+        spanning_component = BondedMolBuildResult(
+            mol=mol,
+            candidates=(
+                *one_dimensional_components.candidates,
+                BondCandidate(0, 1, 1.5, periodic_image=(0, 1, 0)),
+            ),
+        )
+
+        separate = _source_framework_periodicity(one_dimensional_components, ())
+        spanning = _source_framework_periodicity(spanning_component, ())
+
+        self.assertEqual(separate["component_count"], 2)
+        self.assertEqual(separate["periodic_rank"], 1)
+        self.assertEqual(
+            [component["periodic_rank"] for component in separate["components"]],
+            [1, 1],
+        )
+        self.assertEqual(spanning["periodic_rank"], 2)
+        self.assertEqual(spanning["dimensionality_hint"], "2D")
+
+    def test_topology_distance_fallback_requires_spanning_source_and_graph_extraction_failure(self):
+        base_metadata = {
+            "event_status": EVENT_STATUS_TOPOLOGY,
+            "successful_hypothesis_count": 0,
+        }
+        extraction_failure = CifDecompositionResult(
+            status="skipped",
+            input_cif="framework.cif",
+            topology=None,
+            linkage="auto",
+            reason="could not extract a periodic linkage graph from the CIF",
+            metadata=base_metadata,
+        )
+        ambiguous = CifDecompositionResult(
+            status="skipped",
+            input_cif="framework.cif",
+            topology=None,
+            linkage="auto",
+            reason="topology auto-detection is ambiguous among: dia, pts",
+            metadata=base_metadata,
+        )
+
+        self.assertTrue(
+            _should_attempt_distance_fallback(
+                extraction_failure,
+                source_framework_periodicity={"periodic_rank": 2},
+            )
+        )
+        self.assertFalse(
+            _should_attempt_distance_fallback(
+                extraction_failure,
+                source_framework_periodicity={"periodic_rank": 1},
+            )
+        )
+        self.assertFalse(
+            _should_attempt_distance_fallback(
+                ambiguous,
+                source_framework_periodicity={"periodic_rank": 3},
+            )
+        )
+
+    def test_buildable_multispecies_precursors_are_classified_without_guessing_cofid(self):
+        monomers = (
+            DecomposedMonomer(3, "aldehyde", TFB, amount=2),
+            DecomposedMonomer(2, "amine", PPD, amount=1),
+            DecomposedMonomer(2, "amine", "Nc1ccc(N)c(F)c1", amount=2),
+        )
+        report = _classify_buildable_multispecies_precursors(monomers, _IMINE_SPEC)
+        self.assertIsNotNone(report)
+        assert report is not None
+        self.assertEqual(report["classification"], "unsupported_multispecies_precursors")
+        self.assertEqual(report["species_counts_by_role"], {"amine": 2, "aldehyde": 1})
+        self.assertEqual(report["reactive_site_counts_by_role"], {"amine": 6, "aldehyde": 6})
+        self.assertTrue(report["reactive_site_balance_valid"])
+
+        event = LinkageEvent(
+            event_id="imine:test",
+            family="imine",
+            atoms=(0, 1),
+            bonds=(0,),
+            cut_bonds=(0,),
+            instance_ids=(None, None),
+            confidence="high",
+            endpoint_roles=((0, "amine"), (1, "aldehyde")),
+            site_id="imine:test",
+        )
+        hypothesis = ReconstructionHypothesis(
+            hypothesis_id="imine:multispecies",
+            events=(event,),
+            monomers=monomers,
+            status=EVENT_STATUS_MULTISPECIES,
+            validation_errors=("unsupported multispecies precursor composition",),
+            metadata={"multispecies_precursor_recovery": report},
+        )
+        result = _select_event_result(
+            Path("multispecies.cif"),
+            requested_family=None,
+            topology="hcb",
+            detection=EventDetectionResult(events=(event,)),
+            hypotheses=(hypothesis,),
+            generation_metadata={},
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.metadata["event_status"], EVENT_STATUS_MULTISPECIES)
+        self.assertEqual(result.metadata["multispecies_precursor_recovery"], report)
+        self.assertIn("multispecies", result.reason)
 
     def test_topology_validation_canonicalizes_unequal_node_node_connectivities(self):
         graph = LinkageTopologyGraph(
