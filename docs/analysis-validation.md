@@ -134,3 +134,7 @@ cofkit analyze zeopp \
 ```
 
 The wrapper keeps raw Zeo++ outputs, stdout/stderr logs, and `zeopp_report.json` in the output directory.
+All sphere-size values are diameters in angstroms. The Python attributes, short CLI summary,
+and JSON report make that convention explicit with labels such as
+`largest_free_sphere_diameter`; probe inputs remain explicitly labelled as radii with
+`probe_radius`.

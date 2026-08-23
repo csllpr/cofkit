@@ -293,13 +293,16 @@ def _run_zeopp(args: argparse.Namespace) -> None:
     print("input_cif:", result.input_cif)
     print("zeopp_binary:", result.zeopp_binary)
     print("output_dir:", result.output_dir)
-    print("largest_included_sphere:", properties.largest_included_sphere)
-    print("largest_free_sphere:", properties.largest_free_sphere)
-    print("largest_included_sphere_along_free_path:", properties.largest_included_sphere_along_free_path)
-    print("axis_aligned_free_sphere:", dict(properties.axis_aligned_free_sphere))
+    print("largest_included_sphere_diameter:", properties.largest_included_sphere_diameter)
+    print("largest_free_sphere_diameter:", properties.largest_free_sphere_diameter)
     print(
-        "axis_aligned_included_sphere_along_free_path:",
-        dict(properties.axis_aligned_included_sphere_along_free_path),
+        "largest_included_sphere_along_free_path_diameter:",
+        properties.largest_included_sphere_along_free_path_diameter,
+    )
+    print("axis_aligned_free_sphere_diameter:", dict(properties.axis_aligned_free_sphere_diameter))
+    print(
+        "axis_aligned_included_sphere_along_free_path_diameter:",
+        dict(properties.axis_aligned_included_sphere_along_free_path_diameter),
     )
     print("point_probe_n_channels:", point_probe_channels.n_channels)
     print("point_probe_n_pockets:", point_probe_channels.n_pockets)

@@ -49,10 +49,11 @@ class ZeoppTests(unittest.TestCase):
                 )
 
             basic = result.baseline.basic_pore_properties
-            self.assertEqual(basic.largest_included_sphere, 12.34)
-            self.assertEqual(basic.largest_free_sphere, 10.11)
-            self.assertEqual(basic.axis_aligned_free_sphere["a"], 7.1)
-            self.assertEqual(basic.axis_aligned_included_sphere_along_free_path["c"], 8.3)
+            self.assertEqual(basic.largest_included_sphere_diameter, 12.34)
+            self.assertEqual(basic.largest_free_sphere_diameter, 10.11)
+            self.assertEqual(basic.axis_aligned_free_sphere_diameter["a"], 7.1)
+            self.assertEqual(basic.axis_aligned_included_sphere_along_free_path_diameter["c"], 8.3)
+            self.assertEqual(basic.largest_free_sphere, basic.largest_free_sphere_diameter)
 
             point_probe_channels = result.baseline.point_probe_channels
             self.assertEqual(point_probe_channels.n_channels, 1)
@@ -85,7 +86,13 @@ class ZeoppTests(unittest.TestCase):
 
             self.assertTrue(Path(result.report_path).is_file())
             report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
-            self.assertEqual(report["baseline"]["basic_pore_properties"]["largest_free_sphere"], 10.11)
+            basic_report = report["baseline"]["basic_pore_properties"]
+            self.assertEqual(basic_report["largest_free_sphere_diameter"], 10.11)
+            self.assertNotIn("largest_free_sphere", basic_report)
+            channel_report = report["probe_scans"][0]["channel_summary"]
+            self.assertIn("largest_free_sphere_diameter", channel_report)
+            self.assertNotIn("largest_free_sphere", channel_report)
+            self.assertIn("largest_free_sphere_diameter", channel_report["channels"][0])
             self.assertEqual(report["probe_scans"][0]["accessibility"]["n_accessible_nodes"], 6)
 
     def test_probe_scan_failures_are_recorded_without_aborting_default_run(self):
@@ -142,6 +149,22 @@ class ZeoppTests(unittest.TestCase):
             self.assertEqual(report["probe_scans"][1]["settings"]["probe_radius"], 1.86)
             self.assertEqual(report["probe_scans"][1]["channel_summary"]["n_channels"], 2)
             self.assertEqual(report["output_dir"], str(output_dir.resolve()))
+
+    def test_analyze_zeopp_cli_labels_sphere_sizes_as_diameters(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_zeopp_binary(temp_path / "network")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+            buffer = io.StringIO()
+
+            with patch.dict(os.environ, {COFKIT_ZEOPP_ENV_VAR: str(fake_binary)}):
+                with contextlib.redirect_stdout(buffer):
+                    cli_main(["analyze", "zeopp", str(cif_path)])
+
+            output = buffer.getvalue()
+            self.assertIn("largest_free_sphere_diameter: 10.11", output)
+            self.assertNotIn("largest_free_sphere: 10.11", output)
 
     def test_analyze_help_lists_zeopp(self):
         buffer = io.StringIO()

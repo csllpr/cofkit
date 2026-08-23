@@ -13,6 +13,7 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 ### Changed
 
 - event-based decomposition is now the API and CLI default after outperforming legacy on the largest available inspected CoRE-COFs linkage-label set; the previous per-family engine remains available explicitly through `decomposition_mode="legacy"` and `--decomposition-mode legacy`
+- Zeo++ sphere-size attributes, CLI labels, and JSON report keys now include `_diameter`, making the `Di`, `Df`, and `Dif` convention explicit; the previous Python attribute names remain as compatibility aliases
 
 ### Fixed
 

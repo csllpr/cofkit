@@ -141,16 +141,16 @@ These are implemented in the local Zeo++ source tree even though some are not sh
 
 One line with:
 
-- largest included sphere
-- largest free sphere
-- largest included sphere along the max free-sphere path
+- largest included sphere diameter
+- largest free sphere diameter
+- largest included sphere diameter along the max free-sphere path
 
 ### `-resex`
 
 Extends `-res` with axis-resolved values:
 
-- free sphere along `a`, `b`, `c`
-- included sphere along the best free path in `a`, `b`, `c`
+- free-sphere diameter along `a`, `b`, `c`
+- included-sphere diameter along the best free path in `a`, `b`, `c`
 
 ### `-chan`
 
@@ -158,7 +158,7 @@ Parse-friendly text containing:
 
 - number of channels
 - channel dimensionality
-- per-channel `Di / Df / Dif`
+- per-channel `Di / Df / Dif` diameters
 - summary max values
 - probe radius / diameter
 

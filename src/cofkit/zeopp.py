@@ -30,20 +30,47 @@ class ZeoppParseError(ZeoppError):
 
 @dataclass(frozen=True)
 class ZeoppBasicPoreProperties:
-    largest_included_sphere: float
-    largest_free_sphere: float
-    largest_included_sphere_along_free_path: float
-    axis_aligned_free_sphere: Mapping[str, float]
-    axis_aligned_included_sphere_along_free_path: Mapping[str, float]
+    largest_included_sphere_diameter: float
+    largest_free_sphere_diameter: float
+    largest_included_sphere_along_free_path_diameter: float
+    axis_aligned_free_sphere_diameter: Mapping[str, float]
+    axis_aligned_included_sphere_along_free_path_diameter: Mapping[str, float]
+
+    @property
+    def largest_included_sphere(self) -> float:
+        """Compatibility alias for :attr:`largest_included_sphere_diameter`."""
+        return self.largest_included_sphere_diameter
+
+    @property
+    def largest_free_sphere(self) -> float:
+        """Compatibility alias for :attr:`largest_free_sphere_diameter`."""
+        return self.largest_free_sphere_diameter
+
+    @property
+    def largest_included_sphere_along_free_path(self) -> float:
+        """Compatibility alias for the explicitly diameter-labelled attribute."""
+        return self.largest_included_sphere_along_free_path_diameter
+
+    @property
+    def axis_aligned_free_sphere(self) -> Mapping[str, float]:
+        """Compatibility alias for :attr:`axis_aligned_free_sphere_diameter`."""
+        return self.axis_aligned_free_sphere_diameter
+
+    @property
+    def axis_aligned_included_sphere_along_free_path(self) -> Mapping[str, float]:
+        """Compatibility alias for the explicitly diameter-labelled attribute."""
+        return self.axis_aligned_included_sphere_along_free_path_diameter
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "largest_included_sphere": self.largest_included_sphere,
-            "largest_free_sphere": self.largest_free_sphere,
-            "largest_included_sphere_along_free_path": self.largest_included_sphere_along_free_path,
-            "axis_aligned_free_sphere": dict(self.axis_aligned_free_sphere),
-            "axis_aligned_included_sphere_along_free_path": dict(
-                self.axis_aligned_included_sphere_along_free_path
+            "largest_included_sphere_diameter": self.largest_included_sphere_diameter,
+            "largest_free_sphere_diameter": self.largest_free_sphere_diameter,
+            "largest_included_sphere_along_free_path_diameter": (
+                self.largest_included_sphere_along_free_path_diameter
+            ),
+            "axis_aligned_free_sphere_diameter": dict(self.axis_aligned_free_sphere_diameter),
+            "axis_aligned_included_sphere_along_free_path_diameter": dict(
+                self.axis_aligned_included_sphere_along_free_path_diameter
             ),
         }
 
@@ -51,16 +78,33 @@ class ZeoppBasicPoreProperties:
 @dataclass(frozen=True)
 class ZeoppChannelEntry:
     index: int
-    largest_included_sphere: float
-    largest_free_sphere: float
-    largest_included_sphere_along_free_path: float
+    largest_included_sphere_diameter: float
+    largest_free_sphere_diameter: float
+    largest_included_sphere_along_free_path_diameter: float
+
+    @property
+    def largest_included_sphere(self) -> float:
+        """Compatibility alias for :attr:`largest_included_sphere_diameter`."""
+        return self.largest_included_sphere_diameter
+
+    @property
+    def largest_free_sphere(self) -> float:
+        """Compatibility alias for :attr:`largest_free_sphere_diameter`."""
+        return self.largest_free_sphere_diameter
+
+    @property
+    def largest_included_sphere_along_free_path(self) -> float:
+        """Compatibility alias for the explicitly diameter-labelled attribute."""
+        return self.largest_included_sphere_along_free_path_diameter
 
     def to_dict(self) -> dict[str, object]:
         return {
             "index": self.index,
-            "largest_included_sphere": self.largest_included_sphere,
-            "largest_free_sphere": self.largest_free_sphere,
-            "largest_included_sphere_along_free_path": self.largest_included_sphere_along_free_path,
+            "largest_included_sphere_diameter": self.largest_included_sphere_diameter,
+            "largest_free_sphere_diameter": self.largest_free_sphere_diameter,
+            "largest_included_sphere_along_free_path_diameter": (
+                self.largest_included_sphere_along_free_path_diameter
+            ),
         }
 
 
@@ -72,10 +116,25 @@ class ZeoppChannelSummary:
     channel_dimensionalities: tuple[int, ...]
     probe_radius: float
     probe_diameter: float | None
-    largest_included_sphere: float | None
-    largest_free_sphere: float | None
-    largest_included_sphere_along_free_path: float | None
+    largest_included_sphere_diameter: float | None
+    largest_free_sphere_diameter: float | None
+    largest_included_sphere_along_free_path_diameter: float | None
     channels: tuple[ZeoppChannelEntry, ...]
+
+    @property
+    def largest_included_sphere(self) -> float | None:
+        """Compatibility alias for :attr:`largest_included_sphere_diameter`."""
+        return self.largest_included_sphere_diameter
+
+    @property
+    def largest_free_sphere(self) -> float | None:
+        """Compatibility alias for :attr:`largest_free_sphere_diameter`."""
+        return self.largest_free_sphere_diameter
+
+    @property
+    def largest_included_sphere_along_free_path(self) -> float | None:
+        """Compatibility alias for the explicitly diameter-labelled attribute."""
+        return self.largest_included_sphere_along_free_path_diameter
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -85,9 +144,11 @@ class ZeoppChannelSummary:
             "channel_dimensionalities": list(self.channel_dimensionalities),
             "probe_radius": self.probe_radius,
             "probe_diameter": self.probe_diameter,
-            "largest_included_sphere": self.largest_included_sphere,
-            "largest_free_sphere": self.largest_free_sphere,
-            "largest_included_sphere_along_free_path": self.largest_included_sphere_along_free_path,
+            "largest_included_sphere_diameter": self.largest_included_sphere_diameter,
+            "largest_free_sphere_diameter": self.largest_free_sphere_diameter,
+            "largest_included_sphere_along_free_path_diameter": (
+                self.largest_included_sphere_along_free_path_diameter
+            ),
             "channels": [channel.to_dict() for channel in self.channels],
         }
 
@@ -627,11 +688,15 @@ def _parse_resex_output(resex_output_path: Path) -> ZeoppBasicPoreProperties:
         floats = _parse_trailing_floats(line)
         if len(floats) >= 9:
             return ZeoppBasicPoreProperties(
-                largest_included_sphere=floats[0],
-                largest_free_sphere=floats[1],
-                largest_included_sphere_along_free_path=floats[2],
-                axis_aligned_free_sphere={"a": floats[3], "b": floats[4], "c": floats[5]},
-                axis_aligned_included_sphere_along_free_path={"a": floats[6], "b": floats[7], "c": floats[8]},
+                largest_included_sphere_diameter=floats[0],
+                largest_free_sphere_diameter=floats[1],
+                largest_included_sphere_along_free_path_diameter=floats[2],
+                axis_aligned_free_sphere_diameter={"a": floats[3], "b": floats[4], "c": floats[5]},
+                axis_aligned_included_sphere_along_free_path_diameter={
+                    "a": floats[6],
+                    "b": floats[7],
+                    "c": floats[8],
+                },
             )
     raise ZeoppParseError(f"Could not parse Zeo++ -resex output: {resex_output_path}")
 
@@ -682,9 +747,9 @@ def _parse_chan_output(chan_output_path: Path, stdout_text: str) -> ZeoppChannel
             channel_entries.append(
                 ZeoppChannelEntry(
                     index=int(channel_match.group(1)),
-                    largest_included_sphere=float(channel_match.group(2)),
-                    largest_free_sphere=float(channel_match.group(3)),
-                    largest_included_sphere_along_free_path=float(channel_match.group(4)),
+                    largest_included_sphere_diameter=float(channel_match.group(2)),
+                    largest_free_sphere_diameter=float(channel_match.group(3)),
+                    largest_included_sphere_along_free_path_diameter=float(channel_match.group(4)),
                 )
             )
 
@@ -704,9 +769,11 @@ def _parse_chan_output(chan_output_path: Path, stdout_text: str) -> ZeoppChannel
         raise ZeoppParseError(f"Could not parse Zeo++ -chan probe radius: {chan_output_path}")
 
     if summary_lis is None and channel_entries:
-        summary_lis = max(entry.largest_included_sphere for entry in channel_entries)
-        summary_lfs = max(entry.largest_free_sphere for entry in channel_entries)
-        summary_lisfp = max(entry.largest_included_sphere_along_free_path for entry in channel_entries)
+        summary_lis = max(entry.largest_included_sphere_diameter for entry in channel_entries)
+        summary_lfs = max(entry.largest_free_sphere_diameter for entry in channel_entries)
+        summary_lisfp = max(
+            entry.largest_included_sphere_along_free_path_diameter for entry in channel_entries
+        )
 
     return ZeoppChannelSummary(
         n_channels=n_channels,
@@ -715,9 +782,9 @@ def _parse_chan_output(chan_output_path: Path, stdout_text: str) -> ZeoppChannel
         channel_dimensionalities=channel_dimensionalities,
         probe_radius=probe_radius,
         probe_diameter=probe_diameter,
-        largest_included_sphere=summary_lis,
-        largest_free_sphere=summary_lfs,
-        largest_included_sphere_along_free_path=summary_lisfp,
+        largest_included_sphere_diameter=summary_lis,
+        largest_free_sphere_diameter=summary_lfs,
+        largest_included_sphere_along_free_path_diameter=summary_lisfp,
         channels=tuple(channel_entries),
     )
 
