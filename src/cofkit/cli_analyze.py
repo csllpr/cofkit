@@ -233,7 +233,10 @@ def _add_zeopp_parser(subparsers) -> None:
         "--channel-radius",
         type=float,
         default=None,
-        help="Optional shared channel-radius override for every requested probe scan. Defaults to each probe radius.",
+        help=(
+            "Optional accessibility radius in angstrom used by Zeo++ -sa and -vol. It does not override "
+            "the radius passed to -chan and must be at least every --probe-radius. Defaults to each probe radius."
+        ),
     )
     parser.add_argument(
         "--surface-samples-per-atom",
@@ -293,22 +296,32 @@ def _run_zeopp(args: argparse.Namespace) -> None:
     print("input_cif:", result.input_cif)
     print("zeopp_binary:", result.zeopp_binary)
     print("output_dir:", result.output_dir)
-    print("largest_included_sphere_diameter:", properties.largest_included_sphere_diameter)
-    print("largest_free_sphere_diameter:", properties.largest_free_sphere_diameter)
+    print("largest_cavity_diameter (LCD; Zeo++ Di; angstrom):", properties.largest_cavity_diameter)
+    print("pore_limiting_diameter (PLD; Zeo++ Df; angstrom):", properties.pore_limiting_diameter)
     print(
-        "largest_included_sphere_along_free_path_diameter:",
+        "largest_included_sphere_along_free_path_diameter (Zeo++ Dif; not PLD; angstrom):",
         properties.largest_included_sphere_along_free_path_diameter,
     )
-    print("axis_aligned_free_sphere_diameter:", dict(properties.axis_aligned_free_sphere_diameter))
     print(
-        "axis_aligned_included_sphere_along_free_path_diameter:",
-        dict(properties.axis_aligned_included_sphere_along_free_path_diameter),
+        "crystallographic_direction_pore_limiting_diameter (Zeo++ Df; angstrom):",
+        dict(properties.crystallographic_direction_pore_limiting_diameter),
+    )
+    print(
+        "crystallographic_direction_largest_included_sphere_along_free_path_diameter "
+        "(Zeo++ Dif; not PLD; angstrom):",
+        dict(properties.crystallographic_direction_largest_included_sphere_along_free_path_diameter),
     )
     print("point_probe_n_channels:", point_probe_channels.n_channels)
     print("point_probe_n_pockets:", point_probe_channels.n_pockets)
-    print("point_probe_channel_dimensionality:", point_probe_channels.channel_dimensionality)
-    print("point_probe_accessible_surface_area_a2:", point_probe_surface_area.accessible_surface_area_a2)
-    print("point_probe_accessible_volume_a3:", point_probe_volume.accessible_volume_a3)
+    print("point_probe_max_channel_dimensionality:", point_probe_channels.max_channel_dimensionality)
+    print(
+        "point_probe_center_accessible_surface_area_a2:",
+        point_probe_surface_area.probe_center_accessible_surface_area_a2,
+    )
+    print(
+        "point_probe_center_accessible_volume_a3:",
+        point_probe_volume.probe_center_accessible_volume_a3,
+    )
     print("probe_scans_requested:", len(result.probe_scans))
     print("probe_scans_successful:", successful_probe_scans)
     print("report_path:", result.report_path)

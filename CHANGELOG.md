@@ -13,7 +13,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 ### Changed
 
 - event-based decomposition is now the API and CLI default after outperforming legacy on the largest available inspected CoRE-COFs linkage-label set; the previous per-family engine remains available explicitly through `decomposition_mode="legacy"` and `--decomposition-mode legacy`
-- Zeo++ sphere-size attributes, CLI labels, and JSON report keys now include `_diameter`, making the `Di`, `Df`, and `Dif` convention explicit; the previous Python attribute names remain as compatibility aliases
+- Zeo++ pore-size attributes, CLI labels, and JSON report keys now expose `largest_cavity_diameter` (LCD / `Di`), `pore_limiting_diameter` (PLD / `Df`), and the distinct `largest_included_sphere_along_free_path_diameter` (`Dif`); reports include a machine-readable `pore_diameter_semantics` glossary, and the previous Python attribute names remain as compatibility aliases
+- Zeo++ reports now label crystallographic-direction values, units, probe-center-accessible surface/volume, inaccessible-pocket contributions, Voronoi-node fractions, per-channel dimensionality, and independent `max_channel_*` aggregates explicitly; scan settings include radii plus derived diameters, enforce `probe_radius <= channel_radius`, and carry a machine-readable `measurement_semantics` glossary
 
 ### Fixed
 

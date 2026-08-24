@@ -134,7 +134,28 @@ cofkit analyze zeopp \
 ```
 
 The wrapper keeps raw Zeo++ outputs, stdout/stderr logs, and `zeopp_report.json` in the output directory.
-All sphere-size values are diameters in angstroms. The Python attributes, short CLI summary,
-and JSON report make that convention explicit with labels such as
-`largest_free_sphere_diameter`; probe inputs remain explicitly labelled as radii with
-`probe_radius`.
+All pore-size values below are diameters in angstroms:
+
+| Zeo++ column | Python / JSON field | Interpretation |
+|---|---|---|
+| `Di` | `largest_cavity_diameter` | Largest cavity diameter (LCD) |
+| `Df` | `pore_limiting_diameter` | Pore-limiting diameter (PLD) |
+| `Dif` | `largest_included_sphere_along_free_path_diameter` | Largest included sphere along the free-sphere path; not PLD |
+
+The JSON report also carries this mapping in `pore_diameter_semantics`, including the
+crystallographic-direction `-resex` fields. Channel summaries use `max_channel_*` for
+independent column-wise maxima across channels; each channel entry carries its own
+`dimensionality` and pore diameters.
+
+Each finite-probe scan records `channel_radius_angstrom`, `probe_radius_angstrom`, and their
+derived diameters. The channel radius classifies void-space accessibility for `-sa` and `-vol`;
+the probe radius is passed to `-chan` and `-axs` and is used for Monte Carlo sampling. Zeo++
+requires the probe radius to be no larger than the channel radius, which cofkit validates.
+
+Surface and volume fields distinguish probe-center-accessible channels from inaccessible,
+non-percolating pockets. In particular, `probe_center_accessible_volume_a3` is volume available
+to the probe center, not probe-occupiable volume, while `inaccessible_pocket_volume_a3` is not
+the framework solid or the complete inaccessible part of the unit cell. Unit-cell volume and
+density are labelled `unit_cell_volume_a3` and `density_g_cm3`; `-axs` reports
+`accessible_voronoi_node_fraction`, not a volume fraction. These definitions are also embedded
+under `measurement_semantics` in every JSON report.

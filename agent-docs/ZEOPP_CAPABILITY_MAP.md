@@ -141,16 +141,16 @@ These are implemented in the local Zeo++ source tree even though some are not sh
 
 One line with:
 
-- largest included sphere diameter
-- largest free sphere diameter
-- largest included sphere diameter along the max free-sphere path
+- `Di`: largest included sphere diameter, commonly the largest cavity diameter (LCD)
+- `Df`: largest free sphere diameter, commonly the pore-limiting diameter (PLD)
+- `Dif`: largest included sphere diameter along the free-sphere path; this is distinct from PLD
 
 ### `-resex`
 
 Extends `-res` with axis-resolved values:
 
-- free-sphere diameter along `a`, `b`, `c`
-- included-sphere diameter along the best free path in `a`, `b`, `c`
+- crystallographic-direction `Df` / pore-limiting diameter along `a`, `b`, `c`
+- crystallographic-direction `Dif` / included-sphere diameter along the best free path in `a`, `b`, `c`
 
 ### `-chan`
 
@@ -158,8 +158,8 @@ Parse-friendly text containing:
 
 - number of channels
 - channel dimensionality
-- per-channel `Di / Df / Dif` diameters
-- summary max values
+- per-channel `Di / Df / Dif` diameters with the same LCD / PLD / distinct-`Dif` mapping
+- independent column-wise summary max values, which need not describe one channel
 - probe radius / diameter
 
 ### `-axs`
@@ -175,8 +175,8 @@ Compact summary lines containing:
 
 - unit-cell volume
 - density
-- accessible surface area
-- non-accessible surface area
+- surface area accessible to the sampling-probe center
+- surface area in non-percolating inaccessible pockets
 - normalized surface metrics
 - per-channel and per-pocket surface-area totals
 
@@ -186,9 +186,9 @@ Compact summary lines containing:
 
 - unit-cell volume
 - density
-- accessible pore volume
-- non-accessible pore volume
-- accessible volume fraction
+- volume available to the sampling-probe center, distinct from probe-occupiable volume
+- void volume in non-percolating inaccessible pockets
+- probe-center-accessible void fraction
 - `cm^3/g` normalized volume
 - per-channel and per-pocket volume totals
 

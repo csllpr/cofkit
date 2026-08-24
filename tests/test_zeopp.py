@@ -49,51 +49,123 @@ class ZeoppTests(unittest.TestCase):
                 )
 
             basic = result.baseline.basic_pore_properties
-            self.assertEqual(basic.largest_included_sphere_diameter, 12.34)
-            self.assertEqual(basic.largest_free_sphere_diameter, 10.11)
-            self.assertEqual(basic.axis_aligned_free_sphere_diameter["a"], 7.1)
-            self.assertEqual(basic.axis_aligned_included_sphere_along_free_path_diameter["c"], 8.3)
-            self.assertEqual(basic.largest_free_sphere, basic.largest_free_sphere_diameter)
+            self.assertEqual(basic.largest_cavity_diameter, 12.34)
+            self.assertEqual(basic.pore_limiting_diameter, 10.11)
+            self.assertEqual(basic.crystallographic_direction_pore_limiting_diameter["a"], 7.1)
+            self.assertEqual(
+                basic.crystallographic_direction_largest_included_sphere_along_free_path_diameter["c"],
+                8.3,
+            )
+            self.assertEqual(basic.largest_included_sphere_diameter, basic.largest_cavity_diameter)
+            self.assertEqual(basic.largest_free_sphere_diameter, basic.pore_limiting_diameter)
+            self.assertEqual(
+                result.pore_diameter_semantics["descriptors"]["Df"]["field"],
+                "pore_limiting_diameter",
+            )
 
             point_probe_channels = result.baseline.point_probe_channels
             self.assertEqual(point_probe_channels.n_channels, 1)
             self.assertEqual(point_probe_channels.n_pockets, 0)
-            self.assertEqual(point_probe_channels.probe_radius, 0.0)
+            self.assertEqual(point_probe_channels.probe_radius_angstrom, 0.0)
+            self.assertEqual(point_probe_channels.max_channel_dimensionality, 3)
+            self.assertEqual(point_probe_channels.channels[0].dimensionality, 3)
 
             point_probe_surface = result.baseline.point_probe_surface_area
+            self.assertEqual(point_probe_surface.probe_center_accessible_surface_area_a2, 1000.0)
+            self.assertEqual(point_probe_surface.n_accessible_channels, 1)
             self.assertEqual(point_probe_surface.accessible_surface_area_a2, 1000.0)
-            self.assertEqual(point_probe_surface.n_channels, 1)
 
             point_probe_volume = result.baseline.point_probe_volume
+            self.assertEqual(point_probe_volume.probe_center_accessible_volume_a3, 5000.0)
+            self.assertEqual(point_probe_volume.n_accessible_channels, 1)
             self.assertEqual(point_probe_volume.accessible_volume_a3, 5000.0)
-            self.assertEqual(point_probe_volume.n_channels, 1)
 
             self.assertEqual(len(result.probe_scans), 2)
             first_scan = result.probe_scans[0]
             self.assertEqual(first_scan.status, "ok")
-            self.assertEqual(first_scan.settings.probe_radius, 1.2)
+            self.assertEqual(first_scan.settings.probe_radius_angstrom, 1.2)
+            self.assertEqual(first_scan.settings.probe_diameter_angstrom, 2.4)
+            self.assertEqual(first_scan.settings.channel_radius_angstrom, 1.2)
+            self.assertEqual(first_scan.settings.channel_diameter_angstrom, 2.4)
             self.assertEqual(first_scan.channel_summary.n_channels, 2)
             self.assertEqual(first_scan.channel_summary.n_pockets, 1)
+            self.assertEqual(first_scan.channel_summary.max_channel_dimensionality, 3)
+            self.assertEqual(first_scan.channel_summary.channel_dimensionalities, (2, 3))
+            self.assertEqual(first_scan.channel_summary.channels[0].dimensionality, 2)
+            self.assertEqual(first_scan.channel_summary.channels[1].dimensionality, 3)
             self.assertEqual(first_scan.accessibility.n_voronoi_nodes, 10)
             self.assertEqual(first_scan.accessibility.n_accessible_nodes, 6)
-            self.assertAlmostEqual(first_scan.surface_area.accessible_surface_area_a2, 880.0)
-            self.assertAlmostEqual(first_scan.volume.accessible_volume_a3, 4400.0)
+            self.assertEqual(first_scan.accessibility.accessible_voronoi_node_fraction, 0.6)
+            self.assertAlmostEqual(
+                first_scan.surface_area.probe_center_accessible_surface_area_a2,
+                880.0,
+            )
+            self.assertAlmostEqual(first_scan.volume.probe_center_accessible_volume_a3, 4400.0)
 
             second_scan = result.probe_scans[1]
             self.assertEqual(second_scan.status, "ok")
-            self.assertAlmostEqual(second_scan.surface_area.accessible_surface_area_a2, 814.0)
-            self.assertAlmostEqual(second_scan.volume.accessible_volume_a3, 4070.0)
+            self.assertAlmostEqual(
+                second_scan.surface_area.probe_center_accessible_surface_area_a2,
+                814.0,
+            )
+            self.assertAlmostEqual(second_scan.volume.probe_center_accessible_volume_a3, 4070.0)
 
             self.assertTrue(Path(result.report_path).is_file())
             report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            semantics = report["pore_diameter_semantics"]
+            self.assertEqual(semantics["zeopp_output_order"], ["Di", "Df", "Dif"])
+            self.assertEqual(semantics["descriptors"]["Di"]["common_abbreviation"], "LCD")
+            self.assertEqual(semantics["descriptors"]["Df"]["common_abbreviation"], "PLD")
+            self.assertTrue(semantics["descriptors"]["Df"]["is_pore_limiting_diameter"])
+            self.assertFalse(semantics["descriptors"]["Dif"]["is_pore_limiting_diameter"])
+            self.assertIn(
+                "not the pore-limiting diameter",
+                semantics["descriptors"]["Dif"]["definition"],
+            )
+            measurement_semantics = report["measurement_semantics"]
+            self.assertIn(
+                "not probe-occupiable volume",
+                measurement_semantics["volume"]["probe_center_accessible_volume"],
+            )
+            self.assertIn(
+                "not a volume fraction",
+                measurement_semantics["accessibility"]["accessible_voronoi_node_fraction"],
+            )
             basic_report = report["baseline"]["basic_pore_properties"]
-            self.assertEqual(basic_report["largest_free_sphere_diameter"], 10.11)
+            self.assertEqual(basic_report["largest_cavity_diameter"], 12.34)
+            self.assertEqual(basic_report["pore_limiting_diameter"], 10.11)
+            self.assertIn("crystallographic_direction_pore_limiting_diameter", basic_report)
             self.assertNotIn("largest_free_sphere", basic_report)
+            self.assertNotIn("largest_free_sphere_diameter", basic_report)
             channel_report = report["probe_scans"][0]["channel_summary"]
-            self.assertIn("largest_free_sphere_diameter", channel_report)
+            self.assertIn("max_channel_pore_limiting_diameter", channel_report)
             self.assertNotIn("largest_free_sphere", channel_report)
-            self.assertIn("largest_free_sphere_diameter", channel_report["channels"][0])
+            self.assertIn("pore_limiting_diameter", channel_report["channels"][0])
+            self.assertEqual(channel_report["channels"][0]["dimensionality"], 2)
+            settings_report = report["probe_scans"][0]["settings"]
+            self.assertEqual(settings_report["probe_radius_angstrom"], 1.2)
+            self.assertEqual(settings_report["probe_diameter_angstrom"], 2.4)
+            surface_report = report["baseline"]["point_probe_surface_area"]
+            self.assertEqual(surface_report["unit_cell_volume_a3"], 321.0)
+            self.assertEqual(surface_report["density_g_cm3"], 0.12345)
+            self.assertEqual(surface_report["probe_center_accessible_surface_area_a2"], 1000.0)
+            self.assertNotIn("accessible_surface_area_a2", surface_report)
+            volume_report = report["baseline"]["point_probe_volume"]
+            self.assertEqual(volume_report["probe_center_accessible_volume_a3"], 5000.0)
+            self.assertEqual(volume_report["inaccessible_pocket_volume_a3"], 0.0)
             self.assertEqual(report["probe_scans"][0]["accessibility"]["n_accessible_nodes"], 6)
+
+    def test_channel_radius_must_cover_every_probe_radius(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cif_path = Path(temp_dir) / "example.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "greater than or equal to every probe radius"):
+                analyze_zeopp_pore_properties(
+                    cif_path,
+                    probe_radii=(1.2, 1.86),
+                    channel_radius=1.5,
+                )
 
     def test_probe_scan_failures_are_recorded_without_aborting_default_run(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -144,10 +216,20 @@ class ZeoppTests(unittest.TestCase):
                     )
 
             report = json.loads(buffer.getvalue())
-            self.assertEqual(report["baseline"]["point_probe_surface_area"]["accessible_surface_area_a2"], 1000.0)
+            self.assertEqual(
+                report["baseline"]["point_probe_surface_area"][
+                    "probe_center_accessible_surface_area_a2"
+                ],
+                1000.0,
+            )
             self.assertEqual(len(report["probe_scans"]), 2)
-            self.assertEqual(report["probe_scans"][1]["settings"]["probe_radius"], 1.86)
+            self.assertEqual(report["probe_scans"][1]["settings"]["probe_radius_angstrom"], 1.86)
+            self.assertEqual(report["probe_scans"][1]["settings"]["probe_diameter_angstrom"], 3.72)
             self.assertEqual(report["probe_scans"][1]["channel_summary"]["n_channels"], 2)
+            self.assertEqual(
+                report["pore_diameter_semantics"]["descriptors"]["Df"]["field"],
+                "pore_limiting_diameter",
+            )
             self.assertEqual(report["output_dir"], str(output_dir.resolve()))
 
     def test_analyze_zeopp_cli_labels_sphere_sizes_as_diameters(self):
@@ -163,8 +245,14 @@ class ZeoppTests(unittest.TestCase):
                     cli_main(["analyze", "zeopp", str(cif_path)])
 
             output = buffer.getvalue()
-            self.assertIn("largest_free_sphere_diameter: 10.11", output)
-            self.assertNotIn("largest_free_sphere: 10.11", output)
+            self.assertIn("largest_cavity_diameter (LCD; Zeo++ Di; angstrom): 12.34", output)
+            self.assertIn("pore_limiting_diameter (PLD; Zeo++ Df; angstrom): 10.11", output)
+            self.assertIn("Zeo++ Dif; not PLD; angstrom", output)
+            self.assertIn("crystallographic_direction_pore_limiting_diameter", output)
+            self.assertIn("point_probe_max_channel_dimensionality: 3", output)
+            self.assertIn("point_probe_center_accessible_surface_area_a2: 1000.0", output)
+            self.assertIn("point_probe_center_accessible_volume_a3: 5000.0", output)
+            self.assertNotIn("largest_free_sphere_diameter:", output)
 
     def test_analyze_help_lists_zeopp(self):
         buffer = io.StringIO()
@@ -172,6 +260,16 @@ class ZeoppTests(unittest.TestCase):
             cli_main(["analyze", "--help"])
 
         self.assertIn("zeopp", buffer.getvalue())
+
+    def test_analyze_zeopp_help_explains_channel_radius(self):
+        buffer = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(buffer):
+            cli_main(["analyze", "zeopp", "--help"])
+
+        output = " ".join(buffer.getvalue().split())
+        self.assertIn("accessibility radius", output)
+        self.assertIn("does not override the radius passed to -chan", output)
+        self.assertIn("must be at least every", output)
 
     def test_windows_static_binary_teardown_status_accepts_completed_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:

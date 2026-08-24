@@ -234,7 +234,7 @@ cofkit analyze zeopp \
 Useful variants:
 
 - repeat `--probe-radius ...` to request accessibility-aware scans in addition to the default point-probe baseline
-- add `--channel-radius ...` when channel scans should use a shared radius instead of matching each probe radius
+- add `--channel-radius ...` to override the accessibility-classification radius used by `-sa` and `-vol`; it does not override the radius passed to `-chan`, must be at least every probe radius, and defaults to the matching probe radius
 - tune `--surface-samples-per-atom` and `--volume-samples-total` when Zeo++ Monte Carlo settings need to change
 - add `--zeopp-path ...` if `COFKIT_ZEOPP_PATH` is not configured
 
@@ -242,6 +242,30 @@ Primary artifacts:
 
 - `zeopp_report.json`
 - raw Zeo++ output files and stdout/stderr logs under the output directory
+
+Diameter interpretation (all values are in angstroms):
+
+| Zeo++ column | `zeopp_report.json` field | Meaning |
+|---|---|---|
+| `Di` | `largest_cavity_diameter` | Largest cavity diameter (LCD): the largest sphere that fits anywhere in the pore space |
+| `Df` | `pore_limiting_diameter` | Pore-limiting diameter (PLD): the largest sphere that can traverse the periodic pore network |
+| `Dif` | `largest_included_sphere_along_free_path_diameter` | Largest included sphere along the free-sphere path; a separate descriptor that is not PLD |
+
+The report repeats this mapping under `pore_diameter_semantics`. Its `-resex`
+crystallographic-direction fields map `Df` to
+`crystallographic_direction_pore_limiting_diameter` and `Dif` to
+`crystallographic_direction_largest_included_sphere_along_free_path_diameter`.
+
+Other interpretation rules are embedded under `measurement_semantics`:
+
+- scan settings include channel/probe radii and derived diameters in angstroms
+- `probe_center_accessible_surface_area_*` and `probe_center_accessible_volume_*` describe
+  locations reachable by the probe center
+- `inaccessible_pocket_*` describes non-percolating pocket contributions, not framework solid
+- `probe_center_accessible_void_fraction` is not generic experimental porosity, and
+  `accessible_voronoi_node_fraction` is not a volume fraction
+- channel-summary `max_channel_*` values are independent column-wise maxima and need not come
+  from the same channel; use `channels` for per-channel dimensionality and diameters
 
 ### Run LAMMPS local optimization on one CIF
 
@@ -480,7 +504,7 @@ Choose the API by how much the user already knows:
 - For `summary.md`, treat it as the human-readable batch overview, not the detailed machine-readable source of truth.
 - For `combined_summary.json`, summarize each template separately and do not collapse per-template counts together without saying so.
 - For classification outputs, keep the five-way split explicit: `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`.
-- For `zeopp_report.json`, keep the point-probe baseline separate from any requested probe scans. Do not assume `probe_scans_successful` means no useful probe data exists; inspect individual scan status and parsed fields.
+- For `zeopp_report.json`, use `pore_diameter_semantics` and `measurement_semantics`, keep the point-probe baseline separate from requested probe scans, and inspect each scan's status and parsed fields. `Di`/LCD and `Df`/PLD are not interchangeable, `Dif` is not PLD, channel-summary maxima are independent, probe-center-accessible volume is not probe-occupiable volume, and Voronoi-node fraction is not volume fraction. Do not assume `probe_scans_successful` means no useful probe data exists.
 - For `lammps_report.json`, report the optimized CIF path, atom/bond/angle/dihedral/improper counts, the forcefield backend, the key settings used, and any warnings.
 - For `graspa_widom_report.json`, report `raspa_backend`, selected components, `unit_cells`, parsed Widom energies, Henry coefficients, source data files, and warnings.
 - For `graspa_isotherm_report.json`, report `raspa_backend`, component, pressure grid, parsed loadings, heat values when present, source data files, and warnings.

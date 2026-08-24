@@ -12,6 +12,102 @@ COFKIT_ZEOPP_ENV_VAR = "COFKIT_ZEOPP_PATH"
 _WINDOWS_STACK_BUFFER_OVERRUN_STATUS = 0xC0000409
 
 
+def _pore_diameter_semantics() -> dict[str, object]:
+    """Return the Zeo++ diameter-column mapping used by parsed reports."""
+    return {
+        "unit": "angstrom",
+        "zeopp_output_order": ["Di", "Df", "Dif"],
+        "descriptors": {
+            "Di": {
+                "field": "largest_cavity_diameter",
+                "channel_entry_field": "largest_cavity_diameter",
+                "channel_summary_field": "max_channel_largest_cavity_diameter",
+                "zeopp_name": "largest included sphere diameter",
+                "common_name": "largest cavity diameter",
+                "common_abbreviation": "LCD",
+                "is_pore_limiting_diameter": False,
+                "definition": "Diameter of the largest sphere that fits anywhere in the pore space.",
+            },
+            "Df": {
+                "field": "pore_limiting_diameter",
+                "channel_entry_field": "pore_limiting_diameter",
+                "channel_summary_field": "max_channel_pore_limiting_diameter",
+                "zeopp_name": "largest free sphere diameter",
+                "common_name": "pore-limiting diameter",
+                "common_abbreviation": "PLD",
+                "is_pore_limiting_diameter": True,
+                "definition": "Diameter of the largest sphere that can traverse the periodic pore network.",
+            },
+            "Dif": {
+                "field": "largest_included_sphere_along_free_path_diameter",
+                "channel_entry_field": "largest_included_sphere_along_free_path_diameter",
+                "channel_summary_field": (
+                    "max_channel_largest_included_sphere_along_free_path_diameter"
+                ),
+                "zeopp_name": "largest included sphere diameter along the free-sphere path",
+                "common_name": "largest included sphere diameter along the free-sphere path",
+                "common_abbreviation": None,
+                "is_pore_limiting_diameter": False,
+                "definition": (
+                    "Diameter of the largest included sphere encountered along the free-sphere path; "
+                    "this is not the pore-limiting diameter (PLD), which is Df."
+                ),
+            },
+        },
+        "crystallographic_direction_fields": {
+            "Df": "crystallographic_direction_pore_limiting_diameter",
+            "Dif": "crystallographic_direction_largest_included_sphere_along_free_path_diameter",
+        },
+    }
+
+
+def _measurement_semantics() -> dict[str, object]:
+    """Return definitions for parsed Zeo++ accessibility and aggregation fields."""
+    return {
+        "probe_scan_radii": {
+            "unit": "angstrom",
+            "channel_radius_angstrom": (
+                "Radius used by -sa and -vol to classify void-space accessibility; "
+                "it does not replace the probe radius passed to -chan."
+            ),
+            "probe_radius_angstrom": "Radius used by -chan, -axs, and Monte Carlo surface/volume sampling.",
+            "constraint": "probe_radius_angstrom must be less than or equal to channel_radius_angstrom.",
+        },
+        "surface_area": {
+            "probe_center_accessible_surface_area": (
+                "Surface accessible to the center of the sampling probe in per-cell, volumetric, "
+                "and gravimetric units."
+            ),
+            "inaccessible_pocket_surface_area": (
+                "Surface inside non-percolating pockets classified as inaccessible by the channel radius."
+            ),
+        },
+        "volume": {
+            "probe_center_accessible_volume": (
+                "Volume available to the center of the sampling probe; this is not probe-occupiable volume."
+            ),
+            "probe_center_accessible_void_fraction": (
+                "Probe-center-accessible volume divided by unit-cell volume; not a generic experimental porosity."
+            ),
+            "inaccessible_pocket_volume": (
+                "Void volume in non-percolating pockets classified as inaccessible by the channel radius."
+            ),
+        },
+        "channel_summary": {
+            "max_channel_fields": (
+                "Independent column-wise maxima across identified channels; the maxima need not come from "
+                "the same channel."
+            ),
+            "channel_dimensionalities": "Per-channel dimensionalities in the same order as channels.",
+        },
+        "accessibility": {
+            "accessible_voronoi_node_fraction": (
+                "Fraction of parsed Voronoi nodes marked accessible by -axs; this is not a volume fraction."
+            ),
+        },
+    }
+
+
 class ZeoppError(RuntimeError):
     """Base error for Zeo++ wrapper failures."""
 
@@ -30,21 +126,53 @@ class ZeoppParseError(ZeoppError):
 
 @dataclass(frozen=True)
 class ZeoppBasicPoreProperties:
-    largest_included_sphere_diameter: float
-    largest_free_sphere_diameter: float
+    """Pore diameters using common LCD/PLD names plus Zeo++'s distinct Dif value."""
+
+    largest_cavity_diameter: float
+    pore_limiting_diameter: float
     largest_included_sphere_along_free_path_diameter: float
-    axis_aligned_free_sphere_diameter: Mapping[str, float]
-    axis_aligned_included_sphere_along_free_path_diameter: Mapping[str, float]
+    crystallographic_direction_pore_limiting_diameter: Mapping[str, float]
+    crystallographic_direction_largest_included_sphere_along_free_path_diameter: Mapping[str, float]
+
+    @property
+    def axis_aligned_pore_limiting_diameter(self) -> Mapping[str, float]:
+        """Compatibility alias for crystallographic-direction Df values."""
+        return self.crystallographic_direction_pore_limiting_diameter
+
+    @property
+    def axis_aligned_largest_included_sphere_along_free_path_diameter(self) -> Mapping[str, float]:
+        """Compatibility alias for crystallographic-direction Dif values."""
+        return self.crystallographic_direction_largest_included_sphere_along_free_path_diameter
+
+    @property
+    def largest_included_sphere_diameter(self) -> float:
+        """Compatibility alias for LCD (Zeo++ Di)."""
+        return self.largest_cavity_diameter
+
+    @property
+    def largest_free_sphere_diameter(self) -> float:
+        """Compatibility alias for PLD (Zeo++ Df)."""
+        return self.pore_limiting_diameter
+
+    @property
+    def axis_aligned_free_sphere_diameter(self) -> Mapping[str, float]:
+        """Compatibility alias for the axis-aligned PLD values (Zeo++ Df)."""
+        return self.crystallographic_direction_pore_limiting_diameter
+
+    @property
+    def axis_aligned_included_sphere_along_free_path_diameter(self) -> Mapping[str, float]:
+        """Compatibility alias for the axis-aligned Zeo++ Dif values."""
+        return self.crystallographic_direction_largest_included_sphere_along_free_path_diameter
 
     @property
     def largest_included_sphere(self) -> float:
-        """Compatibility alias for :attr:`largest_included_sphere_diameter`."""
-        return self.largest_included_sphere_diameter
+        """Compatibility alias for LCD (Zeo++ Di)."""
+        return self.largest_cavity_diameter
 
     @property
     def largest_free_sphere(self) -> float:
-        """Compatibility alias for :attr:`largest_free_sphere_diameter`."""
-        return self.largest_free_sphere_diameter
+        """Compatibility alias for PLD (Zeo++ Df)."""
+        return self.pore_limiting_diameter
 
     @property
     def largest_included_sphere_along_free_path(self) -> float:
@@ -53,24 +181,26 @@ class ZeoppBasicPoreProperties:
 
     @property
     def axis_aligned_free_sphere(self) -> Mapping[str, float]:
-        """Compatibility alias for :attr:`axis_aligned_free_sphere_diameter`."""
-        return self.axis_aligned_free_sphere_diameter
+        """Compatibility alias for the axis-aligned PLD values (Zeo++ Df)."""
+        return self.crystallographic_direction_pore_limiting_diameter
 
     @property
     def axis_aligned_included_sphere_along_free_path(self) -> Mapping[str, float]:
-        """Compatibility alias for the explicitly diameter-labelled attribute."""
-        return self.axis_aligned_included_sphere_along_free_path_diameter
+        """Compatibility alias for the axis-aligned Zeo++ Dif values."""
+        return self.crystallographic_direction_largest_included_sphere_along_free_path_diameter
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "largest_included_sphere_diameter": self.largest_included_sphere_diameter,
-            "largest_free_sphere_diameter": self.largest_free_sphere_diameter,
+            "largest_cavity_diameter": self.largest_cavity_diameter,
+            "pore_limiting_diameter": self.pore_limiting_diameter,
             "largest_included_sphere_along_free_path_diameter": (
                 self.largest_included_sphere_along_free_path_diameter
             ),
-            "axis_aligned_free_sphere_diameter": dict(self.axis_aligned_free_sphere_diameter),
-            "axis_aligned_included_sphere_along_free_path_diameter": dict(
-                self.axis_aligned_included_sphere_along_free_path_diameter
+            "crystallographic_direction_pore_limiting_diameter": dict(
+                self.crystallographic_direction_pore_limiting_diameter
+            ),
+            "crystallographic_direction_largest_included_sphere_along_free_path_diameter": dict(
+                self.crystallographic_direction_largest_included_sphere_along_free_path_diameter
             ),
         }
 
@@ -78,19 +208,30 @@ class ZeoppBasicPoreProperties:
 @dataclass(frozen=True)
 class ZeoppChannelEntry:
     index: int
-    largest_included_sphere_diameter: float
-    largest_free_sphere_diameter: float
+    dimensionality: int | None
+    largest_cavity_diameter: float
+    pore_limiting_diameter: float
     largest_included_sphere_along_free_path_diameter: float
 
     @property
+    def largest_included_sphere_diameter(self) -> float:
+        """Compatibility alias for LCD (Zeo++ Di)."""
+        return self.largest_cavity_diameter
+
+    @property
+    def largest_free_sphere_diameter(self) -> float:
+        """Compatibility alias for PLD (Zeo++ Df)."""
+        return self.pore_limiting_diameter
+
+    @property
     def largest_included_sphere(self) -> float:
-        """Compatibility alias for :attr:`largest_included_sphere_diameter`."""
-        return self.largest_included_sphere_diameter
+        """Compatibility alias for LCD (Zeo++ Di)."""
+        return self.largest_cavity_diameter
 
     @property
     def largest_free_sphere(self) -> float:
-        """Compatibility alias for :attr:`largest_free_sphere_diameter`."""
-        return self.largest_free_sphere_diameter
+        """Compatibility alias for PLD (Zeo++ Df)."""
+        return self.pore_limiting_diameter
 
     @property
     def largest_included_sphere_along_free_path(self) -> float:
@@ -100,8 +241,9 @@ class ZeoppChannelEntry:
     def to_dict(self) -> dict[str, object]:
         return {
             "index": self.index,
-            "largest_included_sphere_diameter": self.largest_included_sphere_diameter,
-            "largest_free_sphere_diameter": self.largest_free_sphere_diameter,
+            "dimensionality": self.dimensionality,
+            "largest_cavity_diameter": self.largest_cavity_diameter,
+            "pore_limiting_diameter": self.pore_limiting_diameter,
             "largest_included_sphere_along_free_path_diameter": (
                 self.largest_included_sphere_along_free_path_diameter
             ),
@@ -112,42 +254,82 @@ class ZeoppChannelEntry:
 class ZeoppChannelSummary:
     n_channels: int
     n_pockets: int | None
-    channel_dimensionality: int | None
+    max_channel_dimensionality: int | None
     channel_dimensionalities: tuple[int, ...]
-    probe_radius: float
-    probe_diameter: float | None
-    largest_included_sphere_diameter: float | None
-    largest_free_sphere_diameter: float | None
-    largest_included_sphere_along_free_path_diameter: float | None
+    probe_radius_angstrom: float
+    probe_diameter_angstrom: float
+    max_channel_largest_cavity_diameter: float | None
+    max_channel_pore_limiting_diameter: float | None
+    max_channel_largest_included_sphere_along_free_path_diameter: float | None
     channels: tuple[ZeoppChannelEntry, ...]
 
     @property
+    def channel_dimensionality(self) -> int | None:
+        """Compatibility alias for :attr:`max_channel_dimensionality`."""
+        return self.max_channel_dimensionality
+
+    @property
+    def probe_radius(self) -> float:
+        """Compatibility alias for :attr:`probe_radius_angstrom`."""
+        return self.probe_radius_angstrom
+
+    @property
+    def probe_diameter(self) -> float:
+        """Compatibility alias for :attr:`probe_diameter_angstrom`."""
+        return self.probe_diameter_angstrom
+
+    @property
+    def largest_cavity_diameter(self) -> float | None:
+        """Compatibility alias for the maximum LCD across channels."""
+        return self.max_channel_largest_cavity_diameter
+
+    @property
+    def pore_limiting_diameter(self) -> float | None:
+        """Compatibility alias for the maximum PLD across channels."""
+        return self.max_channel_pore_limiting_diameter
+
+    @property
+    def largest_included_sphere_along_free_path_diameter(self) -> float | None:
+        """Compatibility alias for the maximum Dif across channels."""
+        return self.max_channel_largest_included_sphere_along_free_path_diameter
+
+    @property
+    def largest_included_sphere_diameter(self) -> float | None:
+        """Compatibility alias for LCD (Zeo++ Di)."""
+        return self.max_channel_largest_cavity_diameter
+
+    @property
+    def largest_free_sphere_diameter(self) -> float | None:
+        """Compatibility alias for PLD (Zeo++ Df)."""
+        return self.max_channel_pore_limiting_diameter
+
+    @property
     def largest_included_sphere(self) -> float | None:
-        """Compatibility alias for :attr:`largest_included_sphere_diameter`."""
-        return self.largest_included_sphere_diameter
+        """Compatibility alias for LCD (Zeo++ Di)."""
+        return self.max_channel_largest_cavity_diameter
 
     @property
     def largest_free_sphere(self) -> float | None:
-        """Compatibility alias for :attr:`largest_free_sphere_diameter`."""
-        return self.largest_free_sphere_diameter
+        """Compatibility alias for PLD (Zeo++ Df)."""
+        return self.max_channel_pore_limiting_diameter
 
     @property
     def largest_included_sphere_along_free_path(self) -> float | None:
         """Compatibility alias for the explicitly diameter-labelled attribute."""
-        return self.largest_included_sphere_along_free_path_diameter
+        return self.max_channel_largest_included_sphere_along_free_path_diameter
 
     def to_dict(self) -> dict[str, object]:
         return {
             "n_channels": self.n_channels,
             "n_pockets": self.n_pockets,
-            "channel_dimensionality": self.channel_dimensionality,
+            "max_channel_dimensionality": self.max_channel_dimensionality,
             "channel_dimensionalities": list(self.channel_dimensionalities),
-            "probe_radius": self.probe_radius,
-            "probe_diameter": self.probe_diameter,
-            "largest_included_sphere_diameter": self.largest_included_sphere_diameter,
-            "largest_free_sphere_diameter": self.largest_free_sphere_diameter,
-            "largest_included_sphere_along_free_path_diameter": (
-                self.largest_included_sphere_along_free_path_diameter
+            "probe_radius_angstrom": self.probe_radius_angstrom,
+            "probe_diameter_angstrom": self.probe_diameter_angstrom,
+            "max_channel_largest_cavity_diameter": self.max_channel_largest_cavity_diameter,
+            "max_channel_pore_limiting_diameter": self.max_channel_pore_limiting_diameter,
+            "max_channel_largest_included_sphere_along_free_path_diameter": (
+                self.max_channel_largest_included_sphere_along_free_path_diameter
             ),
             "channels": [channel.to_dict() for channel in self.channels],
         }
@@ -155,65 +337,163 @@ class ZeoppChannelSummary:
 
 @dataclass(frozen=True)
 class ZeoppSurfaceAreaProperties:
-    unitcell_volume: float
-    density: float
-    accessible_surface_area_a2: float
-    accessible_surface_area_m2_cm3: float
-    accessible_surface_area_m2_g: float
-    non_accessible_surface_area_a2: float
-    non_accessible_surface_area_m2_cm3: float
-    non_accessible_surface_area_m2_g: float
-    n_channels: int
-    channel_surface_area_a2: tuple[float, ...]
-    n_pockets: int
-    pocket_surface_area_a2: tuple[float, ...]
+    unit_cell_volume_a3: float
+    density_g_cm3: float
+    probe_center_accessible_surface_area_a2: float
+    probe_center_accessible_surface_area_m2_cm3: float
+    probe_center_accessible_surface_area_m2_g: float
+    inaccessible_pocket_surface_area_a2: float
+    inaccessible_pocket_surface_area_m2_cm3: float
+    inaccessible_pocket_surface_area_m2_g: float
+    n_accessible_channels: int
+    accessible_channel_surface_areas_a2: tuple[float, ...]
+    n_inaccessible_pockets: int
+    inaccessible_pocket_surface_areas_a2: tuple[float, ...]
+
+    @property
+    def unitcell_volume(self) -> float:
+        return self.unit_cell_volume_a3
+
+    @property
+    def density(self) -> float:
+        return self.density_g_cm3
+
+    @property
+    def accessible_surface_area_a2(self) -> float:
+        return self.probe_center_accessible_surface_area_a2
+
+    @property
+    def accessible_surface_area_m2_cm3(self) -> float:
+        return self.probe_center_accessible_surface_area_m2_cm3
+
+    @property
+    def accessible_surface_area_m2_g(self) -> float:
+        return self.probe_center_accessible_surface_area_m2_g
+
+    @property
+    def non_accessible_surface_area_a2(self) -> float:
+        return self.inaccessible_pocket_surface_area_a2
+
+    @property
+    def non_accessible_surface_area_m2_cm3(self) -> float:
+        return self.inaccessible_pocket_surface_area_m2_cm3
+
+    @property
+    def non_accessible_surface_area_m2_g(self) -> float:
+        return self.inaccessible_pocket_surface_area_m2_g
+
+    @property
+    def n_channels(self) -> int:
+        return self.n_accessible_channels
+
+    @property
+    def channel_surface_area_a2(self) -> tuple[float, ...]:
+        return self.accessible_channel_surface_areas_a2
+
+    @property
+    def n_pockets(self) -> int:
+        return self.n_inaccessible_pockets
+
+    @property
+    def pocket_surface_area_a2(self) -> tuple[float, ...]:
+        return self.inaccessible_pocket_surface_areas_a2
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "unitcell_volume": self.unitcell_volume,
-            "density": self.density,
-            "accessible_surface_area_a2": self.accessible_surface_area_a2,
-            "accessible_surface_area_m2_cm3": self.accessible_surface_area_m2_cm3,
-            "accessible_surface_area_m2_g": self.accessible_surface_area_m2_g,
-            "non_accessible_surface_area_a2": self.non_accessible_surface_area_a2,
-            "non_accessible_surface_area_m2_cm3": self.non_accessible_surface_area_m2_cm3,
-            "non_accessible_surface_area_m2_g": self.non_accessible_surface_area_m2_g,
-            "n_channels": self.n_channels,
-            "channel_surface_area_a2": list(self.channel_surface_area_a2),
-            "n_pockets": self.n_pockets,
-            "pocket_surface_area_a2": list(self.pocket_surface_area_a2),
+            "unit_cell_volume_a3": self.unit_cell_volume_a3,
+            "density_g_cm3": self.density_g_cm3,
+            "probe_center_accessible_surface_area_a2": self.probe_center_accessible_surface_area_a2,
+            "probe_center_accessible_surface_area_m2_cm3": (
+                self.probe_center_accessible_surface_area_m2_cm3
+            ),
+            "probe_center_accessible_surface_area_m2_g": self.probe_center_accessible_surface_area_m2_g,
+            "inaccessible_pocket_surface_area_a2": self.inaccessible_pocket_surface_area_a2,
+            "inaccessible_pocket_surface_area_m2_cm3": self.inaccessible_pocket_surface_area_m2_cm3,
+            "inaccessible_pocket_surface_area_m2_g": self.inaccessible_pocket_surface_area_m2_g,
+            "n_accessible_channels": self.n_accessible_channels,
+            "accessible_channel_surface_areas_a2": list(self.accessible_channel_surface_areas_a2),
+            "n_inaccessible_pockets": self.n_inaccessible_pockets,
+            "inaccessible_pocket_surface_areas_a2": list(self.inaccessible_pocket_surface_areas_a2),
         }
 
 
 @dataclass(frozen=True)
 class ZeoppVolumeProperties:
-    unitcell_volume: float
-    density: float
-    accessible_volume_a3: float
-    accessible_volume_fraction: float
-    accessible_volume_cm3_g: float
-    non_accessible_volume_a3: float
-    non_accessible_volume_fraction: float
-    non_accessible_volume_cm3_g: float
-    n_channels: int
-    channel_volume_a3: tuple[float, ...]
-    n_pockets: int
-    pocket_volume_a3: tuple[float, ...]
+    unit_cell_volume_a3: float
+    density_g_cm3: float
+    probe_center_accessible_volume_a3: float
+    probe_center_accessible_void_fraction: float
+    probe_center_accessible_volume_cm3_g: float
+    inaccessible_pocket_volume_a3: float
+    inaccessible_pocket_void_fraction: float
+    inaccessible_pocket_volume_cm3_g: float
+    n_accessible_channels: int
+    accessible_channel_volumes_a3: tuple[float, ...]
+    n_inaccessible_pockets: int
+    inaccessible_pocket_volumes_a3: tuple[float, ...]
+
+    @property
+    def unitcell_volume(self) -> float:
+        return self.unit_cell_volume_a3
+
+    @property
+    def density(self) -> float:
+        return self.density_g_cm3
+
+    @property
+    def accessible_volume_a3(self) -> float:
+        return self.probe_center_accessible_volume_a3
+
+    @property
+    def accessible_volume_fraction(self) -> float:
+        return self.probe_center_accessible_void_fraction
+
+    @property
+    def accessible_volume_cm3_g(self) -> float:
+        return self.probe_center_accessible_volume_cm3_g
+
+    @property
+    def non_accessible_volume_a3(self) -> float:
+        return self.inaccessible_pocket_volume_a3
+
+    @property
+    def non_accessible_volume_fraction(self) -> float:
+        return self.inaccessible_pocket_void_fraction
+
+    @property
+    def non_accessible_volume_cm3_g(self) -> float:
+        return self.inaccessible_pocket_volume_cm3_g
+
+    @property
+    def n_channels(self) -> int:
+        return self.n_accessible_channels
+
+    @property
+    def channel_volume_a3(self) -> tuple[float, ...]:
+        return self.accessible_channel_volumes_a3
+
+    @property
+    def n_pockets(self) -> int:
+        return self.n_inaccessible_pockets
+
+    @property
+    def pocket_volume_a3(self) -> tuple[float, ...]:
+        return self.inaccessible_pocket_volumes_a3
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "unitcell_volume": self.unitcell_volume,
-            "density": self.density,
-            "accessible_volume_a3": self.accessible_volume_a3,
-            "accessible_volume_fraction": self.accessible_volume_fraction,
-            "accessible_volume_cm3_g": self.accessible_volume_cm3_g,
-            "non_accessible_volume_a3": self.non_accessible_volume_a3,
-            "non_accessible_volume_fraction": self.non_accessible_volume_fraction,
-            "non_accessible_volume_cm3_g": self.non_accessible_volume_cm3_g,
-            "n_channels": self.n_channels,
-            "channel_volume_a3": list(self.channel_volume_a3),
-            "n_pockets": self.n_pockets,
-            "pocket_volume_a3": list(self.pocket_volume_a3),
+            "unit_cell_volume_a3": self.unit_cell_volume_a3,
+            "density_g_cm3": self.density_g_cm3,
+            "probe_center_accessible_volume_a3": self.probe_center_accessible_volume_a3,
+            "probe_center_accessible_void_fraction": self.probe_center_accessible_void_fraction,
+            "probe_center_accessible_volume_cm3_g": self.probe_center_accessible_volume_cm3_g,
+            "inaccessible_pocket_volume_a3": self.inaccessible_pocket_volume_a3,
+            "inaccessible_pocket_void_fraction": self.inaccessible_pocket_void_fraction,
+            "inaccessible_pocket_volume_cm3_g": self.inaccessible_pocket_volume_cm3_g,
+            "n_accessible_channels": self.n_accessible_channels,
+            "accessible_channel_volumes_a3": list(self.accessible_channel_volumes_a3),
+            "n_inaccessible_pockets": self.n_inaccessible_pockets,
+            "inaccessible_pocket_volumes_a3": list(self.inaccessible_pocket_volumes_a3),
         }
 
 
@@ -222,28 +502,53 @@ class ZeoppAccessibilitySummary:
     n_voronoi_nodes: int
     n_accessible_nodes: int
     n_inaccessible_nodes: int
-    accessible_fraction: float | None
+    accessible_voronoi_node_fraction: float | None
+
+    @property
+    def accessible_fraction(self) -> float | None:
+        """Compatibility alias for :attr:`accessible_voronoi_node_fraction`."""
+        return self.accessible_voronoi_node_fraction
 
     def to_dict(self) -> dict[str, object]:
         return {
             "n_voronoi_nodes": self.n_voronoi_nodes,
             "n_accessible_nodes": self.n_accessible_nodes,
             "n_inaccessible_nodes": self.n_inaccessible_nodes,
-            "accessible_fraction": self.accessible_fraction,
+            "accessible_voronoi_node_fraction": self.accessible_voronoi_node_fraction,
         }
 
 
 @dataclass(frozen=True)
 class ZeoppProbeScanSettings:
-    channel_radius: float
-    probe_radius: float
+    channel_radius_angstrom: float
+    probe_radius_angstrom: float
     surface_samples_per_atom: int
     volume_samples_total: int
 
+    @property
+    def channel_diameter_angstrom(self) -> float:
+        return 2.0 * self.channel_radius_angstrom
+
+    @property
+    def probe_diameter_angstrom(self) -> float:
+        return 2.0 * self.probe_radius_angstrom
+
+    @property
+    def channel_radius(self) -> float:
+        """Compatibility alias for :attr:`channel_radius_angstrom`."""
+        return self.channel_radius_angstrom
+
+    @property
+    def probe_radius(self) -> float:
+        """Compatibility alias for :attr:`probe_radius_angstrom`."""
+        return self.probe_radius_angstrom
+
     def to_dict(self) -> dict[str, object]:
         return {
-            "channel_radius": self.channel_radius,
-            "probe_radius": self.probe_radius,
+            "channel_radius_angstrom": self.channel_radius_angstrom,
+            "channel_diameter_angstrom": self.channel_diameter_angstrom,
+            "probe_radius_angstrom": self.probe_radius_angstrom,
+            "probe_diameter_angstrom": self.probe_diameter_angstrom,
             "surface_samples_per_atom": self.surface_samples_per_atom,
             "volume_samples_total": self.volume_samples_total,
         }
@@ -306,12 +611,24 @@ class ZeoppAnalysisResult:
     def properties(self) -> ZeoppBasicPoreProperties:
         return self.baseline.basic_pore_properties
 
+    @property
+    def pore_diameter_semantics(self) -> Mapping[str, object]:
+        """Map Zeo++ Di/Df/Dif columns to the parsed LCD/PLD fields."""
+        return _pore_diameter_semantics()
+
+    @property
+    def measurement_semantics(self) -> Mapping[str, object]:
+        """Describe probe, accessibility, volume, and aggregation semantics."""
+        return _measurement_semantics()
+
     def to_dict(self) -> dict[str, object]:
         return {
             "input_cif": self.input_cif,
             "zeopp_binary": self.zeopp_binary,
             "output_dir": self.output_dir,
             "report_path": self.report_path,
+            "pore_diameter_semantics": dict(self.pore_diameter_semantics),
+            "measurement_semantics": dict(self.measurement_semantics),
             "baseline": self.baseline.to_dict(),
             "probe_scans": [scan.to_dict() for scan in self.probe_scans],
         }
@@ -360,6 +677,13 @@ def analyze_zeopp_pore_properties(
             raise ValueError("probe_radii values must be non-negative.")
     if channel_radius is not None and channel_radius < 0.0:
         raise ValueError("channel_radius must be non-negative when provided.")
+    if channel_radius is not None:
+        oversized_probe_radii = [value for value in normalized_probe_radii if value > channel_radius]
+        if oversized_probe_radii:
+            raise ValueError(
+                "channel_radius must be greater than or equal to every probe radius because Zeo++ "
+                "uses it to classify accessibility for -sa and -vol."
+            )
 
     binary = resolve_zeopp_binary(zeopp_path)
     run_dir = _resolve_output_dir(input_path, output_dir)
@@ -381,8 +705,8 @@ def analyze_zeopp_pore_properties(
             run_dir / "probe_scans",
             scan_index=index,
             settings=ZeoppProbeScanSettings(
-                channel_radius=value if channel_radius is None else float(channel_radius),
-                probe_radius=value,
+                channel_radius_angstrom=value if channel_radius is None else float(channel_radius),
+                probe_radius_angstrom=value,
                 surface_samples_per_atom=surface_samples_per_atom,
                 volume_samples_total=volume_samples_total,
             ),
@@ -505,8 +829,8 @@ def _run_probe_scan(
 ) -> ZeoppProbeScanResult:
     label = (
         f"probe_scan_{scan_index:02d}"
-        f"__chan_{_format_radius_label(settings.channel_radius)}"
-        f"__probe_{_format_radius_label(settings.probe_radius)}"
+        f"__chan_{_format_radius_label(settings.channel_radius_angstrom)}"
+        f"__probe_{_format_radius_label(settings.probe_radius_angstrom)}"
     )
     output_dir = output_root / label
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -530,7 +854,7 @@ def _run_probe_scan(
     try:
         chan_stdout = _run_zeopp_command(
             binary,
-            ("-chan", f"{settings.probe_radius:g}", output_paths["chan"], str(input_path)),
+            ("-chan", f"{settings.probe_radius_angstrom:g}", output_paths["chan"], str(input_path)),
             expected_output_path=Path(output_paths["chan"]),
             stdout_log_path=Path(output_paths["chan_stdout_log"]),
             stderr_log_path=Path(output_paths["chan_stderr_log"]),
@@ -547,8 +871,8 @@ def _run_probe_scan(
             binary,
             (
                 "-sa",
-                f"{settings.channel_radius:g}",
-                f"{settings.probe_radius:g}",
+                f"{settings.channel_radius_angstrom:g}",
+                f"{settings.probe_radius_angstrom:g}",
                 str(settings.surface_samples_per_atom),
                 output_paths["sa"],
                 str(input_path),
@@ -569,8 +893,8 @@ def _run_probe_scan(
             binary,
             (
                 "-vol",
-                f"{settings.channel_radius:g}",
-                f"{settings.probe_radius:g}",
+                f"{settings.channel_radius_angstrom:g}",
+                f"{settings.probe_radius_angstrom:g}",
                 str(settings.volume_samples_total),
                 output_paths["vol"],
                 str(input_path),
@@ -589,7 +913,7 @@ def _run_probe_scan(
     try:
         _run_zeopp_command(
             binary,
-            ("-axs", f"{settings.probe_radius:g}", output_paths["axs"], str(input_path)),
+            ("-axs", f"{settings.probe_radius_angstrom:g}", output_paths["axs"], str(input_path)),
             expected_output_path=Path(output_paths["axs"]),
             stdout_log_path=Path(output_paths["axs_stdout_log"]),
             stderr_log_path=Path(output_paths["axs_stderr_log"]),
@@ -687,12 +1011,17 @@ def _parse_resex_output(resex_output_path: Path) -> ZeoppBasicPoreProperties:
     for line in reversed(resex_output_path.read_text(encoding="utf-8").splitlines()):
         floats = _parse_trailing_floats(line)
         if len(floats) >= 9:
+            # Zeo++ order: Di (LCD), Df (PLD), Dif (not PLD), then axis-resolved Df and Dif.
             return ZeoppBasicPoreProperties(
-                largest_included_sphere_diameter=floats[0],
-                largest_free_sphere_diameter=floats[1],
+                largest_cavity_diameter=floats[0],
+                pore_limiting_diameter=floats[1],
                 largest_included_sphere_along_free_path_diameter=floats[2],
-                axis_aligned_free_sphere_diameter={"a": floats[3], "b": floats[4], "c": floats[5]},
-                axis_aligned_included_sphere_along_free_path_diameter={
+                crystallographic_direction_pore_limiting_diameter={
+                    "a": floats[3],
+                    "b": floats[4],
+                    "c": floats[5],
+                },
+                crystallographic_direction_largest_included_sphere_along_free_path_diameter={
                     "a": floats[6],
                     "b": floats[7],
                     "c": floats[8],
@@ -710,10 +1039,10 @@ def _parse_chan_output(chan_output_path: Path, stdout_text: str) -> ZeoppChannel
     channel_dimensionalities: tuple[int, ...] = ()
     probe_radius: float | None = None
     probe_diameter: float | None = None
-    summary_lis: float | None = None
-    summary_lfs: float | None = None
-    summary_lisfp: float | None = None
-    channel_entries: list[ZeoppChannelEntry] = []
+    summary_lcd: float | None = None
+    summary_pld: float | None = None
+    summary_dif: float | None = None
+    channel_entry_values: list[tuple[int, float, float, float]] = []
 
     dimensionality_pattern = re.compile(
         r"(\d+)\s+channels identified of dimensionality\s+([0-9 ]+)\s*$",
@@ -744,48 +1073,64 @@ def _parse_chan_output(chan_output_path: Path, stdout_text: str) -> ZeoppChannel
 
         channel_match = channel_pattern.search(line)
         if channel_match is not None:
-            channel_entries.append(
-                ZeoppChannelEntry(
-                    index=int(channel_match.group(1)),
-                    largest_included_sphere_diameter=float(channel_match.group(2)),
-                    largest_free_sphere_diameter=float(channel_match.group(3)),
-                    largest_included_sphere_along_free_path_diameter=float(channel_match.group(4)),
+            channel_entry_values.append(
+                (
+                    int(channel_match.group(1)),
+                    float(channel_match.group(2)),
+                    float(channel_match.group(3)),
+                    float(channel_match.group(4)),
                 )
             )
 
         summary_match = summary_pattern.search(line)
         if summary_match is not None:
-            summary_lis = float(summary_match.group(1))
-            summary_lfs = float(summary_match.group(2))
-            summary_lisfp = float(summary_match.group(3))
+            # Zeo++ -chan columns follow Di (LCD), Df (PLD), Dif (not PLD).
+            summary_lcd = float(summary_match.group(1))
+            summary_pld = float(summary_match.group(2))
+            summary_dif = float(summary_match.group(3))
             probe_radius = float(summary_match.group(4))
             probe_diameter = float(summary_match.group(5))
 
+    channel_entries = tuple(
+        ZeoppChannelEntry(
+            index=values[0],
+            dimensionality=(
+                channel_dimensionalities[position]
+                if position < len(channel_dimensionalities)
+                else None
+            ),
+            largest_cavity_diameter=values[1],
+            pore_limiting_diameter=values[2],
+            largest_included_sphere_along_free_path_diameter=values[3],
+        )
+        for position, values in enumerate(channel_entry_values)
+    )
+
     if n_channels is None:
         n_channels = len(channel_entries)
-    if n_channels is None:
-        raise ZeoppParseError(f"Could not parse Zeo++ -chan channel count: {chan_output_path}")
     if probe_radius is None:
         raise ZeoppParseError(f"Could not parse Zeo++ -chan probe radius: {chan_output_path}")
+    if probe_diameter is None:
+        probe_diameter = 2.0 * probe_radius
 
-    if summary_lis is None and channel_entries:
-        summary_lis = max(entry.largest_included_sphere_diameter for entry in channel_entries)
-        summary_lfs = max(entry.largest_free_sphere_diameter for entry in channel_entries)
-        summary_lisfp = max(
+    if summary_lcd is None and channel_entries:
+        summary_lcd = max(entry.largest_cavity_diameter for entry in channel_entries)
+        summary_pld = max(entry.pore_limiting_diameter for entry in channel_entries)
+        summary_dif = max(
             entry.largest_included_sphere_along_free_path_diameter for entry in channel_entries
         )
 
     return ZeoppChannelSummary(
         n_channels=n_channels,
         n_pockets=n_pockets,
-        channel_dimensionality=max(channel_dimensionalities) if channel_dimensionalities else None,
+        max_channel_dimensionality=max(channel_dimensionalities) if channel_dimensionalities else None,
         channel_dimensionalities=channel_dimensionalities,
-        probe_radius=probe_radius,
-        probe_diameter=probe_diameter,
-        largest_included_sphere_diameter=summary_lis,
-        largest_free_sphere_diameter=summary_lfs,
-        largest_included_sphere_along_free_path_diameter=summary_lisfp,
-        channels=tuple(channel_entries),
+        probe_radius_angstrom=probe_radius,
+        probe_diameter_angstrom=probe_diameter,
+        max_channel_largest_cavity_diameter=summary_lcd,
+        max_channel_pore_limiting_diameter=summary_pld,
+        max_channel_largest_included_sphere_along_free_path_diameter=summary_dif,
+        channels=channel_entries,
     )
 
 
@@ -802,18 +1147,26 @@ def _parse_surface_area_output(sa_output_path: Path) -> ZeoppSurfaceAreaProperti
     pocket_values = _parse_counted_values(lines[2], "Number_of_pockets", "Pocket_surface_area_A^2")
 
     return ZeoppSurfaceAreaProperties(
-        unitcell_volume=_require_metric(metrics, "Unitcell_volume", sa_output_path),
-        density=_require_metric(metrics, "Density", sa_output_path),
-        accessible_surface_area_a2=_require_metric(metrics, "ASA_A^2", sa_output_path),
-        accessible_surface_area_m2_cm3=_require_metric(metrics, "ASA_m^2/cm^3", sa_output_path),
-        accessible_surface_area_m2_g=_require_metric(metrics, "ASA_m^2/g", sa_output_path),
-        non_accessible_surface_area_a2=_require_metric(metrics, "NASA_A^2", sa_output_path),
-        non_accessible_surface_area_m2_cm3=_require_metric(metrics, "NASA_m^2/cm^3", sa_output_path),
-        non_accessible_surface_area_m2_g=_require_metric(metrics, "NASA_m^2/g", sa_output_path),
-        n_channels=channel_values[0],
-        channel_surface_area_a2=channel_values[1],
-        n_pockets=pocket_values[0],
-        pocket_surface_area_a2=pocket_values[1],
+        unit_cell_volume_a3=_require_metric(metrics, "Unitcell_volume", sa_output_path),
+        density_g_cm3=_require_metric(metrics, "Density", sa_output_path),
+        probe_center_accessible_surface_area_a2=_require_metric(metrics, "ASA_A^2", sa_output_path),
+        probe_center_accessible_surface_area_m2_cm3=_require_metric(
+            metrics, "ASA_m^2/cm^3", sa_output_path
+        ),
+        probe_center_accessible_surface_area_m2_g=_require_metric(
+            metrics, "ASA_m^2/g", sa_output_path
+        ),
+        inaccessible_pocket_surface_area_a2=_require_metric(metrics, "NASA_A^2", sa_output_path),
+        inaccessible_pocket_surface_area_m2_cm3=_require_metric(
+            metrics, "NASA_m^2/cm^3", sa_output_path
+        ),
+        inaccessible_pocket_surface_area_m2_g=_require_metric(
+            metrics, "NASA_m^2/g", sa_output_path
+        ),
+        n_accessible_channels=channel_values[0],
+        accessible_channel_surface_areas_a2=channel_values[1],
+        n_inaccessible_pockets=pocket_values[0],
+        inaccessible_pocket_surface_areas_a2=pocket_values[1],
     )
 
 
@@ -830,18 +1183,22 @@ def _parse_volume_output(vol_output_path: Path) -> ZeoppVolumeProperties:
     pocket_values = _parse_counted_values(lines[2], "Number_of_pockets", "Pocket_volume_A^3")
 
     return ZeoppVolumeProperties(
-        unitcell_volume=_require_metric(metrics, "Unitcell_volume", vol_output_path),
-        density=_require_metric(metrics, "Density", vol_output_path),
-        accessible_volume_a3=_require_metric(metrics, "AV_A^3", vol_output_path),
-        accessible_volume_fraction=_require_metric(metrics, "AV_Volume_fraction", vol_output_path),
-        accessible_volume_cm3_g=_require_metric(metrics, "AV_cm^3/g", vol_output_path),
-        non_accessible_volume_a3=_require_metric(metrics, "NAV_A^3", vol_output_path),
-        non_accessible_volume_fraction=_require_metric(metrics, "NAV_Volume_fraction", vol_output_path),
-        non_accessible_volume_cm3_g=_require_metric(metrics, "NAV_cm^3/g", vol_output_path),
-        n_channels=channel_values[0],
-        channel_volume_a3=channel_values[1],
-        n_pockets=pocket_values[0],
-        pocket_volume_a3=pocket_values[1],
+        unit_cell_volume_a3=_require_metric(metrics, "Unitcell_volume", vol_output_path),
+        density_g_cm3=_require_metric(metrics, "Density", vol_output_path),
+        probe_center_accessible_volume_a3=_require_metric(metrics, "AV_A^3", vol_output_path),
+        probe_center_accessible_void_fraction=_require_metric(
+            metrics, "AV_Volume_fraction", vol_output_path
+        ),
+        probe_center_accessible_volume_cm3_g=_require_metric(metrics, "AV_cm^3/g", vol_output_path),
+        inaccessible_pocket_volume_a3=_require_metric(metrics, "NAV_A^3", vol_output_path),
+        inaccessible_pocket_void_fraction=_require_metric(
+            metrics, "NAV_Volume_fraction", vol_output_path
+        ),
+        inaccessible_pocket_volume_cm3_g=_require_metric(metrics, "NAV_cm^3/g", vol_output_path),
+        n_accessible_channels=channel_values[0],
+        accessible_channel_volumes_a3=channel_values[1],
+        n_inaccessible_pockets=pocket_values[0],
+        inaccessible_pocket_volumes_a3=pocket_values[1],
     )
 
 
@@ -863,7 +1220,7 @@ def _parse_accessibility_output(axs_output_path: Path) -> ZeoppAccessibilitySumm
         n_voronoi_nodes=n_total,
         n_accessible_nodes=n_accessible,
         n_inaccessible_nodes=n_total - n_accessible,
-        accessible_fraction=(n_accessible / n_total) if n_total else None,
+        accessible_voronoi_node_fraction=(n_accessible / n_total) if n_total else None,
     )
 
 
