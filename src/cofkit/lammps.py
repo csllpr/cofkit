@@ -2244,7 +2244,9 @@ def _build_dreiding_improper_terms(
             coeff_rows.append(list(coeffs))
             type_id = len(coeff_rows)
             type_ids[coefficient_key] = type_id
-        topology_rows.append([type_id, improper.atom_id_1, improper.atom_id_2, improper.atom_id_3, improper.atom_id_4])
+        # Shared impropers store (axis, center, plane, plane). LAMMPS umbrella
+        # uses (center, plane, plane, axis), with the IL axis out of the IJK plane.
+        topology_rows.append([type_id, improper.atom_id_2, improper.atom_id_3, improper.atom_id_4, improper.atom_id_1])
     return topology_rows, coeff_rows
 
 
