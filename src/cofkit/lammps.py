@@ -144,6 +144,8 @@ class LammpsParseError(LammpsError):
 
 @dataclass(frozen=True)
 class LammpsOptimizationSettings:
+    omp_threads: int | None = None
+    enable_omp: bool = True
     forcefield: str = "uff"
     charge_model: str = "eqeq"
     pair_cutoff: float = 12.0
@@ -197,6 +199,8 @@ class LammpsOptimizationSettings:
 
 @dataclass(frozen=True)
 class LammpsMdSettings:
+    omp_threads: int | None = None
+    enable_omp: bool = True
     forcefield: str = "dreiding"
     charge_model: str = "eqeq"
     pair_cutoff: float = 12.0
@@ -562,6 +566,8 @@ def optimize_cif_with_lammps(
         stdout_log_path=stdout_log_path,
         stderr_log_path=stderr_log_path,
         timeout_seconds=timeout_seconds,
+        omp_threads=effective_settings.omp_threads,
+        enable_omp=effective_settings.enable_omp,
     )
     final_frame = _parse_lammps_dump_last_frame(
         dump_path,
@@ -737,6 +743,8 @@ def run_lammps_md_on_cif(
         stdout_log_path=stdout_log_path,
         stderr_log_path=stderr_log_path,
         timeout_seconds=timeout_seconds,
+        omp_threads=settings.omp_threads,
+        enable_omp=settings.enable_omp,
     )
     expected_atoms = len(model.parsed.atoms) + (guest_restart_state.n_atoms if guest_restart_state is not None else 0)
     final_frame = _parse_lammps_dump_last_frame(dump_path, expected_atoms=expected_atoms)
@@ -819,6 +827,8 @@ def run_lammps_md_on_cif(
 
 
 def _validate_md_settings(settings: LammpsMdSettings) -> None:
+    if settings.omp_threads is not None and settings.omp_threads <= 0:
+        raise ValueError("omp_threads must be positive when provided.")
     forcefield = _normalize_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_FORCEFIELDS:
         raise ValueError(
@@ -876,6 +886,8 @@ def _md_settings_to_optimization_settings(settings: LammpsMdSettings) -> LammpsO
 
 
 def _validate_settings(settings: LammpsOptimizationSettings) -> None:
+    if settings.omp_threads is not None and settings.omp_threads <= 0:
+        raise ValueError("omp_threads must be positive when provided.")
     forcefield = _normalize_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_FORCEFIELDS:
         raise ValueError(
@@ -3935,19 +3947,27 @@ def _run_lammps(
     stdout_log_path: Path,
     stderr_log_path: Path,
     timeout_seconds: float,
+    omp_threads: int | None = None,
+    enable_omp: bool = True,
 ) -> tuple[str, ...]:
-    command = [
-        str(binary),
+    environment = os.environ.copy()
+    if enable_omp:
+        configured = omp_threads
+        if configured is None:
+            raw = str(environment.get("OMP_NUM_THREADS", "")).strip()
+            configured = int(raw) if raw.isdigit() and int(raw) > 0 else _default_lammps_omp_num_threads()
+        environment["OMP_NUM_THREADS"] = str(configured)
+    command = [str(binary)]
+    if enable_omp:
+        command.extend(["-sf", "omp", "-pk", "omp", str(configured)])
+    command.extend([
         "-in",
         str(input_script_path),
         "-log",
         str(log_path),
         "-screen",
         "none",
-    ]
-    environment = os.environ.copy()
-    if not str(environment.get("OMP_NUM_THREADS", "")).strip():
-        environment["OMP_NUM_THREADS"] = str(_default_lammps_omp_num_threads())
+    ])
     try:
         completed = subprocess.run(
             command,

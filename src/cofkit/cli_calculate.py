@@ -1574,6 +1574,17 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
         help="LAMMPS MD timestep in fs. Default: 1.0.",
     )
     parser.add_argument(
+        "--md-omp-threads",
+        type=int,
+        default=None,
+        help="OpenMP threads for each non-MPI LAMMPS MD process. Defaults to half the host CPU count.",
+    )
+    parser.add_argument(
+        "--md-disable-omp",
+        action="store_true",
+        help="Disable LAMMPS OpenMP style activation for MD.",
+    )
+    parser.add_argument(
         "--md-ensemble",
         choices=("nvt", "nve-langevin"),
         default="nvt",
@@ -1764,6 +1775,8 @@ def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
         eta=args.eqeq_eta,
     )
     lammps_md_settings = LammpsMdSettings(
+        omp_threads=args.md_omp_threads,
+        enable_omp=not args.md_disable_omp,
         forcefield=args.lammps_forcefield,
         charge_model=args.charge_model,
         pair_cutoff=args.pair_cutoff,
