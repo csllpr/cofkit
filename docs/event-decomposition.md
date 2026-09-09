@@ -5,7 +5,7 @@ COFKit provides two CIF decomposition engines:
 - `event` is the default detector → event → reconstruction-hypothesis → global-validation engine.
 - `legacy` is the retained per-family compatibility engine.
 
-Event mode became the default after outperforming legacy on the largest available inspected linkage-label collection, the partially labelled CoRE-COFs 1242 table. This set was also used while improving the detector, so it is an operational benchmark rather than an independent holdout. Legacy mode remains available for compatibility and comparison.
+Event mode uses globally validated reconstruction hypotheses. Legacy mode remains available for compatibility and comparison. The default selection does not establish accuracy on a new dataset; validate linkage and precursor recovery for the structures you use.
 
 ## Usage
 
@@ -64,7 +64,7 @@ The normal `CifDecompositionResult` shape is preserved. Event-specific informati
 - `fragment_identity_normalization`: formula/element-graph equivalent fragment forms and the selected buildable representative;
 - `multispecies_precursor_recovery`: when present, every distinct recovered species, its declared and detected motif count, fragment count, and role-wise reactive-site balance;
 - `defect_detection`: when present, the dominant precursor combination, fragment-agreement fraction, minority fragments, and structural-glitch evidence for a probable defective input;
-- `benchmark_contract`: records the default mode, retained legacy availability, and benchmark basis.
+- `benchmark_contract`: compatibility metadata recording the default mode, legacy availability, and selection unit; it does not certify predictive accuracy.
 
 Detailed event statuses include `SUCCESS_COMPLETE`, `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`, `DETECTED_PROBABLE_STRUCTURAL_DEFECT`, `UNSUPPORTED_MULTISPECIES_PRECURSORS`, `FAILED_CHEMICAL_VALIDATION`, `FAILED_ENDPOINT_ACCOUNTING`, `FAILED_TOPOLOGY_VALIDATION`, `FAILED_UNEXPLAINED_FRAMEWORK`, `UNSUPPORTED_LINKAGE`, and `SUPPRESSED_TRIAZINE_MOTIF`.
 
@@ -72,40 +72,12 @@ Detailed event statuses include `SUCCESS_COMPLETE`, `AMBIGUOUS_MULTIPLE_DECOMPOS
 
 For failed binary-linkage hypotheses, event mode can distinguish a mostly regular framework containing a small number of damaged fragments from an ordinary incomplete decomposition. Every reaction role must have one unique dominant monomer, the dominant combination must account for strictly more than 75% of recovered fragment instances, and the minority reconstruction must contain independent structural glitches such as role-connectivity loss, a reactive-site deficit, or unexplained framework fragments. Multiple same-role species alone are insufficient, so legitimate multivariate structures are not classified as defective merely because they contain more than two precursor species.
 
-A probable defect remains a `skipped` decomposition and never produces a guessed COFid. JSON output includes the machine-readable `defect_detection` report and `probable_linkage`; normal CLI output prints the candidate linkage, agreement fraction, dominant monomers, and glitch summary before exiting unsuccessfully. CoRE-COFs No. 1147 (`ND-COF-2-AA`) is the reference case: 8 of 10 reconstructed fragments agree with Tp plus the CANAL diamine, while the two outliers each lose one reactive site, corresponding to 11 detected beta-ketoenamine events where the dominant fragment pattern implies 12. Conversely, a role-complete set of multiple distinct species is reported as `UNSUPPORTED_MULTISPECIES_PRECURSORS` only when every species independently exposes its declared motif count and the role-wise reactive-site totals balance. This status is deliberately agnostic about whether the source represents an intentional multivariate material, disorder, or another data provenance issue.
+A probable defect remains a `skipped` decomposition and never produces a guessed COFid. JSON output includes the machine-readable `defect_detection` report and `probable_linkage`; normal CLI output prints the candidate linkage, agreement fraction, dominant monomers, and glitch summary before exiting unsuccessfully. Conversely, a role-complete set of multiple distinct species is reported as `UNSUPPORTED_MULTISPECIES_PRECURSORS` only when every species independently exposes its declared motif count and the role-wise reactive-site totals balance. This status is deliberately agnostic about whether the source represents an intentional multivariate material, disorder, or another data provenance issue.
 
 ## Current limitations
 
 - COFid currently serializes one linkage family. Event mode reports non-overlapping family combinations, but it does not serialize a mixed-linkage COFid.
-- Multivariate COFs with several chemically distinct precursors in the same reaction role are not yet supported as complete decompositions. Such reconstructions abstain with `UNSUPPORTED_MULTISPECIES_PRECURSORS`; external provenance is still required before calling a particular CIF intentionally multivariate. Confirmed beta-ketoenamine examples in CoRE-COFs are:
-
-  | No. | Name | Recovered multivariate composition |
-  | ---: | --- | --- |
-  | 618 | `TpBD-3COOH` | 18 linkage events; Tp plus unsubstituted and dicarboxylated benzidine linkers |
-  | 1098 | `COF2-AA` | 6 linkage events; two equivalent 3-connected Tp nodes plus three distinct 2-connected diamines (Bpy, DBAb, and DTz) |
-  | 1099 | `COF3-AA` | 6 linkage events; Tp plus two distinct 2-connected diamines |
-
-  All three retain their distinct recovered precursor identities and deliberately abstain instead of being collapsed into a binary COFid or classified as structural defects. Current precursor validation and the forward COFid build request require exactly one unique monomer block per binary-reaction role. Future support should validate role coverage and stoichiometric endpoint balance across multiple species, validate topology by role/connectivity rather than unique-species count, and represent multivariate composition without discarding or merging precursor identities.
+- Multivariate COFs with several chemically distinct precursors in the same reaction role are not yet supported as complete decompositions. Such reconstructions abstain with `UNSUPPORTED_MULTISPECIES_PRECURSORS`; external provenance is still required before calling a particular CIF intentionally multivariate. Distinct precursor identities are retained; they are not collapsed into a binary COFid or classified as defects solely because multiple species are present.
 - Hypothesis enumeration chooses one interpretation per detected site and is capped at 256 combinations per family. It does not yet search arbitrary subsets of high-confidence sites.
 - Guest handling is conservative: disconnected components with no event atoms are ignored, while unexplained fragments from the event-bearing framework component invalidate a hypothesis.
 - The same `P1`, bond-source, topology-repository, and supported-linkage restrictions as legacy mode still apply.
-- The inspection table labels 920 of 1,242 structures and was consulted during detector improvement; reported scores are therefore not independent estimates of generalization.
-
-## Benchmark basis
-
-Both engines were run on identical CIFs, topology inputs, linkage requests, and bond modes from `CoRE-COFs_1242-v7.0/COF-linkage-inspection.csv`. Of 920 labelled structures, 797 have one supported linkage-family label, 6 are explicit multi-linkage labels, 4 are alternative labels, and 113 are outside the eight supported families.
-
-On the 797 supported single-family labels, event mode achieved 65.2% exact accuracy, 69.0% unique coverage, 94.5% selective accuracy when unique, and 76.7% macro F1. Legacy achieved 46.8%, 56.2%, 83.3%, and 58.8%, respectively. Across all 920 labels, strict decision accuracy was 68.2% for event and 52.0% for legacy. In paired scoring, event gained 151 cases that legacy missed and lost 4 that legacy got right. Two alternating-order 16-worker timing runs averaged 5.851 seconds for event and 8.469 seconds for legacy over the 920 CIFs.
-
-Future evaluations should continue to compare at least:
-
-- exact linkage-label accuracy;
-- exact reconstructed precursor identity and connectivity;
-- complete-success, ambiguous, partial, unsupported, and failure rates;
-- false-positive rate by linkage family;
-- triazine motif-versus-linkage decisions;
-- mixed-linkage cases;
-- runtime and hypothesis truncation;
-- per-family confusion matrices and failure-stage distributions.
-
-Raw decomposition count alone is not sufficient: linkage correctness, unsupported-family false positives, ambiguity, and precursor reconstruction remain part of the release criterion.

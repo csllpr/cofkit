@@ -74,8 +74,8 @@ To classify a finished batch output into `valid`, `warning`, `needs_optimization
 
 ```bash
 python3 examples/classify_batch_output.py \
-  out/full_cif_generation_default_selector_20260320 \
-  --output-dir out/full_cif_generation_default_selector_20260320_coarse_validation_triage
+  out/batch_run \
+  --output-dir out/classified_batch
 ```
 
 That workflow writes one classification manifest plus five CIF trees:

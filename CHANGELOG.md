@@ -8,11 +8,11 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Added
 
-- event-based CIF decomposition with immutable linkage events, atomic azine/boronate/ring handling, bounded reconstruction hypotheses, global endpoint/framework/topology validation, generalized triazine motif classification, and structured benchmark diagnostics
+- event-based CIF decomposition with immutable linkage events, atomic azine/boronate/ring handling, bounded reconstruction hypotheses, global endpoint/framework/topology validation, generalized triazine motif classification, and structured decomposition diagnostics
 
 ### Changed
 
-- event-based decomposition is now the API and CLI default after outperforming legacy on the largest available inspected CoRE-COFs linkage-label set; the previous per-family engine remains available explicitly through `decomposition_mode="legacy"` and `--decomposition-mode legacy`
+- event-based decomposition is now the API and CLI default with globally validated reconstruction hypotheses; the previous per-family engine remains available explicitly through `decomposition_mode="legacy"` and `--decomposition-mode legacy`
 - Zeo++ pore-size attributes, CLI labels, and JSON report keys now expose `largest_cavity_diameter` (LCD / `Di`), `pore_limiting_diameter` (PLD / `Df`), and the distinct `largest_included_sphere_along_free_path_diameter` (`Dif`); reports include a machine-readable `pore_diameter_semantics` glossary, and the previous Python attribute names remain as compatibility aliases
 - Zeo++ reports now label crystallographic-direction values, units, probe-center-accessible surface/volume, inaccessible-pocket contributions, Voronoi-node fractions, per-channel dimensionality, and independent `max_channel_*` aggregates explicitly; scan settings include radii plus derived diameters, enforce `probe_radius <= channel_radius`, and carry a machine-readable `measurement_semantics` glossary
 
@@ -68,7 +68,6 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 - Zeo++ binary discovery through `COFKIT_ZEOPP_PATH`, plus persisted raw `.res` / `.chan` outputs, subprocess logs, and `zeopp_report.json`
 - point-probe Zeo++ pore baselines in the public CLI, now including `-resex`, `-sa 0 0`, and `-vol 0 0`
 - optional repeated accessibility-aware Zeo++ probe scans, with parsed channel, surface-area, pore-volume, and Voronoi-node accessibility summaries
-- an internal Zeo++ capability map in [agent-docs/ZEOPP_CAPABILITY_MAP.md](agent-docs/ZEOPP_CAPABILITY_MAP.md)
 - initial `cofkit calculate lammps-optimize` wrapper for fixed-cell local cleanup of explicit-bond `P1` CIFs
 - LAMMPS binary discovery through `COFKIT_LMP_PATH` for the new cleanup workflow
 - generated LAMMPS data/input files, stdout/stderr logs, dump trajectory, optimized CIF export, and `lammps_report.json` for the new cleanup workflow
@@ -76,7 +75,7 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 - staged LAMMPS optimization controls, including `timestep`, `min_modify`, an optional second minimization stage, and an optional final `fix box/relax` stage with a box-relax-compatible minimizer
 - optional short restrained LAMMPS preruns before minimization, using `velocity create` plus `langevin` and `nve/limit`
 - explicit atomistic CIF bond-type export through `_ccdc_geom_bond_type`, plus LAMMPS bond-order reuse from that field when present
-- explicit-bond-order-driven UFF assignment in the LAMMPS path, now adapted from the local `reference_repositories/lammps_interface` logic and including dihedral and improper terms in the generated data file
+- explicit-bond-order-driven UFF assignment in the LAMMPS path, now adapted from the upstream [LAMMPS Interface](https://github.com/peteboyd/lammps_interface) logic and including dihedral and improper terms in the generated data file
 
 ### Scope
 

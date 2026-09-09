@@ -2617,7 +2617,7 @@ def _select_event_result(
             "default_mode": "event",
             "legacy_mode_available": True,
             "selection_unit": "globally validated reconstruction hypothesis",
-            "promotion_basis": "CoRE-COFs_1242-v7.0 inspected linkage labels",
+            "promotion_basis": None,
         },
     }
     requested_linkage = requested_family or "auto"

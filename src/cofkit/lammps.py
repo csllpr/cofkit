@@ -1243,13 +1243,13 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
     parameter_sources = {
         "forcefield": "UFF",
         "atom_typing": "Open Babel UFF atom types from the explicit CIF bond graph",
-        "bonded_parameters": "cofkit UFF formulas adapted from reference_repositories/lammps_interface",
+        "bonded_parameters": "cofkit UFF formulas adapted from https://github.com/peteboyd/lammps_interface",
         "nonbond_parameters": "UFF.prm plus Lorentz-Berthelot mixing",
     }
     uff_parameter_file = _bundled_uff_parameter_file()
     parameter_sources["reference_parameter_file"] = str(uff_parameter_file)
     parameter_sources["reference_parameter_sha256"] = _bundled_uff_parameter_sha256()
-    parameter_sources["reference_logic"] = "reference_repositories/lammps_interface"
+    parameter_sources["reference_logic"] = "https://github.com/peteboyd/lammps_interface"
     if has_all_charges:
         parameter_sources["electrostatics"] = "Explicit atom charges carried into the LAMMPS data file"
         parameter_sources["charge_assignment"] = "Atom charges read from the CIF atom-site charge loop"

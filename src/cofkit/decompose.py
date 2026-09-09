@@ -313,8 +313,8 @@ def decompose_cif_to_cofid(
     if normalized_decomposition_mode == "event":
         # Imported lazily so the event pipeline can reuse the stable graph,
         # precursor, and topology primitives in this module without creating an
-        # import cycle.  Event mode is the default after its CoRE-COFs labelled
-        # benchmark; callers can still request the compatibility path explicitly.
+        # import cycle. Callers can still request the legacy compatibility path
+        # explicitly.
         from .decompose_events import decompose_cif_to_cofid_event
 
         return decompose_cif_to_cofid_event(
