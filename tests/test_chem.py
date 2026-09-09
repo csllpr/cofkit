@@ -2,7 +2,6 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.chem import Molecule, MotifDetector, default_motif_kind_registry
 

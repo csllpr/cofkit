@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.cli import main as cli_main
 from cofkit.graspa import (
@@ -132,7 +131,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
 
@@ -153,7 +155,7 @@ class GraspaWidomTests(unittest.TestCase):
                 )
 
             self.assertEqual(result.unit_cells, (1, 2, 3))
-            self.assertEqual(len(result.component_results), 7)
+            self.assertEqual(len(result.component_results), 6)
             self.assertTrue(Path(result.eqeq_charged_cif).is_file())
             self.assertTrue(Path(result.results_csv_path).is_file())
             self.assertTrue(Path(result.report_path).is_file())
@@ -190,7 +192,6 @@ class GraspaWidomTests(unittest.TestCase):
                 [
                     ("TIP4P_DREIDING", "dreiding"),
                     ("CO2_DREIDING", "dreiding"),
-                    ("H2_DREIDING", "dreiding"),
                     ("N2_DREIDING", "dreiding"),
                     ("SO2_DREIDING", "dreiding"),
                     ("Xe_GENERICMOFS", "genericmofs"),
@@ -205,9 +206,9 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("UnitCells 0 1 2 3", simulation_input)
             self.assertIn("NumberOfBlocks 5", simulation_input)
             self.assertIn("NumberOfProductionCycles     2000000", simulation_input)
-            self.assertIn("Component 4 MoleculeName              SO2_DREIDING", simulation_input)
-            self.assertIn("Component 5 MoleculeName              Xe_GENERICMOFS", simulation_input)
-            self.assertIn("Component 6 MoleculeName              Kr_GENERICMOFS", simulation_input)
+            self.assertIn("Component 3 MoleculeName              SO2_DREIDING", simulation_input)
+            self.assertIn("Component 4 MoleculeName              Xe_GENERICMOFS", simulation_input)
+            self.assertIn("Component 5 MoleculeName              Kr_GENERICMOFS", simulation_input)
 
             eqeq_audit = json.loads((Path(result.eqeq_run_dir) / "eqeq_invocation.json").read_text(encoding="utf-8"))
             self.assertEqual(eqeq_audit["argv"][0], "example_framework.cif")
@@ -216,7 +217,7 @@ class GraspaWidomTests(unittest.TestCase):
             graspa_audit = json.loads((Path(result.widom_run_dir) / "graspa_invocation.json").read_text(encoding="utf-8"))
             self.assertEqual(graspa_audit["framework_name"], "framework")
             self.assertEqual(graspa_audit["unit_cells"], [1, 2, 3])
-            self.assertEqual(graspa_audit["components"], ["TIP4P_DREIDING", "CO2_DREIDING", "H2_DREIDING", "N2_DREIDING", "SO2_DREIDING", "Xe_GENERICMOFS", "Kr_GENERICMOFS"])
+            self.assertEqual(graspa_audit["components"], ["TIP4P_DREIDING", "CO2_DREIDING", "N2_DREIDING", "SO2_DREIDING", "Xe_GENERICMOFS", "Kr_GENERICMOFS"])
 
             csv_text = Path(result.results_csv_path).read_text(encoding="utf-8")
             self.assertIn("component,widom_energy,widom_energy_errorbar,henry,henry_errorbar", csv_text)
@@ -242,10 +243,10 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["framework_forcefield_metadata"], framework_metadata)
             self.assertEqual(report["component_results"][1]["component"], "CO2_DREIDING")
             self.assertEqual(report["component_results"][1]["henry"], 2e-05)
-            self.assertEqual(report["component_results"][5]["component"], "Xe_GENERICMOFS")
+            self.assertEqual(report["component_results"][4]["component"], "Xe_GENERICMOFS")
+            self.assertEqual(report["component_results"][4]["henry"], 5e-05)
+            self.assertEqual(report["component_results"][5]["component"], "Kr_GENERICMOFS")
             self.assertEqual(report["component_results"][5]["henry"], 6e-05)
-            self.assertEqual(report["component_results"][6]["component"], "Kr_GENERICMOFS")
-            self.assertEqual(report["component_results"][6]["henry"], 7e-05)
 
     def test_run_graspa_isotherm_workflow_accepts_external_guest_bundle(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -258,7 +259,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
 
@@ -321,7 +325,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
 
@@ -520,7 +527,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
 
@@ -564,7 +574,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
             output_dir = temp_path / "cli_widom"
@@ -622,7 +635,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
 
@@ -676,7 +692,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
             initial_restart_file = temp_path / "restartfile"
@@ -764,7 +783,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
             output_dir = temp_path / "cli_isotherm"
@@ -821,7 +843,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
             output_dir = temp_path / "cli_raspa2_isotherm"
@@ -877,7 +902,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
 
@@ -924,7 +952,8 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertAlmostEqual(first_point.component_results[1].adsorbed_mol_fraction, 0.18 / 0.19)
             self.assertAlmostEqual(first_point.selectivity_results[0].selectivity, 0.5)
             self.assertAlmostEqual(first_point.selectivity_results[1].selectivity, 2.0)
-            self.assertAlmostEqual(first_point.selectivity_results[1].selectivity_errorbar, 2.0 * (2.0 ** 0.5) * 0.1)
+            self.assertTrue(math.isnan(first_point.selectivity_results[1].selectivity_errorbar))
+            self.assertIsNone(first_point.selectivity_results[1].to_dict()["selectivity_errorbar"])
 
             simulation_input = Path(first_point.simulation_input_path).read_text(encoding="utf-8")
             self.assertIn("MolFraction              0.1", simulation_input)
@@ -958,7 +987,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
             output_dir = temp_path / "cli_mixture"
@@ -1022,7 +1054,10 @@ class GraspaWidomTests(unittest.TestCase):
                 "data_example\n"
                 "_cell_length_a 26.0\n"
                 "_cell_length_b 13.0\n"
-                "_cell_length_c 9.0\n",
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
                 encoding="utf-8",
             )
 
@@ -1156,7 +1191,15 @@ class GraspaWidomTests(unittest.TestCase):
             "input_text = input_path.read_text(encoding='utf-8')\n"
             "if strip_leading_cofid_comment and input_text.startswith('# COFid: '):\n"
             "    _, _, input_text = input_text.partition('\\n')\n"
-            "Path(stem + '.cif').write_text(input_text + '\\n# fake charged output\\n', encoding='utf-8')\n"
+            "import gemmi\n"
+            "block = gemmi.cif.read_string(input_text).sole_block()\n"
+            "labels = list(block.find_loop('_atom_site_label'))\n"
+            "block.set_pair('_audit_creation_method', 'test')\n"
+            "table = block.find_loop('_atom_site_label').get_loop()\n"
+            "table.add_columns(['_atom_site_charge'], '0.0')\n"
+            "doc = gemmi.cif.Document()\n"
+            "doc.add_copied_block(block)\n"
+            "doc.write_file(stem + '.cif')\n"
             "Path(stem + '.json').write_text(json.dumps({'argv': args}, indent=2), encoding='utf-8')\n"
             "Path('eqeq_invocation.json').write_text(json.dumps({'argv': args}, indent=2), encoding='utf-8')\n"
             "sys.stdout.write('fake eqeq stdout\\n')\n"

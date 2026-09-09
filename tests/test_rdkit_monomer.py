@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import CIFWriter, COFEngine, COFProject, build_rdkit_monomer
 from cofkit.chem import rdkit as rdkit_module

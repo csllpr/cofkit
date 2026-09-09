@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -623,6 +624,7 @@ class ZeoppAnalysisResult:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "high_accuracy_decomposition": True,
             "input_cif": self.input_cif,
             "zeopp_binary": self.zeopp_binary,
             "output_dir": self.output_dir,
@@ -664,18 +666,18 @@ def analyze_zeopp_pore_properties(
     input_path = Path(cif_path).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(f"CIF file does not exist: {input_path}")
-    if timeout_seconds <= 0.0:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
         raise ValueError("timeout_seconds must be positive.")
-    if surface_samples_per_atom <= 0:
+    if type(surface_samples_per_atom) is not int or surface_samples_per_atom <= 0:
         raise ValueError("surface_samples_per_atom must be positive.")
-    if volume_samples_total <= 0:
+    if type(volume_samples_total) is not int or volume_samples_total <= 0:
         raise ValueError("volume_samples_total must be positive.")
 
     normalized_probe_radii = tuple(float(value) for value in probe_radii)
     for value in normalized_probe_radii:
-        if value < 0.0:
+        if not math.isfinite(value) or value < 0.0:
             raise ValueError("probe_radii values must be non-negative.")
-    if channel_radius is not None and channel_radius < 0.0:
+    if channel_radius is not None and (not math.isfinite(channel_radius) or channel_radius < 0.0):
         raise ValueError("channel_radius must be non-negative when provided.")
     if channel_radius is not None:
         oversized_probe_radii = [value for value in normalized_probe_radii if value > channel_radius]
@@ -962,7 +964,7 @@ def _run_zeopp_command(
     stderr_log_path: Path,
     timeout_seconds: float,
 ) -> str:
-    command = [str(binary), *args]
+    command = [str(binary), "-ha", *args]
     expected_output_path.unlink(missing_ok=True)
     try:
         completed = subprocess.run(

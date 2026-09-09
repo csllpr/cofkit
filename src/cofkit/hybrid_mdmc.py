@@ -5,7 +5,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
+from .calculation_io import atomic_write_text, begin_attempt, derive_seed, finish_attempt, validate_numbers
 from .graspa import (
+    _load_graspa_guest_bundles, _canonicalize_isotherm_settings, _canonicalize_mixture_settings,
+    _validate_isotherm_settings, _validate_mixture_settings,
     DEFAULT_RASPA_BACKEND,
     EqeqChargeSettings,
     GraspaIsothermResult,
@@ -173,7 +176,7 @@ def run_hybrid_mdmc_workflow(
         if output_dir is None
         else Path(output_dir).expanduser().resolve()
     )
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = begin_attempt(run_dir, input_path=input_path, settings=settings, binary=None)
 
     warnings = _hybrid_exchange_warnings(settings)
 
@@ -188,7 +191,7 @@ def run_hybrid_mdmc_workflow(
             output_dir=cycle_dir / "1.lammps_md",
             lmp_path=lmp_path,
             eqeq_path=eqeq_path,
-            settings=lammps_md_settings,
+            settings=replace(lammps_md_settings, velocity_seed=derive_seed(lammps_md_settings.velocity_seed, "md", cycle)),
             timeout_seconds=lammps_timeout_seconds,
             eqeq_settings=lammps_eqeq_settings,
             eqeq_timeout_seconds=eqeq_timeout_seconds,
@@ -222,7 +225,8 @@ def run_hybrid_mdmc_workflow(
         if len(settings.components) == 1:
             component = settings.components[0]
             gcmc_result_type = "isotherm"
-            isotherm_settings = _isotherm_settings_from_hybrid(settings, component)
+            isotherm_settings = replace(_isotherm_settings_from_hybrid(settings, component),
+                random_seed=derive_seed(lammps_md_settings.velocity_seed, "mc", cycle))
             if settings.exchange_mode == "guest_restart":
                 isotherm_settings = replace(
                     isotherm_settings,
@@ -243,7 +247,8 @@ def run_hybrid_mdmc_workflow(
             )
         else:
             gcmc_result_type = "mixture"
-            mixture_settings = _mixture_settings_from_hybrid(settings)
+            mixture_settings = replace(_mixture_settings_from_hybrid(settings),
+                random_seed=derive_seed(lammps_md_settings.velocity_seed, "mc", cycle))
             if settings.exchange_mode == "guest_restart":
                 mixture_settings = replace(
                     mixture_settings,
@@ -331,11 +336,13 @@ def run_hybrid_mdmc_workflow(
         cycle_results=tuple(cycle_results),
         warnings=warnings,
     )
-    report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
+    finish_attempt(run_dir)
     return result
 
 
 def _validate_hybrid_settings(settings: HybridMdMcSettings) -> None:
+    validate_numbers(settings)
     if settings.cycles <= 0:
         raise ValueError("cycles must be positive.")
     if settings.exchange_mode not in {"framework", "guest_restart"}:
@@ -391,6 +398,13 @@ def _validate_hybrid_settings(settings: HybridMdMcSettings) -> None:
         raise ValueError("cutoff_coulomb must be positive.")
     if settings.ewald_precision <= 0.0:
         raise ValueError("ewald_precision must be positive.")
+    bundles = _load_graspa_guest_bundles(settings.guest_bundles)
+    if len(settings.components) == 1:
+        adsorption = _canonicalize_isotherm_settings(_isotherm_settings_from_hybrid(settings, settings.components[0]), bundles)
+        _validate_isotherm_settings(adsorption, guest_bundles=bundles)
+    else:
+        adsorption = _canonicalize_mixture_settings(_mixture_settings_from_hybrid(settings), bundles)
+        _validate_mixture_settings(adsorption, guest_bundles=bundles)
 
 
 def _hybrid_exchange_warnings(settings: HybridMdMcSettings) -> tuple[str, ...]:

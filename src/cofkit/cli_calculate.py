@@ -62,6 +62,14 @@ def add_calculate_group(subparsers) -> None:
     _add_hybrid_mdmc_parser(calculate_subparsers)
 
 
+def _add_eqeq_charge_acceptance_arguments(parser):
+    defaults = EqeqChargeSettings()
+    parser.add_argument("--eqeq-target-charge", type=float, default=defaults.target_charge,
+                        help="Intended total framework charge in electrons; default is neutral.")
+    parser.add_argument("--eqeq-net-charge-tolerance", type=float, default=defaults.net_charge_tolerance,
+                        help="Maximum numerical net-charge error in electrons (default: 0.001).")
+
+
 def _set_help_default(parser: argparse.ArgumentParser) -> None:
     def _show_help(_: argparse.Namespace) -> None:
         parser.print_help()
@@ -187,10 +195,10 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--forcefield",
-        default="uff",
+        default=LammpsOptimizationSettings().forcefield,
         choices=_FORCEFIELD_SELECTORS,
         help=(
-            "Forcefield backend to use for the LAMMPS data file. Default: uff."
+            "Forcefield backend to use for the LAMMPS data file. Default: dreiding."
         ),
     )
     parser.add_argument(
@@ -219,11 +227,12 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         default=-2.0,
         help="EQeq hydrogen electron affinity for the default LAMMPS charge-assignment stage. Default: -2.0.",
     )
+    _add_eqeq_charge_acceptance_arguments(parser)
     parser.add_argument(
         "--eqeq-charge-precision",
         type=int,
-        default=3,
-        help="Number of digits for EQeq point charges in the default LAMMPS charge stage. Default: 3.",
+        default=EqeqChargeSettings().charge_precision,
+        help="Number of digits for EQeq point charges in the default LAMMPS charge stage. Default: 6.",
     )
     parser.add_argument(
         "--eqeq-method",
@@ -364,11 +373,15 @@ def _add_lammps_optimize_parser(subparsers) -> None:
             "Default when stage 2 is enabled: 0.0."
         ),
     )
+    parser.add_argument("--dump-interval", type=int, default=LammpsOptimizationSettings().dump_interval,
+                        help="Optimization trajectory interval; a final snapshot is always written.")
+    parser.add_argument("--pressure-tolerance", type=float, default=LammpsOptimizationSettings().pressure_tolerance,
+                        help="Acceptance tolerance for relaxed cell stress components, in atm.")
     parser.add_argument(
         "--energy-tolerance",
         type=float,
-        default=1.0e-6,
-        help="Stage-1 LAMMPS minimization energy tolerance. Default: 1e-6.",
+        default=LammpsOptimizationSettings().energy_tolerance,
+        help="Stage-1 LAMMPS minimization energy tolerance. Default: 0 (force-only stopping).",
     )
     parser.add_argument(
         "--force-tolerance",
@@ -567,6 +580,8 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         two_stage_protocol=args.two_stage,
         stage2_position_restraint_force_constant=args.stage2_position_restraint_force_constant,
         energy_tolerance=args.energy_tolerance,
+        dump_interval=args.dump_interval,
+        pressure_tolerance=args.pressure_tolerance,
         force_tolerance=args.force_tolerance,
         max_iterations=args.max_iterations,
         max_evaluations=args.max_evaluations,
@@ -598,6 +613,8 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         lambda_value=args.eqeq_lambda,
         hydrogen_electron_affinity=args.eqeq_h_i0,
         charge_precision=args.eqeq_charge_precision,
+        target_charge=args.eqeq_target_charge,
+        net_charge_tolerance=args.eqeq_net_charge_tolerance,
         method=args.eqeq_method,
         real_space_cells=args.eqeq_real_space_cells,
         reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
@@ -690,11 +707,12 @@ def _add_graspa_widom_parser(subparsers) -> None:
         default=-2.0,
         help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
     )
+    _add_eqeq_charge_acceptance_arguments(parser)
     parser.add_argument(
         "--eqeq-charge-precision",
         type=int,
-        default=3,
-        help="Number of digits for EQeq point charges. Default: 3.",
+        default=EqeqChargeSettings().charge_precision,
+        help="Number of digits for EQeq point charges. Default: 6.",
     )
     parser.add_argument(
         "--eqeq-method",
@@ -748,7 +766,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
         "--all-components",
         action="store_true",
         help=(
-            "Activate the default packaged Widom probe set. Alternative RASPA example models must be selected "
+            "Activate the default packaged Widom probe set (excludes unsupported gRASPA Feynman-Hibbs H2). Alternative RASPA example models must be selected "
             "explicitly because they use a different global nonbonded convention."
         ),
     )
@@ -858,6 +876,8 @@ def _run_graspa_widom(args: argparse.Namespace) -> None:
         lambda_value=args.eqeq_lambda,
         hydrogen_electron_affinity=args.eqeq_h_i0,
         charge_precision=args.eqeq_charge_precision,
+        target_charge=args.eqeq_target_charge,
+        net_charge_tolerance=args.eqeq_net_charge_tolerance,
         method=args.eqeq_method,
         real_space_cells=args.eqeq_real_space_cells,
         reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
@@ -964,11 +984,12 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
         default=-2.0,
         help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
     )
+    _add_eqeq_charge_acceptance_arguments(parser)
     parser.add_argument(
         "--eqeq-charge-precision",
         type=int,
-        default=3,
-        help="Number of digits for EQeq point charges. Default: 3.",
+        default=EqeqChargeSettings().charge_precision,
+        help="Number of digits for EQeq point charges. Default: 6.",
     )
     parser.add_argument(
         "--eqeq-method",
@@ -1022,9 +1043,9 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
     parser.add_argument(
         "--fugacity-coefficient",
         type=_parse_graspa_fugacity_coefficient,
-        default=1.0,
+        default=GraspaIsothermSettings().fugacity_coefficient,
         metavar="VALUE",
-        help="Adsorbate fugacity coefficient as a positive float or PR-EOS. Default: 1.0.",
+        help="Adsorbate fugacity coefficient as a positive float or PR-EOS. Default: PR-EOS.",
     )
     parser.add_argument(
         "--initialization-cycles",
@@ -1102,6 +1123,8 @@ def _run_graspa_isotherm(args: argparse.Namespace) -> None:
         lambda_value=args.eqeq_lambda,
         hydrogen_electron_affinity=args.eqeq_h_i0,
         charge_precision=args.eqeq_charge_precision,
+        target_charge=args.eqeq_target_charge,
+        net_charge_tolerance=args.eqeq_net_charge_tolerance,
         method=args.eqeq_method,
         real_space_cells=args.eqeq_real_space_cells,
         reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
@@ -1209,11 +1232,12 @@ def _add_graspa_mixture_parser(subparsers) -> None:
         default=-2.0,
         help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
     )
+    _add_eqeq_charge_acceptance_arguments(parser)
     parser.add_argument(
         "--eqeq-charge-precision",
         type=int,
-        default=3,
-        help="Number of digits for EQeq point charges. Default: 3.",
+        default=EqeqChargeSettings().charge_precision,
+        help="Number of digits for EQeq point charges. Default: 6.",
     )
     parser.add_argument(
         "--eqeq-method",
@@ -1269,9 +1293,9 @@ def _add_graspa_mixture_parser(subparsers) -> None:
     parser.add_argument(
         "--fugacity-coefficient",
         type=_parse_graspa_fugacity_coefficient,
-        default=1.0,
+        default=GraspaIsothermSettings().fugacity_coefficient,
         metavar="VALUE",
-        help="Component fugacity coefficient as a positive float or PR-EOS. Applied to every component. Default: 1.0.",
+        help="Component fugacity coefficient as a positive float or PR-EOS. Applied to every component. Default: PR-EOS.",
     )
     parser.add_argument(
         "--initialization-cycles",
@@ -1387,6 +1411,8 @@ def _run_graspa_mixture(args: argparse.Namespace) -> None:
         lambda_value=args.eqeq_lambda,
         hydrogen_electron_affinity=args.eqeq_h_i0,
         charge_precision=args.eqeq_charge_precision,
+        target_charge=args.eqeq_target_charge,
+        net_charge_tolerance=args.eqeq_net_charge_tolerance,
         method=args.eqeq_method,
         real_space_cells=args.eqeq_real_space_cells,
         reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
@@ -1640,9 +1666,9 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--fugacity-coefficient",
         type=_parse_graspa_fugacity_coefficient,
-        default=1.0,
+        default=GraspaIsothermSettings().fugacity_coefficient,
         metavar="VALUE",
-        help="Component fugacity coefficient as a positive float or PR-EOS. Applied to every component. Default: 1.0.",
+        help="Component fugacity coefficient as a positive float or PR-EOS. Applied to every component. Default: PR-EOS.",
     )
     parser.add_argument(
         "--gcmc-initialization-cycles",
@@ -1698,11 +1724,12 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
         default=-2.0,
         help="EQeq hydrogen electron affinity for both charge-assignment stages. Default: -2.0.",
     )
+    _add_eqeq_charge_acceptance_arguments(parser)
     parser.add_argument(
         "--eqeq-charge-precision",
         type=int,
-        default=3,
-        help="Number of digits for EQeq point charges. Default: 3.",
+        default=EqeqChargeSettings().charge_precision,
+        help="Number of digits for EQeq point charges. Default: 6.",
     )
     parser.add_argument(
         "--eqeq-method",
@@ -1769,6 +1796,8 @@ def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
         lambda_value=args.eqeq_lambda,
         hydrogen_electron_affinity=args.eqeq_h_i0,
         charge_precision=args.eqeq_charge_precision,
+        target_charge=args.eqeq_target_charge,
+        net_charge_tolerance=args.eqeq_net_charge_tolerance,
         method=args.eqeq_method,
         real_space_cells=args.eqeq_real_space_cells,
         reciprocal_space_cells=args.eqeq_reciprocal_space_cells,

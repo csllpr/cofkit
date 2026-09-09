@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator
 from cofkit.cli import main as cli_main
@@ -142,7 +141,7 @@ class ValidateCliTests(unittest.TestCase):
                     )
 
         optimized.assert_called_once()
-        self.assertNotIn("settings", optimized.call_args.kwargs)
+        self.assertEqual(optimized.call_args.kwargs["settings"].forcefield, "dreiding")
         report = json.loads(buffer.getvalue())
         self.assertEqual(report["status"], "match")
         self.assertEqual(report["optimized_cif"], str(summary.cif_path))

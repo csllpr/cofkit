@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import json
 
 from .graspa import EqeqExecutionError, GraspaConfigurationError
@@ -11,6 +12,7 @@ from .lammps import (
     LammpsInputError,
     LammpsParseError,
 )
+from .lammps import LammpsOptimizationSettings
 from .validate import (
     COFidValidationResult,
     validate_cif_against_cofid,
@@ -84,6 +86,7 @@ def _add_optimize_parser(subparsers) -> None:
         help="Per-run timeout for the default EQeq charge-assignment subprocess. Default: 300.",
     )
     parser.add_argument("--json", action="store_true", help="Print the validation result as JSON.")
+    parser.add_argument("--settings-json", type=Path, help="JSON object of LammpsOptimizationSettings overrides.")
     parser.set_defaults(func=_run_optimize)
 
 
@@ -97,18 +100,24 @@ def _run_simple(args: argparse.Namespace) -> None:
 
 def _run_optimize(args: argparse.Namespace) -> None:
     try:
+        overrides = json.loads(args.settings_json.read_text()) if args.settings_json else {}
+        if not isinstance(overrides, dict):
+            raise ValueError("--settings-json must contain a JSON object.")
+        settings = LammpsOptimizationSettings(**overrides)
         result = validate_lammps_optimized_cif_against_cofid(
             args.cofid,
             args.cif_path,
             output_dir=args.output_dir,
             lmp_path=args.lmp_path,
             eqeq_path=args.eqeq_path,
+            settings=settings,
             timeout_seconds=args.timeout_seconds,
             eqeq_timeout_seconds=args.eqeq_timeout_seconds,
         )
     except (
         FileNotFoundError,
         ValueError,
+        TypeError,
         GraspaConfigurationError,
         EqeqExecutionError,
         LammpsConfigurationError,

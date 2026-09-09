@@ -2,7 +2,6 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.build_workflows import builtin_build_workflow_registry
 from cofkit.reactions import ReactionLibrary

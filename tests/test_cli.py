@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import __version__ as package_version
 from cofkit.batch_models import BatchPairSummary
@@ -55,10 +54,13 @@ class BatchSummaryCompatibilityTests(unittest.TestCase):
 
 class DefaultRepoPathTests(unittest.TestCase):
     def test_source_checkout_resolves_against_repo_root(self):
-        resolved = cli_build._default_repo_path("out", "single_pair_generation")
-
-        expected_root = Path(cli_build.__file__).resolve().parents[2]
-        self.assertEqual(resolved, str(expected_root / "out" / "single_pair_generation"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src" / "cofkit").mkdir(parents=True)
+            (root / "pyproject.toml").write_text("[project]\nname = 'fixture'\n")
+            with patch.object(cli_build, "__file__", str(root / "src" / "cofkit" / "cli_build.py")):
+                resolved = cli_build._default_repo_path("out", "single_pair_generation")
+            self.assertEqual(resolved, str(root / "out" / "single_pair_generation"))
 
     def test_installed_package_falls_back_to_cwd_relative(self):
         fake_installed_file = "/venv/lib/python3.11/site-packages/cofkit/cli_build.py"

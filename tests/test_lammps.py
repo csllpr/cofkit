@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.cli import main as cli_main
 import cofkit.lammps as lammps_module
@@ -101,7 +100,7 @@ class LammpsTests(unittest.TestCase):
             self.assertTrue(Path(result.optimized_cif).is_file())
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
             self.assertIn("read_data lammps_input.data", script_text)
-            self.assertIn("dump cofkit_dump all custom 1 lammps_trajectory.lammpstrj", script_text)
+            self.assertIn("dump cofkit_dump all custom 100 lammps_trajectory.lammpstrj", script_text)
             self.assertNotIn(str(output_dir), script_text)
 
     def test_optimize_cif_with_lammps_preserves_stacking_suffix_in_optimized_cif_comment(self):
@@ -155,7 +154,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("fix cofkit_hold all spring/self 0.050000", script_text)
             self.assertIn("minimize 1e-06 1e-06 10000 100000", script_text)
             self.assertIn("fix cofkit_md all nve", script_text)
-            self.assertIn("fix cofkit_langevin all langevin 300 300 100 351542", script_text)
+            self.assertIn("fix cofkit_langevin all langevin 300 300 100 35854483", script_text)
             self.assertIn("run 25", script_text)
             self.assertIn("write_dump all custom", script_text)
             output_text = Path(result.output_cif).read_text(encoding="utf-8")
@@ -311,7 +310,7 @@ class LammpsTests(unittest.TestCase):
         self.assertNotIn("wrapped into the current LAMMPS framework cell", " ".join(result.warnings))
         self.assertNotIn("folded into the current LAMMPS framework unit cell", " ".join(result.warnings))
 
-    def test_optimize_cif_with_lammps_defaults_to_uff(self):
+    def test_optimize_cif_with_lammps_defaults_to_dreiding(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
@@ -327,10 +326,10 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(cif_path, output_dir=temp_path / "default_uff_out")
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
 
-        self.assertEqual(result.settings.forcefield, "uff")
+        self.assertEqual(result.settings.forcefield, "dreiding")
         self.assertEqual(result.settings.charge_model, "eqeq")
         self.assertEqual(result.charge_model, "eqeq")
-        self.assertEqual(result.forcefield_backend, "uff_openbabel_explicit_graph_pymatgen")
+        self.assertEqual(result.forcefield_backend, "dreiding_openbabel_mapped_lammps_interface_pymatgen")
         self.assertEqual(result.n_charged_atoms, 3)
         self.assertEqual(result.settings.pre_minimization_mode, "md")
         self.assertEqual(result.settings.pre_minimization_steps, 10000)
@@ -444,7 +443,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("# pre_minimization", script_text)
             self.assertIn("velocity all create 350 13579 mom yes rot yes dist gaussian", script_text)
             self.assertIn("fix cofkit_prerun_nve all nve/limit 0.05", script_text)
-            self.assertIn("fix cofkit_prerun_langevin all langevin 350 350 50 118308", script_text)
+            self.assertIn("fix cofkit_prerun_langevin all langevin 350 350 50 380932608", script_text)
             self.assertIn("run 25", script_text)
             self.assertIn("unfix cofkit_prerun_langevin", script_text)
             self.assertIn("unfix cofkit_prerun_nve", script_text)
@@ -481,7 +480,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("min_style sd", script_text)
             self.assertIn("pair_coeff * * 2", script_text)
             self.assertIn("pair_coeff * * 10", script_text)
-            self.assertIn("minimize 1e-06 1e-06 12 120", script_text)
+            self.assertIn("minimize 0 1e-06 12 120", script_text)
             self.assertIn("pair_style lj/cut 12.000000", script_text)
             self.assertIn("pair_coeff 1 1", script_text)
             self.assertNotIn("velocity all create", script_text)
@@ -716,7 +715,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("_atom_site_charge", optimized_text)
             self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.100000", optimized_text)
 
-    def test_lammps_eqeq_charge_model_maps_collapsed_eqeq_labels_by_atom_order(self):
+    def test_lammps_eqeq_charge_model_verifies_collapsed_labels_by_geometry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
@@ -751,7 +750,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.100000", optimized_text)
             self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00 0.000000", optimized_text)
             self.assertIn("a3 O 0.300000 0.100000 0.100000 1.00 -0.100000", optimized_text)
-            self.assertIn("mapped charges by atom order", " ".join(result.warnings))
+            self.assertNotIn("mapped charges by atom order", " ".join(result.warnings))
 
     def test_output_cif_writes_inferred_periodic_bond_symmetry_when_needed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -770,7 +769,7 @@ class LammpsTests(unittest.TestCase):
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
             self.assertIn("a1 a2 . 1_655 1.030776 S", optimized_text)
 
-    def test_output_cif_recomputes_explicit_periodic_bond_symmetry_from_final_geometry(self):
+    def test_output_cif_updates_periodic_bond_symmetry_from_image_crossing(self):
         cif_path = Path(__file__).resolve().parent / "fixtures" / "tabf3__tctb__hcb_periodic_conflict.cif"
         parsed = lammps_module._parse_explicit_bond_cif(cif_path)
         final_positions = {atom.atom_id: atom.fractional_position for atom in parsed.atoms}
@@ -778,7 +777,8 @@ class LammpsTests(unittest.TestCase):
         final_positions[atom_id_by_label["m2_C14"]] = (0.520042, 0.014438, 0.415150)
         final_positions[atom_id_by_label["m1_N6"]] = (0.408258, 0.104422, 0.485174)
 
-        rendered = lammps_module._render_optimized_cif(parsed, final_positions)
+        rendered = lammps_module._render_optimized_cif(parsed, final_positions,
+            image_changes={atom_id_by_label["m2_C14"]: (0, 1, 0)})
         self.assertIn("m2_C14 m1_N6 . .", rendered)
         self.assertNotIn("m2_C14 m1_N6 . 1_565", rendered)
 
@@ -1064,7 +1064,9 @@ class LammpsTests(unittest.TestCase):
             "            z = float(parts[5])\n"
             "        if atom_id == 2:\n"
             "            y += 0.25\n"
-            "        atoms.append((atom_id, x, y, z))\n"
+            "        offset = 7 if atom_style == 'full' else 6\n"
+            "        images = parts[offset:offset+3] if len(parts) >= offset+3 else ['0', '0', '0']\n"
+            "        atoms.append((atom_id, x, y, z, ' '.join(images)))\n"
             "\n"
             "dump_path.parent.mkdir(parents=True, exist_ok=True)\n"
             "dump_path.write_text(\n"
@@ -1072,12 +1074,17 @@ class LammpsTests(unittest.TestCase):
             "    f'ITEM: NUMBER OF ATOMS\\n{len(atoms)}\\n'\n"
             "    'ITEM: BOX BOUNDS xy xz yz pp pp pp\\n'\n"
             "    '0 10 0\\n0 10 0\\n0 10 0\\n'\n"
-            "    'ITEM: ATOMS id x y z\\n'\n"
-            "    + ''.join(f'{atom_id} {x:.6f} {y:.6f} {z:.6f}\\n' for atom_id, x, y, z in atoms),\n"
+            "    'ITEM: ATOMS id x y z ix iy iz\\n'\n"
+            "    + ''.join(f'{atom_id} {x:.6f} {y:.6f} {z:.6f} {images}\\n' for atom_id, x, y, z, images in atoms),\n"
             "    encoding='utf-8',\n"
             ")\n"
             "if log_path is not None:\n"
-            "    log_path.write_text('LAMMPS fake log\\n', encoding='utf-8')\n"
+            "    records = []\n"
+            "    for line in script_lines:\n"
+            "        if line.startswith('print \"COFKIT_STAGE '):\n"
+            "            label = line.split()[2].rstrip('\"')\n"
+            "            records.extend([f'COFKIT_STAGE {label}', 'Stopping criterion = force tolerance', f'COFKIT_MINIMUM {label} 0 0 0 0 0 0 0 0'])\n"
+            "    log_path.write_text('\\n'.join(records) + '\\nWARNING: fake warning from test binary\\n', encoding='utf-8')\n"
             "sys.stdout.write(f\"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', '')}\\n\")\n"
             "sys.stderr.write('WARNING: fake warning from test binary\\n')\n"
             "sys.exit(0)\n",

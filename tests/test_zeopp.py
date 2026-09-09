@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.cli import main as cli_main
 from cofkit.zeopp import (
@@ -337,7 +336,8 @@ class ZeoppTests(unittest.TestCase):
             "import sys\n"
             "from pathlib import Path\n"
             "\n"
-            "args = sys.argv[1:]\n"
+            "assert sys.argv[1] == '-ha'\n"
+            "args = sys.argv[2:]\n"
             "if not args:\n"
             "    sys.exit(2)\n"
             "\n"

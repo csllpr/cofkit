@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from .cif_checks import read_ordered_structure
+from .calculation_io import MAX_ENGINE_SEED, atomic_write_text, begin_attempt, derive_seed, finish_attempt, record_execution, validate_numbers
+
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field, replace
@@ -146,7 +150,7 @@ class LammpsParseError(LammpsError):
 class LammpsOptimizationSettings:
     omp_threads: int | None = None
     enable_omp: bool = True
-    forcefield: str = "uff"
+    forcefield: str = "dreiding"
     charge_model: str = "eqeq"
     pair_cutoff: float = 12.0
     coulomb_cutoff: float = 12.0
@@ -165,8 +169,10 @@ class LammpsOptimizationSettings:
     soft_pre_minimization_max_evaluations: int = 20000
     two_stage_protocol: bool = True
     stage2_position_restraint_force_constant: float | None = None
-    energy_tolerance: float = 1.0e-6
+    energy_tolerance: float = 0.0
     force_tolerance: float = 1.0e-6
+    dump_interval: int = 100
+    pressure_tolerance: float = 1.0  # atm; numerical acceptance, not model accuracy
     max_iterations: int = 200000
     max_evaluations: int = 2000000
     min_style: str = "fire"
@@ -261,6 +267,7 @@ class LammpsOptimizationResult:
     eqeq_stderr_log_path: str | None = None
     eqeq_json_output_path: str | None = None
     warnings: tuple[str, ...] = ()
+    convergence: dict[str, object] = field(default_factory=dict)
     forcefield_metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -454,6 +461,8 @@ class _LammpsDumpFrame:
     lammps_basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
     cell_parameters: tuple[float, float, float, float, float, float]
 
+    image_flags: dict[int, tuple[int, int, int]] | None = None
+
 
 def resolve_lammps_binary(lmp_path: str | Path | None = None) -> Path:
     raw_value = str(lmp_path) if lmp_path is not None else os.environ.get(COFKIT_LMP_ENV_VAR)
@@ -488,9 +497,9 @@ def optimize_cif_with_lammps(
     eqeq_settings: EqeqChargeSettings | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
 ) -> LammpsOptimizationResult:
-    if timeout_seconds <= 0.0:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
         raise ValueError("timeout_seconds must be positive.")
-    if eqeq_timeout_seconds is not None and eqeq_timeout_seconds <= 0.0:
+    if eqeq_timeout_seconds is not None and (not math.isfinite(eqeq_timeout_seconds) or eqeq_timeout_seconds <= 0.0):
         raise ValueError("eqeq_timeout_seconds must be positive when provided.")
     settings = settings or LammpsOptimizationSettings()
     _validate_settings(settings)
@@ -502,8 +511,12 @@ def optimize_cif_with_lammps(
 
     binary = resolve_lammps_binary(lmp_path)
     run_dir = _resolve_output_dir(input_path, output_dir, suffix="_lammps")
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = begin_attempt(run_dir, input_path=input_path, settings=settings, binary=binary)
 
+    try:
+        read_ordered_structure(input_path)
+    except ValueError as exc:
+        raise LammpsInputError(str(exc)) from exc
     parsed = _parse_explicit_bond_cif(input_path)
     eqeq_result: EqeqChargeResult | None = None
     warnings: list[str] = []
@@ -559,6 +572,7 @@ def optimize_cif_with_lammps(
         encoding="utf-8",
     )
 
+    record_execution(run_dir, [str(binary), "-in", input_script_path.name])
     execution_warnings = _run_lammps(
         binary=binary,
         input_script_path=input_script_path,
@@ -573,16 +587,21 @@ def optimize_cif_with_lammps(
         dump_path,
         expected_atoms=len(optimization_model.parsed.atoms),
     )
+    convergence = _check_minimization_convergence(log_path, settings, parsed)
+    atomic_write_text(run_dir / "convergence.json", json.dumps(convergence, indent=2, allow_nan=False))
+    if not convergence["converged"]:
+        raise LammpsExecutionError(f"LAMMPS completed but optimization is unconverged; see {run_dir / 'convergence.json'}")
     model_fractional_positions = _cartesian_positions_to_fractional(
         final_frame.lammps_origin,
         final_frame.lammps_basis,
         final_frame.cartesian_positions,
     )
     final_fractional_positions = model_fractional_positions
-    optimized_cif_path.write_text(
+    atomic_write_text(optimized_cif_path,
         _render_optimized_cif(
             parsed,
             final_fractional_positions,
+            image_changes=_image_changes(parsed, prepared, final_frame),
             cell_parameters=final_frame.cell_parameters,
             basis=final_frame.lammps_basis,
             cofid=None if input_cofid_comment is None else input_cofid_comment.cofid,
@@ -599,6 +618,7 @@ def optimize_cif_with_lammps(
         "eqeq" if eqeq_result is not None else ("input_cif" if prepared.has_charges else "none")
     )
     result = LammpsOptimizationResult(
+        convergence=convergence,
         input_cif=str(input_path),
         optimized_cif=str(optimized_cif_path),
         output_dir=str(run_dir),
@@ -636,7 +656,8 @@ def optimize_cif_with_lammps(
         eqeq_json_output_path=eqeq_result.eqeq_json_output_path if eqeq_result is not None else None,
         warnings=all_warnings,
     )
-    report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
+    finish_attempt(run_dir)
     return result
 
 
@@ -652,9 +673,9 @@ def run_lammps_md_on_cif(
     eqeq_timeout_seconds: float | None = 300.0,
     guest_restart_state: LammpsGuestRestartState | None = None,
 ) -> LammpsMdResult:
-    if timeout_seconds <= 0.0:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
         raise ValueError("timeout_seconds must be positive.")
-    if eqeq_timeout_seconds is not None and eqeq_timeout_seconds <= 0.0:
+    if eqeq_timeout_seconds is not None and (not math.isfinite(eqeq_timeout_seconds) or eqeq_timeout_seconds <= 0.0):
         raise ValueError("eqeq_timeout_seconds must be positive when provided.")
     settings = settings or LammpsMdSettings()
     _validate_md_settings(settings)
@@ -666,8 +687,12 @@ def run_lammps_md_on_cif(
 
     binary = resolve_lammps_binary(lmp_path)
     run_dir = _resolve_output_dir(input_path, output_dir, suffix="_lammps_md")
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = begin_attempt(run_dir, input_path=input_path, settings=settings, binary=binary)
 
+    try:
+        read_ordered_structure(input_path)
+    except ValueError as exc:
+        raise LammpsInputError(str(exc)) from exc
     parsed = _parse_explicit_bond_cif(input_path)
     eqeq_result: EqeqChargeResult | None = None
     warnings: list[str] = []
@@ -736,6 +761,7 @@ def run_lammps_md_on_cif(
         encoding="utf-8",
     )
 
+    record_execution(run_dir, [str(binary), "-in", input_script_path.name])
     execution_warnings = _run_lammps(
         binary=binary,
         input_script_path=input_script_path,
@@ -753,10 +779,11 @@ def run_lammps_md_on_cif(
         final_frame.lammps_basis,
         final_frame.cartesian_positions,
     )
-    output_cif_path.write_text(
+    atomic_write_text(output_cif_path,
         _render_optimized_cif(
             parsed,
             final_fractional_positions,
+            image_changes=_image_changes(parsed, prepared, final_frame),
             cell_parameters=final_frame.cell_parameters,
             basis=final_frame.lammps_basis,
             cofid=None if input_cofid_comment is None else input_cofid_comment.cofid,
@@ -822,11 +849,13 @@ def run_lammps_md_on_cif(
             guest_restart_state.source_snapshot_path if guest_restart_state is not None else None
         ),
     )
-    report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
+    finish_attempt(run_dir)
     return result
 
 
 def _validate_md_settings(settings: LammpsMdSettings) -> None:
+    validate_numbers(settings)
     if settings.omp_threads is not None and settings.omp_threads <= 0:
         raise ValueError("omp_threads must be positive when provided.")
     forcefield = _normalize_forcefield_name(settings.forcefield)
@@ -853,18 +882,18 @@ def _validate_md_settings(settings: LammpsMdSettings) -> None:
         raise ValueError("steps must be positive.")
     if settings.thermostat_damping <= 0.0:
         raise ValueError("thermostat_damping must be positive.")
-    if settings.velocity_seed <= 0:
-        raise ValueError("velocity_seed must be positive.")
+    if not 0 < settings.velocity_seed <= MAX_ENGINE_SEED:
+        raise ValueError("velocity_seed must be in the LAMMPS range 1..900000000.")
     if _normalize_lammps_md_ensemble(settings.ensemble) not in {"nvt", "nve_langevin"}:
         raise ValueError("ensemble must be one of: nvt, nve-langevin.")
     if settings.dump_interval <= 0:
         raise ValueError("dump_interval must be positive.")
     if settings.position_restraint_force_constant < 0.0:
         raise ValueError("position_restraint_force_constant must be non-negative.")
-    if settings.minimization_energy_tolerance <= 0.0:
-        raise ValueError("minimization_energy_tolerance must be positive.")
-    if settings.minimization_force_tolerance <= 0.0:
-        raise ValueError("minimization_force_tolerance must be positive.")
+    if settings.minimization_energy_tolerance < 0.0:
+        raise ValueError("minimization_energy_tolerance must be non-negative.")
+    if settings.minimization_force_tolerance < 0.0:
+        raise ValueError("minimization_force_tolerance must be non-negative.")
     if settings.minimization_max_iterations <= 0:
         raise ValueError("minimization_max_iterations must be positive.")
     if settings.minimization_max_evaluations <= 0:
@@ -886,6 +915,9 @@ def _md_settings_to_optimization_settings(settings: LammpsMdSettings) -> LammpsO
 
 
 def _validate_settings(settings: LammpsOptimizationSettings) -> None:
+    validate_numbers(settings)
+    if settings.dump_interval <= 0 or settings.pressure_tolerance <= 0:
+        raise ValueError("dump_interval and pressure_tolerance must be positive.")
     if settings.omp_threads is not None and settings.omp_threads <= 0:
         raise ValueError("omp_threads must be positive when provided.")
     forcefield = _normalize_forcefield_name(settings.forcefield)
@@ -927,7 +959,7 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
     if (
         settings.pre_minimization_mode == "md"
         and settings.pre_minimization_steps > 0
-        and settings.pre_minimization_seed <= 0
+        and not 0 < settings.pre_minimization_seed <= MAX_ENGINE_SEED
     ):
         raise ValueError("pre_minimization_seed must be a positive integer when pre_minimization_steps is enabled.")
     if (
@@ -952,20 +984,20 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError("soft_pre_minimization_max_evaluations must be positive.")
     if settings.stage2_position_restraint_force_constant is not None and settings.stage2_position_restraint_force_constant < 0.0:
         raise ValueError("stage2_position_restraint_force_constant must be non-negative when provided.")
-    if settings.energy_tolerance <= 0.0:
-        raise ValueError("energy_tolerance must be positive.")
-    if settings.force_tolerance <= 0.0:
-        raise ValueError("force_tolerance must be positive.")
+    if settings.energy_tolerance < 0.0:
+        raise ValueError("energy_tolerance must be non-negative.")
+    if settings.force_tolerance < 0.0:
+        raise ValueError("force_tolerance must be non-negative.")
     if settings.max_iterations <= 0:
         raise ValueError("max_iterations must be positive.")
     if settings.max_evaluations <= 0:
         raise ValueError("max_evaluations must be positive.")
     if not settings.min_style:
         raise ValueError("min_style must be non-empty.")
-    if settings.stage2_energy_tolerance is not None and settings.stage2_energy_tolerance <= 0.0:
-        raise ValueError("stage2_energy_tolerance must be positive when provided.")
-    if settings.stage2_force_tolerance is not None and settings.stage2_force_tolerance <= 0.0:
-        raise ValueError("stage2_force_tolerance must be positive when provided.")
+    if settings.stage2_energy_tolerance is not None and settings.stage2_energy_tolerance < 0.0:
+        raise ValueError("stage2_energy_tolerance must be non-negative when provided.")
+    if settings.stage2_force_tolerance is not None and settings.stage2_force_tolerance < 0.0:
+        raise ValueError("stage2_force_tolerance must be non-negative when provided.")
     if settings.stage2_max_iterations is not None and settings.stage2_max_iterations <= 0:
         raise ValueError("stage2_max_iterations must be positive when provided.")
     if settings.stage2_max_evaluations is not None and settings.stage2_max_evaluations <= 0:
@@ -999,10 +1031,10 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError("box_relax_nreset must be positive when provided.")
     if not settings.box_relax_min_style:
         raise ValueError("box_relax_min_style must be non-empty.")
-    if settings.box_relax_energy_tolerance is not None and settings.box_relax_energy_tolerance <= 0.0:
-        raise ValueError("box_relax_energy_tolerance must be positive when provided.")
-    if settings.box_relax_force_tolerance is not None and settings.box_relax_force_tolerance <= 0.0:
-        raise ValueError("box_relax_force_tolerance must be positive when provided.")
+    if settings.box_relax_energy_tolerance is not None and settings.box_relax_energy_tolerance < 0.0:
+        raise ValueError("box_relax_energy_tolerance must be non-negative when provided.")
+    if settings.box_relax_force_tolerance is not None and settings.box_relax_force_tolerance < 0.0:
+        raise ValueError("box_relax_force_tolerance must be non-negative when provided.")
     if settings.box_relax_max_iterations is not None and settings.box_relax_max_iterations <= 0:
         raise ValueError("box_relax_max_iterations must be positive when provided.")
     if settings.box_relax_max_evaluations is not None and settings.box_relax_max_evaluations <= 0:
@@ -3054,6 +3086,9 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
             )
         )
 
+    pairs = [(min(b.atom_id_1, b.atom_id_2), max(b.atom_id_1, b.atom_id_2)) for b in bonds]
+    if any(a == b for a, b in pairs) or len(set(pairs)) != len(pairs):
+        raise LammpsInputError("Periodic self-bonds/multiedges require an explicit larger supercell before LAMMPS export.")
     angles = _derive_angles(tuple(atoms), tuple(bonds), basis)
     dihedrals = _derive_dihedrals(tuple(atoms), tuple(bonds))
     impropers = _derive_impropers(tuple(atoms), tuple(bonds))
@@ -3154,23 +3189,10 @@ def _extract_atom_site_charges_from_block(
                 duplicate_labels = True
             charges_by_label[label] = charge
             charges_in_row_order.append(charge)
-        if expected_label_set:
-            missing = sorted(expected_label_set - charges_by_label.keys())
-            if missing:
-                matching_labels = expected_label_set.intersection(charges_by_label)
-                if len(charges_in_row_order) == len(expected_label_sequence) and (
-                    duplicate_labels or not matching_labels
-                ):
-                    return _AtomChargeExtractionResult(
-                        charges_by_label={
-                            label: charges_in_row_order[index]
-                            for index, label in enumerate(expected_label_sequence)
-                        },
-                        used_atom_order_fallback=True,
-                    )
-                raise LammpsInputError(
-                    f"CIF charge loop {charge_column_name} is missing charges for atom labels: {', '.join(missing)}"
-                )
+        if duplicate_labels or not all(math.isfinite(q) for q in charges_in_row_order):
+            raise LammpsInputError("CIF charges require unique labels and finite values.")
+        if expected_label_set and set(charges_by_label) != expected_label_set:
+            raise LammpsInputError("CIF charge labels must match every expected atom; unverified atom-order mapping is forbidden.")
         return _AtomChargeExtractionResult(charges_by_label=charges_by_label)
     return _AtomChargeExtractionResult(charges_by_label={})
 
@@ -3575,8 +3597,8 @@ def _build_minimization_stages(
             _LammpsMinimizationStage(
                 label="stage2",
                 min_style=settings.stage2_min_style or settings.min_style,
-                energy_tolerance=settings.stage2_energy_tolerance or settings.energy_tolerance,
-                force_tolerance=settings.stage2_force_tolerance or settings.force_tolerance,
+                energy_tolerance=(settings.stage2_energy_tolerance if settings.stage2_energy_tolerance is not None else settings.energy_tolerance),
+                force_tolerance=(settings.stage2_force_tolerance if settings.stage2_force_tolerance is not None else settings.force_tolerance),
                 max_iterations=settings.stage2_max_iterations or settings.max_iterations,
                 max_evaluations=settings.stage2_max_evaluations or settings.max_evaluations,
                 position_restraint_force_constant=(
@@ -3592,8 +3614,8 @@ def _build_minimization_stages(
             _LammpsMinimizationStage(
                 label="box_relax",
                 min_style=settings.box_relax_min_style,
-                energy_tolerance=settings.box_relax_energy_tolerance or last_stage.energy_tolerance,
-                force_tolerance=settings.box_relax_force_tolerance or last_stage.force_tolerance,
+                energy_tolerance=(settings.box_relax_energy_tolerance if settings.box_relax_energy_tolerance is not None else last_stage.energy_tolerance),
+                force_tolerance=(settings.box_relax_force_tolerance if settings.box_relax_force_tolerance is not None else last_stage.force_tolerance),
                 max_iterations=settings.box_relax_max_iterations or last_stage.max_iterations,
                 max_evaluations=settings.box_relax_max_evaluations or last_stage.max_evaluations,
                 position_restraint_force_constant=last_stage.position_restraint_force_constant,
@@ -3734,10 +3756,12 @@ def _render_lammps_input_script(
         if periodic_electrostatics:
             thermo_terms.append("elong")
     thermo_terms.append("press")
+    thermo_terms.extend(f"c_cofkit_virial[{i}]" for i in range(1, 7))
     lines.extend(
         [
             f"read_data {data_file}",
             *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
+            "compute cofkit_virial all pressure NULL virial",
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
         ]
@@ -3748,7 +3772,7 @@ def _render_lammps_input_script(
         [
             "thermo 50",
             "thermo_style custom " + " ".join(thermo_terms),
-            f"dump cofkit_dump all custom 1 {dump_file} id x y z",
+            f"dump cofkit_dump all custom {settings.dump_interval} {dump_file} id x y z ix iy iz",
             "dump_modify cofkit_dump sort id",
         ]
     )
@@ -3775,7 +3799,7 @@ def _render_lammps_input_script(
                     f"{settings.pre_minimization_temperature:.8g} "
                     f"{settings.pre_minimization_temperature:.8g} "
                     f"{settings.pre_minimization_damping:.8g} "
-                    f"{settings.pre_minimization_seed + 104729}"
+                    f"{derive_seed(settings.pre_minimization_seed, 'prerun_langevin')}"
                 ),
                 f"run {settings.pre_minimization_steps}",
                 "unfix cofkit_prerun_langevin",
@@ -3806,6 +3830,7 @@ def _render_lammps_input_script(
         if periodic_electrostatics:
             lines.append("kspace_style ewald " + f"{settings.ewald_precision:.8g}")
     for stage in minimization_stages:
+        lines.append(f'print "COFKIT_STAGE {stage.label}"')
         lines.append(f"# {stage.label}")
         if active_restraint_force_constant is not None and (
             abs(active_restraint_force_constant - stage.position_restraint_force_constant) > 1.0e-12
@@ -3826,8 +3851,10 @@ def _render_lammps_input_script(
             f"minimize {stage.energy_tolerance:.8g} {stage.force_tolerance:.8g} "
             f"{stage.max_iterations} {stage.max_evaluations}"
         )
+        lines.append(f'print "COFKIT_MINIMUM {stage.label} $(fnorm:%.17g) $(fmax:%.17g) $(c_cofkit_virial[1]:%.17g) $(c_cofkit_virial[2]:%.17g) $(c_cofkit_virial[3]:%.17g) $(c_cofkit_virial[4]:%.17g) $(c_cofkit_virial[5]:%.17g) $(c_cofkit_virial[6]:%.17g)"')
         if stage.relax_cell:
             lines.append("unfix cofkit_boxrelax")
+    lines.append(f"write_dump all custom {dump_file} id x y z ix iy iz modify sort id append yes")
     lines.append("undump cofkit_dump")
     if active_restraint_force_constant is not None:
         lines.append("unfix cofkit_hold")
@@ -3884,7 +3911,7 @@ def _render_lammps_md_input_script(
             f"timestep {settings.timestep:.8g}",
             "thermo 100",
             "thermo_style custom " + " ".join(thermo_terms),
-            f"dump cofkit_dump all custom {settings.dump_interval} {dump_file} id x y z",
+            f"dump cofkit_dump all custom {settings.dump_interval} {dump_file} id x y z ix iy iz",
             "dump_modify cofkit_dump sort id",
         ]
     )
@@ -3912,7 +3939,7 @@ def _render_lammps_md_input_script(
             f"{settings.thermostat_damping:.8g}"
         )
         lines.append(f"run {settings.steps}")
-        lines.append(f"write_dump all custom {dump_file} id x y z modify sort id append yes")
+        lines.append(f"write_dump all custom {dump_file} id x y z ix iy iz modify sort id append yes")
         lines.append("unfix cofkit_md")
     else:
         lines.extend(
@@ -3920,16 +3947,17 @@ def _render_lammps_md_input_script(
                 "fix cofkit_md all nve",
                 (
                     f"fix cofkit_langevin all langevin {settings.temperature:.8g} {settings.temperature:.8g} "
-                    f"{settings.thermostat_damping:.8g} {settings.velocity_seed + 104729}"
+                    f"{settings.thermostat_damping:.8g} {derive_seed(settings.velocity_seed, 'md_langevin')}"
                 ),
                 f"run {settings.steps}",
-                f"write_dump all custom {dump_file} id x y z modify sort id append yes",
+                f"write_dump all custom {dump_file} id x y z ix iy iz modify sort id append yes",
                 "unfix cofkit_langevin",
                 "unfix cofkit_md",
             ]
         )
     if settings.position_restraint_force_constant > 0.0:
         lines.append("unfix cofkit_hold")
+    lines.append(f"write_dump all custom {dump_file} id x y z ix iy iz modify sort id append yes")
     lines.append("undump cofkit_dump")
     lines.append("")
     return "\n".join(lines)
@@ -3968,6 +3996,7 @@ def _run_lammps(
         "-screen",
         "none",
     ])
+    record_execution(input_script_path.parent, command)
     try:
         completed = subprocess.run(
             command,
@@ -3995,12 +4024,59 @@ def _run_lammps(
         )
 
     warnings: list[str] = []
-    merged = "\n".join(filter(None, (completed.stdout, completed.stderr)))
+    merged = "\n".join(filter(None, (completed.stdout, completed.stderr, log_path.read_text(errors="replace") if log_path.exists() else "")))
     for line in merged.splitlines():
         stripped = line.strip()
         if stripped.startswith("WARNING:"):
             warnings.append(stripped)
     return tuple(warnings)
+
+
+def _check_minimization_convergence(log_path, settings, parsed) -> dict[str, object]:
+    """Require stage diagnostics and final force/stress acceptance in real units."""
+    text = log_path.read_text(errors="replace") if log_path.is_file() else ""
+    records = []
+    for stage in _build_minimization_stages(settings):
+        segments = re.findall(rf"^COFKIT_STAGE {stage.label}\s*$([\s\S]*?)(?=^COFKIT_STAGE |\Z)", text, re.MULTILINE)
+        record = {"stage": stage.label, "converged": False}
+        if len(segments) != 1:
+            record["reason"] = "missing_or_duplicate_stage"
+            records.append(record)
+            continue
+        segment = segments[0]
+        reason = re.search(r"Stopping criterion\s*=\s*([^\n]+)", segment)
+        rows = re.findall(rf"^COFKIT_MINIMUM {stage.label} (.+)$", segment, re.MULTILINE)
+        record["stopping_criterion"] = reason.group(1).strip() if reason else None
+        try:
+            values = [float(v) for v in rows[0].split()] if len(rows) == 1 else []
+        except ValueError:
+            values = []
+        if len(values) != 8 or not all(math.isfinite(v) for v in values):
+            record["reason"] = "missing_or_nonfinite_metrics"
+            records.append(record)
+            continue
+        fnorm, fmax, *stress = values
+        record.update(force_norm_kcal_mol_angstrom=fnorm, force_max_kcal_mol_angstrom=fmax,
+                      virial_stress_atm=stress, force_tolerance=stage.force_tolerance)
+        normal = reason is not None and reason.group(1).strip().lower() in {"force tolerance", "energy tolerance"}
+        force_ok = fnorm >= 0 and fmax >= 0 and fnorm <= stage.force_tolerance
+        stress_ok = True
+        if stage.relax_cell:
+            mode = _box_relax_mode_for_structure(settings, parsed)
+            if mode == "iso":
+                deviations = [sum(stress[:3]) / 3 - settings.box_relax_target_pressure]
+            else:
+                deviations = [p - settings.box_relax_target_pressure for p in stress[:3]]
+                if mode == "tri":
+                    deviations.extend(stress[3:])
+            stress_ok = max(map(abs, deviations)) <= settings.pressure_tolerance
+            record["pressure_tolerance_atm"] = settings.pressure_tolerance
+        record["converged"] = normal and force_ok and stress_ok
+        record["reason"] = "accepted" if record["converged"] else "termination_or_force_or_stress_check_failed"
+        records.append(record)
+    return {"execution_status": "completed", "converged": bool(records and records[-1]["converged"]),
+            "acceptance": "final-stage termination, global force norm, and relaxed stress components",
+            "stages": records}
 
 
 def _default_lammps_omp_num_threads() -> int:
@@ -4023,77 +4099,67 @@ def _parse_lammps_dump_last_frame(
     if not dump_path.is_file():
         raise LammpsParseError(f"LAMMPS dump file was not created: {dump_path}")
 
-    lines = dump_path.read_text(encoding="utf-8").splitlines()
-    index = 0
-    last_frame: dict[int, tuple[float, float, float]] | None = None
-    last_origin: tuple[float, float, float] | None = None
-    last_basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None
-    last_cell_parameters: tuple[float, float, float, float, float, float] | None = None
-    while index < len(lines):
-        if lines[index].strip() != "ITEM: TIMESTEP":
-            raise LammpsParseError(f"Unexpected LAMMPS dump format in {dump_path}: missing ITEM: TIMESTEP")
-        index += 1
-        if index >= len(lines):
-            break
-        index += 1
-        if index >= len(lines) or lines[index].strip() != "ITEM: NUMBER OF ATOMS":
-            raise LammpsParseError(f"Unexpected LAMMPS dump format in {dump_path}: missing atom count header")
-        index += 1
-        if index >= len(lines):
-            raise LammpsParseError(f"Unexpected end of LAMMPS dump in {dump_path}")
-        try:
-            n_atoms = int(lines[index].strip())
-        except ValueError as exc:
-            raise LammpsParseError(f"Invalid atom count in LAMMPS dump {dump_path}: {lines[index]!r}") from exc
-        index += 1
-        if index >= len(lines) or not lines[index].startswith("ITEM: BOX BOUNDS"):
-            raise LammpsParseError(f"Unexpected LAMMPS dump format in {dump_path}: missing box-bounds header")
-        origin, basis, cell_parameters = _parse_lammps_dump_box(lines[index : index + 4], dump_path=dump_path)
-        index += 4
-        if index > len(lines) or not lines[index - 1]:
-            pass
-        if index >= len(lines) or not lines[index].startswith("ITEM: ATOMS"):
-            raise LammpsParseError(f"Unexpected LAMMPS dump format in {dump_path}: missing atom header")
-        header = lines[index].split()[2:]
-        index += 1
-        expected_header = ["id", "x", "y", "z"]
-        if header != expected_header:
-            raise LammpsParseError(
-                f"Unexpected LAMMPS dump atom columns in {dump_path}: expected {expected_header}, got {header}"
-            )
-        frame: dict[int, tuple[float, float, float]] = {}
-        for _ in range(n_atoms):
-            if index >= len(lines):
-                raise LammpsParseError(f"Unexpected end of LAMMPS dump in {dump_path}")
-            parts = lines[index].split()
-            index += 1
-            if len(parts) != 4:
-                raise LammpsParseError(f"Unexpected LAMMPS dump atom row in {dump_path}: {lines[index - 1]!r}")
-            atom_id = int(parts[0])
-            frame[atom_id] = (float(parts[1]), float(parts[2]), float(parts[3]))
-        last_frame = frame
-        last_origin = origin
-        last_basis = basis
-        last_cell_parameters = cell_parameters
+    last_frame = None
+    with dump_path.open(encoding="utf-8") as handle:
+        def required_line():
+            line = handle.readline()
+            if not line:
+                raise LammpsParseError(f"Truncated final frame in {dump_path}")
+            return line.strip()
 
-    if last_frame is None or last_origin is None or last_basis is None or last_cell_parameters is None:
+        while line := handle.readline():
+            if line.strip() != "ITEM: TIMESTEP":
+                raise LammpsParseError(f"Expected timestep header in {dump_path}")
+            try:
+                int(required_line())
+                if required_line() != "ITEM: NUMBER OF ATOMS":
+                    raise LammpsParseError("Missing atom count header")
+                count = int(required_line())
+                if count != expected_atoms:
+                    raise LammpsParseError(f"Dump atom count {count}, expected {expected_atoms}")
+                bounds = [required_line() for _ in range(4)]
+                origin, basis, cell = _parse_lammps_dump_box(bounds, dump_path=dump_path)
+                if not all(math.isfinite(v) for row in (origin, *basis) for v in row):
+                    raise LammpsParseError("Nonfinite dump cell")
+                header = required_line()
+                if header not in ("ITEM: ATOMS id x y z", "ITEM: ATOMS id x y z ix iy iz"):
+                    raise LammpsParseError(f"Unsupported dump columns: {header}")
+                images = {} if header.endswith("ix iy iz") else None
+                frame = {}
+                for _ in range(count):
+                    row = required_line().split()
+                    if len(row) != (7 if images is not None else 4):
+                        raise LammpsParseError("Incomplete dump atom row")
+                    atom_id = int(row[0])
+                    xyz = tuple(float(v) for v in row[1:4])
+                    if atom_id in frame or not 1 <= atom_id <= expected_atoms or not all(map(math.isfinite, xyz)):
+                        raise LammpsParseError("Invalid/duplicate atom ID or nonfinite dump coordinates")
+                    frame[atom_id] = xyz
+                    if images is not None:
+                        images[atom_id] = tuple(int(v) for v in row[4:])
+                last_frame = _LammpsDumpFrame(frame, origin, basis, cell, images)
+            except (ValueError, IndexError) as exc:
+                raise LammpsParseError(f"Invalid dump frame in {dump_path}: {exc}") from exc
+    if last_frame is None:
         raise LammpsParseError(f"LAMMPS dump file did not contain any frames: {dump_path}")
-    if len(last_frame) != expected_atoms:
-        raise LammpsParseError(
-            f"LAMMPS dump file {dump_path} contained {len(last_frame)} atoms in the final frame, expected {expected_atoms}"
-        )
-    return _LammpsDumpFrame(
-        cartesian_positions=last_frame,
-        lammps_origin=last_origin,
-        lammps_basis=last_basis,
-        cell_parameters=last_cell_parameters,
-    )
+    return last_frame
+
+
+def _image_changes(parsed, prepared, frame):
+    if frame.image_flags is None:
+        raise LammpsParseError("Final calculation snapshot must contain atom image flags to preserve periodic bonds.")
+    initial, _ = _compute_unwrapped_atom_images(parsed)
+    raw = _cartesian_positions_to_fractional(frame.lammps_origin, frame.lammps_basis, frame.cartesian_positions, wrap=False)
+    return {atom.atom_id: tuple(final + math.floor(position) - start for final, position, start in zip(
+                frame.image_flags[atom.atom_id], raw[atom.atom_id], initial[atom.atom_id] if prepared.has_image_flags else (0, 0, 0)))
+            for atom in parsed.atoms}
 
 
 def _cartesian_positions_to_fractional(
     origin: tuple[float, float, float],
     basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
     final_cartesian_positions: dict[int, tuple[float, float, float]],
+    *, wrap: bool = True,
 ) -> dict[int, tuple[float, float, float]]:
     a_vec, b_vec, c_vec = basis
     ax = a_vec[0]
@@ -4114,7 +4180,7 @@ def _cartesian_positions_to_fractional(
         fz = relative_z / cz
         fy = (relative_y - fz * yz) / by
         fx = (relative_x - fy * xy - fz * xz) / ax
-        positions[atom_id] = (_wrap_fraction(fx), _wrap_fraction(fy), _wrap_fraction(fz))
+        positions[atom_id] = ((_wrap_fraction(fx), _wrap_fraction(fy), _wrap_fraction(fz)) if wrap else (fx, fy, fz))
     return positions
 
 
@@ -4122,6 +4188,7 @@ def _render_optimized_cif(
     parsed: _ParsedExplicitBondCif,
     final_fractional_positions: dict[int, tuple[float, float, float]],
     *,
+    image_changes: Mapping[int, tuple[int, int, int]] | None = None,
     cell_parameters: tuple[float, float, float, float, float, float] | None = None,
     basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None,
     cofid: str | None = None,
@@ -4170,7 +4237,7 @@ def _render_optimized_cif(
             f"{fractional[2]:.6f} {atom.occupancy:.2f}"
         )
         if has_charges:
-            line += f" {float(atom.charge):.6f}"
+            line += f" {float(atom.charge):.10f}"
         lines.append(line)
 
     lines.extend(
@@ -4188,11 +4255,12 @@ def _render_optimized_cif(
     for bond in parsed.bonds:
         fractional_1 = final_fractional_positions[bond.atom_id_1]
         fractional_2 = final_fractional_positions[bond.atom_id_2]
-        output_shift_1, output_shift_2 = _closest_periodic_shifts(
-            left_fractional=fractional_1,
-            right_fractional=fractional_2,
-            basis=active_basis,
-        )
+        changes = image_changes or {}
+        left_change = changes.get(bond.atom_id_1, (0, 0, 0))
+        right_change = changes.get(bond.atom_id_2, (0, 0, 0))
+        output_shift_1 = (0, 0, 0)
+        output_shift_2 = tuple(b-a + dy-dx for a, b, dx, dy in
+                               zip(bond.shift_1, bond.shift_2, left_change, right_change))
         symmetry_1 = _format_p1_symmetry_shift(output_shift_1)
         symmetry_2 = _format_p1_symmetry_shift(output_shift_2)
         distance = _bond_distance(

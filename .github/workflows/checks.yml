@@ -1,0 +1,61 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lammps-engine:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.2"
+          python-version: "3.11"
+      - run: uv sync --frozen --extra dev
+      - run: uv pip install lammps==2025.7.22.4.0
+      - name: Provide the MPICH ABI used by the LAMMPS wheel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmpich12
+          mkdir -p "$RUNNER_TEMP/mpich"
+          ln -s /usr/lib/x86_64-linux-gnu/libmpich.so.12 "$RUNNER_TEMP/mpich/libmpi.so.12"
+      - name: Require real LAMMPS checks
+        env:
+          COFKIT_TEST_LMP: lmp
+          COFKIT_REQUIRE_LAMMPS: "1"
+        run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/mpich:${LD_LIBRARY_PATH:-}"
+          uv run --no-sync pytest tests/engines -q
+
+  installed-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.2"
+          python-version: "3.11"
+      - run: uv lock --check
+      # Existing unused imports/assignments are maintenance debt; undefined names
+      # and invalid control flow must never enter a release.
+      - run: uvx ruff==0.12.12 check src --select E9,F63,F7,F82
+      - run: uv sync --frozen --extra dev
+      - run: uv build --wheel
+      - name: Install wheel and test outside the checkout
+        shell: bash
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --reinstall dist/*.whl
+          mkdir -p "$RUNNER_TEMP/cofkit-validation/docs"
+          cp -r tests "$RUNNER_TEMP/cofkit-validation/tests"
+          cp docs/COFid_Specification_v1.2.md "$RUNNER_TEMP/cofkit-validation/docs/"
+          cd "$RUNNER_TEMP/cofkit-validation"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -c 'import cofkit; assert "site-packages" in cofkit.__file__, cofkit.__file__'
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest tests -q

@@ -2,7 +2,6 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.geometry import Frame, frame_axes, matmul_vec, norm, rotation_from_frame_to_axes, sub
 

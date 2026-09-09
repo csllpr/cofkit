@@ -3,7 +3,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, default_motif_kind_registry
 from cofkit.cofid import cofid_comment_line, cofid_to_build_request, read_cofid_from_cif

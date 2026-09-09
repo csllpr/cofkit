@@ -13,7 +13,7 @@ from fractions import Fraction
 from itertools import combinations, permutations, product
 from math import ceil, floor, gcd, sqrt
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from .bond_types import cif_type_to_bond_order, is_aromatic_bond_order
 from .chem.rdkit import detect_rdkit_motif_count

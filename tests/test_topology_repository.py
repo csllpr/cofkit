@@ -4,7 +4,6 @@ import unittest
 import zipfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import cofkit.topologies as topologies_module
 from cofkit.topology_data import write_workspace_topology_index

@@ -15,6 +15,7 @@ try:  # pragma: no cover - exercised in integration environments
 except ImportError:  # pragma: no cover - import guard for incomplete environments
     gemmi = None
 
+from .periodic_geometry import images_within, p1_shift
 from .topologies import get_topology_hint
 
 
@@ -273,7 +274,7 @@ class CoarseStructureValidator:
             else:
                 reasons.append("disconnected_instance_graph")
 
-        clash_distance = self._min_nonbonded_heavy_distance_below_cutoff(small, bonded_pairs)
+        clash_distance = self._min_nonbonded_heavy_distance_below_cutoff(small, self._bonded_images(block))
         metrics["min_nonbonded_heavy_distance"] = clash_distance
         if clash_distance is not None and clash_distance < self.thresholds.min_nonbonded_heavy_distance:
             reasons.append("heavy_atom_clash")
@@ -299,6 +300,8 @@ class CoarseStructureValidator:
         adjacency: dict[str, set[str]] = defaultdict(set)
         inter_instance_edges = 0
         for pair in bonded_pairs:
+            if len(pair) != 2:
+                continue
             label_1, label_2 = tuple(pair)
             instance_1 = self._instance_id(label_1)
             instance_2 = self._instance_id(label_2)
@@ -365,30 +368,44 @@ class CoarseStructureValidator:
             return False
         return len(set(component_sizes)) == 1
 
-    def _min_nonbonded_heavy_distance_below_cutoff(
-        self,
-        small,
-        bonded_pairs: set[frozenset[str]],
-    ) -> float | None:
+    def _bonded_images(self, block) -> set[tuple[str, str, tuple[int, int, int]]]:
+        labels1 = block.find_loop("_geom_bond_atom_site_label_1")
+        labels2 = block.find_loop("_geom_bond_atom_site_label_2")
+        sym1 = block.find_loop("_geom_bond_site_symmetry_1")
+        sym2 = block.find_loop("_geom_bond_site_symmetry_2")
+        result = set()
+        for i in range(min(len(labels1), len(labels2))):
+            first = p1_shift(str(sym1[i]) if len(sym1) else ".")
+            second = p1_shift(str(sym2[i]) if len(sym2) else ".")
+            shift = tuple(b-a for a, b in zip(first, second))
+            result.add((str(labels1[i]), str(labels2[i]), shift))
+            result.add((str(labels2[i]), str(labels1[i]), tuple(-v for v in shift)))
+        return result
+
+    def _min_nonbonded_heavy_distance_below_cutoff(self, small, bonded_images) -> float | None:
         cutoff = self.thresholds.min_nonbonded_heavy_distance
         search = gemmi.NeighborSearch(small, cutoff).populate(include_h=False)
         minimum: float | None = None
         for index, site in enumerate(small.sites):
             if site.element.is_hydrogen:
                 continue
-            origin = site.orth(small.cell)
-            for mark in search.find_site_neighbors(site, min_dist=0.001, max_dist=cutoff):
-                other_index = int(mark.atom_idx)
-                if other_index <= index:
-                    continue
+            candidates = {(index, 0)}
+            candidates.update((int(mark.atom_idx), int(mark.image_idx))
+                for mark in search.find_site_neighbors(site, min_dist=0, max_dist=cutoff))
+            for other_index, image_index in candidates:
                 other = small.sites[other_index]
                 if other.element.is_hydrogen:
                     continue
-                if frozenset((site.label, other.label)) in bonded_pairs:
-                    continue
-                distance = origin.dist(mark.pos)
-                if minimum is None or distance < minimum:
-                    minimum = distance
+                position = other.fract
+                if image_index:
+                    position = small.cell.images[image_index - 1].apply(position)
+                for shift, distance in images_within(small.cell, site.fract, position, cutoff):
+                    if index == other_index and image_index == 0 and shift == (0, 0, 0):
+                        continue
+                    if image_index == 0 and (site.label, other.label, shift) in bonded_images:
+                        continue
+                    if minimum is None or distance < minimum:
+                        minimum = distance
         return minimum
 
     def _resolve_cif_path(

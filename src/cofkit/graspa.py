@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .calculation_io import atomic_write_text, begin_attempt, derive_seed, finish_attempt, record_execution, validate_numbers
+
 import csv
 import json
 import math
@@ -17,6 +19,8 @@ from ._dreiding_reference import (
     DREIDING_PARAMETERS,
     DREIDING_REFERENCE_SOURCE,
 )
+from .periodic_geometry import face_widths
+from .cif_checks import read_ordered_structure, validate_charge_assignment
 from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
 from .guest_bundles import GuestBundle, GuestBundleError, load_guest_bundles
 from .guest_forcefields import (
@@ -44,7 +48,7 @@ SUPPORTED_RASPA_BACKENDS = ("graspa", "raspa2")
 DEFAULT_RASPA_BACKEND = "graspa"
 PACKAGED_GUEST_FORCEFIELD_METADATA = load_packaged_guest_forcefield_metadata()
 DEFAULT_WIDOM_COMPONENTS = tuple(
-    metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA if metadata.default_widom
+    metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA if metadata.default_widom and metadata.name != "H2_DREIDING"
 )
 AVAILABLE_WIDOM_COMPONENTS = tuple(metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA)
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
@@ -140,7 +144,9 @@ class GraspaParseError(GraspaError):
 class EqeqChargeSettings:
     lambda_value: float = 1.2
     hydrogen_electron_affinity: float = -2.0
-    charge_precision: int = 3
+    charge_precision: int = 6
+    target_charge: float = 0.0
+    net_charge_tolerance: float = 1e-3
     method: str = "ewald"
     real_space_cells: int = 2
     reciprocal_space_cells: int = 2
@@ -151,6 +157,8 @@ class EqeqChargeSettings:
             "lambda_value": self.lambda_value,
             "hydrogen_electron_affinity": self.hydrogen_electron_affinity,
             "charge_precision": self.charge_precision,
+            "target_charge": self.target_charge,
+            "net_charge_tolerance": self.net_charge_tolerance,
             "method": self.method,
             "real_space_cells": self.real_space_cells,
             "reciprocal_space_cells": self.reciprocal_space_cells,
@@ -352,7 +360,7 @@ class GraspaIsothermSettings:
     component: str = "CO2_DREIDING"
     guest_bundles: tuple[str, ...] = ()
     pressures: tuple[float, ...] = (10_000.0, 100_000.0, 1_000_000.0)
-    fugacity_coefficient: float | str = 1.0
+    fugacity_coefficient: float | str = "PR-EOS"
     backend: str = DEFAULT_RASPA_BACKEND
     forcefield: str = "dreiding"
     use_gpu_reduction: bool = False
@@ -361,7 +369,7 @@ class GraspaIsothermSettings:
     initialization_cycles: int = 50_000
     equilibration_cycles: int = 50_000
     production_cycles: int = 200_000
-    use_max_step: bool = True
+    use_max_step: bool = False
     max_step_per_cycle: int = 1
     use_charges_from_cif_file: bool = True
     restart_file: bool = False
@@ -535,7 +543,7 @@ class GraspaIsothermResult:
 class GraspaMixtureComponentSettings:
     component: str
     mol_fraction: float
-    fugacity_coefficient: float | str = 1.0
+    fugacity_coefficient: float | str = "PR-EOS"
     translation_probability: float = 1.0
     rotation_probability: float = 1.0
     reinsertion_probability: float = 1.0
@@ -570,7 +578,7 @@ class GraspaMixtureSettings:
     initialization_cycles: int = 50_000
     equilibration_cycles: int = 50_000
     production_cycles: int = 200_000
-    use_max_step: bool = True
+    use_max_step: bool = False
     max_step_per_cycle: int = 1
     use_charges_from_cif_file: bool = True
     restart_file: bool = False
@@ -672,6 +680,7 @@ class GraspaMixtureSelectivityResult:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "uncertainty_status": "unavailable_without_paired_loading_statistics",
             "numerator_component": self.numerator_component,
             "denominator_component": self.denominator_component,
             "feed_mol_fraction_ratio": _json_safe_float(self.feed_mol_fraction_ratio),
@@ -829,6 +838,7 @@ def assign_eqeq_charges_to_cif(
     settings = settings or EqeqChargeSettings()
     _validate_eqeq_settings(settings)
     timeout_seconds = _normalize_timeout(timeout_seconds, "timeout_seconds")
+    read_ordered_structure(input_path)
     eqeq_binary = resolve_eqeq_binary(eqeq_path)
 
     run_dir = (
@@ -836,7 +846,7 @@ def assign_eqeq_charges_to_cif(
         if output_dir is not None
         else input_path.parent / f"{input_path.stem}_eqeq"
     )
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = begin_attempt(run_dir, input_path=input_path, settings=settings, binary=eqeq_binary)
 
     eqeq_input_path = run_dir / input_path.name
     shutil.copy2(input_path, eqeq_input_path)
@@ -854,6 +864,7 @@ def assign_eqeq_charges_to_cif(
         str(settings.reciprocal_space_cells),
         _format_cli_number(settings.eta),
     ]
+    record_execution(run_dir, eqeq_command)
     try:
         with eqeq_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
             with eqeq_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -885,12 +896,19 @@ def assign_eqeq_charges_to_cif(
         raise EqeqExecutionError(
             f"EQeq completed without writing the expected charged CIF: {eqeq_charged_cif_path}"
         )
+    try:
+        charge_checks = validate_charge_assignment(input_path, eqeq_charged_cif_path,
+            target_charge=settings.target_charge, tolerance=settings.net_charge_tolerance)
+    except ValueError as exc:
+        raise EqeqExecutionError(str(exc)) from exc
+    atomic_write_text(run_dir / "charge_validation.json", json.dumps(charge_checks, indent=2))
     ensure_cif_has_cofid_comment(
         eqeq_charged_cif_path,
         None if input_cofid_comment is None else input_cofid_comment.cofid,
         suffix=None if input_cofid_comment is None else input_cofid_comment.suffix,
     )
 
+    finish_attempt(run_dir)
     return EqeqChargeResult(
         input_cif=str(input_path),
         output_dir=str(run_dir),
@@ -938,6 +956,7 @@ def run_graspa_widom_workflow(
     )
 
     run_dir = _resolve_output_dir(input_path, output_dir, suffix=f"_{raspa_backend}_widom")
+    run_dir = begin_attempt(run_dir, input_path=input_path, settings=widom_settings, binary=graspa_binary)
     eqeq_run_dir = run_dir / "eqeq"
     widom_run_dir = run_dir / "widom"
     widom_run_dir.mkdir(parents=True, exist_ok=True)
@@ -970,6 +989,7 @@ def run_graspa_widom_workflow(
 
     graspa_stdout_log_path = widom_run_dir / f"{raspa_backend}.stdout.log"
     graspa_stderr_log_path = widom_run_dir / f"{raspa_backend}.stderr.log"
+    record_execution(widom_run_dir, [str(graspa_binary)])
     try:
         with graspa_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
             with graspa_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -1007,10 +1027,14 @@ def run_graspa_widom_workflow(
             f"No Widom component summaries could be parsed from {len(data_file_paths)} data file(s)."
         )
 
+    if {r.component for r in component_results} != set(widom_settings.components) or len(component_results) != len(widom_settings.components):
+        raise GraspaParseError("Widom summaries do not match the requested components exactly.")
     results_csv_path = widom_output_dir / "results.csv"
     _write_results_csv(component_results, results_csv_path)
 
     warnings: list[str] = []
+    if widom_settings.components == DEFAULT_WIDOM_COMPONENTS:
+        warnings.append("The default probe set excludes H2_DREIDING: its Feynman-Hibbs potential is unsupported by upstream gRASPA.")
     if eqeq_result.eqeq_json_output_path is None:
         warnings.append("EQeq did not write the companion JSON output file.")
     if len(data_file_paths) > 1:
@@ -1058,7 +1082,8 @@ def run_graspa_widom_workflow(
         warnings=tuple(warnings),
         framework_forcefield_metadata=resolve_forcefield_metadata(widom_settings.forcefield).to_dict(),
     )
-    report_path.write_text(json.dumps(result.to_dict(), indent=2, allow_nan=False), encoding="utf-8")
+    atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
+    finish_attempt(run_dir)
     return result
 
 
@@ -1102,6 +1127,7 @@ def run_graspa_isotherm_workflow(
     )
 
     run_dir = _resolve_output_dir(input_path, output_dir, suffix=f"_{raspa_backend}_isotherm")
+    run_dir = begin_attempt(run_dir, input_path=input_path, settings=isotherm_settings, binary=graspa_binary)
     eqeq_run_dir = run_dir / "eqeq"
     isotherm_root_dir = run_dir / "isotherm"
     isotherm_root_dir.mkdir(parents=True, exist_ok=True)
@@ -1125,6 +1151,7 @@ def run_graspa_isotherm_workflow(
     warnings: list[str] = []
 
     for index, pressure in enumerate(isotherm_settings.pressures):
+        point_settings = replace(isotherm_settings, random_seed=derive_seed(isotherm_settings.random_seed, "pressure", index, pressure))
         pressure_run_dir = isotherm_root_dir / _format_pressure_run_dir_name(index, pressure)
         pressure_run_dir.mkdir(parents=True, exist_ok=True)
         pressure_framework_cif_path = pressure_run_dir / f"{isotherm_settings.framework_name}.cif"
@@ -1144,7 +1171,7 @@ def run_graspa_isotherm_workflow(
         simulation_input_path = pressure_run_dir / "simulation.input"
         simulation_input_path.write_text(
             _render_isotherm_simulation_input(
-                isotherm_settings,
+                point_settings,
                 unit_cells=unit_cells,
                 pressure=pressure,
                 guest_bundles=guest_bundles,
@@ -1154,6 +1181,7 @@ def run_graspa_isotherm_workflow(
 
         graspa_stdout_log_path = pressure_run_dir / f"{raspa_backend}.stdout.log"
         graspa_stderr_log_path = pressure_run_dir / f"{raspa_backend}.stderr.log"
+        record_execution(pressure_run_dir, [str(graspa_binary)])
         try:
             with graspa_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
                 with graspa_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -1254,7 +1282,8 @@ def run_graspa_isotherm_workflow(
         warnings=tuple(warnings),
         framework_forcefield_metadata=resolve_forcefield_metadata(isotherm_settings.forcefield).to_dict(),
     )
-    report_path.write_text(json.dumps(result.to_dict(), indent=2, allow_nan=False), encoding="utf-8")
+    atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
+    finish_attempt(run_dir)
     return result
 
 
@@ -1299,6 +1328,7 @@ def run_graspa_mixture_workflow(
     )
 
     run_dir = _resolve_output_dir(input_path, output_dir, suffix=f"_{raspa_backend}_mixture")
+    run_dir = begin_attempt(run_dir, input_path=input_path, settings=mixture_settings, binary=graspa_binary)
     eqeq_run_dir = run_dir / "eqeq"
     mixture_root_dir = run_dir / "mixture"
     mixture_root_dir.mkdir(parents=True, exist_ok=True)
@@ -1328,6 +1358,7 @@ def run_graspa_mixture_workflow(
         )
 
     for index, pressure in enumerate(mixture_settings.pressures):
+        point_settings = replace(mixture_settings, random_seed=derive_seed(mixture_settings.random_seed, "pressure", index, pressure))
         pressure_run_dir = mixture_root_dir / _format_pressure_run_dir_name(index, pressure)
         pressure_run_dir.mkdir(parents=True, exist_ok=True)
         pressure_framework_cif_path = pressure_run_dir / f"{mixture_settings.framework_name}.cif"
@@ -1347,7 +1378,7 @@ def run_graspa_mixture_workflow(
         simulation_input_path = pressure_run_dir / "simulation.input"
         simulation_input_path.write_text(
             _render_mixture_simulation_input(
-                mixture_settings,
+                point_settings,
                 unit_cells=unit_cells,
                 pressure=pressure,
                 guest_bundles=guest_bundles,
@@ -1357,6 +1388,7 @@ def run_graspa_mixture_workflow(
 
         graspa_stdout_log_path = pressure_run_dir / f"{raspa_backend}.stdout.log"
         graspa_stderr_log_path = pressure_run_dir / f"{raspa_backend}.stderr.log"
+        record_execution(pressure_run_dir, [str(graspa_binary)])
         try:
             with graspa_stdout_log_path.open("w", encoding="utf-8") as stdout_handle:
                 with graspa_stderr_log_path.open("w", encoding="utf-8") as stderr_handle:
@@ -1436,7 +1468,6 @@ def run_graspa_mixture_workflow(
                 selectivity_result.feed_mol_fraction_ratio,
                 selectivity_result.adsorbed_mol_fraction_ratio,
                 selectivity_result.selectivity,
-                selectivity_result.selectivity_errorbar,
             )
         ):
             warnings.append(
@@ -1448,6 +1479,7 @@ def run_graspa_mixture_workflow(
 
     component_results_csv_path = mixture_root_dir / "component_results.csv"
     _write_mixture_component_results_csv(point_results, component_results_csv_path)
+    warnings.append("Selectivity uncertainty is unavailable: backend marginal loading errors do not provide paired covariance/statistics.")
     selectivity_results_csv_path = mixture_root_dir / "selectivity_results.csv"
     _write_mixture_selectivity_results_csv(point_results, selectivity_results_csv_path)
 
@@ -1476,7 +1508,8 @@ def run_graspa_mixture_workflow(
         warnings=tuple(warnings),
         framework_forcefield_metadata=resolve_forcefield_metadata(mixture_settings.forcefield).to_dict(),
     )
-    report_path.write_text(json.dumps(result.to_dict(), indent=2, allow_nan=False), encoding="utf-8")
+    atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
+    finish_attempt(run_dir)
     return result
 
 
@@ -1511,12 +1544,13 @@ def _resolve_binary(
 def _normalize_timeout(value: float | None, field_name: str) -> float | None:
     if value is None:
         return None
-    if value <= 0.0:
+    if not math.isfinite(value) or value <= 0.0:
         raise ValueError(f"{field_name} must be positive when provided.")
     return float(value)
 
 
 def _validate_eqeq_settings(settings: EqeqChargeSettings) -> None:
+    validate_numbers(settings)
     if settings.method not in _SUPPORTED_EQEQ_METHODS:
         raise ValueError(
             f"Unsupported EQeq method {settings.method!r}. "
@@ -1526,6 +1560,10 @@ def _validate_eqeq_settings(settings: EqeqChargeSettings) -> None:
         raise ValueError("charge_precision must be non-negative.")
     if settings.real_space_cells < 0 or settings.reciprocal_space_cells < 0:
         raise ValueError("real_space_cells and reciprocal_space_cells must be non-negative.")
+    if settings.net_charge_tolerance <= 0:
+        raise ValueError("net_charge_tolerance must be positive.")
+    if settings.lambda_value <= 0:
+        raise ValueError("lambda_value must be positive.")
     if settings.eta <= 0.0:
         raise ValueError("eta must be positive.")
 
@@ -1690,12 +1728,66 @@ def _component_is_rotatable(component: str, guest_bundles: Sequence[GuestBundle]
     return True
 
 
+def _validate_eos_component(component: str, guest_bundles: Sequence[GuestBundle]) -> None:
+    bundle = next((b for b in guest_bundles if b.name == component), None)
+    definition = (bundle.raspa.molecule_definition_text if bundle else
+                  (_widom_template_dir() / f"{component}.def").read_text())
+    rows = [line.strip() for line in definition.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    try:
+        tc, pc, omega = (float(row) for row in rows[:3])
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"PR-EOS requires critical constants for {component}; supply an explicit fugacity coefficient.") from exc
+    if not all(map(math.isfinite, (tc, pc, omega))) or tc <= 0 or pc <= 0:
+        raise ValueError(f"Invalid critical constants for {component}; PR-EOS cannot be used.")
+
+
+def _validate_calculation_contract(settings, guest_bundles: Sequence[GuestBundle]) -> None:
+    backend = _validate_raspa_backend(settings.backend)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", settings.framework_name):
+        raise ValueError("framework_name must contain only letters, digits, underscores, or hyphens.")
+    if settings.number_of_simulations != 1 or not settings.single_simulation:
+        raise ValueError("Result parsing supports exactly one simulation per calculation.")
+    if settings.max_step_per_cycle <= 0:
+        raise ValueError("max_step_per_cycle must be positive.")
+    if settings.random_seed < 0:
+        raise ValueError("random_seed must be non-negative.")
+    if settings.number_of_blocks > settings.production_cycles:
+        raise ValueError("number_of_blocks cannot exceed production_cycles.")
+    if isinstance(settings, GraspaIsothermSettings):
+        components = (settings.component,)
+        moves = (settings,)
+    elif isinstance(settings, GraspaMixtureSettings):
+        components = tuple(item.component for item in settings.components)
+        moves = settings.components
+    else:
+        components = settings.components
+        moves = ()
+    if len(set(components)) != len(components):
+        raise ValueError("Duplicate components are not supported.")
+    for item in moves:
+        if sum((item.translation_probability, item.rotation_probability,
+                item.reinsertion_probability, item.swap_probability)) <= 0:
+            raise ValueError("At least one sampling move weight must be positive.")
+        if item.swap_probability <= 0:
+            raise ValueError("Grand-canonical adsorption requires positive swap_probability.")
+    for item in moves:
+        if isinstance(item.fugacity_coefficient, str):
+            _validate_eos_component(item.component, guest_bundles)
+    if backend == "graspa":
+        if "H2_DREIDING" in components:
+            raise GraspaConfigurationError("H2_DREIDING requires Feynman-Hibbs interactions, unsupported by the verified upstream gRASPA parser. Select a verified supporting backend explicitly.")
+        for bundle in guest_bundles:
+            if bundle.name in components and any(row.split()[1] != "lennard-jones" for row in bundle.raspa.mixing_rule_rows):
+                raise GraspaConfigurationError("gRASPA guest bundles currently require verified lennard-jones interactions.")
+
+
 def _validate_widom_settings(
     settings: GraspaWidomSettings,
     *,
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> None:
-    _validate_raspa_backend(settings.backend)
+    validate_numbers(settings)
+    _validate_calculation_contract(settings, guest_bundles)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
         raise ValueError(
@@ -1746,7 +1838,8 @@ def _validate_isotherm_settings(
     *,
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> None:
-    _validate_raspa_backend(settings.backend)
+    validate_numbers(settings)
+    _validate_calculation_contract(settings, guest_bundles)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
         raise ValueError(
@@ -1805,7 +1898,8 @@ def _validate_mixture_settings(
     *,
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> None:
-    _validate_raspa_backend(settings.backend)
+    validate_numbers(settings)
+    _validate_calculation_contract(settings, guest_bundles)
     forcefield = _normalize_graspa_forcefield_name(settings.forcefield)
     if forcefield not in _SUPPORTED_GRASPA_FORCEFIELDS:
         raise ValueError(
@@ -2194,17 +2288,19 @@ def _validate_guest_mixing_rule_rows(base_rows: Sequence[str], guest_rows: Seque
 
 
 def _compute_unit_cells_from_cif(cif_path: Path, *, cutoff: float) -> tuple[int, int, int]:
-    lengths = _extract_cell_lengths(cif_path)
-    missing = [key for key in ("_cell_length_a", "_cell_length_b", "_cell_length_c") if key not in lengths]
-    if missing:
-        raise GraspaParseError(
-            f"Missing cell lengths {', '.join(missing)} in CIF file required for Widom UnitCells calculation: {cif_path}"
-        )
-    return (
-        _compute_supercell(lengths["_cell_length_a"], cutoff),
-        _compute_supercell(lengths["_cell_length_b"], cutoff),
-        _compute_supercell(lengths["_cell_length_c"], cutoff),
-    )
+    import gemmi
+    block = gemmi.cif.read_file(str(cif_path)).sole_block()
+    tags = ("length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma")
+    parameters = [gemmi.cif.as_number(block.find_value("_cell_" + tag) or "?") for tag in tags]
+    if not all(math.isfinite(v) and v > 0 for v in parameters):
+        raise GraspaParseError("Supercell calculation requires all six finite, positive cell parameters.")
+    if not all(0 < angle < 180 for angle in parameters[3:]):
+        raise GraspaParseError("Cell angles must be strictly between 0 and 180 degrees.")
+    try:
+        widths = face_widths(gemmi.UnitCell(*parameters))
+    except ValueError as exc:
+        raise GraspaParseError(str(exc)) from exc
+    return tuple(_compute_supercell(width, cutoff) for width in widths)
 
 
 def _extract_cell_lengths(cif_path: Path) -> dict[str, float]:
@@ -2239,9 +2335,10 @@ def _parse_numeric_value(raw_value: str) -> float | None:
 
 
 def _compute_supercell(cell_length: float, cutoff: float) -> int:
-    if cell_length <= 0.0:
-        return 1
-    return max(int((2.0 * cutoff + cell_length - 1e-9) / cell_length), 1)
+    if not all(math.isfinite(x) and x > 0 for x in (cell_length, cutoff)):
+        raise ValueError("Cell width and cutoff must be finite and positive.")
+    # Conservative ceiling: never round a slightly undersized box down.
+    return max(math.ceil(2.0 * cutoff / cell_length), 1)
 
 
 def _render_widom_simulation_input(
@@ -2322,6 +2419,8 @@ def _render_isotherm_simulation_input(
     pressure: float,
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
+    if pressure == 0:
+        settings = replace(settings, fugacity_coefficient=1.0)
     if _normalize_raspa_backend_name(settings.backend) == "raspa2":
         return _render_raspa2_isotherm_simulation_input(
             settings,
@@ -2399,6 +2498,8 @@ def _render_mixture_simulation_input(
     pressure: float,
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
+    if pressure == 0:
+        settings = replace(settings, components=tuple(replace(c, fugacity_coefficient=1.0) for c in settings.components))
     if _normalize_raspa_backend_name(settings.backend) == "raspa2":
         return _render_raspa2_mixture_simulation_input(
             settings,
@@ -2484,6 +2585,7 @@ def _render_raspa2_widom_simulation_input(
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     lines = _render_raspa2_common_lines(
+        random_seed=settings.random_seed,
         number_of_cycles=settings.production_cycles,
         initialization_cycles=settings.initialization_cycles,
         equilibration_cycles=settings.equilibration_cycles,
@@ -2526,6 +2628,7 @@ def _render_raspa2_isotherm_simulation_input(
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     lines = _render_raspa2_common_lines(
+        random_seed=settings.random_seed,
         number_of_cycles=settings.production_cycles,
         initialization_cycles=settings.initialization_cycles,
         equilibration_cycles=settings.equilibration_cycles,
@@ -2578,6 +2681,7 @@ def _render_raspa2_mixture_simulation_input(
     guest_bundles: Sequence[GuestBundle] = (),
 ) -> str:
     lines = _render_raspa2_common_lines(
+        random_seed=settings.random_seed,
         number_of_cycles=settings.production_cycles,
         initialization_cycles=settings.initialization_cycles,
         equilibration_cycles=settings.equilibration_cycles,
@@ -2632,6 +2736,7 @@ def _render_raspa2_mixture_simulation_input(
 
 def _render_raspa2_common_lines(
     *,
+    random_seed: int,
     number_of_cycles: int,
     initialization_cycles: int,
     equilibration_cycles: int,
@@ -2653,6 +2758,7 @@ def _render_raspa2_common_lines(
 ) -> list[str]:
     lines = [
         "SimulationType                MonteCarlo",
+        f"RandomSeed                    {random_seed}",
         f"NumberOfCycles                {number_of_cycles}",
         f"NumberOfInitializationCycles  {initialization_cycles}",
     ]
@@ -2713,7 +2819,7 @@ def _validate_fugacity_coefficient(value: float | str) -> None:
         if value.strip().casefold() != "pr-eos":
             raise ValueError("fugacity_coefficient must be a float or the literal 'PR-EOS'.")
         return
-    if value <= 0.0:
+    if not math.isfinite(value) or value <= 0.0:
         raise ValueError("fugacity_coefficient must be positive when provided as a float.")
 
 
@@ -2740,7 +2846,10 @@ def _format_pressure_run_dir_name(index: int, pressure: float) -> str:
 
 
 def _collect_raspa_data_file_paths(output_dir: Path) -> tuple[str, ...]:
-    return tuple(str(path) for path in sorted(output_dir.rglob("*.data")))
+    paths = tuple(str(path) for path in sorted(output_dir.rglob("*.data")))
+    if len(paths) > 1:
+        raise GraspaParseError("Multiple simulation output files are ambiguous; one simulation per attempt is required.")
+    return paths
 
 
 def _json_safe_float(value: float) -> float | None:
@@ -2873,10 +2982,7 @@ def _parse_mixture_result_files(
             component_name: values["loading_mol_per_kg"][0]
             for component_name, values in resolved_components
         }
-        loading_errorbar_by_component = {
-            component_name: values["loading_mol_per_kg"][1]
-            for component_name, values in resolved_components
-        }
+
 
         component_results = tuple(
             GraspaMixturePointComponentResult(
@@ -2913,14 +3019,7 @@ def _parse_mixture_result_files(
                     numerator_feed_mol_fraction=normalized_feed_mol_fractions[numerator_component],
                     denominator_feed_mol_fraction=normalized_feed_mol_fractions[denominator_component],
                 ),
-                selectivity_errorbar=_compute_selectivity_errorbar(
-                    numerator_loading=loading_by_component[numerator_component],
-                    numerator_loading_errorbar=loading_errorbar_by_component[numerator_component],
-                    denominator_loading=loading_by_component[denominator_component],
-                    denominator_loading_errorbar=loading_errorbar_by_component[denominator_component],
-                    numerator_feed_mol_fraction=normalized_feed_mol_fractions[numerator_component],
-                    denominator_feed_mol_fraction=normalized_feed_mol_fractions[denominator_component],
-                ),
+                selectivity_errorbar=math.nan,
             )
             for numerator_component in expected_components
             for denominator_component in expected_components
@@ -3140,41 +3239,6 @@ def _compute_selectivity(
     adsorbed_ratio = _safe_ratio(numerator_loading, denominator_loading)
     feed_ratio = _safe_ratio(numerator_feed_mol_fraction, denominator_feed_mol_fraction)
     return _safe_ratio(adsorbed_ratio, feed_ratio)
-
-
-def _compute_selectivity_errorbar(
-    *,
-    numerator_loading: float,
-    numerator_loading_errorbar: float,
-    denominator_loading: float,
-    denominator_loading_errorbar: float,
-    numerator_feed_mol_fraction: float,
-    denominator_feed_mol_fraction: float,
-) -> float:
-    selectivity = _compute_selectivity(
-        numerator_loading=numerator_loading,
-        denominator_loading=denominator_loading,
-        numerator_feed_mol_fraction=numerator_feed_mol_fraction,
-        denominator_feed_mol_fraction=denominator_feed_mol_fraction,
-    )
-    if not math.isfinite(selectivity):
-        return math.nan
-    if numerator_loading == 0.0 and numerator_loading_errorbar == 0.0:
-        return 0.0
-    if numerator_loading <= 0.0 or denominator_loading <= 0.0:
-        return math.nan
-    if (
-        not math.isfinite(numerator_loading_errorbar)
-        or not math.isfinite(denominator_loading_errorbar)
-        or numerator_loading_errorbar < 0.0
-        or denominator_loading_errorbar < 0.0
-    ):
-        return math.nan
-    relative_variance = (
-        (numerator_loading_errorbar / numerator_loading) ** 2
-        + (denominator_loading_errorbar / denominator_loading) ** 2
-    )
-    return abs(selectivity) * math.sqrt(relative_variance)
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:

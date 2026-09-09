@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit.graspa import (
     EqeqChargeSettings,
@@ -55,7 +54,7 @@ class HybridMdMcTests(unittest.TestCase):
                             components=(GraspaMixtureComponentSettings(component="CO2_DREIDING", mol_fraction=1.0),),
                             initialization_cycles=1,
                             equilibration_cycles=1,
-                            production_cycles=2,
+                            production_cycles=10,
                         ),
                         lammps_md_settings=LammpsMdSettings(
                             forcefield="uff",
@@ -151,7 +150,7 @@ class HybridMdMcTests(unittest.TestCase):
                             ),
                             initialization_cycles=1,
                             equilibration_cycles=1,
-                            production_cycles=2,
+                            production_cycles=10,
                         ),
                         lammps_md_settings=LammpsMdSettings(
                             forcefield="uff",
@@ -261,7 +260,7 @@ class HybridMdMcTests(unittest.TestCase):
                             ),
                             initialization_cycles=1,
                             equilibration_cycles=1,
-                            production_cycles=2,
+                            production_cycles=10,
                         ),
                         lammps_md_settings=LammpsMdSettings(
                             forcefield="uff",

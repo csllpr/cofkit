@@ -10,7 +10,6 @@ from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem import rdDepictor
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, CoarseValidationThresholds
 from cofkit.build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator

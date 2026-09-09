@@ -245,9 +245,9 @@ class BatchStructureGenerator:
         self.optimizer = ContinuousOptimizer(self.config.optimizer_config, scorer=self.scorer)
         self.cif_writer = CIFWriter()
         self.structure_validator = CoarseStructureValidator(thresholds=self.config.validation_thresholds)
-        self._monomer_cache: dict[str, BuiltBatchMonomer] = {}
+        self._monomer_cache: dict[tuple[object, ...], BuiltBatchMonomer] = {}
         self._monomer_cache_lock = Lock()
-        self._spatial_rotation_cache: dict[tuple[str, tuple[tuple[float, float, float], ...]], tuple[Mat3, tuple[str, ...], tuple[float, ...]]] = {}
+        self._spatial_rotation_cache: dict[tuple[object, ...], tuple[Mat3, tuple[str, ...], tuple[float, ...]]] = {}
         self._spatial_rotation_cache_lock = Lock()
         self._topology_id_cache: dict[tuple[tuple[int, int], str], tuple[str, ...]] = {}
         self._topology_id_cache_lock = Lock()
@@ -432,10 +432,13 @@ class BatchStructureGenerator:
         return self._library_loader.library_prefix_for_motif_kind(motif_kind)
 
     def build_monomer(self, record: BatchMonomerRecord) -> BuiltBatchMonomer:
+        cache_key = (record.id, record.name, record.smiles, record.motif_kind,
+                     record.expected_connectivity, self.config.rdkit_num_conformers,
+                     self.config.rdkit_random_seed, id(self.smiles_monomer_builder))
         with self._monomer_cache_lock:
-            cached = self._monomer_cache.get(record.id)
+            cached = self._monomer_cache.get(cache_key)
         if cached is not None:
-            return cached
+            return replace(cached, record=record)
 
         try:
             monomer = self.smiles_monomer_builder(
@@ -457,10 +460,10 @@ class BatchStructureGenerator:
             result = BuiltBatchMonomer(record=record, error=f"{type(exc).__name__}: {exc}")
 
         with self._monomer_cache_lock:
-            existing = self._monomer_cache.get(record.id)
+            existing = self._monomer_cache.get(cache_key)
             if existing is not None:
-                return existing
-            self._monomer_cache[record.id] = result
+                return replace(existing, record=record)
+            self._monomer_cache[cache_key] = result
         return result
 
     def _autodetect_num_conformers(self) -> int:
@@ -4841,7 +4844,10 @@ class BatchStructureGenerator:
             self._wrap_angle(target_angle - local_angle)
             for local_angle, target_angle in zip(local_angles, target_angles)
         ]
-        best_angle = sum(diffs) / len(diffs)
+        sine_sum, cosine_sum = sum(map(sin, diffs)), sum(map(cos, diffs))
+        # A zero resultant leaves rotation underdetermined; choose zero reproducibly.
+        best_angle = (atan2(sine_sum, cosine_sum)
+                      if abs(sine_sum) + abs(cosine_sum) > 1e-12 * len(diffs) else 0.0)
         rotation = (
             (cos(best_angle), -sin(best_angle), 0.0),
             (sin(best_angle), cos(best_angle), 0.0),
@@ -4861,9 +4867,9 @@ class BatchStructureGenerator:
         template_id: str | None = None,
     ) -> tuple[Mat3, tuple[str, ...], tuple[float, ...]]:
         cache_key = (
-            spec.id,
-            template_id,
-            tuple(tuple(round(value, 6) for value in direction) for direction in target_directions),
+            spec.atom_positions, spec.bonds,
+            tuple((m.id, m.frame, m.atom_ids) for m in spec.motifs),
+            template_id, target_directions,
         )
         with self._spatial_rotation_cache_lock:
             cached = self._spatial_rotation_cache.get(cache_key)

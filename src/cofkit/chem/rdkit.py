@@ -110,6 +110,8 @@ class RDKitMotifBuilder:
         *,
         num_conformers: int = 8,
         random_seed: int = 0xC0F,
+        optimization_max_iterations: int = 500,
+        optimization_attempts: int = 1,
     ) -> MonomerSpec:
         if Chem is None or AllChem is None:
             raise RuntimeError("RDKit is required for build_rdkit_monomer()")
@@ -145,6 +147,8 @@ class RDKitMotifBuilder:
             embedding.conformer_ids,
             allow_unoptimized=embedding.used_fallback,
             skip_reason=optimization_skip_reason,
+            max_iterations=optimization_max_iterations,
+            max_attempts=optimization_attempts,
         )
         conformer = molecule.GetConformer(selection.conformer_id)
 
@@ -259,6 +263,8 @@ def build_rdkit_monomer(
     *,
     num_conformers: int = 8,
     random_seed: int = 0xC0F,
+    optimization_max_iterations: int = 500,
+    optimization_attempts: int = 1,
     motif_registry: MotifKindRegistry | None = None,
     builder: RDKitMotifBuilder | None = None,
 ) -> MonomerSpec:
@@ -270,6 +276,8 @@ def build_rdkit_monomer(
         motif_kind,
         num_conformers=num_conformers,
         random_seed=random_seed,
+        optimization_max_iterations=optimization_max_iterations,
+        optimization_attempts=optimization_attempts,
     )
 
 
@@ -440,13 +448,25 @@ def _conformer_coordinate_error(molecule, conformer_ids: tuple[int, ...]) -> str
     return None
 
 
+def _minimize_conformer(field, *, max_iterations: int, max_attempts: int) -> int:
+    for _ in range(max_attempts):
+        status = field.Minimize(maxIts=max_iterations)
+        if status != 1:
+            return status
+    return status
+
+
 def _optimize_conformers(
     molecule,
     conformer_ids: tuple[int, ...],
     *,
     allow_unoptimized: bool = False,
     skip_reason: str | None = None,
+    max_iterations: int = 500,
+    max_attempts: int = 1,
 ) -> _ConformerSelectionResult:
+    if any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in (max_iterations, max_attempts)):
+        raise ValueError("Conformer minimization iterations and attempts must be positive integers.")
     if skip_reason is not None:
         return _ConformerSelectionResult(
             conformer_id=conformer_ids[0],
@@ -477,14 +497,16 @@ def _optimize_conformers(
                     field = AllChem.MMFFGetMoleculeForceField(molecule, props, confId=conf_id)
                     if field is None:
                         continue
-                    field.Minimize(maxIts=500)
+                    status = _minimize_conformer(field, max_iterations=max_iterations, max_attempts=max_attempts)
                     energy = float(field.CalcEnergy())
                 except (RuntimeError, ValueError) as exc:
                     diagnostics.append(
                         f"MMFF conformer {conf_id} failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
                     )
                     continue
-                if isfinite(energy) and (best is None or energy < best[1]):
+                if status != 0:
+                    diagnostics.append(f"Conformer {conf_id} did not converge (status {status})")
+                if status == 0 and isfinite(energy) and (best is None or energy < best[1]):
                     best = (conf_id, energy)
             if best is not None:
                 return _ConformerSelectionResult(
@@ -501,14 +523,16 @@ def _optimize_conformers(
             field = AllChem.UFFGetMoleculeForceField(molecule, confId=conf_id)
             if field is None:
                 continue
-            field.Minimize(maxIts=500)
+            status = _minimize_conformer(field, max_iterations=max_iterations, max_attempts=max_attempts)
             energy = float(field.CalcEnergy())
         except (RuntimeError, ValueError) as exc:
             diagnostics.append(
                 f"UFF conformer {conf_id} failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
             )
             continue
-        if isfinite(energy) and (best is None or energy < best[1]):
+        if status != 0:
+            diagnostics.append(f"Conformer {conf_id} did not converge (status {status})")
+        if status == 0 and isfinite(energy) and (best is None or energy < best[1]):
             best = (conf_id, energy)
     if best is not None:
         return _ConformerSelectionResult(
@@ -524,7 +548,7 @@ def _optimize_conformers(
             conformer_ids[0],
             None,
             "none",
-            "skipped",
+            "unconverged",
             tuple(diagnostics),
         )
     detail = "; ".join(diagnostics)
