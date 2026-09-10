@@ -250,6 +250,68 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(report["n_total_atoms"], 4)
             self.assertEqual(report["guest_components"], ["Xe_GENERICMOFS"])
 
+    def test_run_lammps_md_guest_restart_keeps_dreiding_hbond_hybrid_labels(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "md_guest_hbond_example.cif"
+            cif_path.write_text(self._hbond_cif_text(), encoding="utf-8")
+            snapshot_path = temp_path / "result_10.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "1 atoms",
+                        "1 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 131.293 # Xe",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 0.0 2.0 3.0 4.0 0 0 0",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
+            guest_restart_state = parse_lammps_guest_restart_snapshot(
+                snapshot_path,
+                templates=templates,
+                sites=sites,
+            )
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = run_lammps_md_on_cif(
+                    cif_path,
+                    output_dir=temp_path / "md_guest_hbond_out",
+                    settings=LammpsMdSettings(
+                        forcefield="dreiding",
+                        charge_model="none",
+                        steps=5,
+                    ),
+                    guest_restart_state=guest_restart_state,
+                )
+
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            pairij_rows = [
+                line.strip()
+                for line in data_text.split("PairIJ Coeffs", 1)[1].split("Bond Coeffs", 1)[0].splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(pairij_rows)
+            for row in pairij_rows:
+                self.assertIn("lj/cut/coul/long", row)
+            self.assertIn(
+                "pair_style hybrid/overlay lj/cut/coul/long 12.000000 12.000000 hbond/dreiding/lj 4 9.000000 11.000000 90.000000",
+                script_text,
+            )
+            self.assertIn("pair_coeff 2 2 hbond/dreiding/lj 3 i 9 2.75", script_text)
+
     def test_run_lammps_md_on_cif_expands_framework_to_guest_restart_supercell(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -651,6 +713,8 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(result.parameter_sources["forcefield"], "DREIDING")
             self.assertIn("standard DREIDING Tables I-II", result.parameter_sources["nonbond_parameters"])
             self.assertIn("Cu/Ni/Mg", result.parameter_sources["reference_logic"])
+            self.assertIn("UFF substitutions", result.parameter_sources["reference_logic"])
+            self.assertNotIn("heuristic", result.parameter_sources["reference_logic"])
             self.assertIn("special_bonds dreiding", script_text)
             self.assertIn("angle_style hybrid cosine/squared", script_text)
             self.assertIn("dihedral_style charmm", script_text)
@@ -667,6 +731,139 @@ class LammpsTests(unittest.TestCase):
                     self.assertIn(tokens[3], {"0", "180"})
             self.assertGreaterEqual(result.n_dihedrals, 1)
             self.assertGreaterEqual(result.n_impropers, 1)
+
+    def test_dreiding_hbond_export_enabled_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "methylamine.cif"
+            cif_path.write_text(self._hbond_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "hbond_out",
+                    settings=LammpsOptimizationSettings(forcefield="dreiding", charge_model="none"),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            self.assertIn("H__HB", set(result.atom_type_symbols.values()))
+            self.assertIn(
+                "pair_style hybrid/overlay lj/cut 12.000000 hbond/dreiding/lj 4 9.000000 11.000000 90.000000",
+                script_text,
+            )
+            self.assertIn("special_bonds dreiding", script_text)
+            hbond_lines = [line for line in script_text.splitlines() if "hbond/dreiding/lj" in line and line.startswith("pair_coeff")]
+            self.assertEqual(hbond_lines, ["pair_coeff 2 2 hbond/dreiding/lj 3 i 9 2.75"])
+            self.assertIn("1 1 lj/cut ", data_text)
+            self.assertIn("Dhb=9", result.parameter_sources["hydrogen_bonding"])
+
+    def test_dreiding_hbond_uses_charged_dhb_with_input_cif_charges(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "methylamine_charged.cif"
+            cif_path.write_text(self._hbond_cif_text(charged=True), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "hbond_charged_out",
+                    settings=LammpsOptimizationSettings(forcefield="dreiding", charge_model="none"),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn(
+                "pair_style hybrid/overlay lj/cut/coul/long 12.000000 12.000000 hbond/dreiding/lj 4 9.000000 11.000000 90.000000",
+                script_text,
+            )
+            self.assertIn("pair_coeff 2 2 hbond/dreiding/lj 3 i 7 2.75", script_text)
+            self.assertIn("Dhb=7", result.parameter_sources["hydrogen_bonding"])
+
+    def test_dreiding_hbond_opt_out_restores_plain_export(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "methylamine.cif"
+            cif_path.write_text(self._hbond_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "hbond_opt_out",
+                    settings=LammpsOptimizationSettings(
+                        forcefield="dreiding",
+                        charge_model="none",
+                        dreiding_hbond=False,
+                    ),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            self.assertNotIn("H__HB", set(result.atom_type_symbols.values()))
+            self.assertIn("pair_style lj/cut 12.000000\n", script_text)
+            self.assertNotIn("hbond/dreiding", script_text)
+            self.assertNotIn(" lj/cut ", data_text)
+            self.assertNotIn("hydrogen_bonding", result.parameter_sources)
+
+    def test_dreiding_hbond_soft_pre_minimization_restores_hybrid_coeffs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "methylamine.cif"
+            cif_path.write_text(self._hbond_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "hbond_soft_out",
+                    settings=LammpsOptimizationSettings(
+                        forcefield="dreiding",
+                        charge_model="none",
+                        pre_minimization_mode="soft",
+                    ),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertIn("pair_style soft ", script_text)
+            restore_section = script_text.split("pair_style soft ", 1)[1]
+            self.assertIn(
+                "pair_style hybrid/overlay lj/cut 12.000000 hbond/dreiding/lj 4 9.000000 11.000000 90.000000",
+                restore_section,
+            )
+            self.assertIn("pair_coeff 1 1 lj/cut ", restore_section)
+            self.assertIn("pair_coeff 2 2 hbond/dreiding/lj 3 i 9 2.75", restore_section)
+
+    def test_uff_backend_ignores_dreiding_hbond(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "methylamine.cif"
+            cif_path.write_text(self._hbond_cif_text(), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "uff_hbond_out",
+                    settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            self.assertNotIn("H__HB", set(result.atom_type_symbols.values()))
+            self.assertIn("pair_style lj/cut 12.000000\n", script_text)
+            self.assertNotIn("hbond/dreiding", script_text)
+            self.assertNotIn("hydrogen_bonding", result.parameter_sources)
+
+    def test_lammps_md_settings_carry_dreiding_hbond_opt_out(self):
+        optimization_settings = lammps_module._md_settings_to_optimization_settings(
+            LammpsMdSettings(forcefield="dreiding", charge_model="none", dreiding_hbond=False)
+        )
+        self.assertFalse(optimization_settings.dreiding_hbond)
+        optimization_settings = lammps_module._md_settings_to_optimization_settings(
+            LammpsMdSettings(forcefield="dreiding", charge_model="none")
+        )
+        self.assertTrue(optimization_settings.dreiding_hbond)
 
     def test_lammps_eqeq_charge_model_writes_charged_export(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1274,6 +1471,63 @@ class LammpsTests(unittest.TestCase):
             "a2 a3 . . 1.500000 S\n"
             "a3 a4 . 1_655 1.500000 S\n"
             "a4 a1 . . 1.500000 S\n"
+        )
+
+    def _hbond_cif_text(self, *, charged: bool = False) -> str:
+        charge_header = "_atom_site_charge\n" if charged else ""
+        charges = (" -0.3", " 0.1", " 0.1", " 0.1", " 0.0", " 0.0", " 0.0") if charged else ("",) * 7
+        sites = (
+            ("c1", "C", "0.400000 0.400000 0.400000"),
+            ("n1", "N", "0.520000 0.400000 0.400000"),
+            ("h1", "H", "0.560000 0.470000 0.400000"),
+            ("h2", "H", "0.560000 0.330000 0.400000"),
+            ("h3", "H", "0.375000 0.470000 0.440000"),
+            ("h4", "H", "0.375000 0.360000 0.470000"),
+            ("h5", "H", "0.375000 0.380000 0.320000"),
+        )
+        atom_rows = "".join(
+            f"{label} {symbol} {position} 1.00{charge}\n"
+            for (label, symbol, position), charge in zip(sites, charges)
+        )
+        return (
+            "data_methylamine\n"
+            "_audit_creation_method 'cofkit test'\n"
+            "_space_group_name_H-M_alt 'P 1'\n"
+            "_space_group_IT_number 1\n"
+            "_cell_length_a 12.000000\n"
+            "_cell_length_b 12.000000\n"
+            "_cell_length_c 12.000000\n"
+            "_cell_angle_alpha 90.000000\n"
+            "_cell_angle_beta 90.000000\n"
+            "_cell_angle_gamma 90.000000\n"
+            "\n"
+            "loop_\n"
+            "_space_group_symop_operation_xyz\n"
+            "'x,y,z'\n"
+            "\n"
+            "loop_\n"
+            "_atom_site_label\n"
+            "_atom_site_type_symbol\n"
+            "_atom_site_fract_x\n"
+            "_atom_site_fract_y\n"
+            "_atom_site_fract_z\n"
+            "_atom_site_occupancy\n"
+            f"{charge_header}"
+            f"{atom_rows}"
+            "\n"
+            "loop_\n"
+            "_geom_bond_atom_site_label_1\n"
+            "_geom_bond_atom_site_label_2\n"
+            "_geom_bond_site_symmetry_1\n"
+            "_geom_bond_site_symmetry_2\n"
+            "_geom_bond_distance\n"
+            "_ccdc_geom_bond_type\n"
+            "c1 n1 . . 1.470000 S\n"
+            "n1 h1 . . 1.010000 S\n"
+            "n1 h2 . . 1.010000 S\n"
+            "c1 h3 . . 1.090000 S\n"
+            "c1 h4 . . 1.090000 S\n"
+            "c1 h5 . . 1.090000 S\n"
         )
 
     def _multi_term_cif_text(self) -> str:

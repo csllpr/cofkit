@@ -71,8 +71,11 @@ class ForceFieldMetadataTests(unittest.TestCase):
             self.assertEqual(metadata.intramolecular_scaling.coulomb_14, 1.0)
             self.assertEqual(metadata.coverage.validated_linkages, ())
             self.assertEqual(metadata.coverage.linkage_validation_status, "not_validated")
-            self.assertEqual(metadata.license.status, "unreviewed")
             self.assertTrue(metadata.parameter_source.citations[0].doi)
+
+        self.assertEqual(uff.license.status, "unreviewed")
+        self.assertEqual(dreiding.license.status, "verified")
+        self.assertIn("10.1021/ja00051a040", {citation.doi for citation in dreiding.parameter_source.citations})
 
         self.assertIn("Xe", uff.coverage.parameterized_elements)
         self.assertNotIn("Xe", dreiding.coverage.parameterized_elements)

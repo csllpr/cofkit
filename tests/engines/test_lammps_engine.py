@@ -77,6 +77,44 @@ def test_optimizer_adapter_convergence(lmp, tmp_path):
     assert result.convergence["stages"][-1]["force_norm_kcal_mol_angstrom"] <= 1e-6
 
 
+def test_dreiding_hbond_optimizer_run(lmp, tmp_path):
+    import math
+
+    from cofkit.lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
+
+    cif = tmp_path / "input.cif"
+    cif.write_text(
+        (
+            Path(__file__).resolve().parents[1] / "fixtures" / "engine_methylamine.cif"
+        ).read_text()
+    )
+    result = optimize_cif_with_lammps(
+        cif,
+        lmp_path=lmp,
+        settings=LammpsOptimizationSettings(
+            enable_omp=False,
+            charge_model="none",
+            pre_minimization_steps=0,
+            relax_cell=False,
+            force_tolerance=1e-4,
+            max_iterations=10000,
+            max_evaluations=100000,
+        ),
+    )
+    assert result.convergence["converged"]
+    assert "H__HB" in set(result.atom_type_symbols.values())
+    script_text = Path(result.lammps_input_script_path).read_text()
+    assert "hbond/dreiding/lj" in script_text
+    log_text = Path(result.lammps_log_path).read_text()
+    energy_blocks = re.findall(
+        r"Energy initial, next-to-last, final =\s*\n\s*([-+\deE. ]+)\n", log_text
+    )
+    assert energy_blocks
+    energies = [float(value) for block in energy_blocks for value in block.split()]
+    assert energies
+    assert all(math.isfinite(value) for value in energies)
+
+
 def test_optimizer_rejects_real_iteration_exhaustion(lmp, tmp_path):
     from cofkit.lammps import (
         LammpsExecutionError,

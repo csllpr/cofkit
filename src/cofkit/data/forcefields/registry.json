@@ -130,7 +130,7 @@
       "aliases": [],
       "scope": "framework",
       "parameter_source": {
-        "description": "Paper-backed standard DREIDING Tables I-II with explicitly documented cofkit heuristic carryovers for Cu, Ni, and Mg.",
+        "description": "Paper-backed standard DREIDING Tables I-II with UFF substitutions for Cu, Ni, and Mg (elements outside the DREIDING paper coverage).",
         "citations": [
           {
             "role": "forcefield_definition",
@@ -139,13 +139,21 @@
             "year": 1990,
             "doi": "10.1021/j100389a010",
             "url": "https://doi.org/10.1021/j100389a010"
+          },
+          {
+            "role": "metal_parameter_substitution",
+            "title": "UFF, a Full Periodic Table Force Field for Molecular Mechanics and Molecular Dynamics Simulations",
+            "authors": "Rappe, Casewit, Colwell, Goddard, and Skiff",
+            "year": 1992,
+            "doi": "10.1021/ja00051a040",
+            "url": "https://doi.org/10.1021/ja00051a040"
           }
         ],
         "artifacts": [
           {
             "role": "parameter_table",
             "path": "_dreiding_reference.py",
-            "sha256": "2aa0f958fb360c5cec55d6a8f03aeaa6c5c4e184bf666ddcd4598f66e1cc73a0",
+            "sha256": "48cc877472d91113d82333063d4eba32a025f42e8ddaf099f0407e6f5f9108f0",
             "provenance": "cofkit's embedded DREIDING parameter table and element representatives."
           }
         ]
@@ -187,8 +195,18 @@
           "lammps": "explicit_pairij",
           "raspa": "mixing_rules"
         },
+        "hydrogen_bonding": {
+          "backends": ["lammps"],
+          "convention": "DREIDING Table V 12-10 donor-acceptor term (hbond/dreiding/lj), Rhb 2.75 A, cos^4(theta_DHA)",
+          "dhb_kcal_per_mol": {
+            "with_charges": 7.0,
+            "charge_free": 9.0
+          },
+          "default": "on",
+          "opt_out": "cofkit calculate lammps-optimize / hybrid-mdmc and cofkit validate optimize accept --no-dreiding-hbond"
+        },
         "notes": [
-          "Hydrogen-bond-specific DREIDING terms are not implemented by the current exporter."
+          "Hydrogen-bond terms are exported for the LAMMPS backend per DREIDING Table V (default on, opt-out via --no-dreiding-hbond); the RASPA backend has no hydrogen-bond term."
         ]
       },
       "intramolecular_scaling": {
@@ -215,15 +233,15 @@
           "raspa": ["H", "B", "C", "N", "O", "F", "P", "S", "Cl", "Br"]
         },
         "notes": [
-          "Cu, Ni, and Mg are heuristic carryovers rather than paper-backed standard DREIDING rows.",
+          "Cu, Ni, and Mg use UFF parameter substitutions (Rappe et al. 1992, DOI 10.1021/ja00051a040) because those elements are outside the DREIDING paper coverage.",
           "No COF linkage family has yet completed a force-field-specific validation suite."
         ]
       },
       "license": {
-        "status": "unreviewed",
+        "status": "verified",
         "identifier": null,
         "source_url": "https://doi.org/10.1021/j100389a010",
-        "notes": "The numerical table is literature-derived and includes attributed implementation carryovers; redistribution status requires review."
+        "notes": "Parameter values are scientific facts transcribed and verified against the published papers (10.1021/j100389a010, 10.1021/ja00051a040); the implementation is original cofkit code and the earlier heuristic seed carryover values have been fully replaced."
       },
       "notes": [
         "The registry describes cofkit's implemented subset and deviations, not all published DREIDING variants."

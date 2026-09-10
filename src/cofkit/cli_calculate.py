@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from .forcefields import supported_forcefield_selectors
 from .graspa import (
@@ -199,6 +200,16 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         choices=_FORCEFIELD_SELECTORS,
         help=(
             "Forcefield backend to use for the LAMMPS data file. Default: dreiding."
+        ),
+    )
+    parser.add_argument(
+        "--dreiding-hbond",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Export DREIDING Table V hydrogen-bond terms (LAMMPS hbond/dreiding/lj) for N/O/F-bound "
+            "hydrogens with the DREIDING backend. Default: enabled. Use --no-dreiding-hbond to opt out; "
+            "ignored by the UFF backend."
         ),
     )
     parser.add_argument(
@@ -562,6 +573,7 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
     settings = LammpsOptimizationSettings(
         forcefield=args.forcefield,
         charge_model=args.charge_model,
+        dreiding_hbond=args.dreiding_hbond,
         pair_cutoff=args.pair_cutoff,
         coulomb_cutoff=args.coulomb_cutoff,
         ewald_precision=args.ewald_precision,
@@ -620,6 +632,11 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         reciprocal_space_cells=args.eqeq_reciprocal_space_cells,
         eta=args.eqeq_eta,
     )
+    if not args.dreiding_hbond and args.forcefield.strip().lower() == "uff":
+        print(
+            "warning: --no-dreiding-hbond has no effect with the UFF forcefield backend.",
+            file=sys.stderr,
+        )
     try:
         result = optimize_cif_with_lammps(
             args.cif_path,
@@ -1564,6 +1581,16 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
         help="LAMMPS framework forcefield for each MD segment. Default: dreiding.",
     )
     parser.add_argument(
+        "--dreiding-hbond",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Export DREIDING Table V hydrogen-bond terms (LAMMPS hbond/dreiding/lj) for N/O/F-bound "
+            "hydrogens in LAMMPS MD segments with the DREIDING backend. Default: enabled. "
+            "Use --no-dreiding-hbond to opt out; ignored by the UFF backend."
+        ),
+    )
+    parser.add_argument(
         "--charge-model",
         choices=("none", "eqeq"),
         default="eqeq",
@@ -1808,6 +1835,7 @@ def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
         enable_omp=not args.md_disable_omp,
         forcefield=args.lammps_forcefield,
         charge_model=args.charge_model,
+        dreiding_hbond=args.dreiding_hbond,
         pair_cutoff=args.pair_cutoff,
         coulomb_cutoff=args.coulomb_cutoff,
         ewald_precision=args.ewald_precision,
@@ -1839,6 +1867,11 @@ def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
         cutoff_coulomb=args.cutoff_coulomb,
         ewald_precision=args.ewald_precision,
     )
+    if not args.dreiding_hbond and args.lammps_forcefield.strip().lower() == "uff":
+        print(
+            "warning: --no-dreiding-hbond has no effect with the UFF forcefield backend.",
+            file=sys.stderr,
+        )
     try:
         result = run_hybrid_mdmc_workflow(
             args.cif_path,

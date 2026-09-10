@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 import json
 
@@ -87,6 +88,15 @@ def _add_optimize_parser(subparsers) -> None:
     )
     parser.add_argument("--json", action="store_true", help="Print the validation result as JSON.")
     parser.add_argument("--settings-json", type=Path, help="JSON object of LammpsOptimizationSettings overrides.")
+    parser.add_argument(
+        "--dreiding-hbond",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Export DREIDING Table V hydrogen-bond terms (LAMMPS hbond/dreiding/lj) for the DREIDING backend. "
+            "Default: enabled. Use --no-dreiding-hbond to opt out; overrides --settings-json."
+        ),
+    )
     parser.set_defaults(func=_run_optimize)
 
 
@@ -103,7 +113,14 @@ def _run_optimize(args: argparse.Namespace) -> None:
         overrides = json.loads(args.settings_json.read_text()) if args.settings_json else {}
         if not isinstance(overrides, dict):
             raise ValueError("--settings-json must contain a JSON object.")
+        if args.dreiding_hbond is not None:
+            overrides["dreiding_hbond"] = args.dreiding_hbond
         settings = LammpsOptimizationSettings(**overrides)
+        if not settings.dreiding_hbond and settings.forcefield.strip().lower() in {"uff", "uff_openbabel"}:
+            print(
+                "warning: --no-dreiding-hbond has no effect with the UFF forcefield backend.",
+                file=sys.stderr,
+            )
         result = validate_lammps_optimized_cif_against_cofid(
             args.cofid,
             args.cif_path,

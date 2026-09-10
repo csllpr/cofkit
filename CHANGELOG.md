@@ -9,10 +9,13 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 ### Added
 
 - event-based CIF decomposition with immutable linkage events, atomic azine/boronate/ring handling, bounded reconstruction hypotheses, global endpoint/framework/topology validation, generalized triazine motif classification, and structured decomposition diagnostics
+- DREIDING Table V hydrogen-bond terms in the LAMMPS backend: N/O/F-bound hydrogens are retyped `H__HB` and donor-acceptor pairs get a 12-10 `hbond/dreiding/lj` term via `pair_style hybrid/overlay` (`Rhb` 2.75 angstrom, `cos^4(theta_DHA)`, `Dhb` 7.0 kcal/mol with charges and 9.0 kcal/mol charge-free), enabled by default with a `--no-dreiding-hbond` opt-out on `calculate lammps-optimize`, `calculate hybrid-mdmc`, and `validate optimize`
 
 ### Changed
 
 - event-based decomposition is now the API and CLI default with globally validated reconstruction hypotheses; the previous per-family engine remains available explicitly through `decomposition_mode="legacy"` and `--decomposition-mode legacy`
+- DREIDING Cu/Ni/Mg parameter rows are now UFF substitutions (Rappe et al. 1992, DOI 10.1021/ja00051a040, transcribed from the bundled pinned `UFF.prm`) instead of heuristic carryovers, because those elements are outside the DREIDING paper coverage
+- DREIDING optimization and MD numerics change for structures containing N-H, O-H, or F-H bonds: hydrogen-bond terms are now exported by default (opt out with `--no-dreiding-hbond`), and N/O/F-bound hydrogens carry the paper's near-zero `H__HB` Lennard-Jones well depth
 - Zeo++ pore-size attributes, CLI labels, and JSON report keys now expose `largest_cavity_diameter` (LCD / `Di`), `pore_limiting_diameter` (PLD / `Df`), and the distinct `largest_included_sphere_along_free_path_diameter` (`Dif`); reports include a machine-readable `pore_diameter_semantics` glossary, and the previous Python attribute names remain as compatibility aliases
 - Zeo++ reports now label crystallographic-direction values, units, probe-center-accessible surface/volume, inaccessible-pocket contributions, Voronoi-node fractions, per-channel dimensionality, and independent `max_channel_*` aggregates explicitly; scan settings include radii plus derived diameters, enforce `probe_radius <= channel_radius`, and carry a machine-readable `measurement_semantics` glossary
 

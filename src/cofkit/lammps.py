@@ -73,6 +73,21 @@ _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic",
 _MIN_MODIFY_NORM_OPTIONS = {"two", "inf", "max"}
 _MIN_MODIFY_FIRE_INTEGRATOR_OPTIONS = {"eulerimplicit", "verlet", "leapfrog", "eulerexplicit"}
 _PRE_MINIMIZATION_MODE_OPTIONS = {"none", "md", "soft"}
+# DREIDING hydrogen-bond convention (Mayo et al., J. Phys. Chem. 1990, 94,
+# 8897-8909, Table V): 12-10 donor-acceptor term with Rhb = 2.75 A and a
+# cos^4(theta_DHA) angular factor. Dhb = 7.0 kcal/mol with Gasteiger-like
+# charges (cofkit uses EQeq), 9.0 kcal/mol charge-free. The hbond/dreiding/lj
+# cutoffs follow the LAMMPS documentation example (rin 9.0, rout 11.0,
+# angle cutoff 90 degrees).
+_DREIDING_HBOND_TYPE_PREFIXES = ("N_", "O_", "F_")
+_DREIDING_HBOND_HYDROGEN_TYPE = "H__HB"
+_DREIDING_HBOND_COSINE_POWER = 4
+_DREIDING_HBOND_RHB = 2.75
+_DREIDING_HBOND_DHB_CHARGED = 7.0
+_DREIDING_HBOND_DHB_UNCHARGED = 9.0
+_DREIDING_HBOND_INNER_CUTOFF = 9.0
+_DREIDING_HBOND_OUTER_CUTOFF = 11.0
+_DREIDING_HBOND_ANGLE_CUTOFF = 90.0
 _BOX_RELAX_MODE_OPTIONS = {"auto", "iso", "aniso", "tri"}
 _UNSUPPORTED_BOX_RELAX_MIN_STYLES = {"quickmin", "fire", "hftn", "cg/kk"}
 _DREIDING_SUPPORTED_ELEMENT_TYPES = frozenset(DREIDING_FRAMEWORK_TYPE_BY_ELEMENT)
@@ -152,6 +167,7 @@ class LammpsOptimizationSettings:
     enable_omp: bool = True
     forcefield: str = "dreiding"
     charge_model: str = "eqeq"
+    dreiding_hbond: bool = True
     pair_cutoff: float = 12.0
     coulomb_cutoff: float = 12.0
     ewald_precision: float = 1.0e-6
@@ -209,6 +225,7 @@ class LammpsMdSettings:
     enable_omp: bool = True
     forcefield: str = "dreiding"
     charge_model: str = "eqeq"
+    dreiding_hbond: bool = True
     pair_cutoff: float = 12.0
     coulomb_cutoff: float = 12.0
     ewald_precision: float = 1.0e-6
@@ -418,6 +435,7 @@ class _PreparedLammpsSystem:
     n_charged_atoms: int
     net_charge: float | None
     warnings: tuple[str, ...]
+    hbond_pair_coeff_lines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -904,6 +922,7 @@ def _md_settings_to_optimization_settings(settings: LammpsMdSettings) -> LammpsO
     return LammpsOptimizationSettings(
         forcefield=settings.forcefield,
         charge_model=settings.charge_model,
+        dreiding_hbond=settings.dreiding_hbond,
         pair_cutoff=settings.pair_cutoff,
         coulomb_cutoff=settings.coulomb_cutoff,
         ewald_precision=settings.ewald_precision,
@@ -1087,7 +1106,7 @@ def _prepare_lammps_system(
     if forcefield == "uff":
         return _prepare_uff_lammps_system(parsed)
     if forcefield == "dreiding":
-        return _prepare_dreiding_lammps_system(parsed)
+        return _prepare_dreiding_lammps_system(parsed, dreiding_hbond=settings.dreiding_hbond)
     raise LammpsConfigurationError(f"Unsupported forcefield backend requested: {settings.forcefield!r}")
 
 
@@ -1276,7 +1295,11 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
     )
 
 
-def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammpsSystem:
+def _prepare_dreiding_lammps_system(
+    parsed: _ParsedExplicitBondCif,
+    *,
+    dreiding_hbond: bool = True,
+) -> _PreparedLammpsSystem:
     _require_dreiding_support()
     if any(bond.bond_order is None for bond in parsed.bonds):
         raise LammpsInputError(
@@ -1297,6 +1320,12 @@ def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _Prepared
     }
     ob_molecule = _build_openbabel_molecule(parsed, typing_cartesian_positions)
     atom_type_by_atom_id = _assign_dreiding_atom_types(ob_molecule)
+    hbond_donor_type_labels: frozenset[str] = frozenset()
+    if dreiding_hbond:
+        atom_type_by_atom_id, hbond_donor_type_labels = _apply_dreiding_hbond_hydrogen_typing(
+            parsed,
+            atom_type_by_atom_id,
+        )
     (
         ordered_type_labels,
         atom_type_ids,
@@ -1306,6 +1335,14 @@ def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _Prepared
         ordered_type_labels=ordered_type_labels,
         atom_type_ids=atom_type_ids,
     )
+    hbond_pair_coeff_lines: tuple[str, ...] = ()
+    if hbond_donor_type_labels:
+        hbond_pair_coeff_lines = _build_dreiding_hbond_pair_coeff_lines(
+            ordered_type_labels=ordered_type_labels,
+            atom_type_ids=atom_type_ids,
+            donor_type_labels=hbond_donor_type_labels,
+            has_charges=has_all_charges,
+        )
     bond_topology_rows, bond_coeff_rows = _build_dreiding_bond_terms(
         parsed=parsed,
         atom_type_by_atom_id=atom_type_by_atom_id,
@@ -1410,6 +1447,11 @@ def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _Prepared
     has_image_flags = image_conflicts == 0
     if has_image_flags:
         data_text = _inject_atom_image_flags(data_text, atom_images)
+    if hbond_pair_coeff_lines:
+        data_text = _insert_pairij_substyle_labels(
+            data_text,
+            substyle=_lj_pair_substyle(has_charges=has_all_charges),
+        )
 
     warnings: list[str] = []
     if image_conflicts > 0:
@@ -1425,6 +1467,13 @@ def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _Prepared
         "nonbond_parameters": f"{DREIDING_REFERENCE_SOURCE} Lennard-Jones parameters",
         "reference_logic": DREIDING_REFERENCE_NOTES,
     }
+    if hbond_pair_coeff_lines:
+        dhb = _DREIDING_HBOND_DHB_CHARGED if has_all_charges else _DREIDING_HBOND_DHB_UNCHARGED
+        parameter_sources["hydrogen_bonding"] = (
+            "DREIDING Table V 12-10 hydrogen-bond terms exported via LAMMPS hbond/dreiding/lj "
+            f"(Dhb={dhb:.8g} kcal/mol, {'charged' if has_all_charges else 'charge-free'} convention; "
+            f"Rhb={_DREIDING_HBOND_RHB:.8g} A)"
+        )
     if has_all_charges:
         parameter_sources["electrostatics"] = "Explicit atom charges carried into the LAMMPS data file"
         parameter_sources["charge_assignment"] = "Atom charges read from the CIF atom-site charge loop"
@@ -1448,6 +1497,7 @@ def _prepare_dreiding_lammps_system(parsed: _ParsedExplicitBondCif) -> _Prepared
         n_charged_atoms=len(parsed.atoms) if has_all_charges else 0,
         net_charge=(sum(float(atom.charge) for atom in parsed.atoms) if has_all_charges else None),
         warnings=tuple(warnings),
+        hbond_pair_coeff_lines=hbond_pair_coeff_lines,
     )
 
 
@@ -1513,6 +1563,32 @@ _LAMMPS_HEADER_COUNT_ORDER = (
 )
 
 
+def _insert_pairij_row_substyle_label(row: str, *, substyle: str) -> str:
+    coeff_part, separator, comment = row.partition("#")
+    fields = coeff_part.split()
+    try:
+        float(fields[2])
+    except ValueError:
+        fields = fields[:2] + fields[3:]
+    labeled = f"{fields[0]} {fields[1]} {substyle} {' '.join(fields[2:])}"
+    if separator:
+        return f"{labeled} # {comment.strip()}"
+    return labeled
+
+
+def _insert_pairij_substyle_labels(data_text: str, *, substyle: str) -> str:
+    lines = data_text.splitlines()
+    in_pairij_section = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if _is_lammps_data_section_header(stripped):
+            in_pairij_section = _lammps_section_base_name(stripped) == "PairIJ Coeffs"
+            continue
+        if in_pairij_section and stripped:
+            lines[index] = _insert_pairij_row_substyle_label(stripped, substyle=substyle)
+    return "\n".join(lines) + ("\n" if data_text.endswith("\n") else "")
+
+
 def _merge_guest_restart_state_into_lammps_data(
     *,
     prepared: _PreparedLammpsSystem,
@@ -1565,6 +1641,18 @@ def _merge_guest_restart_state_into_lammps_data(
         guest_type_by_site=guest_type_by_site,
         site_by_label=site_by_label,
     )
+    if prepared.hbond_pair_coeff_lines:
+        # The merged guest system always runs charged with lj/cut/coul/long,
+        # so every PairIJ row (framework and guest) must carry that substyle
+        # label for the hybrid/overlay pair style.
+        pairij_rows = [
+            _insert_pairij_row_substyle_label(row, substyle="lj/cut/coul/long")
+            for row in pairij_rows
+        ]
+        pair_rows = [
+            _insert_pairij_row_substyle_label(row, substyle="lj/cut/coul/long")
+            for row in pair_rows
+        ]
     pairij_rows.extend(pair_rows)
 
     molecule_atoms_by_key: dict[str, list[LammpsGuestSnapshotAtom]] = {}
@@ -1949,8 +2037,18 @@ def _parse_pairij_diagonal_rows(pairij_rows: Sequence[str]) -> dict[int, tuple[f
         try:
             left = int(parts[0])
             right = int(parts[1])
-            epsilon = float(parts[2])
-            sigma = float(parts[3])
+        except ValueError:
+            continue
+        values = parts[2:]
+        try:
+            float(values[0])
+        except ValueError:
+            values = values[1:]
+        if len(values) < 2:
+            continue
+        try:
+            epsilon = float(values[0])
+            sigma = float(values[1])
         except ValueError:
             continue
         if left == right:
@@ -2186,6 +2284,64 @@ def _build_dreiding_pairij_rows(
             sigma = ((left_params.r0 / _UFF_RMIN_TO_SIGMA_FACTOR) + (right_params.r0 / _UFF_RMIN_TO_SIGMA_FACTOR)) / 2.0
             rows.append([atom_type_ids[left_label], atom_type_ids[right_label], float(epsilon), float(sigma)])
     return rows
+
+
+def _apply_dreiding_hbond_hydrogen_typing(
+    parsed: _ParsedExplicitBondCif,
+    atom_type_by_atom_id: dict[int, str],
+) -> tuple[dict[int, str], frozenset[str]]:
+    donor_type_labels: set[str] = set()
+    hbond_hydrogen_ids: set[int] = set()
+    for bond in parsed.bonds:
+        left_type = atom_type_by_atom_id[bond.atom_id_1]
+        right_type = atom_type_by_atom_id[bond.atom_id_2]
+        if left_type == "H_" and right_type.startswith(_DREIDING_HBOND_TYPE_PREFIXES):
+            hbond_hydrogen_ids.add(bond.atom_id_1)
+            donor_type_labels.add(right_type)
+        elif right_type == "H_" and left_type.startswith(_DREIDING_HBOND_TYPE_PREFIXES):
+            hbond_hydrogen_ids.add(bond.atom_id_2)
+            donor_type_labels.add(left_type)
+    if not hbond_hydrogen_ids:
+        return atom_type_by_atom_id, frozenset()
+    retyped = dict(atom_type_by_atom_id)
+    for atom_id in hbond_hydrogen_ids:
+        retyped[atom_id] = _DREIDING_HBOND_HYDROGEN_TYPE
+    return retyped, frozenset(donor_type_labels)
+
+
+def _build_dreiding_hbond_pair_coeff_lines(
+    *,
+    ordered_type_labels: list[str],
+    atom_type_ids: dict[str, int],
+    donor_type_labels: frozenset[str],
+    has_charges: bool,
+) -> tuple[str, ...]:
+    hydrogen_type_id = atom_type_ids[_DREIDING_HBOND_HYDROGEN_TYPE]
+    dhb = _DREIDING_HBOND_DHB_CHARGED if has_charges else _DREIDING_HBOND_DHB_UNCHARGED
+    acceptor_type_ids = sorted(
+        atom_type_ids[label]
+        for label in ordered_type_labels
+        if label.startswith(_DREIDING_HBOND_TYPE_PREFIXES)
+    )
+    lines: list[str] = []
+    for donor_type_id in sorted(atom_type_ids[label] for label in donor_type_labels):
+        for acceptor_type_id in acceptor_type_ids:
+            type_i = min(donor_type_id, acceptor_type_id)
+            type_j = max(donor_type_id, acceptor_type_id)
+            donor_flag = "i" if donor_type_id <= acceptor_type_id else "j"
+            lines.append(
+                f"pair_coeff {type_i} {type_j} hbond/dreiding/lj "
+                f"{hydrogen_type_id} {donor_flag} {dhb:.8g} {_DREIDING_HBOND_RHB:.8g}"
+            )
+    return tuple(lines)
+
+
+def _dreiding_hbond_pair_style_fragment() -> str:
+    return (
+        f"hbond/dreiding/lj {_DREIDING_HBOND_COSINE_POWER} "
+        f"{_DREIDING_HBOND_INNER_CUTOFF:.6f} {_DREIDING_HBOND_OUTER_CUTOFF:.6f} "
+        f"{_DREIDING_HBOND_ANGLE_CUTOFF:.6f}"
+    )
 
 
 def _build_dreiding_bond_terms(
@@ -3686,6 +3842,37 @@ def _has_nonperiodic_boundary(boundary: str) -> bool:
     return any(token.lower() == "f" for token in boundary.split())
 
 
+def _lj_pair_substyle(*, has_charges: bool, boundary: str = "p p p") -> str:
+    if has_charges:
+        if _has_nonperiodic_boundary(boundary):
+            return "lj/cut/coul/cut"
+        return "lj/cut/coul/long"
+    return "lj/cut"
+
+
+def _lj_pair_style_args(
+    settings: LammpsOptimizationSettings | LammpsMdSettings,
+    *,
+    substyle: str,
+) -> str:
+    if substyle in {"lj/cut/coul/long", "lj/cut/coul/cut"}:
+        return f"{settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
+    return f"{settings.pair_cutoff:.6f}"
+
+
+def _render_pair_style_line(
+    settings: LammpsOptimizationSettings | LammpsMdSettings,
+    prepared: _PreparedLammpsSystem,
+    *,
+    boundary: str,
+) -> str:
+    substyle = _lj_pair_substyle(has_charges=prepared.has_charges, boundary=boundary)
+    args = _lj_pair_style_args(settings, substyle=substyle)
+    if prepared.hbond_pair_coeff_lines:
+        return f"pair_style hybrid/overlay {substyle} {args} {_dreiding_hbond_pair_style_fragment()}"
+    return f"pair_style {substyle} {args}"
+
+
 def _render_special_bonds_line(prepared: _PreparedLammpsSystem) -> str:
     if prepared.forcefield_backend.startswith("dreiding"):
         return "special_bonds dreiding"
@@ -3699,12 +3886,19 @@ def _render_pairij_coeff_lines(prepared: _PreparedLammpsSystem) -> list[str]:
     pairij_rows = _lammps_section_rows(sections, "PairIJ Coeffs")
     pair_coeff_lines: list[str] = []
     for row in pairij_rows:
-        fields = row.split()
+        fields = row.split("#", 1)[0].split()
         if len(fields) < 4:
             continue
-        pair_coeff_lines.append(f"pair_coeff {fields[0]} {fields[1]} {fields[2]} {fields[3]}")
+        try:
+            float(fields[2])
+        except ValueError:
+            coeff_fields = fields[:5]
+        else:
+            coeff_fields = fields[:4]
+        pair_coeff_lines.append("pair_coeff " + " ".join(coeff_fields))
     if not pair_coeff_lines:
         raise LammpsInputError("LAMMPS soft pre-minimization could not find PairIJ Coeffs to restore.")
+    pair_coeff_lines.extend(prepared.hbond_pair_coeff_lines)
     return pair_coeff_lines
 
 
@@ -3722,15 +3916,7 @@ def _render_lammps_input_script(
     thermo_terms = ["step", "pe", "ebond"]
     minimization_stages = _build_minimization_stages(settings)
     periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
-    pair_style_line = (
-        f"pair_style lj/cut/coul/long {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
-        if periodic_electrostatics
-        else (
-            f"pair_style lj/cut/coul/cut {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
-            if prepared.has_charges
-            else f"pair_style lj/cut {settings.pair_cutoff:.6f}"
-        )
-    )
+    pair_style_line = _render_pair_style_line(settings, prepared, boundary=boundary)
     special_bonds_line = _render_special_bonds_line(prepared)
     lines = [
         "units real",
@@ -3761,6 +3947,7 @@ def _render_lammps_input_script(
         [
             f"read_data {data_file}",
             *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
+            *prepared.hbond_pair_coeff_lines,
             "compute cofkit_virial all pressure NULL virial",
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
@@ -3873,15 +4060,7 @@ def _render_lammps_md_input_script(
     data_file = data_path.name
     dump_file = dump_path.name
     periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
-    pair_style_line = (
-        f"pair_style lj/cut/coul/long {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
-        if periodic_electrostatics
-        else (
-            f"pair_style lj/cut/coul/cut {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
-            if prepared.has_charges
-            else f"pair_style lj/cut {settings.pair_cutoff:.6f}"
-        )
-    )
+    pair_style_line = _render_pair_style_line(settings, prepared, boundary=boundary)
     thermo_terms = ["step", "temp", "pe", "ke", "etotal", "press", "evdwl"]
     if prepared.has_charges:
         thermo_terms.append("ecoul")
@@ -3906,6 +4085,7 @@ def _render_lammps_md_input_script(
         [
             f"read_data {data_file}",
             *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
+            *prepared.hbond_pair_coeff_lines,
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
             f"timestep {settings.timestep:.8g}",

@@ -24,6 +24,7 @@ Important controls:
 
 - `--forcefield` selects a registered force-field family or stable parameter-set ID
 - `--charge-model {none,eqeq}` controls charge staging; default is `eqeq`
+- `--dreiding-hbond` / `--no-dreiding-hbond` toggles DREIDING hydrogen-bond export; default is enabled
 - `--pair-cutoff`, `--coulomb-cutoff`, and `--ewald-precision` tune nonbonded settings
 - `--pre-minimization-steps` and `--pre-minimization-*` tune the restrained prerun
 - `--two-stage` / `--no-two-stage` and `--stage2-*` tune staged minimization
@@ -37,7 +38,9 @@ Optimization exports now require final-stage convergence evidence from `lammps.l
 
 `validate optimize` uses the same defaults and accepts `--settings-json path.json`, a JSON object of `LammpsOptimizationSettings` overrides. The Python wrapper accepts `settings=LammpsOptimizationSettings(...)`. Periodic self-bonds or multiple bonds between the same atom IDs require an explicit larger supercell; unsupported primitive representations are rejected.
 
-The optimizer's DREIDING implementation still needs chemistry-specific qualification, particularly where hydrogen-bond terms or heuristic metal parameters matter. A numerically converged calculation does not by itself validate that model.
+With the DREIDING backend, hydrogen-bond terms follow the original paper's Table V convention (Mayo et al., *J. Phys. Chem.* 1990, 94, 8897-8909) and are exported for the LAMMPS backend only: hydrogens bonded to N/O/F-typed atoms are retyped `H__HB` (near-zero Lennard-Jones well depth), and donor-acceptor interactions are computed with a 12-10 `hbond/dreiding/lj` term (`pair_style hybrid/overlay`), with `Rhb = 2.75` angstrom, a `cos^4(theta_DHA)` angular factor, cosine periodicity 4, inner cutoff 9.0 angstrom, outer cutoff 11.0 angstrom, and an angle cutoff of 90 degrees (the LAMMPS documentation example values for this style). `Dhb` is 7.0 kcal/mol when the run carries charges (input-CIF or EQeq, following the paper's Gasteiger-like charge convention) and 9.0 kcal/mol for charge-free runs. The export is enabled by default; `--no-dreiding-hbond` opts out on `cofkit calculate lammps-optimize`, `cofkit calculate hybrid-mdmc`, and `cofkit validate optimize` (`--dreiding-hbond` / `--no-dreiding-hbond`). The flag has no effect with the UFF backend, and the RASPA/gRASPA framework assets have no hydrogen-bond term. This changes optimization numerics for structures containing N-H, O-H, or F-H bonds relative to earlier cofkit releases.
+
+The DREIDING Cu/Ni/Mg rows are UFF parameter substitutions (Rappe et al., *J. Am. Chem. Soc.* 1992, 114, 10024-10035, DOI 10.1021/ja00051a040, transcribed from the bundled pinned `UFF.prm`) because those elements are outside the DREIDING paper coverage; DREIDING-organic plus UFF-metal mixing is standard practice but remains a model choice. A numerically converged calculation does not by itself validate the underlying force-field model.
 
 ## Force-Field Metadata
 

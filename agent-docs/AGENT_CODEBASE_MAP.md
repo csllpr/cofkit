@@ -95,7 +95,7 @@ Then go straight to the module that matches the task.
 ## External calculation seams
 
 - [src/cofkit/lammps.py](../src/cofkit/lammps.py)
-  - UFF/DREIDING-backed explicit-bond CIF to LAMMPS data/input generation, EQeq charge staging, local minimization/MD orchestration, optional guest-restart atom/force-field merging for MD, and optimized or MD-updated CIF export.
+  - UFF/DREIDING-backed explicit-bond CIF to LAMMPS data/input generation, EQeq charge staging, local minimization/MD orchestration, optional guest-restart atom/force-field merging for MD, and optimized or MD-updated CIF export. The DREIDING path also retypes N/O/F-bound hydrogens as `H__HB` and exports Table V hydrogen-bond terms (`pair_style hybrid/overlay` + `hbond/dreiding/lj` pair coeffs, labeled PairIJ rows) unless `dreiding_hbond=False`.
 - [src/cofkit/graspa.py](../src/cofkit/graspa.py)
   - EQeq to gRASPA/RASPA2 Widom, single-component isotherm, and mixture workflows; framework mixing-rule generation; simulation.input rendering; result parsing.
 - [src/cofkit/hybrid_mdmc.py](../src/cofkit/hybrid_mdmc.py)

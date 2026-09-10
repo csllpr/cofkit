@@ -1,0 +1,43 @@
+data_methylamine
+_audit_creation_method 'cofkit hbond smoke test'
+_space_group_name_H-M_alt 'P 1'
+_space_group_IT_number 1
+_cell_length_a 12.000000
+_cell_length_b 12.000000
+_cell_length_c 12.000000
+_cell_angle_alpha 90.000000
+_cell_angle_beta 90.000000
+_cell_angle_gamma 90.000000
+
+loop_
+_space_group_symop_operation_xyz
+'x,y,z'
+
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+c1 C 0.400000 0.400000 0.400000 1.00
+n1 N 0.520000 0.400000 0.400000 1.00
+h1 H 0.560000 0.470000 0.400000 1.00
+h2 H 0.560000 0.330000 0.400000 1.00
+h3 H 0.375000 0.470000 0.440000 1.00
+h4 H 0.375000 0.360000 0.470000 1.00
+h5 H 0.375000 0.380000 0.320000 1.00
+
+loop_
+_geom_bond_atom_site_label_1
+_geom_bond_atom_site_label_2
+_geom_bond_site_symmetry_1
+_geom_bond_site_symmetry_2
+_geom_bond_distance
+_ccdc_geom_bond_type
+c1 n1 . . 1.470000 S
+n1 h1 . . 1.010000 S
+n1 h2 . . 1.010000 S
+c1 h3 . . 1.090000 S
+c1 h4 . . 1.090000 S
+c1 h5 . . 1.090000 S

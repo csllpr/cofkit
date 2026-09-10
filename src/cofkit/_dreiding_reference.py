@@ -13,18 +13,21 @@ class DreidingAtomParameters:
     s: float
 
 
-# The paper-backed rows below are intended to follow standard DREIDING
-# (Mayo et al., J. Phys. Chem. 1990, 94, 8897-8909, Tables I-II). The
-# original machine-readable seed came from lammps-interface, but the
-# canonical target for the paper-covered entries is standard DREIDING,
-# not the alternate DREIDING/A tables later in the same paper.
+# The paper-backed rows below follow standard DREIDING (Mayo et al.,
+# J. Phys. Chem. 1990, 94, 8897-8909, Tables I-II). The `s` field is the
+# per-atom X6 zeta exponent from paper Table II, retained for provenance;
+# the LJ 12-6 export does not use it. The Cu/Ni/Mg rows are UFF
+# substitutions (Rappe et al., J. Am. Chem. Soc. 1992, 114, 10024-10035,
+# DOI 10.1021/ja00051a040) transcribed from the bundled pinned UFF.prm,
+# because those elements are outside the DREIDING paper coverage.
 DREIDING_REFERENCE_SOURCE = (
     "standard DREIDING Tables I-II (Mayo et al., J. Phys. Chem. 1990)"
 )
 DREIDING_REFERENCE_NOTES = (
-    "Paper-backed entries track standard DREIDING Tables I-II. The Cu/Ni/Mg rows remain "
-    "explicit heuristic carryovers from lammps-interface commit 255f027cb76142d39c050a6810404debc6a06562, "
-    "and hydrogen-bond-specific parameters are not part of the current cofkit export."
+    "Paper-backed entries track standard DREIDING Tables I-II. The Cu/Ni/Mg rows are UFF "
+    "substitutions (Rappe et al., J. Am. Chem. Soc. 1992, 114, 10024-10035) for elements "
+    "outside the DREIDING paper coverage. Hydrogen-bond terms follow DREIDING Table V and "
+    "are exported for the LAMMPS backend (Dhb 7.0 with charges, 9.0 without)."
 )
 
 
@@ -66,11 +69,11 @@ DREIDING_PARAMETERS: dict[str, DreidingAtomParameters] = {
     "Ca": DreidingAtomParameters(1.940, 90.0, 3.472, 0.05, 0.0, 12.0),
     "Fe": DreidingAtomParameters(1.285, 90.0, 4.54, 0.055, 0.0, 12.0),
     "Zn": DreidingAtomParameters(1.330, 109.471, 4.54, 0.055, 0.0, 12.0),
-    # These three entries are explicitly heuristic carryovers from the
-    # lammps-interface seed rather than paper-backed standard DREIDING rows.
-    "Cu": DreidingAtomParameters(1.302, 90.0, 4.54, 0.055, 0.0, 12.0),
-    "Ni": DreidingAtomParameters(1.164, 90.0, 4.54, 0.055, 0.0, 12.0),
-    "Mg": DreidingAtomParameters(1.421, 90.0, 4.54, 0.055, 0.0, 12.0),
+    # UFF substitutions for elements outside the DREIDING paper coverage
+    # (Rappe et al. 1992; values from the bundled pinned UFF.prm).
+    "Cu": DreidingAtomParameters(1.302, 109.471, 3.495, 0.005, 0.0, 12.0),
+    "Ni": DreidingAtomParameters(1.164, 90.0, 2.834, 0.015, 0.0, 12.0),
+    "Mg": DreidingAtomParameters(1.421, 109.471, 3.021, 0.111, 0.0, 12.0),
     "C_R1": DreidingAtomParameters(0.700, 120.0, 4.23, 0.1356, 0.0, 14.034),
     "C_34": DreidingAtomParameters(0.770, 109.471, 4.2370, 0.3016, 0.0, 12.0),
     "C_33": DreidingAtomParameters(0.770, 109.471, 4.1524, 0.25, 0.0, 12.0),
