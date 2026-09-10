@@ -744,13 +744,15 @@ class BatchStructureGenerator:
         max_pairs: int | None = None,
         write_cif: bool | None = None,
         auto_detect_libraries: bool = False,
+        libraries: Mapping[str, tuple[BatchMonomerRecord, ...]] | None = None,
     ) -> BatchRunSummary:
         template = self._selected_binary_bridge_template(template_id=template_id)
-        libraries = self.load_binary_bridge_test_set(
-            input_dir,
-            template_id=template.id,
-            auto_detect=auto_detect_libraries,
-        )
+        if libraries is None:
+            libraries = self.load_binary_bridge_test_set(
+                input_dir,
+                template_id=template.id,
+                auto_detect=auto_detect_libraries,
+            )
         output_root = Path(output_dir)
         output_root.mkdir(parents=True, exist_ok=True)
         manifest_path = output_root / "manifest.jsonl"

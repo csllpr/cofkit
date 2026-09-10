@@ -50,6 +50,21 @@ cofkit build single-pair \
 
 The `first.geometry` and `second.geometry` objects in `summary.json` record the RDKit embedding method, whether a fallback was used, and force-field optimization status. Standard ETKDGv3 remains the primary path. If it fails, cofkit tries bounded random-coordinate ETKDGv3 and ETKDGv2 embeddings. A final 2D coordinate fallback is restricted to planar metal-containing or formally charged precursors, is not force-field minimized, and is labeled explicitly in the summary.
 
+## Motif-Overlap Warnings
+
+Some motif kinds share the same base SMARTS. In particular, `aldehyde` and `keto_aldehyde` match the same aldehyde groups; the `keto_aldehyde` handler additionally requires an ortho-hydroxyl or beta-keto route, marking a beta-ketoenamine precursor. When a monomer is assigned the generic kind (explicitly or through template-restricted autodetection) but also matches the specific one, cofkit emits a non-blocking `warning:` line on stderr. For example, forcing triformylphloroglucinol through an imine build:
+
+```bash
+cofkit build single-pair \
+  --template-id imine_bridge \
+  --first-smiles '<amine SMILES>' \
+  --second-smiles 'O=CC1=C(O)C(C=O)=C(O)C(C=O)=C1O' \
+  --second-motif-kind aldehyde \
+  --output-dir out/tp_imine
+```
+
+warns that the monomer also matches `keto_aldehyde`, that COFs assembled this way may only be stable as beta-ketoenamine (bken) COFs, and suggests `keto_enamine_bridge`. The build still completes. Single-pair runs record the warnings as an `overlap_warnings` list next to each monomer's `motif_kind` in `summary.json`. Batch library loaders attach the same `overlap_warnings` to each monomer record's metadata, and `batch-binary-bridge` / `batch-all-binary-bridges` echo them to stderr (deduplicated by monomer id) — this covers keto-aldehyde SMILES forced through an `aldehydes_count_*.txt` library file.
+
 ## Ring-Forming Linkages
 
 Use `ring-forming` for boroxine or triazine cyclotrimerization. Three-connected product rings are represented as virtual topology nodes; real ditopic precursor molecules occupy the hcb edges. A primitive hcb build therefore contains three precursor instances and two three-participant ring events.

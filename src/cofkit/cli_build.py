@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
@@ -328,24 +329,28 @@ def _run_single_pair(args: argparse.Namespace) -> None:
     allowed_motif_kinds = tuple(role.motif_kind for role in profile.binary_bridge_roles)
     resolver = MonomerRoleResolver.builtin()
 
-    first_kind = _resolve_single_pair_motif_kind(
+    first_kind, first_warnings = _resolve_single_pair_motif_kind(
         smiles=args.first_smiles,
         explicit_kind=args.first_motif_kind,
         monomer_id=args.first_id,
         allowed_motif_kinds=allowed_motif_kinds,
         auto_detect=args.auto_detect_motifs,
         resolver=resolver,
+        template_id=args.template_id,
         num_conformers=args.num_conformers,
     )
-    second_kind = _resolve_single_pair_motif_kind(
+    second_kind, second_warnings = _resolve_single_pair_motif_kind(
         smiles=args.second_smiles,
         explicit_kind=args.second_motif_kind,
         monomer_id=args.second_id,
         allowed_motif_kinds=allowed_motif_kinds,
         auto_detect=args.auto_detect_motifs,
         resolver=resolver,
+        template_id=args.template_id,
         num_conformers=args.num_conformers,
     )
+    for warning in (*first_warnings, *second_warnings):
+        print(f"warning: {warning}", file=sys.stderr)
 
     first = build_rdkit_monomer(
         args.first_id,
@@ -396,6 +401,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             "name": args.first_name or args.first_id,
             "motif_kind": first_kind,
             "motif_count": len(first.motifs),
+            "overlap_warnings": list(first_warnings),
             "geometry": _monomer_geometry_summary(first),
         },
         "second": {
@@ -403,6 +409,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             "name": args.second_name or args.second_id,
             "motif_kind": second_kind,
             "motif_count": len(second.motifs),
+            "overlap_warnings": list(second_warnings),
             "geometry": _monomer_geometry_summary(second),
         },
         "attempted_structures": attempted_structures,
@@ -623,19 +630,29 @@ def _resolve_single_pair_motif_kind(
     allowed_motif_kinds: Iterable[str],
     auto_detect: bool,
     resolver: MonomerRoleResolver,
+    template_id: str,
     num_conformers: int,
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
     if explicit_kind is not None:
-        return explicit_kind
-    if not auto_detect:
-        raise SystemExit(f"monomer {monomer_id!r} needs an explicit motif kind or --auto-detect-motifs")
-    record = resolver.infer_record(
+        kind = explicit_kind
+    else:
+        if not auto_detect:
+            raise SystemExit(f"monomer {monomer_id!r} needs an explicit motif kind or --auto-detect-motifs")
+        record = resolver.infer_record(
+            smiles,
+            record_id=monomer_id,
+            allowed_motif_kinds=allowed_motif_kinds,
+            num_conformers=num_conformers,
+        )
+        kind = record.motif_kind
+    warnings = resolver.forced_kind_warnings(
         smiles,
-        record_id=monomer_id,
-        allowed_motif_kinds=allowed_motif_kinds,
+        assigned_kind=kind,
+        monomer_id=monomer_id,
+        template_id=template_id,
         num_conformers=num_conformers,
     )
-    return record.motif_kind
+    return kind, warnings
 
 
 def _monomer_geometry_summary(monomer) -> dict[str, object]:
@@ -754,6 +771,12 @@ def _run_batch_binary_bridge(args: argparse.Namespace) -> None:
     if not Path(args.input_dir).is_dir():
         raise SystemExit(f"input directory does not exist: {args.input_dir}")
     generator = _configure_generator(args, template_id=args.template_id)
+    libraries = generator.load_binary_bridge_test_set(
+        args.input_dir,
+        template_id=args.template_id,
+        auto_detect=args.auto_detect_libraries,
+    )
+    _print_library_overlap_warnings(libraries)
     summary = generator.run_binary_bridge_batch(
         args.input_dir,
         args.output_dir,
@@ -761,8 +784,26 @@ def _run_batch_binary_bridge(args: argparse.Namespace) -> None:
         max_pairs=args.max_pairs,
         write_cif=args.write_cif,
         auto_detect_libraries=args.auto_detect_libraries,
+        libraries=libraries,
     )
     _print_batch_summary(summary, template_id=args.template_id)
+
+
+def _print_library_overlap_warnings(
+    libraries: Mapping[str, tuple],
+    *,
+    _seen_ids: set[str] | None = None,
+) -> set[str]:
+    seen = _seen_ids if _seen_ids is not None else set()
+    for records in libraries.values():
+        for record in records:
+            if record.id in seen:
+                continue
+            seen.add(record.id)
+            warnings = record.metadata.get("overlap_warnings", ())
+            for warning in warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+    return seen
 
 
 def _add_batch_all_binary_bridges_parser(subparsers) -> None:
@@ -801,11 +842,29 @@ def _run_batch_all_binary_bridges(args: argparse.Namespace) -> None:
     if not available_templates:
         raise SystemExit("no available binary-bridge templates were detected for the input directory")
 
+    seen_warning_ids: set[str] = set()
+    libraries_by_template = {}
+    for template_id in available_templates:
+        libraries = discovery.load_binary_bridge_test_set(
+            input_dir,
+            template_id=template_id,
+            auto_detect=args.auto_detect_libraries,
+        )
+        libraries_by_template[template_id] = libraries
+        _print_library_overlap_warnings(libraries, _seen_ids=seen_warning_ids)
+
     template_workers = min(max(1, args.template_workers), len(available_templates))
     summaries = {}
     with ThreadPoolExecutor(max_workers=template_workers) as executor:
         futures = {
-            executor.submit(_run_template_batch, template_id, args, input_dir, output_dir): template_id
+            executor.submit(
+                _run_template_batch,
+                template_id,
+                args,
+                input_dir,
+                output_dir,
+                libraries_by_template[template_id],
+            ): template_id
             for template_id in available_templates
         }
         for future in as_completed(futures):
@@ -831,6 +890,7 @@ def _run_template_batch(
     args: argparse.Namespace,
     input_dir: Path,
     output_dir: Path,
+    libraries: Mapping[str, tuple] | None = None,
 ):
     generator = _configure_generator(args, template_id=template_id)
     summary = generator.run_binary_bridge_batch(
@@ -840,6 +900,7 @@ def _run_template_batch(
         max_pairs=args.max_pairs,
         write_cif=args.write_cif,
         auto_detect_libraries=args.auto_detect_libraries,
+        libraries=libraries,
     )
     return template_id, summary
 

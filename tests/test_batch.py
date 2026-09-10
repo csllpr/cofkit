@@ -13,6 +13,7 @@ from cofkit import (
     BatchStructureGenerator,
     CoarseValidationThresholds,
     Frame,
+    MonomerRoleResolver,
     MonomerSpec,
     ReactiveMotif,
     ReactionRealizer,
@@ -46,6 +47,7 @@ BEX_D2H_AMINE = (
 HEXA_AMINE = "Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N"
 HEXA_ALDEHYDE = "O=Cc1ccc(-c2cc3c(cc2-c2ccc(C=O)cc2)C2c4cc(-c5ccc(C=O)cc5)c(-c5ccc(C=O)cc5)cc4C3c3cc(-c4ccc(C=O)cc4)c(-c4ccc(C=O)cc4)cc32)cc1"
 TP = "O=Cc1c(O)c(C=O)c(O)c(C=O)c1O"
+PHENYLENEDIACETONITRILE = "N#CCc1ccc(CC#N)cc1"
 COF42_HYDRAZIDE = "CCOc1cc(C(=O)NN)cc(C(=O)NN)c1OCC"
 
 
@@ -115,6 +117,93 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(record.expected_connectivity, 3)
         self.assertEqual(record.metadata["detected_motif_kinds"], ("aldehyde", "keto_aldehyde"))
         self.assertEqual(record.metadata["detected_connectivities"]["keto_aldehyde"], 3)
+
+    def test_forced_kind_warnings_flag_keto_aldehyde_behind_imine_assignment(self):
+        resolver = MonomerRoleResolver.builtin()
+
+        warnings = resolver.forced_kind_warnings(
+            TP,
+            assigned_kind="aldehyde",
+            monomer_id="tp",
+            template_id="imine_bridge",
+        )
+
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("keto_aldehyde", warnings[0])
+        self.assertIn("keto_enamine_bridge", warnings[0])
+
+    def test_forced_kind_warnings_silent_for_keto_enamine_assignment(self):
+        resolver = MonomerRoleResolver.builtin()
+
+        warnings = resolver.forced_kind_warnings(
+            TP,
+            assigned_kind="keto_aldehyde",
+            monomer_id="tp",
+            template_id="keto_enamine_bridge",
+        )
+
+        self.assertEqual(warnings, ())
+
+    def test_forced_kind_warnings_silent_for_plain_aldehyde(self):
+        resolver = MonomerRoleResolver.builtin()
+
+        warnings = resolver.forced_kind_warnings(
+            TFB,
+            assigned_kind="aldehyde",
+            monomer_id="tfb",
+            template_id="imine_bridge",
+        )
+
+        self.assertEqual(warnings, ())
+
+    def test_forced_kind_warnings_silent_for_nitrile_activated_methylene_overlap(self):
+        resolver = MonomerRoleResolver.builtin()
+
+        warnings = resolver.forced_kind_warnings(
+            PHENYLENEDIACETONITRILE,
+            assigned_kind="activated_methylene",
+            monomer_id="pda",
+        )
+
+        self.assertEqual(warnings, ())
+
+    def test_infer_monomer_record_with_restricted_kinds_warns_about_keto_aldehyde(self):
+        record = self.generator.infer_monomer_record(
+            TP,
+            record_id="generic_0001",
+            allowed_motif_kinds=("amine", "aldehyde"),
+        )
+
+        self.assertEqual(record.motif_kind, "aldehyde")
+        warnings = record.metadata["overlap_warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("keto_enamine_bridge", warnings[0])
+
+    def test_infer_monomer_record_plain_aldehyde_has_no_overlap_warnings(self):
+        record = self.generator.infer_monomer_record(
+            TFB,
+            record_id="generic_0001",
+            allowed_motif_kinds=("amine", "aldehyde"),
+        )
+
+        self.assertEqual(record.motif_kind, "aldehyde")
+        self.assertEqual(record.metadata["overlap_warnings"], ())
+
+    def test_load_smiles_library_attaches_overlap_warnings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "aldehydes_count_3.txt"
+            path.write_text(f"smiles\n{TP}\n{TFB}\n", encoding="utf-8")
+
+            records = self.generator.load_smiles_library(
+                path,
+                motif_kind="aldehyde",
+                expected_connectivity=3,
+            )
+
+        keto_warnings = records[0].metadata["overlap_warnings"]
+        self.assertEqual(len(keto_warnings), 1)
+        self.assertIn("keto_enamine_bridge", keto_warnings[0])
+        self.assertEqual(records[1].metadata["overlap_warnings"], ())
 
     def test_load_binary_bridge_test_set_auto_groups_generic_files_by_detected_role_and_connectivity(self):
         generator = BatchStructureGenerator(

@@ -62,6 +62,60 @@ class MonomerRoleResolver:
             candidates[motif_kind] = monomer
         return candidates
 
+    def forced_kind_warnings(
+        self,
+        smiles: str,
+        *,
+        assigned_kind: str,
+        monomer_id: str,
+        template_id: str | None = None,
+        num_conformers: int = 2,
+        random_seed: int = 0xC0F,
+    ) -> tuple[str, ...]:
+        """Warn when a forced/assigned generic kind shadows a more specific kind.
+
+        Best-effort: any failure to build the specific-kind monomer (weird
+        SMILES, RDKit errors) simply yields no warning.
+        """
+        warnings: list[str] = []
+        for specific_kind in self.generic_suppression.get(assigned_kind, ()):
+            try:
+                definition = self.motif_builder.motif_registry.get(specific_kind)
+            except KeyError:
+                continue
+            allowed_templates = tuple(definition.allowed_reaction_templates)
+            if template_id is not None and template_id in allowed_templates:
+                continue
+            try:
+                monomer = self.motif_builder.build_monomer(
+                    monomer_id,
+                    monomer_id,
+                    smiles,
+                    specific_kind,
+                    num_conformers=max(1, min(2, num_conformers)),
+                    random_seed=random_seed,
+                )
+            except Exception:
+                continue
+            if not monomer.motifs:
+                continue
+            template_note = f" for requested template {template_id!r}" if template_id is not None else ""
+            suggested = ", ".join(allowed_templates) if allowed_templates else "a compatible template"
+            if specific_kind == "keto_aldehyde":
+                specific_note = (
+                    " (a beta-ketoenamine precursor); COFs assembled this way may only be "
+                    "stable as beta-ketoenamine (bken) COFs, so"
+                )
+            else:
+                specific_note = ";"
+            warnings.append(
+                f"monomer {monomer_id!r} is parsed as {assigned_kind!r}{template_note}, "
+                f"but it also matches the more specific motif kind {specific_kind!r}"
+                f"{specific_note} consider template(s) "
+                f"{suggested} with motif kind {specific_kind!r}"
+            )
+        return tuple(warnings)
+
     def resolve_detected_motif_kind(
         self,
         candidates: Mapping[str, MonomerSpec],
@@ -116,6 +170,13 @@ class MonomerRoleResolver:
                 kind: len(candidate.motifs)
                 for kind, candidate in sorted(candidates.items())
             },
+            "overlap_warnings": self.forced_kind_warnings(
+                smiles,
+                assigned_kind=motif_kind,
+                monomer_id=record_id,
+                num_conformers=num_conformers,
+                random_seed=random_seed,
+            ),
         }
         if library_stem:
             metadata["library_stem"] = library_stem
@@ -197,16 +258,24 @@ class BinaryBridgeLibraryLoader:
                 if line_number == 1 and line.lower() == "smiles":
                     continue
                 index = len(rows) + 1
+                record_id = f"{prefix}_{index:04d}"
                 rows.append(
                     BatchMonomerRecord(
-                        id=f"{prefix}_{index:04d}",
-                        name=f"{prefix}_{index:04d}",
+                        id=record_id,
+                        name=record_id,
                         smiles=line,
                         motif_kind=motif_kind,
                         expected_connectivity=expected_connectivity,
                         source_path=str(library_path),
                         source_line=line_number,
-                        metadata={"library_stem": library_path.stem},
+                        metadata={
+                            "library_stem": library_path.stem,
+                            "overlap_warnings": self.role_resolver.forced_kind_warnings(
+                                line,
+                                assigned_kind=motif_kind,
+                                monomer_id=record_id,
+                            ),
+                        },
                     )
                 )
         return tuple(rows)

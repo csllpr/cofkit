@@ -8,6 +8,7 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Added
 
+- motif-overlap warnings for generic motif-kind assignments: when a monomer is parsed as a generic kind (currently `aldehyde`) but also matches a shadowed specific kind (currently `keto_aldehyde`), single-pair builds print a non-blocking `warning:` line to stderr and record `overlap_warnings` per monomer in `summary.json`, and batch library loaders attach the same warnings to each monomer record's metadata and echo them to stderr during `batch-binary-bridge` / `batch-all-binary-bridges`; the warning notes the monomer may only be stable as a beta-ketoenamine (bken) COF and suggests the specific kind's templates (e.g. `keto_enamine_bridge`)
 - event-based CIF decomposition with immutable linkage events, atomic azine/boronate/ring handling, bounded reconstruction hypotheses, global endpoint/framework/topology validation, generalized triazine motif classification, and structured decomposition diagnostics
 - DREIDING Table V hydrogen-bond terms in the LAMMPS backend: N/O/F-bound hydrogens are retyped `H__HB` and donor-acceptor pairs get a 12-10 `hbond/dreiding/lj` term via `pair_style hybrid/overlay` (`Rhb` 2.75 angstrom, `cos^4(theta_DHA)`, `Dhb` 7.0 kcal/mol with charges and 9.0 kcal/mol charge-free), enabled by default with a `--no-dreiding-hbond` opt-out on `calculate lammps-optimize`, `calculate hybrid-mdmc`, and `validate optimize`
 

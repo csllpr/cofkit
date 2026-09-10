@@ -54,6 +54,7 @@ Then go straight to the module that matches the task.
 
 - [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
   - `MonomerRoleResolver` for autodetection from SMILES.
+  - `MonomerRoleResolver.forced_kind_warnings` for non-blocking motif-overlap warnings: a monomer assigned a generic kind (per `_AUTO_DETECT_GENERIC_SUPPRESSION`, currently `aldehyde`) that also builds as the shadowed specific kind (currently `keto_aldehyde`) yields a warning suggesting the specific kind's templates. `infer_record` and `BinaryBridgeLibraryLoader.load_smiles_library` attach these to record metadata as `overlap_warnings`; the CLI echoes them to stderr.
   - `BinaryBridgeLibraryLoader` for explicit and autodetected batch libraries.
 - [src/cofkit/batch_models.py](../src/cofkit/batch_models.py)
   - Neutral batch-facing data classes.

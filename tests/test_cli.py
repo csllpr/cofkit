@@ -369,6 +369,50 @@ class CliTests(unittest.TestCase):
             self.assertEqual(summary["successful_structures"], 1)
             self.assertEqual(summary["results"][0]["metadata"]["cofid"], cofid)
 
+    @unittest.skipIf(Chem is None, "RDKit is not available")
+    def test_single_pair_cli_warns_when_keto_aldehyde_forced_through_imine(self):
+        tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
+        tp = "O=Cc1c(O)c(C=O)c(O)c(C=O)c1O"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "single_pair_overlap"
+            stdout_buffer = io.StringIO()
+            stderr_buffer = io.StringIO()
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                cli_main(
+                    [
+                        "build",
+                        "single-pair",
+                        "--template-id",
+                        "imine_bridge",
+                        "--first-smiles",
+                        tapb,
+                        "--second-smiles",
+                        tp,
+                        "--first-id",
+                        "tapb",
+                        "--second-id",
+                        "tp",
+                        "--first-motif-kind",
+                        "amine",
+                        "--second-motif-kind",
+                        "aldehyde",
+                        "--topology",
+                        "hcb",
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            stderr_text = stderr_buffer.getvalue()
+            self.assertIn("warning:", stderr_text)
+            self.assertIn("keto_aldehyde", stderr_text)
+            self.assertIn("keto_enamine_bridge", stderr_text)
+            summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["successful_structures"], 1)
+            self.assertEqual(summary["first"]["overlap_warnings"], [])
+            self.assertEqual(len(summary["second"]["overlap_warnings"]), 1)
+            self.assertIn("keto_enamine_bridge", summary["second"]["overlap_warnings"][0])
+
     def test_single_pair_cli_rejects_internal_post_build_conversion_flag(self):
         stderr_buffer = io.StringIO()
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(stderr_buffer):

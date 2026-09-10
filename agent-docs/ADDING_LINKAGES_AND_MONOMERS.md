@@ -52,6 +52,7 @@ Current practical end-to-end support is strongest for `binary_bridge` templates.
    - if not, document that RDKit is required for practical ingestion
 5. If autodetect ambiguity needs chemistry-specific suppression, update [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
    - current example: generic `aldehyde` is suppressed when `keto_aldehyde` is also found
+   - the same map (`_AUTO_DETECT_GENERIC_SUPPRESSION`) doubles as the motif-overlap map: assigning the generic kind (explicitly or via template-restricted autodetection) now emits a non-blocking warning when the monomer also matches the specific kind, so consider whether a new motif kind shadows a generic one and extend the map if so
 
 ## 3. If you are adding a new linkage
 
@@ -101,6 +102,7 @@ These are common sources of bad patches:
 
 - The practical generation path still expects exactly one binary-bridge template per run.
 - Batch autodetection still requires exactly one resolved motif kind per monomer.
+- Motif-kind overlaps audited so far: `aldehyde` and `keto_aldehyde` intentionally share the same SMARTS (the `keto_aldehyde` handler additionally requires an ortho-hydroxyl or beta-keto route); generic `aldehyde` assignments that also match `keto_aldehyde` now warn and suggest `keto_enamine_bridge`. The `nitrile` / `activated_methylene` overlap (e.g. phenylenediacetonitrile matches both) is chemically legitimate and is intentionally not suppressed or warned; full autodetect already errors honestly on that ambiguity. `amine` / `hydrazine` / `hydrazide` are deliberately disjoint, and the `catechol` handler correctly rejects plain phenols.
 - Non-binary / ring-forming chemistries are not yet fully integrated into topology-guided batch generation.
 - Validation thresholds are still mostly global; do not assume they are linkage-specific.
 - Topology compatibility and builder support are separate concepts.
