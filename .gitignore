@@ -15,6 +15,7 @@ __pycache__/
 out/
 
 # Local scratch / temp
+/.untracked/
 *.tmp
 *.bak
 

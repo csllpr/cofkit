@@ -25,6 +25,8 @@ Then go straight to the module that matches the task.
   - Owns analysis-facing commands such as `cofkit analyze classify-output`, `cofkit analyze decompose`, and `cofkit analyze zeopp`.
 - [src/cofkit/cli_calculate.py](../src/cofkit/cli_calculate.py)
   - Owns external calculation commands such as `cofkit calculate lammps-optimize`, `graspa-widom`, `graspa-isotherm`, `graspa-mixture`, and `hybrid-mdmc`.
+- [src/cofkit/cli_validate.py](../src/cofkit/cli_validate.py)
+  - Owns validation commands such as `cofkit validate simple` and `cofkit validate optimize`.
 - [src/cofkit/engine.py](../src/cofkit/engine.py)
   - Direct project-style API via `COFEngine`.
 - [src/cofkit/batch.py](../src/cofkit/batch.py)
