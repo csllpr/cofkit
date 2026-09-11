@@ -134,7 +134,7 @@ def test_unreadable_convergence_diagnostics_keep_hard_failure(tmp_path, log_text
     assert not _convergence_diagnostics_available(convergence)
 
 
-def test_rdkit_nonconverged_conformer_is_never_optimized():
+def test_rdkit_nonconverged_conformer_downgrades_to_unconverged():
     field = Mock()
     field.Minimize.return_value = 1
     field.CalcEnergy.return_value = -10
@@ -142,8 +142,12 @@ def test_rdkit_nonconverged_conformer_is_never_optimized():
         patch("cofkit.chem.rdkit.AllChem.MMFFHasAllMoleculeParams", return_value=False),
         patch("cofkit.chem.rdkit.AllChem.UFFGetMoleculeForceField", return_value=field),
     ):
-        with pytest.raises(ValueError, match="did not converge"):
-            _optimize_conformers(Mock(), (0,))
+        result = _optimize_conformers(Mock(), (0,))
+    assert result.optimization_status == "unconverged"
+    assert result.conformer_id == 0
+    assert result.energy == -10
+    assert result.forcefield == "UFF"
+    assert any("did not converge" in diagnostic for diagnostic in result.diagnostics)
 
 
 def test_streaming_dump_rejects_truncated_final_frame(tmp_path):

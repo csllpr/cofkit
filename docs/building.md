@@ -48,7 +48,7 @@ cofkit build single-pair \
 
 `--cofid` defines the monomers, topology, and linkage, so it cannot be combined with direct SMILES or topology overrides.
 
-The `first.geometry` and `second.geometry` objects in `summary.json` record the RDKit embedding method, whether a fallback was used, and force-field optimization status. Standard ETKDGv3 remains the primary path. If it fails, cofkit tries bounded random-coordinate ETKDGv3 and ETKDGv2 embeddings. A final 2D coordinate fallback is restricted to planar metal-containing or formally charged precursors, is not force-field minimized, and is labeled explicitly in the summary.
+The `first.geometry` and `second.geometry` objects in `summary.json` record the RDKit embedding method, whether a fallback was used, and force-field optimization status. Standard ETKDGv3 remains the primary path. If it fails, cofkit tries bounded random-coordinate ETKDGv3 and ETKDGv2 embeddings. A final 2D coordinate fallback is restricted to planar metal-containing or formally charged precursors, is not force-field minimized, and is labeled explicitly in the summary. Force-field minimization that does not fully converge is not fatal: the build proceeds with the lowest-energy unconverged conformer, the monomer is labeled `unconverged` with diagnostics in the geometry metadata, and the CLI prints a `warning:` line to stderr.
 
 ## Motif-Overlap Warnings
 

@@ -145,7 +145,6 @@ class RDKitMotifBuilder:
         selection = _optimize_conformers(
             molecule,
             embedding.conformer_ids,
-            allow_unoptimized=embedding.used_fallback,
             skip_reason=optimization_skip_reason,
             max_iterations=optimization_max_iterations,
             max_attempts=optimization_attempts,
@@ -460,7 +459,6 @@ def _optimize_conformers(
     molecule,
     conformer_ids: tuple[int, ...],
     *,
-    allow_unoptimized: bool = False,
     skip_reason: str | None = None,
     max_iterations: int = 500,
     max_attempts: int = 1,
@@ -477,6 +475,7 @@ def _optimize_conformers(
         )
 
     diagnostics: list[str] = []
+    best_unconverged: tuple[int, float, str] | None = None
     try:
         has_mmff_parameters = bool(AllChem.MMFFHasAllMoleculeParams(molecule))
     except (RuntimeError, ValueError) as exc:
@@ -506,6 +505,8 @@ def _optimize_conformers(
                     continue
                 if status != 0:
                     diagnostics.append(f"Conformer {conf_id} did not converge (status {status})")
+                    if isfinite(energy) and (best_unconverged is None or energy < best_unconverged[1]):
+                        best_unconverged = (conf_id, energy, "MMFF")
                 if status == 0 and isfinite(energy) and (best is None or energy < best[1]):
                     best = (conf_id, energy)
             if best is not None:
@@ -532,6 +533,8 @@ def _optimize_conformers(
             continue
         if status != 0:
             diagnostics.append(f"Conformer {conf_id} did not converge (status {status})")
+            if isfinite(energy) and (best_unconverged is None or energy < best_unconverged[1]):
+                best_unconverged = (conf_id, energy, "UFF")
         if status == 0 and isfinite(energy) and (best is None or energy < best[1]):
             best = (conf_id, energy)
     if best is not None:
@@ -542,19 +545,28 @@ def _optimize_conformers(
             "optimized",
             tuple(diagnostics),
         )
-    if allow_unoptimized:
-        diagnostics.append("no supported force field produced a finite optimized conformer")
+    if best_unconverged is not None:
+        diagnostics.append(
+            "no force-field minimization fully converged; proceeding with the "
+            f"lowest-energy unconverged {best_unconverged[2]} conformer"
+        )
         return _ConformerSelectionResult(
-            conformer_ids[0],
-            None,
-            "none",
+            best_unconverged[0],
+            best_unconverged[1],
+            best_unconverged[2],
             "unconverged",
             tuple(diagnostics),
         )
-    detail = "; ".join(diagnostics)
-    raise ValueError(
-        "RDKit force-field optimization failed"
-        + (f" ({detail})" if detail else "")
+    diagnostics.append(
+        "no supported force field produced a finite minimized conformer; "
+        "proceeding with the unminimized embedded conformer"
+    )
+    return _ConformerSelectionResult(
+        conformer_ids[0],
+        None,
+        "none",
+        "unconverged",
+        tuple(diagnostics),
     )
 
 
