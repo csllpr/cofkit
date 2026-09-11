@@ -167,6 +167,14 @@ class GraspaWidomTests(unittest.TestCase):
                 Path(result.widom_framework_cif).read_text(encoding="utf-8").splitlines()[0],
                 f"# COFid: {cofid}",
             )
+            self.assertIn(
+                "\nC1 C 0.1 0.1 0.1",
+                Path(result.eqeq_charged_cif).read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "\nC C 0.1 0.1 0.1",
+                Path(result.widom_framework_cif).read_text(encoding="utf-8"),
+            )
             mixing_rules_text = (Path(result.widom_run_dir) / "force_field_mixing_rules.def").read_text(encoding="utf-8")
             self.assertIn("// standard DREIDING Tables I-II (Mayo et al., J. Phys. Chem. 1990)", mixing_rules_text)
             self.assertRegex(

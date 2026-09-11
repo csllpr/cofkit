@@ -969,7 +969,7 @@ def run_graspa_widom_workflow(
     )
 
     widom_framework_cif_path = widom_run_dir / f"{widom_settings.framework_name}.cif"
-    shutil.copy2(eqeq_result.eqeq_charged_cif, widom_framework_cif_path)
+    _write_graspa_framework_cif(eqeq_result.eqeq_charged_cif, widom_framework_cif_path)
     _copy_widom_template_assets(
         widom_run_dir,
         widom_settings.components,
@@ -1140,7 +1140,7 @@ def run_graspa_isotherm_workflow(
     )
 
     isotherm_framework_cif_path = isotherm_root_dir / f"{isotherm_settings.framework_name}.cif"
-    shutil.copy2(eqeq_result.eqeq_charged_cif, isotherm_framework_cif_path)
+    _write_graspa_framework_cif(eqeq_result.eqeq_charged_cif, isotherm_framework_cif_path)
 
     unit_cells = _compute_unit_cells_from_cif(
         isotherm_framework_cif_path,
@@ -1341,7 +1341,7 @@ def run_graspa_mixture_workflow(
     )
 
     mixture_framework_cif_path = mixture_root_dir / f"{mixture_settings.framework_name}.cif"
-    shutil.copy2(eqeq_result.eqeq_charged_cif, mixture_framework_cif_path)
+    _write_graspa_framework_cif(eqeq_result.eqeq_charged_cif, mixture_framework_cif_path)
 
     unit_cells = _compute_unit_cells_from_cif(
         mixture_framework_cif_path,
@@ -2285,6 +2285,44 @@ def _validate_guest_mixing_rule_rows(base_rows: Sequence[str], guest_rows: Seque
         if row_type in existing_types or row_type in appended_types:
             raise GraspaConfigurationError(f"Duplicate gRASPA mixing-rule type in guest bundles: {row_type}")
         appended_types.add(row_type)
+
+
+def _write_graspa_framework_cif(source: Path, destination: Path) -> None:
+    """Copy the charged CIF for gRASPA with pseudo-atom-compatible labels.
+
+    Charge validation restores the caller's original atom labels in the
+    user-facing charged CIF, but gRASPA matches `_atom_site_label` against
+    pseudo_atoms.def entries, and the framework force-field assets name
+    pseudo atoms by element symbol. Rewrite the labels to their type symbols
+    in the simulation input copy only.
+    """
+    import gemmi
+    source = Path(source)
+    destination = Path(destination)
+    header_comments: list[str] = []
+    with source.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith("#"):
+                header_comments.append(line.rstrip("\n"))
+            elif line.strip():
+                break
+    document = gemmi.cif.read_file(str(source))
+    block = document.sole_block()
+    labels = block.find_loop("_atom_site_label")
+    type_symbols = block.find_loop("_atom_site_type_symbol")
+    if not labels or not type_symbols or len(labels) != len(type_symbols):
+        raise GraspaConfigurationError(
+            "Charged CIF must provide matching _atom_site_label and "
+            "_atom_site_type_symbol loops."
+        )
+    for index in range(len(labels)):
+        labels[index] = gemmi.cif.quote(gemmi.cif.as_string(type_symbols[index]))
+    document.write_file(str(destination))
+    if header_comments:
+        body = destination.read_text(encoding="utf-8")
+        destination.write_text(
+            "\n".join(header_comments) + "\n" + body, encoding="utf-8"
+        )
 
 
 def _compute_unit_cells_from_cif(cif_path: Path, *, cutoff: float) -> tuple[int, int, int]:

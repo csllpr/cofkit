@@ -48,20 +48,39 @@ def read_ordered_structure(path: Path):
     return block, small
 
 
+def _same_fractional_position(a, b, *, tolerance: float = 1e-5) -> bool:
+    """Componentwise fractional comparison with periodic wrap.
+
+    EQeq serializes fractional coordinates with five decimals, so rounding
+    can shift each component by up to 5e-6; the 1e-5 tolerance covers that
+    with margin. A fractional tolerance is cell-size independent, unlike a
+    Cartesian distance cutoff, which a skewed or large cell would amplify
+    beyond the serialized precision.
+    """
+    for u, v in ((a.x, b.x), (a.y, b.y), (a.z, b.z)):
+        delta = abs(u - v) % 1.0
+        if min(delta, 1.0 - delta) > tolerance:
+            return False
+    return True
+
+
 def validate_charge_assignment(
     source: Path, charged: Path, *, target_charge: float, tolerance: float
 ) -> dict[str, object]:
     """Verify a bijection before restoring input labels in the charged CIF.
 
-    Geometry tolerance (1e-4 Å) accommodates decimal CIF serialization, not
-    structural relaxation. EQeq is required to leave the geometry unchanged.
+    Positions are compared in fractional coordinates with a 1e-5 tolerance
+    and cell lengths/angles with a 1e-4 absolute tolerance, because the EQeq
+    binary serializes coordinates and cell parameters with only five
+    decimals. The tolerances accommodate decimal CIF serialization, not
+    structural relaxation: EQeq is required to leave the geometry unchanged.
     """
     _, original = read_ordered_structure(source)
     block, result = read_ordered_structure(charged)
     if len(original.sites) != len(result.sites):
         raise ValueError("EQeq changed the number of atom sites.")
     for a, b in zip(original.cell.parameters, result.cell.parameters):
-        if not math.isclose(a, b, rel_tol=1e-8, abs_tol=1e-8):
+        if not math.isclose(a, b, rel_tol=1e-8, abs_tol=1e-4):
             raise ValueError("EQeq changed the unit cell.")
     charges = block.find_loop("_atom_site_charge")
     if not charges:
@@ -88,14 +107,15 @@ def validate_charge_assignment(
             candidates = [by_label[atom.label]]
         else:
             if search is None:
-                # 1 Å bins control search cost, independently of the 1e-4 Å
-                # serialization tolerance. Avoid a quadratic atom-pair scan.
+                # 1 Å bins control search cost; the 0.05 Å search radius is a
+                # loose prefilter for the fractional serialization tolerance
+                # applied below. Avoid a quadratic atom-pair scan.
                 search = gemmi.NeighborSearch(original, 1.0).populate(include_h=True)
             candidates = sorted(
                 {
                     int(mark.atom_idx)
                     for mark in search.find_site_neighbors(
-                        atom, min_dist=0, max_dist=1e-4
+                        atom, min_dist=0, max_dist=0.05
                     )
                 }
             )
@@ -103,10 +123,7 @@ def validate_charge_assignment(
             j
             for j in candidates
             if atom.element == original.sites[j].element
-            and original.cell.find_nearest_pbc_image(
-                atom.fract, original.sites[j].fract, 0
-            ).dist()
-            <= 1e-4
+            and _same_fractional_position(atom.fract, original.sites[j].fract)
         ]
         if len(candidates) != 1 or candidates[0] in used:
             raise ValueError(

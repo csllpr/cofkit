@@ -195,3 +195,57 @@ def test_charge_bijection_and_total(tmp_path, charges):
     else:
         with pytest.raises(ValueError):
             validate_charge_assignment(source, output, target_charge=0, tolerance=1e-3)
+
+
+def test_cell_serialization_rounding_accepted(tmp_path):
+    header = (
+        "data_x\n"
+        "_cell_length_a 14.502860\n_cell_length_b 14.502969\n"
+        "_cell_length_c 6.800283\n_cell_angle_alpha 90.000000\n"
+        "_cell_angle_beta 90.000000\n_cell_angle_gamma 119.999752\n"
+        "loop_\n_atom_site_label\n_atom_site_type_symbol\n"
+        "_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+    )
+    source = tmp_path / "source.cif"
+    source.write_text(header + "A C 0 0 0\nB N 0.1 0 0\n")
+    output = tmp_path / "charged.cif"
+    output.write_text(
+        "data_x\n"
+        "_cell_length_a 14.50286\n_cell_length_b 14.50297\n"
+        "_cell_length_c 6.80028\n_cell_angle_alpha 90.00000\n"
+        "_cell_angle_beta 90.00000\n_cell_angle_gamma 119.99975\n"
+        "loop_\n_atom_site_label\n_atom_site_type_symbol\n"
+        "_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+        "_atom_site_charge\nA C 0 0 0 0.1\nB N 0.1 0 0 -0.1\n"
+    )
+    checks = validate_charge_assignment(source, output, target_charge=0, tolerance=1e-3)
+    assert checks["net_charge"] == 0
+    output.write_text(output.read_text().replace("14.50286", "14.50386"))
+    with pytest.raises(ValueError, match="unit cell"):
+        validate_charge_assignment(source, output, target_charge=0, tolerance=1e-3)
+
+
+def test_fractional_rounding_accepted_in_skewed_cell(tmp_path):
+    header = (
+        "data_x\n"
+        "_cell_length_a 14.502860\n_cell_length_b 14.502969\n"
+        "_cell_length_c 6.800283\n_cell_angle_alpha 90.000000\n"
+        "_cell_angle_beta 90.000000\n_cell_angle_gamma 119.999752\n"
+        "loop_\n_atom_site_label\n_atom_site_type_symbol\n"
+        "_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+    )
+    source = tmp_path / "source.cif"
+    source.write_text(header + "A C 0.279585 0.559184 0.750004\n")
+    output = tmp_path / "charged.cif"
+    # Five-decimal EQeq serialization of the same position; in this skewed
+    # cell the Cartesian shift exceeds 1e-4 angstrom.
+    output.write_text(
+        header + "_atom_site_charge\nA C 0.27959 0.55918 0.75000 0.0\n"
+    )
+    checks = validate_charge_assignment(source, output, target_charge=0, tolerance=1e-3)
+    assert checks["net_charge"] == 0
+    output.write_text(
+        header + "_atom_site_charge\nA C 0.28059 0.55918 0.75000 0.0\n"
+    )
+    with pytest.raises(ValueError, match="atom mapping"):
+        validate_charge_assignment(source, output, target_charge=0, tolerance=1e-3)

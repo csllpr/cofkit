@@ -2,9 +2,9 @@
 
 All notable changes to `cofkit` are recorded here.
 
-Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-07-20` is version `2026.7.20`.
+Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-09-10` is version `2026.9.10`.
 
-## Unreleased
+## 2026.9.10
 
 ### Added
 
@@ -23,6 +23,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- EQeq charge validation now accommodates the EQeq binary's five-decimal CIF serialization: positions are compared in fractional coordinates with a 1e-5 tolerance instead of a 1e-4 angstrom Cartesian cutoff that skewed or large cells amplify beyond the serialized precision, and cell parameters are compared with a 1e-4 absolute tolerance instead of 1e-8; the previous checks rejected ordinary charge assignments with spurious "EQeq changed the unit cell" and "atom mapping is ambiguous" errors, aborting Widom/GCMC workflows
+- gRASPA Widom/isotherm/mixture runs again accept frameworks whose charged CIF carries restored original atom labels: the simulation-input framework CIF now rewrites `_atom_site_label` to the element type symbols that the framework force-field pseudo-atom definitions expect, while the user-facing charged CIF keeps the original labels and leading COFid comment; previously gRASPA aborted with "Atom Label not defined"
 - DREIDING LAMMPS exports now order umbrella impropers with the central atom first and each outer atom as the fourth-atom axis in turn, correcting planar energies and out-of-plane restoring forces
 - precursor validation no longer treats resonance-deactivated thioamide or thiourea nitrogens as primary-amine builders, preventing thiourea-linked frameworks from being accepted as beta-ketoenamines
 - activated-methylene detection now follows direct aromatic conjugation from a methyl-bearing phenyl ring into an attached five- or six-membered heteroaromatic acceptor, while still rejecting unactivated biaryl methyl groups
