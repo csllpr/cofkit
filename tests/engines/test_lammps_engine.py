@@ -1,5 +1,6 @@
 """Real-engine checks; the dedicated CI job requires the configured executable."""
 
+import json
 import os
 import re
 import shutil
@@ -115,9 +116,8 @@ def test_dreiding_hbond_optimizer_run(lmp, tmp_path):
     assert all(math.isfinite(value) for value in energies)
 
 
-def test_optimizer_rejects_real_iteration_exhaustion(lmp, tmp_path):
+def test_optimizer_warns_on_real_iteration_exhaustion(lmp, tmp_path):
     from cofkit.lammps import (
-        LammpsExecutionError,
         LammpsOptimizationSettings,
         optimize_cif_with_lammps,
     )
@@ -128,20 +128,28 @@ def test_optimizer_rejects_real_iteration_exhaustion(lmp, tmp_path):
             Path(__file__).resolve().parents[1] / "fixtures" / "engine_molecule.cif"
         ).read_text()
     )
-    with pytest.raises(LammpsExecutionError, match="unconverged"):
-        optimize_cif_with_lammps(
-            cif,
-            lmp_path=lmp,
-            settings=LammpsOptimizationSettings(
-                enable_omp=False,
-                charge_model="none",
-                pre_minimization_steps=0,
-                relax_cell=False,
-                two_stage_protocol=False,
-                position_restraint_force_constant=0,
-                max_iterations=1,
-                max_evaluations=10,
-                force_tolerance=1e-12,
-            ),
-        )
-    assert not list(tmp_path.rglob("*_optimized.cif"))
+    result = optimize_cif_with_lammps(
+        cif,
+        lmp_path=lmp,
+        settings=LammpsOptimizationSettings(
+            enable_omp=False,
+            charge_model="none",
+            pre_minimization_steps=0,
+            relax_cell=False,
+            two_stage_protocol=False,
+            position_restraint_force_constant=0,
+            max_iterations=1,
+            max_evaluations=10,
+            force_tolerance=1e-12,
+        ),
+    )
+    assert not result.convergence["converged"]
+    assert any("unconverged" in warning for warning in result.warnings)
+    optimized = Path(result.optimized_cif)
+    assert optimized.is_file()
+    assert "treat this structure as unconverged" in optimized.read_text()
+    report = json.loads(Path(result.report_path).read_text())
+    assert report["convergence"]["converged"] is False
+    assert any("unconverged" in warning for warning in report["warnings"])
+    convergence_json = json.loads((Path(result.output_dir) / "convergence.json").read_text())
+    assert convergence_json["converged"] is False

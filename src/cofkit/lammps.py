@@ -607,8 +607,12 @@ def optimize_cif_with_lammps(
     )
     convergence = _check_minimization_convergence(log_path, settings, parsed)
     atomic_write_text(run_dir / "convergence.json", json.dumps(convergence, indent=2, allow_nan=False))
+    unconverged_warning: str | None = None
     if not convergence["converged"]:
-        raise LammpsExecutionError(f"LAMMPS completed but optimization is unconverged; see {run_dir / 'convergence.json'}")
+        if not _convergence_diagnostics_available(convergence):
+            raise LammpsExecutionError(f"LAMMPS completed but optimization is unconverged; see {run_dir / 'convergence.json'}")
+        unconverged_warning = _unconverged_optimization_warning(convergence)
+        warnings.append(unconverged_warning)
     model_fractional_positions = _cartesian_positions_to_fractional(
         final_frame.lammps_origin,
         final_frame.lammps_basis,
@@ -624,6 +628,12 @@ def optimize_cif_with_lammps(
             basis=final_frame.lammps_basis,
             cofid=None if input_cofid_comment is None else input_cofid_comment.cofid,
             cofid_comment_suffix=None if input_cofid_comment is None else input_cofid_comment.suffix,
+            warning_comment=(
+                None
+                if unconverged_warning is None
+                else "cofkit warning: optimization did not meet the force acceptance criteria; "
+                "treat this structure as unconverged (see lammps_report.json and convergence.json)"
+            ),
         ),
         encoding="utf-8",
     )
@@ -4259,6 +4269,57 @@ def _check_minimization_convergence(log_path, settings, parsed) -> dict[str, obj
             "stages": records}
 
 
+_CONVERGENCE_UNREADABLE_REASONS = frozenset({"missing_or_duplicate_stage", "missing_or_nonfinite_metrics"})
+
+
+def _convergence_diagnostics_available(convergence: Mapping[str, object]) -> bool:
+    """True when every stage produced readable termination/force/stress diagnostics.
+
+    Runs whose diagnostics are unreadable (missing stage markers or non-finite
+    metrics) cannot be distinguished from blown-up structures, so they keep the
+    hard-failure behavior instead of the unconverged-warning downgrade.
+    """
+    stages = convergence.get("stages") or ()
+    return bool(stages) and all(
+        record.get("reason") not in _CONVERGENCE_UNREADABLE_REASONS
+        for record in stages
+    )
+
+
+def _unconverged_optimization_warning(convergence: Mapping[str, object]) -> str:
+    stages = convergence.get("stages") or ()
+    final = stages[-1] if stages else {}
+    details: list[str] = []
+    criterion = final.get("stopping_criterion")
+    if criterion:
+        details.append(f"stopped on {criterion!r}")
+    force_norm = final.get("force_norm_kcal_mol_angstrom")
+    force_tolerance = final.get("force_tolerance")
+    if (
+        isinstance(force_norm, (int, float))
+        and isinstance(force_tolerance, (int, float))
+        and force_norm > force_tolerance
+    ):
+        details.append(
+            f"final force norm {force_norm:.6g} kcal/mol/angstrom exceeds "
+            f"tolerance {force_tolerance:.6g}"
+        )
+    failed_stages = [
+        str(record.get("stage"))
+        for record in stages
+        if not record.get("converged")
+    ]
+    if failed_stages:
+        details.append(f"unaccepted stage(s): {', '.join(failed_stages)}")
+    detail_text = f" ({'; '.join(details)})" if details else ""
+    return (
+        f"LAMMPS completed but the optimization did not meet the force acceptance criteria{detail_text}. "
+        "Energy-based termination is not force convergence; the optimized CIF and report were still "
+        "written, but this structure must be treated as unconverged "
+        "(converged=false in lammps_report.json and convergence.json)."
+    )
+
+
 def _default_lammps_omp_num_threads() -> int:
     cpu_count = os.cpu_count() or 1
     return max(1, cpu_count // 2)
@@ -4373,6 +4434,7 @@ def _render_optimized_cif(
     basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None,
     cofid: str | None = None,
     cofid_comment_suffix: str | None = None,
+    warning_comment: str | None = None,
 ) -> str:
     active_cell_parameters = cell_parameters or parsed.cell_parameters
     active_basis = basis or parsed.lammps_basis
@@ -4381,6 +4443,8 @@ def _render_optimized_cif(
     lines: list[str] = []
     if cofid:
         lines.append(cofid_comment_line(cofid, suffix=cofid_comment_suffix))
+    if warning_comment:
+        lines.append(f"# {warning_comment}")
     lines.extend(
         [
             f"data_{_sanitize_data_name(parsed.source_path.stem + '_lammps_optimized')}",

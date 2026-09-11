@@ -163,6 +163,13 @@ def _print_human_result(result: COFidValidationResult) -> None:
     print("checked_cif:", result.checked_cif)
     if result.optimized_cif is not None:
         print("optimized_cif:", result.optimized_cif)
+    if result.lammps_result is not None:
+        converged = result.lammps_result.convergence.get("converged")
+        print("optimization_converged:", converged)
+        if not converged:
+            for warning in result.lammps_result.warnings:
+                if "unconverged" in warning:
+                    print(f"warning: {warning}", file=sys.stderr)
     print("expected_cofid:", result.input_cofid)
     print("recovered_cofid:", result.recovered_cofid or "")
     print("topology_compared:", str(result.topology_compared).lower())

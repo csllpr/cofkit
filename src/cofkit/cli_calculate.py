@@ -661,6 +661,11 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
     ) as exc:
         raise SystemExit(f"error: {exc}") from exc
 
+    if not result.convergence.get("converged", True):
+        for warning in result.warnings:
+            if "unconverged" in warning:
+                print(f"warning: {warning}", file=sys.stderr)
+
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
         return
@@ -669,6 +674,7 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
     print("lammps_binary:", result.lammps_binary)
     print("output_dir:", result.output_dir)
     print("optimized_cif:", result.optimized_cif)
+    print("converged:", result.convergence.get("converged"))
     print("n_atoms:", result.n_atoms)
     print("n_bonds:", result.n_bonds)
     print("n_angles:", result.n_angles)

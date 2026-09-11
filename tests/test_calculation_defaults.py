@@ -15,7 +15,9 @@ from cofkit.lammps import (
     LammpsParseError,
     _build_minimization_stages,
     _check_minimization_convergence,
+    _convergence_diagnostics_available,
     _parse_lammps_dump_last_frame,
+    _unconverged_optimization_warning,
     _validate_settings,
 )
 
@@ -88,6 +90,48 @@ def test_missing_convergence_and_excess_stress_are_rejected(tmp_path):
     assert not _check_minimization_convergence(
         path, LammpsOptimizationSettings(box_relax_mode="iso"), None
     )["converged"]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["energy tolerance", "max iterations", "linesearch alpha is zero"],
+)
+def test_unconverged_with_readable_diagnostics_downgrades_to_warning(tmp_path, reason):
+    path = tmp_path / "log"
+    path.write_text(
+        f"COFKIT_STAGE stage1\nStopping criterion = {reason}\nCOFKIT_MINIMUM stage1 5 5 0 0 0 0 0 0\n"
+    )
+    convergence = _check_minimization_convergence(
+        path,
+        LammpsOptimizationSettings(two_stage_protocol=False, relax_cell=False),
+        None,
+    )
+    assert not convergence["converged"]
+    assert _convergence_diagnostics_available(convergence)
+    warning = _unconverged_optimization_warning(convergence)
+    assert "unconverged" in warning
+    assert "force norm" in warning
+    assert repr(reason) in warning
+
+
+@pytest.mark.parametrize(
+    "log_text",
+    [
+        "",
+        "COFKIT_STAGE stage1\nStopping criterion = force tolerance\nCOFKIT_MINIMUM stage1 nan nan 0 0 0 0 0 0\n",
+        "COFKIT_STAGE stage1\nno metrics here\n",
+    ],
+)
+def test_unreadable_convergence_diagnostics_keep_hard_failure(tmp_path, log_text):
+    path = tmp_path / "log"
+    path.write_text(log_text)
+    convergence = _check_minimization_convergence(
+        path,
+        LammpsOptimizationSettings(two_stage_protocol=False, relax_cell=False),
+        None,
+    )
+    assert not convergence["converged"]
+    assert not _convergence_diagnostics_available(convergence)
 
 
 def test_rdkit_nonconverged_conformer_is_never_optimized():
