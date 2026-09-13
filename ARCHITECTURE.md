@@ -31,6 +31,8 @@
   - workflow-family registry that isolates binary-bridge and ring-forming builders from the reserved composite-topology workflow
 - `cofkit.monomer_library`
   - extracted monomer-role resolution, detector-backed library loading, and explicit-library regrouping
+- `cofkit.node_shape`
+  - whole-monomer node-shape classification (square / rectangular / tetrahedral) for 4-connecting monomers from molecular-graph symmetry, plus topology node-shape signatures; used by batch topology selection and net planning to reject confident shape mismatches
 - `cofkit.single_node_topologies`
   - symmetry-expanded `2D` one-node topology layouts and explicit `P1` node/edge-orbit reconstruction for shared batch and single-pair generation
 - `cofkit.single_node_topologies_3d`
@@ -85,7 +87,7 @@
 1. load monomer libraries from `examples/batch_test_monomers/`-style explicit text inputs or detector-scanned generic `.txt` inputs
 2. build/cache `MonomerSpec` objects, optionally through RDKit/SMARTS motif detection
 3. enumerate supported pairings from the selected binary-bridge linkage profile and the discovered or detected role-specific libraries
-4. enumerate all applicable default topologies per pair, spanning the supported one-node families plus the current curated indexed-topology subset
+4. enumerate all applicable default topologies per pair, spanning the supported one-node families plus the current curated indexed-topology subset, and filter out confident node-shape mismatches for 4-connecting monomers (square vs rectangular vs tetrahedral; `unknown` shapes keep connectivity-only behavior, and the filter can be disabled via `BatchGenerationConfig.shape_aware_topology_filter`)
 5. route supported one-node and indexed-topology pair cases through the shared topology-builder registry used by both batch generation and direct single-pair input
 6. write `manifest.jsonl` and `summary.md`
 7. run pair generation through a process pool by default in the practical batch CLIs (`8` workers unless overridden)

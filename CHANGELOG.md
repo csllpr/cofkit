@@ -2,7 +2,13 @@
 
 All notable changes to `cofkit` are recorded here.
 
-Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-09-10` is version `2026.9.10`.
+Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-09-12` is version `2026.9.12`.
+
+## 2026.9.12
+
+### Added
+
+- shape-aware topology compatibility for 4-connecting monomers: monomers are now classified by molecular-graph symmetry into C4/Td-like or D2h-like node-shape families (`cofkit.node_shape`), while supported nets use canonical node-shape labels (`sql` square, `kgm` rectangular, `dia` tetrahedral); batch topology selection and `NetPlanner` compatibility now reject confident shape mismatches with explicit reasons (e.g. a rectangular tetratopic + linker pair is offered `kgm` instead of `sql`), while `unknown` classifications on either side keep the previous connectivity-count-only behavior; decorated `bex` `4+4` generation is now gated on a rectangular classification when shapes are known, and pair summaries record per-reactant node-shape labels (`reactant_node_shapes` on `BatchPairSummary`, `monomer_node_shapes` in candidate `topology_selection` metadata); the filter can be disabled with `BatchGenerationConfig(shape_aware_topology_filter=False)`
 
 ## 2026.9.10
 
