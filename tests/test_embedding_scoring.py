@@ -1,7 +1,7 @@
 import math
 import sys
 import unittest
-from math import cos, pi, sin
+from math import cos, pi, sin, sqrt
 from pathlib import Path
 
 
@@ -71,6 +71,24 @@ def cyclic_motifs(prefix: str, kind: str, count: int, radius: float) -> tuple[Re
         angle = 2.0 * pi * idx / count
         origin = (radius * cos(angle), radius * sin(angle), 0.0)
         primary = (cos(angle), sin(angle), 0.0)
+        motifs.append(
+            ReactiveMotif(
+                id=f"{prefix}{idx + 1}",
+                kind=kind,
+                atom_ids=(idx + 1,),
+                frame=Frame(origin=origin, primary=primary, normal=(0.0, 0.0, 1.0)),
+            )
+        )
+    return tuple(motifs)
+
+
+def tetrahedral_motifs(prefix: str, kind: str, radius: float) -> tuple[ReactiveMotif, ...]:
+    corners = ((1.0, 1.0, 1.0), (1.0, -1.0, -1.0), (-1.0, 1.0, -1.0), (-1.0, -1.0, 1.0))
+    motifs = []
+    for idx, corner in enumerate(corners):
+        length = sqrt(3.0)
+        origin = tuple(radius * component / length for component in corner)
+        primary = tuple(component / length for component in corner)
         motifs.append(
             ReactiveMotif(
                 id=f"{prefix}{idx + 1}",
@@ -443,12 +461,12 @@ class EmbeddingTests(unittest.TestCase):
         tetra_amine = MonomerSpec(
             id="tetra_amine",
             name="tetramine",
-            motifs=cyclic_motifs("n", "amine", count=4, radius=4.5),
+            motifs=tetrahedral_motifs("n", "amine", radius=4.5),
         )
         tetra_aldehyde = MonomerSpec(
             id="tetra_aldehyde",
             name="tetraaldehyde",
-            motifs=cyclic_motifs("c", "aldehyde", count=4, radius=2.4),
+            motifs=tetrahedral_motifs("c", "aldehyde", radius=2.4),
         )
         project = COFProject(
             monomers=(tetra_amine, tetra_aldehyde),

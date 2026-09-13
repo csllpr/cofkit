@@ -62,6 +62,9 @@ Then go straight to the module that matches the task.
 
 ## Topology seams
 
+- [src/cofkit/node_shape.py](../src/cofkit/node_shape.py)
+  - Whole-monomer node-shape classification (square / rectangular / tetrahedral / unknown) for 4-connecting monomers, plus net node-shape signatures from single-node layout edge directions.
+  - Consumed by `batch.py` topology selection (`_topology_ids_for_pair`, `_topology_unavailable_errors`, decorated-`bex` gating) and by `planner.py` compatibility checks; unknown shapes are always treated as "no opinion".
 - [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
   - Shared dispatch for supported topology-family builders.
 - [src/cofkit/single_node_topologies.py](../src/cofkit/single_node_topologies.py)

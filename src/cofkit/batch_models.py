@@ -78,6 +78,14 @@ class BatchPairSummary:
         }
 
     @property
+    def reactant_node_shapes(self) -> Mapping[str, str]:
+        """4-connecting reactant node-shape labels (square/rectangular/etc.)."""
+        mapping = self.metadata.get("reactant_node_shapes")
+        if isinstance(mapping, ABCMapping):
+            return {str(key): str(value) for key, value in mapping.items()}
+        return {}
+
+    @property
     def amine_record_id(self) -> str:
         return str(self.reactant_record_ids.get("amine", self.reactant_a_record_id))
 

@@ -32,6 +32,14 @@ from .geometry import (
 )
 from .model import AssemblyState, Candidate, MonomerInstance, MonomerSpec, MotifRef, Pose, ReactionEvent, ReactionTemplate, order_candidates, residual_ranking_key
 from .monomer_library import BinaryBridgeLibraryLoader, MonomerRoleResolver
+from .node_shape import (
+    KNOWN_SHAPE_LABELS,
+    SHAPE_RECTANGULAR,
+    NodeShapeSignature,
+    classify_monomer_node_shape,
+    classify_topology_node_shape,
+    shapes_compatible,
+)
 from .optimizer import ContinuousOptimizer, OptimizerConfig
 from .planner import AssignmentPlan, NetPlan, NetPlanner
 from .product_graph import PeriodicProductGraph
@@ -102,6 +110,10 @@ class BatchGenerationConfig:
     topology_ids: tuple[str, ...] = ()
     single_node_topology_ids: tuple[str, ...] = ()
     use_indexed_topology_defaults: bool = False
+    # Filter candidate topologies by 4-connecting monomer node shape
+    # (square/rectangular/tetrahedral) when both the monomer and the net
+    # classify confidently; unknown shapes keep shape-agnostic behavior.
+    shape_aware_topology_filter: bool = True
     stacking_ids: tuple[str, ...] = ()
     rdkit_num_conformers: int = 8
     rdkit_random_seed: int = 0xC0F
@@ -1122,9 +1134,11 @@ class BatchStructureGenerator:
         second_connectivity: int,
     ) -> _TopologyEvaluation:
         pair_mode = self._pair_mode_from_connectivities(first_connectivity, second_connectivity)
+        node_shapes = self._pair_node_shapes(first, second, pair_mode="node-node")
         topology_ids = self._topology_ids_for_pair(
             connectivities=(first_connectivity, second_connectivity),
             pair_mode="node-node",
+            node_shapes=node_shapes,
         )
         if not topology_ids:
             return _TopologyEvaluation(
@@ -1139,6 +1153,7 @@ class BatchStructureGenerator:
                         f"{min(first_connectivity, second_connectivity)}+{max(first_connectivity, second_connectivity)} "
                         "batch generation"
                     ),
+                    node_shapes=node_shapes,
                 ),
             )
 
@@ -1172,6 +1187,7 @@ class BatchStructureGenerator:
                 failed_topologies=topology_errors,
                 selected_topology=topology_id,
                 evaluation_mode="all-topologies",
+                node_shapes=node_shapes,
             )
             for topology_id, candidate in raw_candidates
         )
@@ -1209,9 +1225,11 @@ class BatchStructureGenerator:
         node_connectivity: int,
     ) -> _TopologyEvaluation:
         pair_mode = self._pair_mode_from_connectivities(len(first.motifs), len(second.motifs))
+        node_shapes = self._pair_node_shapes(first, second, pair_mode="node-linker")
         topology_ids = self._topology_ids_for_pair(
             connectivities=(len(first.motifs), len(second.motifs)),
             pair_mode="node-linker",
+            node_shapes=node_shapes,
         )
         if not topology_ids:
             return _TopologyEvaluation(
@@ -1225,6 +1243,7 @@ class BatchStructureGenerator:
                         "no topology-guided node-linker builders are available for "
                         f"{node_connectivity}+2 batch generation"
                     ),
+                    node_shapes=node_shapes,
                 ),
             )
 
@@ -1258,6 +1277,7 @@ class BatchStructureGenerator:
                 failed_topologies=topology_errors,
                 selected_topology=topology_id,
                 evaluation_mode="all-topologies",
+                node_shapes=node_shapes,
             )
             for topology_id, candidate in raw_candidates
         )
@@ -3756,13 +3776,52 @@ class BatchStructureGenerator:
             return "two_monomer_node_node_modes"
         return "two_monomer_node_linker_modes"
 
+    def _pair_node_shapes(
+        self,
+        first: MonomerSpec,
+        second: MonomerSpec,
+        *,
+        pair_mode: str,
+    ) -> tuple[NodeShapeSignature, ...]:
+        if not self.config.shape_aware_topology_filter:
+            return ()
+        if pair_mode == "node-linker":
+            node = first if len(first.motifs) >= len(second.motifs) else second
+            return (classify_monomer_node_shape(node),)
+        return (classify_monomer_node_shape(first), classify_monomer_node_shape(second))
+
+    def _topology_shape_compatibility_error(
+        self,
+        topology_id: str,
+        node_shapes: tuple[NodeShapeSignature, ...],
+    ) -> str | None:
+        if not self.config.shape_aware_topology_filter or not node_shapes:
+            return None
+        topology_shape = classify_topology_node_shape(topology_id)
+        for shape in node_shapes:
+            if shapes_compatible(shape, topology_shape) is False:
+                return (
+                    f"monomer node shape {shape.label!r} is incompatible with "
+                    f"topology {topology_id!r} node shape {topology_shape.label!r}"
+                )
+        return None
+
+    def _decorated_bex_shape_allowed(self, node_shapes: tuple[NodeShapeSignature, ...]) -> bool:
+        if not self.config.shape_aware_topology_filter:
+            return True
+        classified = [shape.label for shape in node_shapes if shape.label in KNOWN_SHAPE_LABELS]
+        if not classified:
+            return True
+        return SHAPE_RECTANGULAR in classified
+
     def _topology_ids_for_pair(
         self,
         *,
         connectivities: tuple[int, int],
         pair_mode: str,
+        node_shapes: tuple[NodeShapeSignature, ...] = (),
     ) -> tuple[str, ...]:
-        key = (tuple(sorted(connectivities)), pair_mode)
+        key = (tuple(sorted(connectivities)), pair_mode, tuple(shape.label for shape in node_shapes))
         with self._topology_id_cache_lock:
             cached = self._topology_id_cache.get(key)
         if cached is not None:
@@ -3788,14 +3847,14 @@ class BatchStructureGenerator:
             except KeyError:
                 continue
             topology_modes = tuple(str(value) for value in hint.metadata.get(mode_key, ()))
-            if mode_token not in topology_modes and not (
-                configured
-                and self._is_decorated_bex_request(
-                    topology_id,
-                    pair_mode,
-                    connectivities,
-                )
-            ):
+            decorated_bex = configured and self._is_decorated_bex_request(
+                topology_id,
+                pair_mode,
+                connectivities,
+            )
+            if mode_token not in topology_modes and not decorated_bex:
+                continue
+            if decorated_bex and not self._decorated_bex_shape_allowed(node_shapes):
                 continue
             builder_error = self._topology_builder_compatibility_error(
                 topology_id=topology_id,
@@ -3803,6 +3862,8 @@ class BatchStructureGenerator:
                 pair_mode=pair_mode,
             )
             if builder_error is not None:
+                continue
+            if self._topology_shape_compatibility_error(topology_id, node_shapes) is not None:
                 continue
             if topology_id not in selected:
                 selected.append(topology_id)
@@ -3873,26 +3934,35 @@ class BatchStructureGenerator:
         connectivities: tuple[int, int],
         pair_mode: str,
         generic_message: str,
+        node_shapes: tuple[NodeShapeSignature, ...] = (),
     ) -> dict[str, str]:
         configured = self._configured_topology_ids()
-        if not configured:
-            return {"__pair__": generic_message}
+        if configured:
+            candidate_ids = configured
+        else:
+            candidate_ids = tuple(
+                dict.fromkeys(
+                    self._legacy_default_topology_ids(connectivities=connectivities, pair_mode=pair_mode)
+                    + _CURATED_DEFAULT_TOPOLOGY_IDS
+                )
+            )
 
         mode_token = self._topology_mode_token(connectivities, pair_mode)
         mode_key = self._topology_mode_metadata_key(pair_mode)
         errors: dict[str, str] = {}
-        for topology_id in configured:
+        for topology_id in candidate_ids:
             try:
                 hint = self._topology_repository.get_hint(topology_id)
             except KeyError as exc:
                 errors[topology_id] = f"{type(exc).__name__}: {exc}"
                 continue
             topology_modes = tuple(str(value) for value in hint.metadata.get(mode_key, ()))
-            if mode_token not in topology_modes and not self._is_decorated_bex_request(
+            decorated_bex = self._is_decorated_bex_request(
                 topology_id,
                 pair_mode,
                 connectivities,
-            ):
+            )
+            if mode_token not in topology_modes and not decorated_bex:
                 reason_key = (
                     "two_monomer_node_node_reason"
                     if pair_mode == "node-node"
@@ -3901,6 +3971,13 @@ class BatchStructureGenerator:
                 reason = hint.metadata.get(reason_key) or hint.metadata.get("two_monomer_reason")
                 errors[topology_id] = str(reason or f"topology {topology_id!r} is not chemically compatible with mode {mode_token!r}")
                 continue
+            if decorated_bex and not self._decorated_bex_shape_allowed(node_shapes):
+                classified = [shape.label for shape in node_shapes if shape.label in KNOWN_SHAPE_LABELS]
+                errors[topology_id] = (
+                    "decorated bex generation requires a rectangular (D2h-like) tetratopic monomer, "
+                    f"got node shape(s) {classified!r}"
+                )
+                continue
             builder_error = self._topology_builder_compatibility_error(
                 topology_id=topology_id,
                 connectivities=connectivities,
@@ -3908,6 +3985,10 @@ class BatchStructureGenerator:
             )
             if builder_error is not None:
                 errors[topology_id] = builder_error
+                continue
+            shape_error = self._topology_shape_compatibility_error(topology_id, node_shapes)
+            if shape_error is not None:
+                errors[topology_id] = shape_error
                 continue
         if not errors:
             errors["__pair__"] = generic_message
@@ -4083,6 +4164,7 @@ class BatchStructureGenerator:
         cofid: str | None,
         hard_hard_invalid_reasons: tuple[str, ...] = (),
         hard_hard_invalid_metrics: Mapping[str, object] | None = None,
+        reactant_node_shapes: Mapping[str, str] | None = None,
     ) -> BatchPairSummary:
         export_blocked = bool(hard_hard_invalid_reasons)
         return BatchPairSummary(
@@ -4121,6 +4203,7 @@ class BatchStructureGenerator:
                 "topology_selection": dict(candidate.metadata.get("topology_selection", {})),
                 "reactant_record_ids": dict(reactant_record_ids),
                 "reactant_connectivities": dict(reactant_connectivities),
+                "reactant_node_shapes": dict(reactant_node_shapes or {}),
                 "reactant_roles": reactant_roles,
                 "template_id": template_id,
                 **(
@@ -4305,6 +4388,10 @@ class BatchStructureGenerator:
             first_role: len(first.motifs),
             second_role: len(second.motifs),
         }
+        role_node_shapes = {
+            first_role: classify_monomer_node_shape(first).label,
+            second_role: classify_monomer_node_shape(second).label,
+        }
 
         try:
             evaluation = self._evaluate_pair_topologies(pair)
@@ -4325,6 +4412,7 @@ class BatchStructureGenerator:
                             "error": f"{type(exc).__name__}: {exc}",
                             "reactant_record_ids": role_record_ids,
                             "reactant_connectivities": role_connectivities,
+                            "reactant_node_shapes": role_node_shapes,
                             "reactant_roles": pair.role_ids,
                             "template_id": pair.template.id,
                         },
@@ -4358,6 +4446,7 @@ class BatchStructureGenerator:
                             "error": error_message,
                             "reactant_record_ids": role_record_ids,
                             "reactant_connectivities": role_connectivities,
+                            "reactant_node_shapes": role_node_shapes,
                             "reactant_roles": pair.role_ids,
                             "template_id": pair.template.id,
                         },
@@ -4416,6 +4505,7 @@ class BatchStructureGenerator:
                 topology_count=len(ordered_candidates),
                 reactant_record_ids=role_record_ids,
                 reactant_connectivities=role_connectivities,
+                reactant_node_shapes=role_node_shapes,
                 reactant_roles=pair.role_ids,
                 template_id=pair.template.id,
                 cofid=cofid,
@@ -4759,6 +4849,7 @@ class BatchStructureGenerator:
         failed_topologies: Mapping[str, str],
         selected_topology: str | None,
         evaluation_mode: str,
+        node_shapes: tuple[NodeShapeSignature, ...] = (),
     ) -> Candidate:
         metadata = dict(candidate.metadata)
         metadata["topology_selection"] = {
@@ -4770,6 +4861,7 @@ class BatchStructureGenerator:
             ),
             "failed_topologies": dict(failed_topologies),
             "selected_topology": selected_topology,
+            "monomer_node_shapes": tuple(shape.label for shape in node_shapes),
         }
         return replace(candidate, metadata=metadata)
 

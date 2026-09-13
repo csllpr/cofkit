@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from .model import MonomerSpec, ReactionTemplate
+from .node_shape import classify_monomer_node_shape, classify_topology_node_shape, shapes_compatible
 
 
 @dataclass(frozen=True)
@@ -148,8 +149,19 @@ class NetPlanner:
             and len(set(monomer_connectivities)) == 1
             and topology_connectivities[0] == monomer_connectivities[0]
         ):
-            return True
-        return monomer_connectivities == topology_connectivities
+            connectivity_match = True
+        else:
+            connectivity_match = monomer_connectivities == topology_connectivities
+        if not connectivity_match:
+            return False
+
+        topology_shape = classify_topology_node_shape(hint.id)
+        for monomer in monomers:
+            if len(monomer.motifs) != 4:
+                continue
+            if shapes_compatible(classify_monomer_node_shape(monomer), topology_shape) is False:
+                return False
+        return True
 
     def _repository(self):
         if self._topology_repository is not None:
