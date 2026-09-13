@@ -1149,6 +1149,7 @@ class DecomposeRoundTripTests(unittest.TestCase):
             BatchGenerationConfig(
                 topology_ids=("bex",),
                 stacking_ids=("AA",),
+                shape_aware_topology_filter=False,
                 enumerate_all_topologies=False,
                 write_cif=True,
                 rdkit_num_conformers=1,
@@ -1789,6 +1790,9 @@ class DecomposeRoundTripTests(unittest.TestCase):
                         "write_cif": True,
                         "rdkit_num_conformers": 1,
                         "retain_top_results": 1,
+                        # Round-trip coverage forces specific topologies even
+                        # when the fixture monomer's node shape mismatches.
+                        "shape_aware_topology_filter": False,
                     }
                     if allow_repairable_geometry:
                         config_kwargs.update(

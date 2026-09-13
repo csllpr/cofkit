@@ -1110,9 +1110,9 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         assert candidate is not None
         self.assertEqual(
             set(summary.metadata["topology_selection"]["available_topologies"]),
-            {"dia", "sql", "kgm", "pts", "lon", "qtz"},
+            {"dia", "pts", "lon", "qtz"},
         )
-        self.assertIn(candidate.metadata["net_plan"]["topology"], {"dia", "sql", "kgm", "pts", "lon", "qtz"})
+        self.assertIn(candidate.metadata["net_plan"]["topology"], {"dia", "pts", "lon", "qtz"})
         self.assertGreater(candidate.metadata["graph_summary"]["n_reaction_events"], 0)
 
     def test_four_plus_two_pair_returns_explicit_2d_topologies_when_requested(self):
@@ -1121,6 +1121,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 rdkit_num_conformers=1,
                 retain_top_results=5,
                 single_node_topology_ids=("sql", "kgm", "htb"),
+                shape_aware_topology_filter=False,
             )
         )
         amine = BatchMonomerRecord(
@@ -1277,6 +1278,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 rdkit_num_conformers=1,
                 retain_top_results=5,
                 single_node_topology_ids=("sql", "kgm", "htb"),
+                shape_aware_topology_filter=False,
             )
         )
         amine = BatchMonomerRecord(
@@ -1331,9 +1333,9 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         assert candidate is not None
         self.assertEqual(
             set(summary.metadata["topology_selection"]["available_topologies"]),
-            {"dia", "sql", "pts", "lon", "qtz"},
+            {"dia", "pts", "lon", "qtz"},
         )
-        self.assertIn(candidate.metadata["net_plan"]["topology"], {"dia", "sql", "pts", "lon", "qtz"})
+        self.assertIn(candidate.metadata["net_plan"]["topology"], {"dia", "pts", "lon", "qtz"})
         self.assertGreater(candidate.metadata["graph_summary"]["n_reaction_events"], 0)
 
     def test_four_plus_four_pair_can_target_sql_bipartite_topology(self):
@@ -1342,6 +1344,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 rdkit_num_conformers=1,
                 retain_top_results=5,
                 single_node_topology_ids=("sql",),
+                shape_aware_topology_filter=False,
             )
         )
         amine = BatchMonomerRecord(
@@ -1377,6 +1380,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 retain_top_results=5,
                 topology_ids=("bex",),
                 write_cif=False,
+                shape_aware_topology_filter=False,
             )
         )
         amine = BatchMonomerRecord(
@@ -1421,6 +1425,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 retain_top_results=5,
                 topology_ids=("bex",),
                 write_cif=False,
+                shape_aware_topology_filter=False,
             )
         )
         amine = BatchMonomerRecord(
@@ -1466,6 +1471,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 retain_top_results=5,
                 topology_ids=("bex",),
                 stacking_ids=("AA",),
+                shape_aware_topology_filter=False,
                 write_cif=True,
                 hard_hard_max_bridge_distance=10.0,
                 validation_thresholds=CoarseValidationThresholds(hard_hard_max_bridge_distance=10.0),
@@ -1642,11 +1648,11 @@ class BatchStructureGeneratorTests(unittest.TestCase):
 
         self.assertEqual(
             set(four_plus_two_summary.metadata["topology_selection"]["available_topologies"]),
-            {"dia", "sql", "kgm", "pts", "lon", "qtz"},
+            {"dia", "pts", "lon", "qtz"},
         )
         self.assertEqual(
             set(four_plus_four_summary.metadata["topology_selection"]["available_topologies"]),
-            {"dia", "sql", "pts", "lon", "qtz"},
+            {"dia", "pts", "lon", "qtz"},
         )
         self.assertEqual(
             set(six_plus_two_summary.metadata["topology_selection"]["available_topologies"]),
