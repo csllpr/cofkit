@@ -1,9 +1,10 @@
 # Current Scope
 
-The base package now installs `rdkit`, `gemmi`, `openbabel`, `pandas`, and `pymatgen` as mandatory runtime dependencies because the practical monomer-construction, CIF, topology, and current UFF/DREIDING-backed LAMMPS workflows depend on them. External binaries such as Zeo++, LAMMPS, EQeq, and gRASPA remain optional add-ons. The canonical repository install path is `uv sync --locked`, with `uv sync --locked --extra dev` for local verification tools such as `pytest`.
+The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, and `networkx` as mandatory runtime dependencies for monomer construction, CIF handling, topology, bond-order normalization, and the current UFF/DREIDING-backed LAMMPS workflows. External binaries such as Zeo++, LAMMPS, EQeq, and gRASPA remain optional add-ons. The canonical repository install path is `uv sync --locked`, with `uv sync --locked --extra dev` for local verification tools such as `pytest`.
 
 ## Implemented so far
 
+- conservative repair of explicit Kekule imine bond-order assignments before decomposition, using NetworkX perfect matching with decisive CH=N / N-C length evidence and explicit carbon-bound H; preserves valences and periodic connectivity, prefers the shorter contacts when several assignments are equally conservative, records changed bonds, and leaves ambiguous/unsatisfiable components unchanged. This is not general bond-order reconstruction for missing-H, charged, aromatic-only, or damaged-connectivity inputs.
 - geometry primitives and local frames
 - core domain dataclasses
 - builtin COF reaction library plus linkage-profile metadata for pair-role ordering, bridge targets, and realization hooks

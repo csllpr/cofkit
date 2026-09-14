@@ -18,7 +18,7 @@ uv sync --locked --extra dev
 uv run pytest -q
 ```
 
-The base package installs the required Python runtime dependencies: `gemmi`, `rdkit`, `openbabel`, `pandas`, and `pymatgen`.
+The base package installs the required Python runtime dependencies: `gemmi`, `rdkit`, `openbabel`, `pandas`, `pymatgen`, and `networkx`.
 
 As an alternative deployment path, create the checked-in Conda environment and install the local package without allowing pip to replace the dependencies already resolved by the environment file:
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from itertools import combinations, permutations, product
 from math import ceil, floor, gcd, sqrt
@@ -1374,6 +1374,29 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
         _apply_bond_order(mol, bond, order)
 
     normalized_bken_bond_count = _normalize_beta_ketoenamine_bond_orders(mol)
+    imine_normalization: dict[str, object] = {}
+    if all(candidate.explicit_order is not None for candidate in candidates):
+        from .decompose_bond_orders import normalize_imine_bond_orders
+
+        # A converter's valid valence assignment can put double bonds through
+        # a periodic network instead of on its imine links. Repair the whole
+        # conjugated assignment before either decomposition engine sees it.
+        # Parallel image rows remain in candidates; incompatible lengths are
+        # excluded as evidence for a local bond-order correction.
+        distances = {
+            pair: pair_candidates[0].distance
+            for pair, pair_candidates in candidates_by_pair.items()
+            if max(item.distance for item in pair_candidates)
+            - min(item.distance for item in pair_candidates) <= 1.0e-3
+        }
+        imine_normalization = normalize_imine_bond_orders(mol, distances)
+        if imine_normalization["changed_bonds"]:
+            candidates = tuple(
+                replace(candidate, explicit_order=float(mol.GetBondBetweenAtoms(
+                    candidate.atom_idx_1, candidate.atom_idx_2,
+                ).GetBondTypeAsDouble()))
+                for candidate in candidates
+            )
     mol.UpdatePropertyCache(strict=False)
     return BondedMolBuildResult(
         mol=mol,
@@ -1381,6 +1404,7 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
             **metadata,
             "n_bond_orders_inferred": inferred_order_count,
             "n_beta_ketoenamine_bond_pairs_normalized": normalized_bken_bond_count,
+            "imine_bond_order_normalization": imine_normalization,
         },
         candidates=tuple(candidates),
     )
