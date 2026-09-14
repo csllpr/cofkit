@@ -1389,7 +1389,10 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
             if max(item.distance for item in pair_candidates)
             - min(item.distance for item in pair_candidates) <= 1.0e-3
         }
-        imine_normalization = normalize_imine_bond_orders(mol, distances)
+        imine_normalization = normalize_imine_bond_orders(
+            mol, distances,
+            edge_multiplicities={pair: len(rows) for pair, rows in candidates_by_pair.items()},
+        )
         if imine_normalization["changed_bonds"]:
             candidates = tuple(
                 replace(candidate, explicit_order=float(mol.GetBondBetweenAtoms(

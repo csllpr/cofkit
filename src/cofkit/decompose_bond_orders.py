@@ -53,6 +53,8 @@ def _match_residual(residual: nx.Graph) -> set[frozenset[int]]:
 def normalize_imine_bond_orders(
     mol,
     distances: Mapping[frozenset[int], float],
+    *,
+    edge_multiplicities: Mapping[frozenset[int], int] | None = None,
 ) -> dict[str, object]:
     """Repair only neutral, H-explicit imines with decisive length evidence.
 
@@ -67,9 +69,13 @@ def normalize_imine_bond_orders(
     instead of the atom row order; only assignments whose contact-length sums
     are exactly equal stay interchangeable. Bonds outside the matching graph
     (aromatic, triple and carbonyl bonds) stay fixed. Unsatisfiable components
-    are left intact and reported. No filenames, precursor identities, expected
+    are left intact and reported. Periodic edge multiplicities are included in
+    the valence check. If a proposal changes periodic valences, retry with all
+    parallel-image bond orders fixed before rejecting that component.
+    No filenames, precursor identities, expected
     species counts, or topology hints are used.
     """
+    multiplicities = edge_multiplicities or {}
     eligible = set()
     for atom in mol.GetAtoms():
         orders = [bond.GetBondTypeAsDouble() for bond in atom.GetBonds()]
@@ -146,21 +152,23 @@ def normalize_imine_bond_orders(
         forced = {edge for edge in targets if edge <= component}
         if not forced - original:
             continue
-        endpoints = {node for edge in forced for node in edge}
-        if len(endpoints) != 2 * len(forced):
+        incoming = {edge for edge in original if edge <= component}
+        component_graph = graph.subgraph(component)
+        proposal = _match_component(component_graph, forced)
+        if proposal is not None and not _preserves_periodic_valences(incoming, proposal, multiplicities):
+            parallel = {
+                frozenset((first, second))
+                for first, second in component_graph.edges
+                if multiplicities.get(frozenset((first, second)), 1) > 1
+            }
+            retry_graph = component_graph.copy()
+            retry_graph.remove_edges_from(tuple(edge) for edge in parallel - incoming)
+            proposal = _match_component(retry_graph, forced | (parallel & incoming))
+        if proposal is None or not _preserves_periodic_valences(incoming, proposal, multiplicities):
             report["unresolved_components"] += 1
             continue
-        residual = graph.subgraph(component - endpoints)
-        matching = set()
-        # After pinning linkage bonds the independent precursor cores are
-        # small; solve each separately even for a many-thousand-atom cell.
-        for nodes in nx.connected_components(residual):
-            matching.update(_match_residual(residual.subgraph(nodes)))
-        if len(matching) * 2 != len(residual):
-            report["unresolved_components"] += 1
-            continue
-        selected.difference_update(edge for edge in original if edge <= component)
-        selected.update(matching | forced)
+        selected.difference_update(incoming)
+        selected.update(proposal)
 
     changes = []
     for edge in sorted(original ^ selected, key=lambda edge: tuple(sorted(edge))):
@@ -173,3 +181,28 @@ def normalize_imine_bond_orders(
     report["changed_bonds"] = changes
     report["restored_imine_bonds"] = len((targets - original) & selected)
     return report
+
+
+def _match_component(graph: nx.Graph, forced: set[frozenset[int]]) -> set[frozenset[int]] | None:
+    endpoints = {node for edge in forced for node in edge}
+    if len(endpoints) != 2 * len(forced) or any(not graph.has_edge(*edge) for edge in forced):
+        return None
+    residual = graph.subgraph(set(graph) - endpoints)
+    matching = set()
+    # Pinning linkage bonds usually separates the small precursor cores.
+    for nodes in nx.connected_components(residual):
+        matching.update(_match_residual(residual.subgraph(nodes)))
+    if len(matching) * 2 != len(residual):
+        return None
+    return matching | forced
+
+
+def _preserves_periodic_valences(original, selected, multiplicities) -> bool:
+    # Unchanged orders cancel. Each reassigned quotient edge changes every
+    # distinct periodic-image bond represented by that edge.
+    delta = Counter()
+    for edge in original ^ selected:
+        change = multiplicities.get(edge, 1) * (1 if edge in selected else -1)
+        for node in edge:
+            delta[node] += change
+    return all(change == 0 for change in delta.values())

@@ -93,7 +93,7 @@ Then go straight to the module that matches the task.
   - Explicit-bond binary-bridge decomposition into recovered monomers and COFid serialization.
   - This logic was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
 - [src/cofkit/decompose_bond_orders.py](../src/cofkit/decompose_bond_orders.py)
-  - Shared graph normalization before event/legacy detection: geometry-constrained, valence-preserving repair of quinoid imine assignments; no new bonds or periodic edge removal. ReDD-COFFEE regressions and independent CHK boundary labels live in `tests/test_decompose_bond_orders.py` and `tests/fixtures/redd_coffee/`.
+  - Shared graph normalization before event/legacy detection: geometry-constrained, valence-preserving repair of quinoid imine assignments; no new bonds or periodic edge removal. Receives periodic edge multiplicities, checks periodic valences, and retries failing components with parallel-image orders fixed before leaving them unresolved. ReDD-COFFEE regressions and independent CHK boundary labels live in `tests/test_decompose_bond_orders.py` and `tests/fixtures/redd_coffee/`.
 
 ## External calculation seams
 

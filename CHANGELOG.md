@@ -8,6 +8,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- Imine normalization checks valences across all periodic-image bonds before accepting each component. Repairs that fail this check are retried with parallel-image bond orders fixed; components with no valid retry remain unchanged and are reported as unresolved. Unchanged parallel bonds and balanced periodic-valence changes do not block repair.
+
 - CIF decomposition repairs geometrically unambiguous, H-explicit quinoid imine bond-order assignments before linkage detection using constrained perfect matchings; atom valences, charges, connectivity, and periodic image records are preserved. This restores missed imine cuts and prevents residual network fragments from being reported as additional precursor species. Inconclusive or unsatisfiable assignments are left unchanged and normalization diagnostics record every changed bond. The matching re-solves each conjugated component, so C=C and C-N double bonds inside that component can be reassigned as well and `changed_bonds` typically exceeds the number of restored imine links. Among equally conservative assignments the matching prefers the double bonds on the shorter contacts, so the repaired orders and their diagnostics are a function of the contact geometry rather than of the CIF atom row order.
 
 ## 2026.9.10

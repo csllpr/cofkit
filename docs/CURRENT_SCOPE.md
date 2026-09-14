@@ -4,7 +4,7 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 
 ## Implemented so far
 
-- conservative repair of explicit Kekule imine bond-order assignments before decomposition, using NetworkX perfect matching with decisive CH=N / N-C length evidence and explicit carbon-bound H; preserves valences and periodic connectivity, prefers the shorter contacts when several assignments are equally conservative, records changed bonds, and leaves ambiguous/unsatisfiable components unchanged. This is not general bond-order reconstruction for missing-H, charged, aromatic-only, or damaged-connectivity inputs.
+- conservative repair of explicit Kekule imine bond-order assignments before decomposition, using NetworkX perfect matching with decisive CH=N / N-C length evidence and explicit carbon-bound H; preserves valences and periodic connectivity, prefers the shorter contacts when several assignments are equally conservative, records changed bonds, and leaves ambiguous/unsatisfiable components unchanged. Proposed repairs must preserve each atom’s valence summed over every periodic-image edge; failing proposals are retried with parallel-image orders fixed, then rejected per component if still unsatisfiable. This is not general bond-order reconstruction for missing-H, charged, aromatic-only, or damaged-connectivity inputs.
 - geometry primitives and local frames
 - core domain dataclasses
 - builtin COF reaction library plus linkage-profile metadata for pair-role ordering, bridge targets, and realization hooks

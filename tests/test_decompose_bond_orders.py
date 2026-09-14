@@ -295,11 +295,11 @@ def _raw_build_and_distances(path):
 
 
 @pytest.mark.parametrize(
-    ("parallel_image_distance", "repaired"),
+    ("parallel_image_distance", "has_evidence"),
     [(1.2805, True), (1.60, False)],
 )
 def test_parallel_image_length_conflicts_exclude_distance_evidence(
-    tmp_path, parallel_image_distance, repaired
+    tmp_path, parallel_image_distance, has_evidence
 ):
     path = tmp_path / "quinoid_probe.cif"
     _write_quinoid_probe_cif(path, parallel_image_distance=parallel_image_distance)
@@ -307,10 +307,11 @@ def test_parallel_image_length_conflicts_exclude_distance_evidence(
     report = build.metadata["imine_bond_order_normalization"]
     # Both image rows stay in the candidate set; only the evidence differs.
     assert sum(1 for c in build.candidates if {c.atom_idx_1, c.atom_idx_2} == {0, 2}) == 2
-    assert report["candidate_imine_bonds"] == (1 if repaired else 0)
-    assert report["restored_imine_bonds"] == (1 if repaired else 0)
-    assert report["unresolved_components"] == 0
-    assert build.mol.GetBondBetweenAtoms(0, 2).GetBondTypeAsDouble() == (2.0 if repaired else 1.0)
+    assert report["candidate_imine_bonds"] == (1 if has_evidence else 0)
+    assert report["restored_imine_bonds"] == 0
+    # Consistent lengths are evidence, but doubling both images violates valence.
+    assert report["unresolved_components"] == (1 if has_evidence else 0)
+    assert build.mol.GetBondBetweenAtoms(0, 2).GetBondTypeAsDouble() == 1.0
 
 
 def test_same_instance_contacts_are_not_treated_as_linkages(tmp_path):
@@ -326,3 +327,109 @@ def test_same_instance_contacts_are_not_treated_as_linkages(tmp_path):
     assert report["candidate_imine_bonds"] == 0
     assert report["changed_bonds"] == []
     assert build.mol.GetBondBetweenAtoms(0, 2).GetBondTypeAsDouble() == 1.0
+
+
+def _periodic_valences(build):
+    values = [0.0] * build.mol.GetNumAtoms()
+    for candidate in build.candidates:
+        for node in (candidate.atom_idx_1, candidate.atom_idx_2):
+            values[node] += candidate.explicit_order
+    return values
+
+
+def test_parallel_core_bonds_cannot_increase_carbon_valence(tmp_path):
+    path = tmp_path / 'parallel_core.cif'
+    _write_quinoid_probe_cif(path, parallel_image_distance=1.2805)
+    path.write_text(path.read_text().replace('C1 N3 . 1_655 1.2805 S\n', '')
+                    + 'C4 C5 . 1_655 1.46 S\n')
+    raw = _raw_build(path)
+    repaired = legacy._build_bonded_mol(legacy.read_periodic_cif_atoms(path))
+    assert _periodic_valences(raw)[3:5] == [4.0, 4.0]
+    assert _periodic_valences(repaired) == _periodic_valences(raw)
+    assert _signature(repaired.mol) == _signature(raw.mol)
+    assert repaired.candidates == raw.candidates
+    report = repaired.metadata['imine_bond_order_normalization']
+    assert report['unresolved_components'] == 1
+    assert report['changed_bonds'] == []
+
+
+def _matching_probe():
+    # A twelve-membered alternating cycle with alternative core matchings.
+    rw = Chem.RWMol()
+    for symbol in ['C', 'N'] + ['C'] * 10 + ['H']:
+        rw.AddAtom(Chem.Atom(symbol))
+    original = {(0, 2), (1, 11), (3, 4), (5, 6), (7, 8), (9, 10)}
+    edges = original | {(0, 1), (0, 12)} | {(i, i + 1) for i in range(2, 11)} | {(4, 7), (5, 8)}
+    for edge in sorted(edges):
+        rw.AddBond(*edge, Chem.BondType.DOUBLE if edge in original else Chem.BondType.SINGLE)
+    mol = rw.GetMol()
+    distances = {frozenset(edge): 1.45 for edge in edges}
+    distances[frozenset((0, 1))] = 1.28
+    distances[frozenset((4, 7))] = 1.30
+    return mol, distances
+
+
+def _weighted_valences(mol, multiplicities):
+    values = [0.0] * mol.GetNumAtoms()
+    for bond in mol.GetBonds():
+        edge = frozenset((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()))
+        for node in edge:
+            values[node] += bond.GetBondTypeAsDouble() * multiplicities.get(edge, 1)
+    return values
+
+
+def test_retry_finds_alternative_without_changing_parallel_bond():
+    mol, distances = _matching_probe()
+    parallel = frozenset((4, 7))
+    unconstrained = Chem.Mol(mol)
+    normalize_imine_bond_orders(unconstrained, distances)
+    assert unconstrained.GetBondBetweenAtoms(4, 7).GetBondTypeAsDouble() == 2
+    before = _weighted_valences(mol, {parallel: 2})
+    report = normalize_imine_bond_orders(mol, distances, edge_multiplicities={parallel: 2})
+    assert _weighted_valences(mol, {parallel: 2}) == before
+    assert report['restored_imine_bonds'] == 1
+    assert report['unresolved_components'] == 0
+    assert mol.GetBondBetweenAtoms(4, 7).GetBondTypeAsDouble() == 1
+    assert mol.GetBondBetweenAtoms(0, 1).GetBondTypeAsDouble() == 2
+
+
+@pytest.mark.parametrize(("edge", "order"), [((5, 6), 2), ((5, 8), 1)])
+def test_unchanged_parallel_bond_does_not_block_component(edge, order):
+    mol, distances = _matching_probe()
+    report = normalize_imine_bond_orders(
+        mol, distances, edge_multiplicities={frozenset(edge): 2},
+    )
+    assert report['restored_imine_bonds'] == 1
+    assert report['unresolved_components'] == 0
+    assert mol.GetBondBetweenAtoms(*edge).GetBondTypeAsDouble() == order
+
+
+def test_balanced_parallel_changes_are_accepted():
+    mol, distances = _matching_probe()
+    multiplicities = {edge: 2 for edge in distances}
+    before = _weighted_valences(mol, multiplicities)
+    report = normalize_imine_bond_orders(mol, distances, edge_multiplicities=multiplicities)
+    assert _weighted_valences(mol, multiplicities) == before
+    assert report['restored_imine_bonds'] == 1
+    assert report['unresolved_components'] == 0
+
+
+def test_rejected_component_does_not_block_disconnected_repair():
+    first, distances = _matching_probe()
+    second, second_distances = _matching_probe()
+    offset = first.GetNumAtoms()
+    mol = Chem.CombineMols(first, second)
+    distances.update({frozenset(node + offset for node in edge): distance
+                      for edge, distance in second_distances.items()})
+    multiplicities = {frozenset((0, 1)): 2}
+    before = _weighted_valences(mol, multiplicities)
+    original = _bond_orders(mol)
+    report = normalize_imine_bond_orders(mol, distances, edge_multiplicities=multiplicities)
+    assert report['unresolved_components'] == 1
+    assert report['restored_imine_bonds'] == 1
+    assert _weighted_valences(mol, multiplicities) == before
+    assert {edge: order for edge, order in _bond_orders(mol).items() if max(edge) < offset} == {
+        edge: order for edge, order in original.items() if max(edge) < offset
+    }
+    actual = {tuple(sorted(edge)) for edge, order in _bond_orders(mol).items() if order != original[edge]}
+    assert {tuple(change['atoms']) for change in report['changed_bonds']} == actual
