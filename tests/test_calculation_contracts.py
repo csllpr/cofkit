@@ -24,6 +24,8 @@ from cofkit.lammps import (
     LammpsInputError,
     LammpsParseError,
     LammpsOptimizationSettings,
+    _extract_atom_site_charges_from_cif,
+    _parse_explicit_bond_cif,
     _validate_settings,
     optimize_cif_with_lammps,
 )
@@ -249,3 +251,63 @@ def test_fractional_rounding_accepted_in_skewed_cell(tmp_path):
     )
     with pytest.raises(ValueError, match="atom mapping"):
         validate_charge_assignment(source, output, target_charge=0, tolerance=1e-3)
+
+
+def test_underscore_labels_are_restored_unquoted(tmp_path):
+    """cofkit labels contain underscores, which gemmi quotes when writing.
+
+    A quoted `'cof_node_C1'` token used to be written into the charged CIF and
+    then compared verbatim against the parsed labels, so the LAMMPS charge
+    ingestion rejected every EQeq output for a cofkit-generated structure.
+    """
+    header = (
+        "data_x\n"
+        "_cell_length_a 20\n_cell_length_b 20\n_cell_length_c 20\n"
+        "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+        "loop_\n_atom_site_label\n_atom_site_type_symbol\n"
+        "_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+    )
+    source = tmp_path / "source.cif"
+    source.write_text(header + "cof_node_C1 C 0 0 0\ncof_node_N2 N 0.1 0 0\n")
+    output = tmp_path / "charged.cif"
+    # EQeq collapses labels to element symbols and keeps five decimals.
+    output.write_text(
+        header + "_atom_site_charge\nN N 0.10000 0.00000 0.00000 -0.1\nC C 0.00000 0.00000 0.00000 0.1\n"
+    )
+
+    checks = validate_charge_assignment(source, output, target_charge=0, tolerance=1e-3)
+
+    assert checks["net_charge"] == 0
+    charged_text = output.read_text()
+    assert "'cof_node_C1'" not in charged_text
+    assert "cof_node_C1" in charged_text
+    charges = _extract_atom_site_charges_from_cif(
+        output, expected_labels=["cof_node_C1", "cof_node_N2"]
+    )
+    assert charges.charges_by_label == {"cof_node_C1": 0.1, "cof_node_N2": -0.1}
+
+
+def test_quoted_cif_labels_are_ingested_by_lammps_parser(tmp_path):
+    """Quoted atom/bond labels denote the same atoms as their bare form.
+
+    Any CIF written through gemmi quotes labels containing underscores, so the
+    explicit-bond parser must unquote before matching labels across loops.
+    """
+    quoted = (
+        lammps_fixtures.LammpsTests()
+        ._example_cif_text()
+        .replace("_atom_site_occupancy\n", "_atom_site_occupancy\n_atom_site_charge\n")
+        .replace("a1 C 0.100000 0.100000 0.100000 1.00", "'a_1' C 0.100000 0.100000 0.100000 1.00 0.1")
+        .replace("a2 C 0.200000 0.100000 0.100000 1.00", "'a_2' C 0.200000 0.100000 0.100000 1.00 0.0")
+        .replace("a3 O 0.300000 0.100000 0.100000 1.00", "'a_3' O 0.300000 0.100000 0.100000 1.00 -0.1")
+        .replace("a1 a2 . . 1.000000", "'a_1' 'a_2' . . 1.000000")
+        .replace("a2 a3 . . 1.000000", "'a_2' 'a_3' . . 1.000000")
+    )
+    cif = tmp_path / "quoted.cif"
+    cif.write_text(quoted)
+
+    parsed = _parse_explicit_bond_cif(cif)
+
+    assert [atom.label for atom in parsed.atoms] == ["a_1", "a_2", "a_3"]
+    assert [atom.charge for atom in parsed.atoms] == [0.1, 0.0, -0.1]
+    assert len(parsed.bonds) == 2

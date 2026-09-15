@@ -15,6 +15,7 @@ try:  # pragma: no cover - exercised in integration environments
 except ImportError:  # pragma: no cover - import guard for incomplete environments
     gemmi = None
 
+from .cif_checks import cif_value_str
 from .periodic_geometry import images_within, p1_shift
 from .topologies import get_topology_hint
 
@@ -287,7 +288,7 @@ class CoarseStructureValidator:
         if len(label_1) == 0 or len(label_2) == 0:
             return set()
         return {
-            frozenset((str(label_1[index]), str(label_2[index])))
+            frozenset((cif_value_str(label_1[index]), cif_value_str(label_2[index])))
             for index in range(min(len(label_1), len(label_2)))
         }
 
@@ -375,11 +376,11 @@ class CoarseStructureValidator:
         sym2 = block.find_loop("_geom_bond_site_symmetry_2")
         result = set()
         for i in range(min(len(labels1), len(labels2))):
-            first = p1_shift(str(sym1[i]) if len(sym1) else ".")
-            second = p1_shift(str(sym2[i]) if len(sym2) else ".")
+            first = p1_shift(cif_value_str(sym1[i]) if len(sym1) else ".")
+            second = p1_shift(cif_value_str(sym2[i]) if len(sym2) else ".")
             shift = tuple(b-a for a, b in zip(first, second))
-            result.add((str(labels1[i]), str(labels2[i]), shift))
-            result.add((str(labels2[i]), str(labels1[i]), tuple(-v for v in shift)))
+            result.add((cif_value_str(labels1[i]), cif_value_str(labels2[i]), shift))
+            result.add((cif_value_str(labels2[i]), cif_value_str(labels1[i]), tuple(-v for v in shift)))
         return result
 
     def _min_nonbonded_heavy_distance_below_cutoff(self, small, bonded_images) -> float | None:

@@ -8,6 +8,18 @@ from pathlib import Path
 import gemmi
 
 
+def cif_value_str(value: object) -> str:
+    """Return a CIF loop/pair value as the string it denotes.
+
+    Raw CIF tokens keep their delimiters, so a quoted label such as
+    ``'bex_node_N1'`` must be unquoted before it is compared with a label
+    parsed by gemmi. Writers quote every value that could be ambiguous
+    (gemmi quotes anything containing an underscore), so readers that
+    compare raw tokens silently stop matching their own output.
+    """
+    return gemmi.cif.as_string(str(value)).strip()
+
+
 def read_ordered_structure(path: Path):
     block = gemmi.cif.read_file(str(path)).sole_block()
     for tag in (
@@ -64,6 +76,16 @@ def _same_fractional_position(a, b, *, tolerance: float = 1e-5) -> bool:
     return True
 
 
+def _accepted_candidates(candidates, atom, original) -> list[int]:
+    """Keep only candidate input sites matching this atom's element and position."""
+    return [
+        j
+        for j in candidates
+        if atom.element == original.sites[j].element
+        and _same_fractional_position(atom.fract, original.sites[j].fract)
+    ]
+
+
 def validate_charge_assignment(
     source: Path, charged: Path, *, target_charge: float, tolerance: float
 ) -> dict[str, object]:
@@ -75,7 +97,7 @@ def validate_charge_assignment(
     decimals. The tolerances accommodate decimal CIF serialization, not
     structural relaxation: EQeq is required to leave the geometry unchanged.
     """
-    _, original = read_ordered_structure(source)
+    source_block, original = read_ordered_structure(source)
     block, result = read_ordered_structure(charged)
     if len(original.sites) != len(result.sites):
         raise ValueError("EQeq changed the number of atom sites.")
@@ -99,39 +121,49 @@ def validate_charge_assignment(
     if len(set(original_labels)) != len(original_labels):
         raise ValueError("Input atom labels must be unique for charge assignment.")
     output_labels = block.find_loop("_atom_site_label")
+    source_labels = source_block.find_loop("_atom_site_label")
+    reuse_source_tokens = len(source_labels) == len(original.sites)
     by_label = {site.label: j for j, site in enumerate(original.sites)}
     search = None
     used: set[int] = set()
     for i, atom in enumerate(result.sites):
+        candidates: list[int] = []
         if atom.label in by_label:
-            candidates = [by_label[atom.label]]
-        else:
+            candidates = _accepted_candidates([by_label[atom.label]], atom, original)
+        if not candidates:
+            # EQeq rewrites labels to element symbols, so a label hit can also
+            # be an unrelated collision; fall back to the geometric search
+            # whenever the label candidate fails the element/position check.
             if search is None:
                 # 1 Å bins control search cost; the 0.05 Å search radius is a
                 # loose prefilter for the fractional serialization tolerance
                 # applied below. Avoid a quadratic atom-pair scan.
                 search = gemmi.NeighborSearch(original, 1.0).populate(include_h=True)
-            candidates = sorted(
-                {
-                    int(mark.atom_idx)
-                    for mark in search.find_site_neighbors(
-                        atom, min_dist=0, max_dist=0.05
-                    )
-                }
+            candidates = _accepted_candidates(
+                sorted(
+                    {
+                        int(mark.atom_idx)
+                        for mark in search.find_site_neighbors(
+                            atom, min_dist=0, max_dist=0.05
+                        )
+                    }
+                ),
+                atom,
+                original,
             )
-        candidates = [
-            j
-            for j in candidates
-            if atom.element == original.sites[j].element
-            and _same_fractional_position(atom.fract, original.sites[j].fract)
-        ]
         if len(candidates) != 1 or candidates[0] in used:
             raise ValueError(
                 "EQeq atom mapping is ambiguous or geometry/elements changed."
             )
         j = candidates[0]
         used.add(j)
-        output_labels[i] = gemmi.cif.quote(original.sites[j].label)
+        # Reuse the input file's raw token so the charged CIF carries labels
+        # byte-identical to the input: gemmi.cif.quote() would wrap every
+        # label containing an underscore in quotes, which naive downstream CIF
+        # readers (cofkit's own included, historically) then fail to match.
+        output_labels[i] = (
+            str(source_labels[j]) if reuse_source_tokens else gemmi.cif.quote(original.sites[j].label)
+        )
     document = gemmi.cif.Document()
     document.add_copied_block(block)
     document.write_file(str(charged))

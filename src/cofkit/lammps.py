@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .cif_checks import read_ordered_structure
+from .cif_checks import cif_value_str, read_ordered_structure
 from .calculation_io import MAX_ENGINE_SEED, atomic_write_text, begin_attempt, derive_seed, finish_attempt, record_execution, validate_numbers
 
 import json
@@ -3159,6 +3159,35 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
     if len(small.sites) == 0:
         raise LammpsInputError(f"CIF file does not contain any atom sites: {cif_path}")
 
+    bond_table = block.find(
+        [
+            "_geom_bond_atom_site_label_1",
+            "_geom_bond_atom_site_label_2",
+            "_geom_bond_site_symmetry_1",
+            "_geom_bond_site_symmetry_2",
+            "_geom_bond_distance",
+        ]
+    )
+    bond_type_loop = block.find_loop("_ccdc_geom_bond_type")
+    if len(bond_type_loop) == 0:
+        bond_type_loop = block.find_loop("_geom_bond_type")
+    # Diagnose the missing bonded topology before the per-atom checks: a
+    # charge-only CIF (an EQeq output, for instance) also collapses atom labels
+    # to element symbols, and reporting duplicate labels first hides the real
+    # blocker.
+    if len(bond_table) == 0:
+        if len(block.find_loop("_geom_bond_atom_site_label_1")) != 0:
+            raise LammpsInputError(
+                "CIF _geom_bond_ loop is missing required columns for LAMMPS optimization; "
+                "_geom_bond_atom_site_label_1, _geom_bond_atom_site_label_2, _geom_bond_site_symmetry_1, "
+                f"_geom_bond_site_symmetry_2, and _geom_bond_distance must all be present: {cif_path}"
+            )
+        raise LammpsInputError(
+            "CIF file does not contain an explicit _geom_bond_* loop and cannot drive the LAMMPS bonded cleanup: "
+            f"{cif_path}. An EQeq output CIF carries charges only; pass the bonded CIF instead and let cofkit "
+            "stage EQeq itself (charge_model='eqeq')."
+        )
+
     a, b, c = float(small.cell.a), float(small.cell.b), float(small.cell.c)
     alpha, beta, gamma = float(small.cell.alpha), float(small.cell.beta), float(small.cell.gamma)
     basis = _lammps_basis_from_cell(a, b, c, alpha, beta, gamma)
@@ -3210,12 +3239,12 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
     bonds: list[_CifBondRecord] = []
     for bond_id in range(len(bond_table)):
         row = bond_table[bond_id]
-        label_1 = str(row[0]).strip()
-        label_2 = str(row[1]).strip()
-        symmetry_1 = str(row[2]).strip() or "."
-        symmetry_2 = str(row[3]).strip() or "."
+        label_1 = cif_value_str(row[0])
+        label_2 = cif_value_str(row[1])
+        symmetry_1 = cif_value_str(row[2]) or "."
+        symmetry_2 = cif_value_str(row[3]) or "."
         try:
-            equilibrium_distance = float(row[4])
+            equilibrium_distance = float(cif_value_str(row[4]))
         except ValueError as exc:
             raise LammpsInputError(
                 f"Bond distance for {label_1}-{label_2} in {cif_path} is not numeric: {row[4]!r}"
@@ -3235,7 +3264,7 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
             raw_symmetry_2=symmetry_2,
             basis=basis,
         )
-        bond_order = cif_type_to_bond_order(str(bond_type_loop[bond_id]).strip()) if len(bond_type_loop) > bond_id else None
+        bond_order = cif_type_to_bond_order(cif_value_str(bond_type_loop[bond_id])) if len(bond_type_loop) > bond_id else None
         bonds.append(
             _CifBondRecord(
                 bond_id=bond_id + 1,
@@ -3342,11 +3371,11 @@ def _extract_atom_site_charges_from_block(
         duplicate_labels = False
         for row_index in range(len(table)):
             row = table[row_index]
-            label = str(row[0]).strip()
+            label = cif_value_str(row[0])
             if not label:
                 raise LammpsInputError(f"CIF charge loop {charge_column_name} contains an empty atom label.")
             try:
-                charge = float(row[1])
+                charge = float(cif_value_str(row[1]))
             except ValueError as exc:
                 raise LammpsInputError(
                     f"CIF charge loop {charge_column_name} contains a non-numeric value for atom {label!r}: {row[1]!r}"
