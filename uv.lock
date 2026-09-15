@@ -140,6 +140,8 @@ name = "cofkit"
 source = { editable = "." }
 dependencies = [
     { name = "gemmi" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "openbabel" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -156,6 +158,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "gemmi", specifier = ">=0.7" },
+    { name = "networkx", specifier = ">=3.2" },
     { name = "openbabel", specifier = ">=3.2.0" },
     { name = "pandas" },
     { name = "pymatgen" },

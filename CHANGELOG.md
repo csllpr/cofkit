@@ -10,6 +10,14 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 - shape-aware topology compatibility for 4-connecting monomers: monomers are now classified by molecular-graph symmetry into C4/Td-like or D2h-like node-shape families (`cofkit.node_shape`), while supported nets use canonical node-shape labels (`sql` square, `kgm` rectangular, `dia` tetrahedral); batch topology selection and `NetPlanner` compatibility now reject confident shape mismatches with explicit reasons (e.g. a rectangular tetratopic + linker pair is offered `kgm` instead of `sql`), while `unknown` classifications on either side keep the previous connectivity-count-only behavior; decorated `bex` `4+4` generation is now gated on a rectangular classification when shapes are known, and pair summaries record per-reactant node-shape labels (`reactant_node_shapes` on `BatchPairSummary`, `monomer_node_shapes` in candidate `topology_selection` metadata); the filter can be disabled with `BatchGenerationConfig(shape_aware_topology_filter=False)`
 
+## Unreleased
+
+### Fixed
+
+- Imine normalization checks valences across all periodic-image bonds before accepting each component. Repairs that fail this check are retried with parallel-image bond orders fixed; components with no valid retry remain unchanged and are reported as unresolved. Unchanged parallel bonds and balanced periodic-valence changes do not block repair.
+
+- CIF decomposition repairs geometrically unambiguous, H-explicit quinoid imine bond-order assignments before linkage detection using constrained perfect matchings; atom valences, charges, connectivity, and periodic image records are preserved. This restores missed imine cuts and prevents residual network fragments from being reported as additional precursor species. Inconclusive or unsatisfiable assignments are left unchanged and normalization diagnostics record every changed bond. The matching re-solves each conjugated component, so C=C and C-N double bonds inside that component can be reassigned as well and `changed_bonds` typically exceeds the number of restored imine links. Among equally conservative assignments the matching prefers the double bonds on the shorter contacts, so the repaired orders and their diagnostics are a function of the contact geometry rather than of the CIF atom row order.
+
 ## 2026.9.10
 
 ### Added
