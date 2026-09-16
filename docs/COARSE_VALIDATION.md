@@ -31,7 +31,7 @@ These graph-intact bridge-geometry failures are classified as `needs_optimizatio
 - mean bridge distance residual `> 0.60 A`
 - any bridge `actual_distance / target_distance < 0.70`
 - any bridge `actual_distance / target_distance > 1.60`
-- any realized inter-monomer linkage bond outside its per-template distance window (currently `boronate_ester_bridge`: B-O bonds outside `1.25-1.65 A`; the ring-closure realization targets ~1.47 A)
+- any realized inter-monomer linkage bond outside its per-template distance window (currently `boronate_ester_bridge`: B-O bonds outside `1.25-1.65 A`; the ring-closure realization targets ~1.44 A)
 
 ## Hard-hard-invalid threshold
 

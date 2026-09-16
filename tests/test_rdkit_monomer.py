@@ -311,6 +311,21 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertEqual(len(monomer.motifs), 3)
         self.assertTrue(all(motif.kind == "activated_methylene" for motif in monomer.motifs))
 
+    def test_build_rdkit_monomer_restores_aromaticity_lost_during_mmff_optimization(self):
+        # The cumulene macrocycle loses RDKit aromatic flags when MMFF property
+        # generation kekulizes the molecule in place; without restoration the
+        # aromatic catechol SMARTS matches nothing and the build fails.
+        monomer = build_rdkit_monomer(
+            "cumulene_tricatechol",
+            "cumulene tricatechol",
+            "Oc1cc2c(cc1O)=C=C=c1cc(O)c(O)cc1=C=C=c1cc(O)c(O)cc1=C=C=2",
+            "catechol",
+        )
+
+        self.assertEqual(len(monomer.motifs), 3)
+        self.assertTrue(all(motif.kind == "catechol" for motif in monomer.motifs))
+        self.assertIn(1.5, {round(order, 2) for *_, order in monomer.bonds})
+
     def test_activated_methylene_detection_accepts_conjugated_aza_and_nitrile_donors(self):
         self.assertEqual(
             detect_rdkit_motif_count(

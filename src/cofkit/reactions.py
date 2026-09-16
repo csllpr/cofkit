@@ -368,11 +368,11 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
         ReactionLinkageProfile(
             template_id="boronate_ester_bridge",
             # This is the boron-to-catechol-oxygen-centroid placement distance for the
-            # five-membered B-O-C-C-O ring, not a bond length: with rigid catechol
-            # O-O ~2.75 angstrom and B-O ~1.47 angstrom, the boron apex sits ~0.55
-            # angstrom from the O midpoint. The realized B-O bonds are closed at the
-            # true bond target during reaction realization.
-            bridge_target_distance=0.55,
+            # five-membered B-O-C-C-O ring, not a bond length: measured baseline
+            # boronate rings sit at 0.80 angstrom (B-O ~1.44, O-B-O ~112 deg, with the
+            # catechol oxygens contracted to O-O ~2.38). The realized B-O bonds are
+            # closed at the true bond target during reaction realization.
+            bridge_target_distance=0.80,
             binary_bridge_roles=(
                 BinaryBridgeRole(role_id="boronic_acid", motif_kind="boronic_acid", library_prefix="boronic_acids"),
                 BinaryBridgeRole(role_id="catechol", motif_kind="catechol", library_prefix="catechols"),

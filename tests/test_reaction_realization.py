@@ -1,10 +1,11 @@
 import sys
 import unittest
+from math import acos, pi
 from pathlib import Path
 
 
 from cofkit import AssemblyState, Candidate, Frame, MonomerSpec, Pose, ReactiveMotif, ReactionEvent, MotifRef
-from cofkit.linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE
+from cofkit.linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG
 from cofkit.reaction_realization import EventRealization, ReactionEventRealizationRegistry, ReactionRealizer
 
 
@@ -706,6 +707,18 @@ class ReactionRealizationTests(unittest.TestCase):
         }
         self.assertAlmostEqual(self._distance(oxygen_positions[0], (-1.0, 0.7, 0.0)), 1.0, places=6)
         self.assertAlmostEqual(self._distance(oxygen_positions[1], (-1.0, -0.7, 0.0)), 1.0, places=6)
+        # The ring contracts toward the measured baseline O-B-O angle instead of
+        # keeping the free-catechol opening (~139 degrees in this fixture, whose
+        # artificial bond lengths make the exact target infeasible).
+        boron_world = boron_atom.local_position
+        vector_1 = tuple(a - b for a, b in zip(oxygen_positions[0], boron_world))
+        vector_2 = tuple(a - b for a, b in zip(oxygen_positions[1], boron_world))
+        norm_1 = self._distance(vector_1, (0.0, 0.0, 0.0))
+        norm_2 = self._distance(vector_2, (0.0, 0.0, 0.0))
+        cosine = sum(a * b for a, b in zip(vector_1, vector_2)) / (norm_1 * norm_2)
+        obo_angle_deg = acos(max(-1.0, min(1.0, cosine))) * 180.0 / pi
+        self.assertLess(obo_angle_deg, 135.0)
+        self.assertGreater(obo_angle_deg, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG - 15.0)
 
     def test_vinylene_realization_removes_aldehyde_oxygen_and_two_activated_hydrogens(self):
         activated_methylene = MonomerSpec(

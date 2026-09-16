@@ -123,6 +123,7 @@ class RDKitMotifBuilder:
         if base is None:
             raise ValueError(f"RDKit could not parse SMILES for {monomer_id!r}")
         molecule = Chem.AddHs(base)
+        n_aromatic_before_optimization = sum(1 for atom in molecule.GetAtoms() if atom.GetIsAromatic())
         try:
             embedding = _embed_conformers(
                 molecule,
@@ -149,6 +150,12 @@ class RDKitMotifBuilder:
             max_iterations=optimization_max_iterations,
             max_attempts=optimization_attempts,
         )
+        # MMFF property generation kekulizes the molecule in place and, for some
+        # ring systems (e.g. cumulene macrocycles), fails to re-perceive
+        # aromaticity, which would silently break aromatic-SMARTS motif detection
+        # and aromatic bond orders below. Re-sanitize to restore it.
+        if sum(1 for atom in molecule.GetAtoms() if atom.GetIsAromatic()) < n_aromatic_before_optimization:
+            Chem.SanitizeMol(molecule)
         conformer = molecule.GetConformer(selection.conformer_id)
 
         detected = self._detect_motifs(molecule, conformer, definition)

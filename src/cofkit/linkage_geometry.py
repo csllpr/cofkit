@@ -8,9 +8,16 @@ IMINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.11
 AZINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.08
 
 # Realized B-O bond length target for the five-membered boronate ester ring
-# (B-O-C-C-O). Distinct from the boronate profile's bridge_target_distance,
-# which is a boron-to-oxygen-centroid placement distance, not a bond length.
-BORONATE_ESTER_BOND_TARGET_DISTANCE = 1.47
+# (B-O-C-C-O): 1.44 angstrom matches both the measured CoRE-COF baseline ring
+# mean (1.43 angstrom) and the DREIDING B_2-O_3 equilibrium (0.79+0.66-0.01).
+# Distinct from the boronate profile's bridge_target_distance, which is a
+# boron-to-oxygen-centroid placement distance, not a bond length.
+BORONATE_ESTER_BOND_TARGET_DISTANCE = 1.44
+
+# Measured O-B-O angle inside the baseline boronate ester rings; the closure
+# fit pulls the rigid catechol oxygens inward toward this value instead of
+# leaving the ring at the free-catechol opening (~138 degrees).
+BORONATE_ESTER_OBO_TARGET_ANGLE_DEG = 112.4
 
 
 def effective_motif_origin(

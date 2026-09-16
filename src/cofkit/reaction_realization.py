@@ -6,7 +6,7 @@ from math import acos, atan2, cos, pi, sin
 from typing import Callable, Mapping
 
 from .geometry import Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub, transpose
-from .linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE
+from .linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG
 from .model import Candidate, MonomerSpec, MotifRef, Pose, ReactionEvent
 from .reactions import bridge_target_distance, linkage_event_realizer
 
@@ -1462,6 +1462,7 @@ class ReactionRealizer:
         catechol_oxygen_worlds: tuple[Vec3, Vec3],
         catechol_normal: Vec3,
         target_bo_distance: float,
+        target_obo_angle_deg: float,
     ) -> tuple[Vec3, Vec3, Vec3] | None:
         anchor_centroid_world = scale(add(catechol_anchor_worlds[0], catechol_anchor_worlds[1]), 0.5)
         bridge_axis = sub(boronic_anchor_world, anchor_centroid_world)
@@ -1530,6 +1531,10 @@ class ReactionRealizer:
                     objective = 0.5 * self._squared_distance_2d(boron_2d, boron_current_2d)
                     objective += 0.5 * self._squared_distance_2d(oxygen_2d_1, anchor_pairs_2d[0][1])
                     objective += 0.5 * self._squared_distance_2d(oxygen_2d_2, anchor_pairs_2d[1][1])
+                    obo_angle_deg = self._obo_angle_deg_2d(boron_2d, oxygen_2d_1, oxygen_2d_2)
+                    if obo_angle_deg is None:
+                        continue
+                    objective += 0.01 * (obo_angle_deg - target_obo_angle_deg) ** 2
                     if best is None or objective < best[0]:
                         best = (objective, boron_2d, oxygen_2d_1, oxygen_2d_2)
 
@@ -1544,6 +1549,21 @@ class ReactionRealizer:
 
         _, boron_2d, oxygen_2d_1, oxygen_2d_2 = best
         return (to_world(boron_2d), to_world(oxygen_2d_1), to_world(oxygen_2d_2))
+
+    def _obo_angle_deg_2d(
+        self,
+        boron_2d: tuple[float, float],
+        oxygen_2d_1: tuple[float, float],
+        oxygen_2d_2: tuple[float, float],
+    ) -> float | None:
+        vector_1 = (oxygen_2d_1[0] - boron_2d[0], oxygen_2d_1[1] - boron_2d[1])
+        vector_2 = (oxygen_2d_2[0] - boron_2d[0], oxygen_2d_2[1] - boron_2d[1])
+        norm_1 = (vector_1[0] ** 2 + vector_1[1] ** 2) ** 0.5
+        norm_2 = (vector_2[0] ** 2 + vector_2[1] ** 2) ** 0.5
+        if norm_1 < 1e-8 or norm_2 < 1e-8:
+            return None
+        cosine = max(-1.0, min(1.0, (vector_1[0] * vector_2[0] + vector_1[1] * vector_2[1]) / (norm_1 * norm_2)))
+        return acos(cosine) * 180.0 / pi
 
     def _orthogonal_component(self, vector: Vec3, axis: Vec3) -> Vec3:
         return sub(vector, scale(axis, dot(vector, axis)))
@@ -2666,6 +2686,7 @@ class ReactionRealizer:
                 catechol_motif.frame.normal,
             ),
             target_bo_distance=BORONATE_ESTER_BOND_TARGET_DISTANCE,
+            target_obo_angle_deg=BORONATE_ESTER_OBO_TARGET_ANGLE_DEG,
         )
         if closed_positions is not None:
             boron_world, *catechol_oxygen_worlds = closed_positions
@@ -2700,7 +2721,8 @@ class ReactionRealizer:
         closure_note = (
             "The exported product applies a local five-membered ring-closure fit that moves the boron and both "
             "catechol oxygens around their anchor bonds so both inter-monomer B-O bonds close at the "
-            f"{BORONATE_ESTER_BOND_TARGET_DISTANCE:.2f} angstrom target."
+            f"{BORONATE_ESTER_BOND_TARGET_DISTANCE:.2f} angstrom target with an O-B-O angle near "
+            f"{BORONATE_ESTER_OBO_TARGET_ANGLE_DEG:.1f} degrees."
             if closed_positions is not None
             else "The exported product realizes the two inter-monomer B-O bonds to the catechol oxygens while keeping monomer-internal coordinates rigid."
         )
