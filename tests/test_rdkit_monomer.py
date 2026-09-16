@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 from cofkit import CIFWriter, COFEngine, COFProject, build_rdkit_monomer
@@ -14,6 +14,9 @@ try:
     from rdkit import Chem  # noqa: F401
 except ImportError:  # pragma: no cover - environment-dependent
     Chem = None
+
+
+CUMULENE_TRICATECHOL_SMILES = "Oc1cc2c(cc1O)=C=C=c1cc(O)c(O)cc1=C=C=c1cc(O)c(O)cc1=C=C=2"
 
 
 @unittest.skipIf(Chem is None, "RDKit is not available")
@@ -325,6 +328,51 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertEqual(len(monomer.motifs), 3)
         self.assertTrue(all(motif.kind == "catechol" for motif in monomer.motifs))
         self.assertIn(1.5, {round(order, 2) for *_, order in monomer.bonds})
+
+    def test_optimize_conformers_reports_successful_aromaticity_restore(self):
+        molecule = Chem.AddHs(Chem.MolFromSmiles(CUMULENE_TRICATECHOL_SMILES))
+        before = rdkit_module._aromaticity_snapshot(molecule)
+        self.assertTrue(before[0])
+        molecule.AddConformer(Chem.Conformer(molecule.GetNumAtoms()), assignId=True)
+        field = Mock()
+        field.Minimize.return_value = 0
+        field.CalcEnergy.return_value = -1.0
+        with (
+            patch.object(rdkit_module.AllChem, "MMFFGetMoleculeForceField", return_value=field),
+            patch.object(rdkit_module.AllChem, "UFFGetMoleculeForceField", return_value=None),
+        ):
+            result = rdkit_module._optimize_conformers(molecule, (0,))
+
+        self.assertEqual(result.forcefield, "MMFF")
+        self.assertTrue(
+            any("re-sanitized and restored" in diagnostic for diagnostic in result.diagnostics)
+        )
+        self.assertEqual(rdkit_module._aromaticity_snapshot(molecule), before)
+
+    def test_aromaticity_restore_detects_same_count_remark_on_different_indices(self):
+        molecule = Chem.AddHs(Chem.MolFromSmiles(CUMULENE_TRICATECHOL_SMILES))
+        snapshot = rdkit_module._aromaticity_snapshot(molecule)
+        aromatic_atoms = tuple(sorted(snapshot[0]))
+        other_atoms = tuple(
+            atom.GetIdx() for atom in molecule.GetAtoms() if atom.GetIdx() not in snapshot[0]
+        )
+        self.assertGreaterEqual(len(other_atoms), len(aromatic_atoms))
+        # Re-mark exactly as many atoms as before, but on different indices: a
+        # count-based check would see no change and skip the repair entirely.
+        for index in aromatic_atoms:
+            molecule.GetAtomWithIdx(index).SetIsAromatic(False)
+        for index in other_atoms[: len(aromatic_atoms)]:
+            molecule.GetAtomWithIdx(index).SetIsAromatic(True)
+        remarked = rdkit_module._aromaticity_snapshot(molecule)
+        self.assertEqual(len(remarked[0]), len(snapshot[0]))
+        self.assertNotEqual(remarked[0], snapshot[0])
+
+        with patch.object(Chem, "SanitizeMol") as sanitize_mock:
+            with self.assertRaises(rdkit_module.AromaticityRestoreError) as context:
+                rdkit_module._restore_mmff_aromaticity(molecule, snapshot)
+
+        sanitize_mock.assert_called_once()
+        self.assertIn("did not restore it", str(context.exception))
 
     def test_activated_methylene_detection_accepts_conjugated_aza_and_nitrile_donors(self):
         self.assertEqual(

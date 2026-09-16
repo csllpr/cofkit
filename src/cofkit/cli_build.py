@@ -11,7 +11,7 @@ from typing import Iterable, Mapping
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
-from .chem.rdkit import build_rdkit_monomer
+from .chem.rdkit import AromaticityRestoreError, build_rdkit_monomer
 from .cif import CIFWriter
 from .cofid import cofid_to_build_request, try_generate_cofid
 from .lammps import LammpsOptimizationSettings
@@ -377,20 +377,23 @@ def _run_single_pair(args: argparse.Namespace) -> None:
     for warning in (*first_warnings, *second_warnings):
         print(f"warning: {warning}", file=sys.stderr)
 
-    first = build_rdkit_monomer(
-        args.first_id,
-        args.first_name or args.first_id,
-        args.first_smiles,
-        first_kind,
-        num_conformers=args.num_conformers,
-    )
-    second = build_rdkit_monomer(
-        args.second_id,
-        args.second_name or args.second_id,
-        args.second_smiles,
-        second_kind,
-        num_conformers=args.num_conformers,
-    )
+    try:
+        first = build_rdkit_monomer(
+            args.first_id,
+            args.first_name or args.first_id,
+            args.first_smiles,
+            first_kind,
+            num_conformers=args.num_conformers,
+        )
+        second = build_rdkit_monomer(
+            args.second_id,
+            args.second_name or args.second_id,
+            args.second_smiles,
+            second_kind,
+            num_conformers=args.num_conformers,
+        )
+    except AromaticityRestoreError as exc:
+        raise SystemExit(f"error: {exc}") from exc
     _warn_unconverged_monomer(first)
     _warn_unconverged_monomer(second)
 
@@ -549,13 +552,16 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         raise SystemExit(
             f"template {args.template_id!r} requires motif kind {profile.ring_participant_motif_kind!r}"
         )
-    monomer = build_rdkit_monomer(
-        args.monomer_id,
-        args.monomer_name or args.monomer_id,
-        args.smiles,
-        motif_kind,
-        num_conformers=args.num_conformers,
-    )
+    try:
+        monomer = build_rdkit_monomer(
+            args.monomer_id,
+            args.monomer_name or args.monomer_id,
+            args.smiles,
+            motif_kind,
+            num_conformers=args.num_conformers,
+        )
+    except AromaticityRestoreError as exc:
+        raise SystemExit(f"error: {exc}") from exc
     _warn_unconverged_monomer(monomer)
     generator = RingFormingStructureGenerator(
         config=RingFormationConfig(
@@ -694,6 +700,7 @@ def _monomer_geometry_summary(monomer) -> dict[str, object]:
         "attempts": metadata.get("embedding_attempts", ()),
         "forcefield": metadata.get("forcefield"),
         "forcefield_optimization_status": metadata.get("forcefield_optimization_status"),
+        "forcefield_diagnostics": list(metadata.get("forcefield_diagnostics", ())),
     }
 
 

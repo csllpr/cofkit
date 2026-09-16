@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 
 from cofkit import (
+    AromaticityRestoreError,
     BatchGenerationConfig,
     BatchMonomerRecord,
     BatchStructureGenerator,
@@ -17,6 +18,7 @@ from cofkit import (
     MonomerSpec,
     ReactiveMotif,
     ReactionRealizer,
+    build_rdkit_monomer,
 )
 from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 
@@ -2108,6 +2110,60 @@ class BatchProcessPoolFallbackTests(unittest.TestCase):
             structure_ids = self._manifest_structure_ids(root / "output")
             self.assertEqual(len(structure_ids), 4)
             self.assertEqual(len(structure_ids), len(set(structure_ids)))
+
+
+@unittest.skipIf(Chem is None, "RDKit is not available")
+class BatchMonomerBuildFailureTests(unittest.TestCase):
+    """A monomer build error is recorded against its record, never raised."""
+
+    def _write_tiny_library(self, root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "amines_count_3.txt").write_text(f"smiles\n{TAPB}\n{TAPB}\n", encoding="utf-8")
+        (root / "aldehydes_count_3.txt").write_text(f"smiles\n{TFB}\n{TFB}\n", encoding="utf-8")
+
+    def test_aromaticity_restore_error_is_recorded_per_record(self):
+        failing_id = "amines_count_3_0001"
+
+        def builder(monomer_id, name, smiles, motif_kind, *, num_conformers, random_seed):
+            if monomer_id == failing_id:
+                raise AromaticityRestoreError(
+                    f"monomer {monomer_id!r}: MMFF aromaticity unresolvable"
+                )
+            return build_rdkit_monomer(
+                monomer_id,
+                name,
+                smiles,
+                motif_kind,
+                num_conformers=num_conformers,
+                random_seed=random_seed,
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = BatchStructureGenerator(
+                BatchGenerationConfig(
+                    rdkit_num_conformers=1,
+                    write_cif=False,
+                    max_workers=2,
+                    single_node_topology_ids=("hcb",),
+                ),
+                smiles_monomer_builder=builder,
+            )
+
+            summary = generator.run_binary_bridge_batch(
+                root / "input",
+                root / "output",
+                write_cif=False,
+            )
+            summary_text = (root / "output" / "summary.md").read_text(encoding="utf-8")
+
+        self.assertEqual(summary.failed_monomers, 1)
+        self.assertEqual(set(summary.build_failures), {failing_id})
+        self.assertIn("AromaticityRestoreError", summary.build_failures[failing_id])
+        self.assertGreater(summary.successful_pairs, 0)
+        self.assertIn("## Build failures", summary_text)
+        self.assertIn("AromaticityRestoreError", summary_text)
 
 
 if __name__ == "__main__":

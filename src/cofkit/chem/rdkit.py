@@ -46,6 +46,18 @@ _NONMETAL_ATOMIC_NUMBERS = frozenset(
 )
 
 
+class AromaticityRestoreError(RuntimeError):
+    """RDKit MMFF property generation cleared a molecule's aromaticity.
+
+    ``AllChem.MMFFGetMoleculeProperties`` kekulizes the molecule it is handed
+    in place and re-marks aromaticity with MMFF's own perception, which leaves
+    cumulene-bridged rings with no aromatic atoms at all. ``Chem.SanitizeMol``
+    normally restores them; this error means it did not, so the monomer must
+    not be built from a molecule with silently altered aromaticity. Present in
+    every RDKit release checked, so it cannot be avoided by upgrading.
+    """
+
+
 @dataclass(frozen=True)
 class _DetectedMotif:
     reactive_atom_id: int
@@ -123,7 +135,6 @@ class RDKitMotifBuilder:
         if base is None:
             raise ValueError(f"RDKit could not parse SMILES for {monomer_id!r}")
         molecule = Chem.AddHs(base)
-        n_aromatic_before_optimization = sum(1 for atom in molecule.GetAtoms() if atom.GetIsAromatic())
         try:
             embedding = _embed_conformers(
                 molecule,
@@ -143,19 +154,16 @@ class RDKitMotifBuilder:
                 f"fallback conformer has {molecule.GetNumAtoms()} atoms; "
                 f"force-field minimization is capped below {_FALLBACK_FORCEFIELD_ATOM_LIMIT} atoms"
             )
-        selection = _optimize_conformers(
-            molecule,
-            embedding.conformer_ids,
-            skip_reason=optimization_skip_reason,
-            max_iterations=optimization_max_iterations,
-            max_attempts=optimization_attempts,
-        )
-        # MMFF property generation kekulizes the molecule in place and, for some
-        # ring systems (e.g. cumulene macrocycles), fails to re-perceive
-        # aromaticity, which would silently break aromatic-SMARTS motif detection
-        # and aromatic bond orders below. Re-sanitize to restore it.
-        if sum(1 for atom in molecule.GetAtoms() if atom.GetIsAromatic()) < n_aromatic_before_optimization:
-            Chem.SanitizeMol(molecule)
+        try:
+            selection = _optimize_conformers(
+                molecule,
+                embedding.conformer_ids,
+                skip_reason=optimization_skip_reason,
+                max_iterations=optimization_max_iterations,
+                max_attempts=optimization_attempts,
+            )
+        except AromaticityRestoreError as exc:
+            raise AromaticityRestoreError(f"monomer {monomer_id!r}: {exc}") from exc
         conformer = molecule.GetConformer(selection.conformer_id)
 
         detected = self._detect_motifs(molecule, conformer, definition)
@@ -462,6 +470,55 @@ def _minimize_conformer(field, *, max_iterations: int, max_attempts: int) -> int
     return status
 
 
+def _aromaticity_snapshot(molecule) -> tuple[frozenset[int], frozenset[int]]:
+    """Return the aromatic atom-index and aromatic bond-index sets."""
+    aromatic_atoms = frozenset(
+        atom.GetIdx() for atom in molecule.GetAtoms() if atom.GetIsAromatic()
+    )
+    aromatic_bonds = frozenset(
+        bond.GetIdx()
+        for bond in molecule.GetBonds()
+        if bond.GetBondType() == Chem.BondType.AROMATIC
+    )
+    return aromatic_atoms, aromatic_bonds
+
+
+def _restore_mmff_aromaticity(
+    molecule,
+    snapshot: tuple[frozenset[int], frozenset[int]],
+) -> str | None:
+    """Repair aromaticity lost to RDKit's in-place MMFF kekulization.
+
+    Returns ``None`` when the aromaticity state is unchanged, a diagnostic
+    entry describing a successful repair, and raises
+    :class:`AromaticityRestoreError` when ``Chem.SanitizeMol`` fails or does
+    not restore the snapshotted sets. The comparison is set equality, never a
+    count: MMFF can re-mark the same number of atoms or bonds differently,
+    which a scalar count would not notice.
+    """
+    if _aromaticity_snapshot(molecule) == snapshot:
+        return None
+    atoms_before = len(snapshot[0])
+    try:
+        Chem.SanitizeMol(molecule)
+    except Exception as exc:
+        raise AromaticityRestoreError(
+            "RDKit MMFF property generation cleared aromaticity in place and "
+            f"Chem.SanitizeMol could not restore it: {type(exc).__name__}: {exc}"
+        ) from exc
+    after = _aromaticity_snapshot(molecule)
+    if after != snapshot:
+        raise AromaticityRestoreError(
+            "RDKit MMFF property generation cleared aromaticity in place and "
+            f"Chem.SanitizeMol did not restore it ({atoms_before} aromatic atoms "
+            f"before, {len(after[0])} after)"
+        )
+    return (
+        "MMFF property generation cleared RDKit aromatic flags in place; "
+        f"re-sanitized and restored {atoms_before} aromatic atoms"
+    )
+
+
 def _optimize_conformers(
     molecule,
     conformer_ids: tuple[int, ...],
@@ -489,6 +546,11 @@ def _optimize_conformers(
         diagnostics.append(f"MMFF parameter check failed: {type(exc).__name__}: {str(exc).splitlines()[0]}")
         has_mmff_parameters = False
     if has_mmff_parameters:
+        # MMFF property generation kekulizes the molecule in place and can drop
+        # the aromatic perception the motif detection downstream depends on, so
+        # the state is snapshotted here and repaired once MMFF is done with the
+        # molecule, never in between force-field construction calls.
+        aromaticity_snapshot = _aromaticity_snapshot(molecule)
         try:
             props = AllChem.MMFFGetMoleculeProperties(molecule)
         except (RuntimeError, ValueError) as exc:
@@ -496,8 +558,8 @@ def _optimize_conformers(
                 f"MMFF property generation failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
             )
             props = None
+        best = None
         if props is not None:
-            best = None
             for conf_id in conformer_ids:
                 try:
                     field = AllChem.MMFFGetMoleculeForceField(molecule, props, confId=conf_id)
@@ -516,14 +578,17 @@ def _optimize_conformers(
                         best_unconverged = (conf_id, energy, "MMFF")
                 if status == 0 and isfinite(energy) and (best is None or energy < best[1]):
                     best = (conf_id, energy)
-            if best is not None:
-                return _ConformerSelectionResult(
-                    best[0],
-                    best[1],
-                    "MMFF",
-                    "optimized",
-                    tuple(diagnostics),
-                )
+        aromaticity_diagnostic = _restore_mmff_aromaticity(molecule, aromaticity_snapshot)
+        if aromaticity_diagnostic is not None:
+            diagnostics.append(aromaticity_diagnostic)
+        if best is not None:
+            return _ConformerSelectionResult(
+                best[0],
+                best[1],
+                "MMFF",
+                "optimized",
+                tuple(diagnostics),
+            )
 
     best = None
     for conf_id in conformer_ids:

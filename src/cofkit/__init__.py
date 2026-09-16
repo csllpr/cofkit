@@ -137,6 +137,7 @@ from .lammps import (
     resolve_lammps_binary,
 )
 from .chem import (
+    AromaticityRestoreError,
     MotifDetector,
     MotifKindDefinition,
     MotifKindRegistry,
@@ -243,6 +244,7 @@ __all__ = [
     "BatchPairSummary",
     "BatchRunSummary",
     "BatchStructureGenerator",
+    "AromaticityRestoreError",
     "AVAILABLE_WIDOM_COMPONENTS",
     "DEFAULT_WIDOM_COMPONENTS",
     "PACKAGED_GUEST_FORCEFIELD_METADATA",

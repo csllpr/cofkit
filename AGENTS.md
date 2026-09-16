@@ -59,6 +59,19 @@ uv build --wheel               # packaging check (CI)
 - Tests: mirror the existing `tests/test_*.py` layout
   (`agent-docs/AGENT_CODEBASE_MAP.md` maps seams to test files).
 
+## Design principles
+
+- **For non-fatal failures, prefer a warning over a hard stop.** Warn on
+  stderr (`print(f"warning: ...", file=sys.stderr)`) or record a
+  `diagnostics` / `warnings` entry on the result object, then carry on.
+  Reserve a non-zero exit for failures that are genuinely
+  unrecoverable.
+- **No individual failure may abort an entire batch operation.** A bad
+  monomer, pair, or record is recorded against that record — as
+  `f"{type(exc).__name__}: {exc}"` in the `batch_models.py` dataclasses,
+  reaching `summary.md` / `failures.jsonl` and the console summary — and
+  the run continues. Never let an exception escape a batch loop.
+
 ## Constraints and conventions
 
 - The practical generation path is binary-bridge-first; ring-forming

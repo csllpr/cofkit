@@ -7,9 +7,10 @@ from .motif_registry import (
     default_motif_kind_registry,
     motif_pseudo_atom_symbol,
 )
-from .rdkit import RDKitMotifBuilder, build_rdkit_monomer
+from .rdkit import AromaticityRestoreError, RDKitMotifBuilder, build_rdkit_monomer
 
 __all__ = [
+    "AromaticityRestoreError",
     "MotifDetector",
     "Molecule",
     "LinkageGeometryModel",
