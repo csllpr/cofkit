@@ -64,7 +64,8 @@ Then go straight to the module that matches the task.
 
 - [src/cofkit/node_shape.py](../src/cofkit/node_shape.py)
   - Whole-monomer node-shape classification (square / rectangular / tetrahedral / unknown) for 4-connecting monomers, plus net node-shape signatures from single-node layout edge directions.
-  - Consumed by `batch.py` topology selection (`_topology_ids_for_pair`, `_topology_unavailable_errors`, decorated-`bex` gating) and by `planner.py` compatibility checks; unknown shapes are always treated as "no opinion".
+  - Consumed by `batch.py` topology selection (`_topology_ids_for_pair`, `_topology_unavailable_errors`, decorated-`bex` gating, `_requested_shape_warnings`) and by `planner.py` compatibility checks; unknown shapes are always treated as "no opinion".
+  - Shape detection only prunes enumerated topologies. Explicitly requested topologies (`--topology`, `--cofid`, `BatchGenerationConfig.topology_ids` / `single_node_topology_ids`, `NetPlanner` `target_topologies`) are kept and report `shape_warnings` in pair-summary / `NetPlan` / `COFEngine` candidate metadata instead. It can be switched off via `shape_aware_topology_filter` on `BatchGenerationConfig`, the CLI `--no-shape-aware-topology-filter`, `NetPlanner(...)`, and `COFEngineConfig(...)`; enumerations that are passed as `topology_ids` can stay filtered with `BatchGenerationConfig(shape_filter_explicit_topologies=True)`.
 - [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
   - Shared dispatch for supported topology-family builders.
 - [src/cofkit/single_node_topologies.py](../src/cofkit/single_node_topologies.py)

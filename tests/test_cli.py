@@ -370,6 +370,84 @@ class CliTests(unittest.TestCase):
             self.assertEqual(summary["results"][0]["metadata"]["cofid"], cofid)
 
     @unittest.skipIf(Chem is None, "RDKit is not available")
+    def test_single_pair_cli_cofid_shape_conflict_warns_and_builds(self):
+        monomers = (
+            (4, "amine", _canonical("Nc1cc(N)c(N)cc1N")),
+            (2, "aldehyde", _canonical("O=Cc1ccc(C=O)cc1")),
+        )
+        cofid = ".".join(
+            f"{connectivity}:{reactive_group}:{smiles}"
+            for connectivity, reactive_group, smiles in sorted(
+                monomers,
+                key=lambda item: (-item[0], item[2]),
+            )
+        ) + "&&sql&&imine"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "single_pair_shape_conflict"
+            stdout_buffer = io.StringIO()
+            stderr_buffer = io.StringIO()
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                cli_main(
+                    [
+                        "build",
+                        "single-pair",
+                        "--cofid",
+                        cofid,
+                        "--num-conformers",
+                        "1",
+                        "--no-write-cif",
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+            stderr_text = stderr_buffer.getvalue()
+
+        self.assertEqual(summary["successful_structures"], 1)
+        self.assertEqual(summary["results"][0]["topology_id"], "sql")
+        self.assertEqual(len(summary["shape_warnings"]), 1)
+        self.assertIn("warning:", stderr_text)
+        self.assertIn("requested topology 'sql'", stderr_text)
+        self.assertIn("rectangular", stderr_text)
+
+    @unittest.skipIf(Chem is None, "RDKit is not available")
+    def test_single_pair_cli_shape_filter_flag_toggles_enumeration(self):
+        base_args = [
+            "build",
+            "single-pair",
+            "--first-smiles",
+            "Nc1cc(N)c(N)cc1N",
+            "--second-smiles",
+            "O=Cc1ccc(C=O)cc1",
+            "--first-motif-kind",
+            "amine",
+            "--second-motif-kind",
+            "aldehyde",
+            "--num-conformers",
+            "1",
+            "--no-write-cif",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            default_dir = Path(temp_dir) / "default_filter"
+            filterless_dir = Path(temp_dir) / "no_filter"
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli_main([*base_args, "--output-dir", str(default_dir)])
+                cli_main([*base_args, "--no-shape-aware-topology-filter", "--output-dir", str(filterless_dir)])
+
+            def _topologies(output_dir: Path) -> set[str]:
+                summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+                return {result["topology_id"] for result in summary["results"]}
+
+            default_topologies = _topologies(default_dir)
+            filterless_topologies = _topologies(filterless_dir)
+
+        self.assertNotIn("sql", default_topologies)
+        self.assertIn("sql", filterless_topologies)
+
+    @unittest.skipIf(Chem is None, "RDKit is not available")
     def test_single_pair_cli_warns_when_keto_aldehyde_forced_through_imine(self):
         tapb = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
         tp = "O=Cc1c(O)c(C=O)c(O)c(C=O)c1O"

@@ -34,8 +34,14 @@ class AssignmentPlan:
 class NetPlanner:
     """Proposes topology/net plans from monomer valence and allowed reactions."""
 
-    def __init__(self, topology_repository: object | None = None):
+    def __init__(
+        self,
+        topology_repository: object | None = None,
+        *,
+        shape_aware_topology_filter: bool = True,
+    ):
         self._topology_repository = topology_repository
+        self.shape_aware_topology_filter = shape_aware_topology_filter
 
     def propose(
         self,
@@ -78,8 +84,21 @@ class NetPlanner:
         else:
             hints = tuple(self._infer_repository_topologies(monomers, target_dimensionality))
 
+        # Explicitly requested topologies are planned even when the node-shape
+        # classifier disagrees; the conflict is reported as a warning instead.
+        explicit_request = bool(target_topologies)
         compatible_hints = tuple(
-            hint for hint in hints if self._is_topology_compatible(hint, monomers, target_dimensionality)
+            hint
+            for hint in hints
+            if self._is_topology_compatible(
+                hint,
+                monomers,
+                target_dimensionality,
+                shape_aware=not explicit_request,
+            )
+        )
+        shape_warnings = (
+            self._requested_shape_warnings(compatible_hints, monomers) if explicit_request else ()
         )
         if compatible_hints:
             return tuple(
@@ -91,6 +110,7 @@ class NetPlanner:
                         "planning_mode": "topology-guided",
                         "connectivities": tuple(len(m.motifs) for m in monomers),
                         "topology_metadata": dict(hint.metadata),
+                        **({"shape_warnings": shape_warnings} if shape_warnings else {}),
                     },
                 )
                 for hint in compatible_hints
@@ -135,6 +155,8 @@ class NetPlanner:
         hint: TopologyHint,
         monomers: tuple[MonomerSpec, ...],
         target_dimensionality: str,
+        *,
+        shape_aware: bool = True,
     ) -> bool:
         if hint.dimensionality != target_dimensionality:
             return False
@@ -155,6 +177,9 @@ class NetPlanner:
         if not connectivity_match:
             return False
 
+        if not shape_aware or not self.shape_aware_topology_filter:
+            return True
+
         topology_shape = classify_topology_node_shape(hint.id)
         for monomer in monomers:
             if len(monomer.motifs) != 4:
@@ -162,6 +187,32 @@ class NetPlanner:
             if shapes_compatible(classify_monomer_node_shape(monomer), topology_shape) is False:
                 return False
         return True
+
+    def _requested_shape_warnings(
+        self,
+        hints: tuple[TopologyHint, ...],
+        monomers: tuple[MonomerSpec, ...],
+    ) -> tuple[str, ...]:
+        """Non-blocking node-shape conflicts for explicitly requested topologies."""
+        if not self.shape_aware_topology_filter:
+            return ()
+        warnings: list[str] = []
+        for hint in hints:
+            if not hint.node_coordination:
+                continue
+            topology_shape = classify_topology_node_shape(hint.id)
+            for monomer in monomers:
+                if len(monomer.motifs) != 4:
+                    continue
+                monomer_shape = classify_monomer_node_shape(monomer)
+                if shapes_compatible(monomer_shape, topology_shape) is False:
+                    warnings.append(
+                        f"requested topology {hint.id!r} conflicts with the classified tetratopic "
+                        f"node shape and was kept anyway: monomer {monomer.id!r} node shape "
+                        f"{monomer_shape.label!r} is incompatible with topology {hint.id!r} "
+                        f"node shape {topology_shape.label!r}"
+                    )
+        return tuple(warnings)
 
     def _repository(self):
         if self._topology_repository is not None:

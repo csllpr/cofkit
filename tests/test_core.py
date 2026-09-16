@@ -199,6 +199,14 @@ class PlannerAndSolverTests(unittest.TestCase):
         self.assertEqual(plans[0].topology.id, "hcb")
         self.assertEqual(plans[0].topology.metadata["n_node_definitions"], 1)
 
+    def test_engine_config_reaches_default_net_planner_shape_filter(self):
+        self.assertTrue(COFEngine().net_planner.shape_aware_topology_filter)
+        self.assertFalse(
+            COFEngine(
+                config=COFEngineConfig(shape_aware_topology_filter=False)
+            ).net_planner.shape_aware_topology_filter
+        )
+
     def test_ring_planner_assigns_virtual_three_connected_topology(self):
         precursor = MonomerSpec(
             id="diboronic",

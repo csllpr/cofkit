@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .embedding import EmbeddingConfig, PeriodicEmbedder
 from .model import Candidate, CandidateEnsemble, MonomerSpec, ReactionTemplate, order_candidates
@@ -36,6 +36,10 @@ class COFEngineConfig:
     default_lateral_span: float = 30.0
     max_candidates: int = 16
     optimization_max_iterations: int = 8
+    # Filter net-planner topology candidates by the classified node shape of
+    # 4-connecting monomers. Explicit target_topologies are planned anyway and
+    # report the conflict as a warning.
+    shape_aware_topology_filter: bool = True
     # Attach (and rank by) the legacy event-count heuristic score. Disabled by
     # default: candidates get score=None and are ranked by geometry residual.
     enable_legacy_scoring: bool = False
@@ -54,7 +58,9 @@ class COFEngine:
     ):
         self.reaction_library = reaction_library or ReactionLibrary.builtin()
         self.config = config or COFEngineConfig()
-        self.net_planner = net_planner or NetPlanner()
+        self.net_planner = net_planner or NetPlanner(
+            shape_aware_topology_filter=self.config.shape_aware_topology_filter
+        )
         self.assignment_solver = assignment_solver or AssignmentSolver()
         self.embedder = embedder or PeriodicEmbedder(
             EmbeddingConfig(
@@ -202,6 +208,9 @@ class COFEngine:
                 allowed_reactions=project.allowed_reactions,
                 target_dimensionality=project.target_dimensionality,
                 topology_ids=topology_ids,
+                # Explicit target_topologies are caller requests; the default
+                # 3D topology list is an enumeration and stays shape-filtered.
+                shape_filter_explicit_topologies=not project.target_topologies,
                 enumerate_all_topologies=True,
                 post_build_conversions=project.post_build_conversions,
                 write_cif=False,
@@ -225,8 +234,20 @@ class COFEngine:
                 raise ValueError(str(error or "single-pair topology generation failed"))
             raise ValueError("single-pair topology generation failed")
 
+        shape_warnings = tuple(
+            dict.fromkeys(
+                str(warning)
+                for summary in summaries
+                for warning in summary.metadata.get("shape_warnings", ()) or ()
+            )
+        )
         ensemble = CandidateEnsemble()
         for candidate in order_candidates(candidates)[: self.config.max_candidates]:
+            if shape_warnings:
+                candidate = replace(
+                    candidate,
+                    metadata={**dict(candidate.metadata), "shape_warnings": shape_warnings},
+                )
             ensemble.add(candidate)
         return ensemble
 

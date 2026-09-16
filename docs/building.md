@@ -35,6 +35,7 @@ By default, the CLI autodetects motif kinds with `--auto-detect-motifs`, enumera
 - `--topology hcb` restricts topology selection; repeat for multiple topologies
 - `--target-dimensionality 2D` or `--target-dimensionality 3D` controls topology selection
 - `--no-all-topologies` keeps only the best generated topology
+- `--no-shape-aware-topology-filter` enumerates topologies by connectivity only, skipping the 4-connecting node-shape check (see below)
 - `--no-write-cif` skips CIF export
 - `--max-cif-exports N` caps exported CIFs
 
@@ -47,6 +48,8 @@ cofkit build single-pair \
 ```
 
 `--cofid` defines the monomers, topology, and linkage, so it cannot be combined with direct SMILES or topology overrides.
+
+For 4-connecting monomers, cofkit classifies the reactive-site symmetry family (square/C4-like, rectangular/D2h-like, or tetrahedral) and matches it against the node shape of the nets it enumerates, so a rectangular tetratopic + ditopic pair is offered `kgm` instead of `sql`. Unclassifiable monomers or nets keep connectivity-only behavior. Explicit requests always win over that classifier: `--cofid` and `--topology` build the requested net even when the classifier disagrees, print a `warning:` line to stderr, and record the conflict as `shape_warnings` in `summary.json`. Use `--no-shape-aware-topology-filter` to turn the detection off entirely for enumerated topologies.
 
 The `first.geometry` and `second.geometry` objects in `summary.json` record the RDKit embedding method, whether a fallback was used, and force-field optimization status. Standard ETKDGv3 remains the primary path. If it fails, cofkit tries bounded random-coordinate ETKDGv3 and ETKDGv2 embeddings. A final 2D coordinate fallback is restricted to planar metal-containing or formally charged precursors, is not force-field minimized, and is labeled explicitly in the summary. Force-field minimization that does not fully converge is not fatal: the build proceeds with the lowest-energy unconverged conformer, the monomer is labeled `unconverged` with diagnostics in the geometry metadata, and the CLI prints a `warning:` line to stderr.
 
@@ -140,6 +143,7 @@ Useful batch flags:
 - `--max-cif-exports N` caps exported CIFs
 - `--no-all-topologies` keeps only the best topology per pair
 - `--topology ID` restricts topology selection; repeat for multiple ids
+- `--no-shape-aware-topology-filter` enumerates topologies by connectivity only for 4-connecting monomers
 - `--auto-detect-libraries` infers roles/connectivities from raw SMILES libraries
 
 Grouped library files are named by role and connectivity, for example:

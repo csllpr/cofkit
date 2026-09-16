@@ -114,6 +114,11 @@ class BatchGenerationConfig:
     # (square/rectangular/tetrahedral) when both the monomer and the net
     # classify confidently; unknown shapes keep shape-agnostic behavior.
     shape_aware_topology_filter: bool = True
+    # Apply that filter to topology_ids / single_node_topology_ids as well.
+    # Those ids are caller requests by default, so a shape conflict is reported
+    # as a warning instead of dropping the topology; set True for ids that only
+    # restrict an internal enumeration, which should still be filtered.
+    shape_filter_explicit_topologies: bool = False
     stacking_ids: tuple[str, ...] = ()
     rdkit_num_conformers: int = 8
     rdkit_random_seed: int = 0xC0F
@@ -161,6 +166,8 @@ class _TopologyEvaluation:
     candidates: tuple[Candidate, ...]
     available_topologies: tuple[str, ...]
     failed_topologies: Mapping[str, str] = field(default_factory=dict)
+    # Non-blocking node-shape conflicts for explicitly requested topologies.
+    shape_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1140,6 +1147,12 @@ class BatchStructureGenerator:
             pair_mode="node-node",
             node_shapes=node_shapes,
         )
+        shape_warnings = self._requested_shape_warnings(
+            topology_ids=topology_ids,
+            node_shapes=node_shapes,
+            pair_mode="node-node",
+            connectivities=(first_connectivity, second_connectivity),
+        )
         if not topology_ids:
             return _TopologyEvaluation(
                 pair_mode=pair_mode,
@@ -1155,6 +1168,7 @@ class BatchStructureGenerator:
                     ),
                     node_shapes=node_shapes,
                 ),
+                shape_warnings=shape_warnings,
             )
 
         raw_candidates: list[tuple[str, Candidate]] = []
@@ -1196,6 +1210,7 @@ class BatchStructureGenerator:
             candidates=candidates,
             available_topologies=topology_ids,
             failed_topologies=topology_errors,
+            shape_warnings=shape_warnings,
         )
 
     def _evaluate_three_plus_three_topologies(
@@ -1231,6 +1246,12 @@ class BatchStructureGenerator:
             pair_mode="node-linker",
             node_shapes=node_shapes,
         )
+        shape_warnings = self._requested_shape_warnings(
+            topology_ids=topology_ids,
+            node_shapes=node_shapes,
+            pair_mode="node-linker",
+            connectivities=(len(first.motifs), len(second.motifs)),
+        )
         if not topology_ids:
             return _TopologyEvaluation(
                 pair_mode=pair_mode,
@@ -1245,6 +1266,7 @@ class BatchStructureGenerator:
                     ),
                     node_shapes=node_shapes,
                 ),
+                shape_warnings=shape_warnings,
             )
 
         raw_candidates: list[tuple[str, Candidate]] = []
@@ -1286,6 +1308,7 @@ class BatchStructureGenerator:
             candidates=candidates,
             available_topologies=topology_ids,
             failed_topologies=topology_errors,
+            shape_warnings=shape_warnings,
         )
 
     def _evaluate_three_plus_two_topologies(
@@ -3795,16 +3818,23 @@ class BatchStructureGenerator:
         topology_id: str,
         node_shapes: tuple[NodeShapeSignature, ...],
     ) -> str | None:
+        conflicts = self._topology_shape_conflicts(topology_id, node_shapes)
+        return conflicts[0] if conflicts else None
+
+    def _topology_shape_conflicts(
+        self,
+        topology_id: str,
+        node_shapes: tuple[NodeShapeSignature, ...],
+    ) -> tuple[str, ...]:
         if not self.config.shape_aware_topology_filter or not node_shapes:
-            return None
+            return ()
         topology_shape = classify_topology_node_shape(topology_id)
-        for shape in node_shapes:
-            if shapes_compatible(shape, topology_shape) is False:
-                return (
-                    f"monomer node shape {shape.label!r} is incompatible with "
-                    f"topology {topology_id!r} node shape {topology_shape.label!r}"
-                )
-        return None
+        return tuple(
+            f"monomer node shape {shape.label!r} is incompatible with "
+            f"topology {topology_id!r} node shape {topology_shape.label!r}"
+            for shape in node_shapes
+            if shapes_compatible(shape, topology_shape) is False
+        )
 
     def _decorated_bex_shape_allowed(self, node_shapes: tuple[NodeShapeSignature, ...]) -> bool:
         if not self.config.shape_aware_topology_filter:
@@ -3813,6 +3843,44 @@ class BatchStructureGenerator:
         if not classified:
             return True
         return SHAPE_RECTANGULAR in classified
+
+    def _decorated_bex_shape_error(self, node_shapes: tuple[NodeShapeSignature, ...]) -> str | None:
+        if self._decorated_bex_shape_allowed(node_shapes):
+            return None
+        classified = [shape.label for shape in node_shapes if shape.label in KNOWN_SHAPE_LABELS]
+        return (
+            "decorated bex generation requires a rectangular (D2h-like) tetratopic monomer, "
+            f"got node shape(s) {classified!r}"
+        )
+
+    def _requested_shape_warnings(
+        self,
+        *,
+        topology_ids: Iterable[str],
+        node_shapes: tuple[NodeShapeSignature, ...],
+        pair_mode: str,
+        connectivities: tuple[int, int],
+    ) -> tuple[str, ...]:
+        """Non-blocking node-shape conflicts for explicitly requested topologies.
+
+        Enumerated topologies stay shape-filtered; topologies the caller
+        requested explicitly are kept and report the conflict instead.
+        """
+        if not self.config.shape_aware_topology_filter or not node_shapes:
+            return ()
+        warnings: list[str] = []
+        for topology_id in topology_ids:
+            conflicts = self._topology_shape_conflicts(topology_id, node_shapes)
+            if self._is_decorated_bex_request(topology_id, pair_mode, connectivities):
+                decorated_bex_error = self._decorated_bex_shape_error(node_shapes)
+                if decorated_bex_error is not None:
+                    conflicts = conflicts + (decorated_bex_error,)
+            for conflict in conflicts:
+                warnings.append(
+                    f"requested topology {topology_id!r} conflicts with the classified tetratopic "
+                    f"node shape and was kept anyway: {conflict}"
+                )
+        return tuple(warnings)
 
     def _topology_ids_for_pair(
         self,
@@ -3840,6 +3908,10 @@ class BatchStructureGenerator:
 
         mode_token = self._topology_mode_token(connectivities, pair_mode)
         mode_key = self._topology_mode_metadata_key(pair_mode)
+        # Node-shape detection only prunes enumerated topologies. Explicitly
+        # requested ones are attempted and report the unresolved conflict as a
+        # warning instead of being dropped.
+        explicit_request = bool(configured) and not self.config.shape_filter_explicit_topologies
         selected: list[str] = []
         for topology_id in candidate_ids:
             try:
@@ -3854,7 +3926,10 @@ class BatchStructureGenerator:
             )
             if mode_token not in topology_modes and not decorated_bex:
                 continue
-            if decorated_bex and not self._decorated_bex_shape_allowed(node_shapes):
+            if not explicit_request and (
+                (decorated_bex and not self._decorated_bex_shape_allowed(node_shapes))
+                or self._topology_shape_compatibility_error(topology_id, node_shapes) is not None
+            ):
                 continue
             builder_error = self._topology_builder_compatibility_error(
                 topology_id=topology_id,
@@ -3862,8 +3937,6 @@ class BatchStructureGenerator:
                 pair_mode=pair_mode,
             )
             if builder_error is not None:
-                continue
-            if self._topology_shape_compatibility_error(topology_id, node_shapes) is not None:
                 continue
             if topology_id not in selected:
                 selected.append(topology_id)
@@ -3949,6 +4022,8 @@ class BatchStructureGenerator:
 
         mode_token = self._topology_mode_token(connectivities, pair_mode)
         mode_key = self._topology_mode_metadata_key(pair_mode)
+        # Shape detection is not a blocker for explicitly requested topologies.
+        explicit_request = bool(configured) and not self.config.shape_filter_explicit_topologies
         errors: dict[str, str] = {}
         for topology_id in candidate_ids:
             try:
@@ -3971,13 +4046,11 @@ class BatchStructureGenerator:
                 reason = hint.metadata.get(reason_key) or hint.metadata.get("two_monomer_reason")
                 errors[topology_id] = str(reason or f"topology {topology_id!r} is not chemically compatible with mode {mode_token!r}")
                 continue
-            if decorated_bex and not self._decorated_bex_shape_allowed(node_shapes):
-                classified = [shape.label for shape in node_shapes if shape.label in KNOWN_SHAPE_LABELS]
-                errors[topology_id] = (
-                    "decorated bex generation requires a rectangular (D2h-like) tetratopic monomer, "
-                    f"got node shape(s) {classified!r}"
-                )
-                continue
+            if decorated_bex and not explicit_request:
+                decorated_bex_error = self._decorated_bex_shape_error(node_shapes)
+                if decorated_bex_error is not None:
+                    errors[topology_id] = decorated_bex_error
+                    continue
             builder_error = self._topology_builder_compatibility_error(
                 topology_id=topology_id,
                 connectivities=connectivities,
@@ -3986,10 +4059,11 @@ class BatchStructureGenerator:
             if builder_error is not None:
                 errors[topology_id] = builder_error
                 continue
-            shape_error = self._topology_shape_compatibility_error(topology_id, node_shapes)
-            if shape_error is not None:
-                errors[topology_id] = shape_error
-                continue
+            if not explicit_request:
+                shape_error = self._topology_shape_compatibility_error(topology_id, node_shapes)
+                if shape_error is not None:
+                    errors[topology_id] = shape_error
+                    continue
         if not errors:
             errors["__pair__"] = generic_message
         elif "__pair__" not in errors:
@@ -4165,6 +4239,7 @@ class BatchStructureGenerator:
         hard_hard_invalid_reasons: tuple[str, ...] = (),
         hard_hard_invalid_metrics: Mapping[str, object] | None = None,
         reactant_node_shapes: Mapping[str, str] | None = None,
+        shape_warnings: tuple[str, ...] = (),
     ) -> BatchPairSummary:
         export_blocked = bool(hard_hard_invalid_reasons)
         return BatchPairSummary(
@@ -4205,6 +4280,7 @@ class BatchStructureGenerator:
                 "reactant_connectivities": dict(reactant_connectivities),
                 "reactant_node_shapes": dict(reactant_node_shapes or {}),
                 "reactant_roles": reactant_roles,
+                "shape_warnings": tuple(shape_warnings),
                 "template_id": template_id,
                 **(
                     {"stacking": dict(candidate.metadata["stacking"])}
@@ -4448,6 +4524,7 @@ class BatchStructureGenerator:
                             "reactant_connectivities": role_connectivities,
                             "reactant_node_shapes": role_node_shapes,
                             "reactant_roles": pair.role_ids,
+                            "shape_warnings": evaluation.shape_warnings,
                             "template_id": pair.template.id,
                         },
                     ),
@@ -4509,6 +4586,7 @@ class BatchStructureGenerator:
                 reactant_roles=pair.role_ids,
                 template_id=pair.template.id,
                 cofid=cofid,
+                shape_warnings=evaluation.shape_warnings,
                 hard_hard_invalid_reasons=hard_hard_invalid_reasons,
                 hard_hard_invalid_metrics=hard_hard_invalid_metrics,
             )

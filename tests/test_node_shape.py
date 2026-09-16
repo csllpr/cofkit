@@ -1,6 +1,14 @@
 import unittest
 
-from cofkit import BatchGenerationConfig, BatchStructureGenerator, Frame, MonomerSpec, ReactiveMotif
+from cofkit import (
+    BatchGenerationConfig,
+    BatchStructureGenerator,
+    COFEngine,
+    COFProject,
+    Frame,
+    MonomerSpec,
+    ReactiveMotif,
+)
 from cofkit.node_shape import (
     SHAPE_RECTANGULAR,
     SHAPE_SQUARE,
@@ -83,6 +91,65 @@ class TopologyShapeTests(unittest.TestCase):
 
     def test_unknown_topology_id_is_unknown(self):
         self.assertEqual(classify_topology_node_shape("does-not-exist").label, SHAPE_UNKNOWN)
+
+
+D2H_TETRA_AMINE = "Nc1cc(N)c(N)cc1N"
+D2H_TETRA_ALDEHYDE = "O=Cc1cc(C=O)c(C=O)cc1C=O"
+
+
+def _d2h_tetratopic_monomers():
+    return (
+        build_rdkit_monomer("d2h_amine", "d2h_amine", D2H_TETRA_AMINE, "amine"),
+        build_rdkit_monomer("d2h_aldehyde", "d2h_aldehyde", D2H_TETRA_ALDEHYDE, "aldehyde"),
+    )
+
+
+class PlannerShapeFilterTests(unittest.TestCase):
+    """Explicit topology requests survive a node-shape disagreement as warnings."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.monomers = _d2h_tetratopic_monomers()
+
+    def test_explicit_request_records_shape_conflict_instead_of_dropping_it(self):
+        plans = NetPlanner().propose(self.monomers, (), "2D", target_topologies=("sql",))
+
+        self.assertEqual([plan.topology.id for plan in plans], ["sql"])
+        warnings = plans[0].metadata["shape_warnings"]
+        self.assertEqual(len(warnings), 2)
+        for warning in warnings:
+            self.assertIn("requested topology 'sql'", warning)
+            self.assertIn("rectangular", warning)
+
+    def test_shape_filter_toggle_keeps_conflicting_topology_without_warning(self):
+        plans = NetPlanner(shape_aware_topology_filter=False).propose(
+            self.monomers,
+            (),
+            "2D",
+            target_topologies=("sql",),
+        )
+
+        self.assertEqual([plan.topology.id for plan in plans], ["sql"])
+        self.assertNotIn("shape_warnings", plans[0].metadata)
+
+
+class EngineShapeFilterTests(unittest.TestCase):
+    """COFEngine keeps explicit topology requests and reports the conflict."""
+
+    def test_explicit_topology_request_reports_shape_conflict_on_candidate(self):
+        project = COFProject(
+            monomers=_d2h_tetratopic_monomers(),
+            allowed_reactions=("imine_bridge",),
+            target_dimensionality="2D",
+            target_topologies=("sql",),
+        )
+
+        candidate = COFEngine().run(project).top(1)[0]
+
+        self.assertEqual(candidate.metadata["net_plan"]["topology"], "sql")
+        warnings = candidate.metadata["shape_warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("rectangular", warnings[0])
 
 
 if __name__ == "__main__":

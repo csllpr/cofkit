@@ -56,10 +56,13 @@ Useful variants:
 - add `--topology hcb` to force one topology
 - add `--target-dimensionality 3D` for supported higher-connectivity cases
 - add `--no-all-topologies` when the user wants only the best topology instead of the full supported set
+- add `--no-shape-aware-topology-filter` when a 4-connecting monomer should be enumerated against every connectivity-compatible net, ignoring the node-shape classifier
 
 Primary artifact:
 
 - `summary.json`
+
+Explicit requests (`--cofid` or `--topology`) are built even when the 4-connecting node-shape classifier disagrees with the requested net: a `warning:` line is printed to stderr and the conflict is recorded as `shape_warnings` in `summary.json`. Report the build plus the warning rather than a failure.
 
 ### Screen one linkage over a library directory
 
@@ -81,6 +84,7 @@ Useful variants:
 
 - add one or more `--topology ...` values to restrict the run to explicit topologies
 - add `--no-all-topologies` when the user wants only the best topology per pair instead of the full supported set
+- add `--no-shape-aware-topology-filter` to enumerate by connectivity only for 4-connecting monomers; explicit `--topology` values are built regardless and report a `shape_warnings` conflict instead
 
 Primary artifacts:
 
@@ -516,6 +520,7 @@ Choose the API by how much the user already knows:
 - Do not treat `cofkit build list-templates` as a complete picture of the whole toolkit; it only covers the build chemistry surface.
 - Do not treat every template returned by `cofkit build list-templates` as immediately runnable for structure generation.
 - Do not assume an unspecified topology means one implicit default topology; the current `single-pair` and `batch-binary-bridge` CLIs enumerate all applicable topologies unless the user passes `--no-all-topologies` or explicit `--topology` values.
+- Do not report a `shape_warnings` entry as a build failure. Explicit `--topology` / `--cofid` requests are built on purpose even when the 4-connecting node-shape classifier disagrees with the requested net; the warning is informational, and `--no-shape-aware-topology-filter` turns the detection off.
 - Do not use `--auto-detect-libraries` on `examples/default_monomers_library`.
 - Do not claim engine-level stacking exploration is supported; `COFProject.stacking_mode` remains `"disabled"`. The supported stacking surface is opt-in post-build `2D` registry enumeration through CLI `--stacking` or `BatchGenerationConfig(stacking_ids=...)`.
 - Do not route users to the current internal benzothiazole/sulfur-enabled conversion prototype through the public CLI.

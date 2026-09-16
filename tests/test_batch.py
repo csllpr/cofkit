@@ -37,6 +37,7 @@ LONG_DIALDEHYDE = "O=Cc1ccc(C#Cc2c3ccccc3c(C#Cc3ccc(C=O)cc3)c3ccccc23)cc1"
 ASYMMETRIC_TRIALDEHYDE = "O=Cc1ccccc1C#Cc1cc(C#Cc2ccccc2C=O)cc(C#Cc2ccccc2C=O)c1"
 TETRA_AMINE = "Nc1ccc(C(c2ccc(N)cc2)(c2ccc(N)cc2)c2ccc(N)cc2)cc1"
 TETRA_ALDEHYDE = "O=Cc1ccc(C(c2ccc(C=O)cc2)(c2ccc(C=O)cc2)c2ccc(C=O)cc2)cc1"
+D2H_TETRA_AMINE = "Nc1cc(N)c(N)cc1N"
 BEX_D2H_ALDEHYDE = (
     "C1C=C(N(C2C=CC(C3C4C(=NON=4)C(C4C=CC(N(C5C=CC(C=O)=CC=5)C5C=CC(C=O)=CC=5)=CC=4)=CC=3)=CC=2)"
     "C2C=CC(C=O)=CC=2)C=CC=1C=O"
@@ -1149,6 +1150,131 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             for candidate in candidates
         }
         self.assertEqual(instance_counts, {"sql": 3, "kgm": 9, "htb": 18})
+
+    def _d2h_pair_records(self):
+        return (
+            BatchMonomerRecord(
+                id="d2h_tetra_amine",
+                name="d2h_tetra_amine",
+                smiles=D2H_TETRA_AMINE,
+                motif_kind="amine",
+                expected_connectivity=4,
+            ),
+            BatchMonomerRecord(
+                id="tpal",
+                name="tpal",
+                smiles=TEREPHTHALALDEHYDE,
+                motif_kind="aldehyde",
+                expected_connectivity=2,
+            ),
+        )
+
+    def test_explicit_topology_shape_conflict_is_a_warning_not_a_skip(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=1,
+                topology_ids=("sql",),
+                write_cif=False,
+            )
+        )
+        amine, aldehyde = self._d2h_pair_records()
+
+        summary, candidate = generator.generate_pair_candidate(amine, aldehyde)
+
+        self.assertEqual(summary.status, "ok")
+        self.assertEqual(summary.metadata["reactant_node_shapes"]["amine"], "rectangular")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.metadata["net_plan"]["topology"], "sql")
+        warnings = summary.metadata["shape_warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("requested topology 'sql'", warnings[0])
+        self.assertIn("rectangular", warnings[0])
+
+    def test_enumerated_topologies_still_filter_shape_conflicts(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(rdkit_num_conformers=1, retain_top_results=1, write_cif=False)
+        )
+        amine, aldehyde = self._d2h_pair_records()
+
+        summary, _candidate = generator.generate_pair_candidate(amine, aldehyde)
+
+        available = set(summary.metadata["topology_selection"]["available_topologies"])
+        self.assertNotIn("sql", available)
+        self.assertIn("kgm", available)
+        self.assertEqual(summary.metadata["shape_warnings"], ())
+
+    def test_shape_aware_topology_filter_off_enumerates_conflicting_topologies(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=1,
+                write_cif=False,
+                shape_aware_topology_filter=False,
+            )
+        )
+        amine, aldehyde = self._d2h_pair_records()
+
+        summary, _candidate = generator.generate_pair_candidate(amine, aldehyde)
+
+        available = set(summary.metadata["topology_selection"]["available_topologies"])
+        self.assertIn("sql", available)
+        self.assertEqual(summary.metadata["shape_warnings"], ())
+
+    def test_shape_filtered_internal_enumeration_drops_conflicting_topology(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=1,
+                topology_ids=("sql",),
+                write_cif=False,
+                shape_filter_explicit_topologies=True,
+            )
+        )
+        amine, aldehyde = self._d2h_pair_records()
+
+        summary, candidate = generator.generate_pair_candidate(amine, aldehyde)
+
+        self.assertEqual(summary.status, "generation-failed")
+        self.assertIsNone(candidate)
+        self.assertEqual(summary.metadata["shape_warnings"], ())
+        self.assertIn("rectangular", summary.metadata["failed_topologies"]["sql"])
+
+    def test_explicit_decorated_bex_request_warns_about_non_rectangular_node(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=1,
+                topology_ids=("bex",),
+                write_cif=False,
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tetra_amine",
+            name="tetra_amine",
+            smiles=TETRA_AMINE,
+            motif_kind="amine",
+            expected_connectivity=4,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tetra_aldehyde",
+            name="tetra_aldehyde",
+            smiles=TETRA_ALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=4,
+        )
+
+        summary, candidate = generator.generate_pair_candidate(amine, aldehyde)
+
+        self.assertEqual(summary.status, "ok")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "decorated-bex-node-node")
+        warnings = summary.metadata["shape_warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("decorated bex", warnings[0])
+        self.assertIn("tetrahedral", warnings[0])
 
     def test_four_plus_two_dia_imine_batch_build_keeps_bent_bridge_geometry(self):
         generator = BatchStructureGenerator(

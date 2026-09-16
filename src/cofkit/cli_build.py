@@ -93,6 +93,18 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         help="Enumerate all applicable topologies per monomer pair. Enabled by default.",
     )
     parser.add_argument(
+        "--shape-aware-topology-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Filter enumerated topologies by the classified node shape of 4-connecting monomers "
+            "(square/C4-like vs rectangular/D2h-like vs tetrahedral). Enabled by default; pass "
+            "--no-shape-aware-topology-filter to enumerate topologies by connectivity only. "
+            "Explicit --topology requests are never filtered: a classifier conflict is reported "
+            "as a warning instead."
+        ),
+    )
+    parser.add_argument(
         "--topology",
         action="append",
         default=[],
@@ -169,6 +181,7 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             allowed_reactions=allowed_reactions,
             target_dimensionality=args.target_dimensionality,
             topology_ids=tuple(args.topology),
+            shape_aware_topology_filter=getattr(args, "shape_aware_topology_filter", True),
             use_indexed_topology_defaults=args.use_indexed_topology_defaults,
             stacking_ids=tuple(args.stacking),
             rdkit_num_conformers=args.num_conformers,
@@ -235,6 +248,18 @@ def _add_single_pair_parser(subparsers) -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Enumerate all applicable topologies per monomer pair. Enabled by default.",
+    )
+    parser.add_argument(
+        "--shape-aware-topology-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Filter enumerated topologies by the classified node shape of 4-connecting monomers "
+            "(square/C4-like vs rectangular/D2h-like vs tetrahedral). Enabled by default; pass "
+            "--no-shape-aware-topology-filter to enumerate topologies by connectivity only. "
+            "Explicit --topology requests are never filtered: a classifier conflict is reported "
+            "as a warning instead."
+        ),
     )
     parser.add_argument(
         "--topology",
@@ -394,6 +419,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         candidates = () if candidate is None else (candidate,)
         attempted_structures = 1 if summary.status == "ok" else 0
 
+    shape_warnings = _print_shape_warnings(summaries)
     report = {
         **({"requested_cofid": requested_cofid} if requested_cofid is not None else {}),
         "template_id": args.template_id,
@@ -417,6 +443,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         "attempted_structures": attempted_structures,
         "successful_structures": sum(1 for summary in summaries if summary.status == "ok"),
         "cifs_written": sum(1 for summary in summaries if summary.cif_path is not None),
+        "shape_warnings": list(shape_warnings),
         "results": [_summary_to_single_pair_result(summary) for summary in summaries],
     }
     (output_dir / "summary.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -719,6 +746,24 @@ def _print_single_pair_geometry_repair_warning(summary) -> None:
         )
 
 
+def _summary_shape_warnings(summaries) -> tuple[str, ...]:
+    """Distinct node-shape warnings recorded on explicitly requested topologies."""
+    warnings: list[str] = []
+    for summary in summaries:
+        for warning in summary.metadata.get("shape_warnings", ()) or ():
+            text = str(warning)
+            if text and text not in warnings:
+                warnings.append(text)
+    return tuple(warnings)
+
+
+def _print_shape_warnings(summaries) -> tuple[str, ...]:
+    warnings = _summary_shape_warnings(summaries)
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    return warnings
+
+
 def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     if template_id is not None:
         print("template_id:", template_id)
@@ -754,6 +799,7 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
             "WARNING:",
             f"geometry repair completed for {nonvalid_repaired} structure(s) whose repaired CIF validation was not valid.",
         )
+    _print_shape_warnings(summary.top_results)
     for result in summary.top_results[:10]:
         print(
             "top_result:",
