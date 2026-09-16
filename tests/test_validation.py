@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - environment-dependent
     gemmi = None
 
 
-def _write_test_cif(path: Path, *, atoms: list[tuple[str, str, float, float, float]], bonds: list[tuple[str, str]]) -> None:
+def _write_test_cif(path: Path, *, atoms: list[tuple[str, str, float, float, float]], bonds: list[tuple[str, str]], bond_distance: float = 1.5) -> None:
     lines = [
         f"data_{path.stem}",
         "_audit_creation_method 'cofkit test'",
@@ -53,7 +53,7 @@ def _write_test_cif(path: Path, *, atoms: list[tuple[str, str, float, float, flo
             ]
         )
         for left, right in bonds:
-            lines.append(f"{left} {right} . . 1.500000")
+            lines.append(f"{left} {right} . . {bond_distance:.6f}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -65,6 +65,7 @@ def _summary_record(
     distance_residual: float = 0.1,
     actual_distance: float = 1.4,
     target_distance: float = 1.3,
+    template_id: str | None = None,
 ) -> dict[str, object]:
     return {
         "structure_id": structure_id,
@@ -81,6 +82,7 @@ def _summary_record(
         "cif_path": str(cif_path),
         "metadata": {
             "graph_summary": {"n_monomer_instances": 2, "n_reaction_events": 1, "reaction_templates": {"imine_bridge": 1}},
+            **({"template_id": template_id} if template_id is not None else {}),
             "score_metadata": {
                 "n_unreacted_motifs": 0,
                 "bridge_event_metrics": [
@@ -246,6 +248,63 @@ class CoarseValidationTests(unittest.TestCase):
         self.assertEqual(report.classification, "hard_invalid")
         self.assertIn("heavy_atom_clash", report.hard_invalid_reasons)
         self.assertLess(report.metrics["min_nonbonded_heavy_distance"], 1.05)
+
+    def test_validator_flags_out_of_window_realized_boronate_bond_as_needs_optimization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "stretched_boronate.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("m1_B1", "B", 0.1, 0.1, 0.1),
+                    ("m2_O1", "O", 0.29, 0.1, 0.1),
+                ],
+                bonds=[("m1_B1", "m2_O1")],
+                bond_distance=1.9,
+            )
+            record = _summary_record(
+                cif_path,
+                structure_id="stretched_boronate",
+                distance_residual=0.1,
+                actual_distance=0.55,
+                target_distance=0.55,
+                template_id="boronate_ester_bridge",
+            )
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "needs_optimization")
+        self.assertIn("realized_bridge_bond_distance", report.needs_optimization_reasons)
+        self.assertEqual(report.hard_invalid_reasons, ())
+        self.assertEqual(report.metrics["realized_bridge_bond_count"], 1)
+        self.assertAlmostEqual(report.metrics["realized_bridge_bond_distance_max"], 1.9)
+
+    def test_validator_accepts_in_window_realized_boronate_bond(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "closed_boronate.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("m1_B1", "B", 0.1, 0.1, 0.1),
+                    ("m2_O1", "O", 0.247, 0.1, 0.1),
+                ],
+                bonds=[("m1_B1", "m2_O1")],
+                bond_distance=1.47,
+            )
+            record = _summary_record(
+                cif_path,
+                structure_id="closed_boronate",
+                distance_residual=0.1,
+                actual_distance=0.55,
+                target_distance=0.55,
+                template_id="boronate_ester_bridge",
+            )
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertEqual(report.metrics["realized_bridge_bond_count"], 1)
 
     def test_classifier_sorts_valid_and_invalid_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:

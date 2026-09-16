@@ -4,7 +4,71 @@ from pathlib import Path
 
 
 from cofkit import AssemblyState, Candidate, Frame, MonomerSpec, Pose, ReactiveMotif, ReactionEvent, MotifRef
+from cofkit.linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE
 from cofkit.reaction_realization import EventRealization, ReactionEventRealizationRegistry, ReactionRealizer
+
+
+def _boronate_ester_monomers() -> tuple[MonomerSpec, MonomerSpec]:
+    boronic_acid = MonomerSpec(
+        id="boronic_acid",
+        name="minimal boronic acid",
+        motifs=(
+            ReactiveMotif(
+                id="bor1",
+                kind="boronic_acid",
+                atom_ids=(0, 1, 2, 3, 4, 5),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                allowed_reaction_templates=("boronate_ester_bridge",),
+                metadata={
+                    "reactive_atom_id": 1,
+                    "anchor_atom_id": 0,
+                    "oxygen_atom_ids": (2, 3),
+                    "hydrogen_atom_ids": (4, 5),
+                },
+            ),
+        ),
+        atom_symbols=("C", "B", "O", "O", "H", "H"),
+        atom_positions=(
+            (-1.2, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.9, 0.9, 0.0),
+            (0.9, -0.9, 0.0),
+            (1.6, 1.2, 0.0),
+            (1.6, -1.2, 0.0),
+        ),
+        bonds=((0, 1, 1.0), (1, 2, 1.0), (1, 3, 1.0), (2, 4, 1.0), (3, 5, 1.0)),
+    )
+    catechol = MonomerSpec(
+        id="catechol",
+        name="minimal catechol",
+        motifs=(
+            ReactiveMotif(
+                id="cat1",
+                kind="catechol",
+                atom_ids=(0, 1, 2, 3, 4, 5),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                allowed_reaction_templates=("boronate_ester_bridge",),
+                metadata={
+                    "reactive_atom_id": 0,
+                    "anchor_atom_id": 4,
+                    "reactive_atom_ids": (0, 1),
+                    "anchor_atom_ids": (4, 5),
+                    "hydrogen_atom_ids": (2, 3),
+                },
+            ),
+        ),
+        atom_symbols=("O", "O", "H", "H", "C", "C"),
+        atom_positions=(
+            (0.0, 0.7, 0.0),
+            (0.0, -0.7, 0.0),
+            (-0.7, 1.2, 0.0),
+            (-0.7, -1.2, 0.0),
+            (-1.0, 0.7, 0.0),
+            (-1.0, -0.7, 0.0),
+        ),
+        bonds=((0, 2, 1.0), (1, 3, 1.0), (0, 4, 1.0), (1, 5, 1.0)),
+    )
+    return boronic_acid, catechol
 
 
 def _single_event_candidate(
@@ -38,6 +102,9 @@ def _single_event_candidate(
 class ReactionRealizationTests(unittest.TestCase):
     def _world_position(self, pose: Pose, local_position):
         return ReactionRealizer()._world_position(pose, local_position)
+
+    def _distance(self, first, second) -> float:
+        return sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
 
     def _assert_retained_hydrogen_reoriented(
         self,
@@ -586,65 +653,7 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertIn(4, retained_atoms)
 
     def test_boronate_ester_realization_removes_boronic_oxygens_and_four_hydrogens(self):
-        boronic_acid = MonomerSpec(
-            id="boronic_acid",
-            name="minimal boronic acid",
-            motifs=(
-                ReactiveMotif(
-                    id="bor1",
-                    kind="boronic_acid",
-                    atom_ids=(0, 1, 2, 3, 4, 5),
-                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
-                    allowed_reaction_templates=("boronate_ester_bridge",),
-                    metadata={
-                        "reactive_atom_id": 1,
-                        "anchor_atom_id": 0,
-                        "oxygen_atom_ids": (2, 3),
-                        "hydrogen_atom_ids": (4, 5),
-                    },
-                ),
-            ),
-            atom_symbols=("C", "B", "O", "O", "H", "H"),
-            atom_positions=(
-                (-1.2, 0.0, 0.0),
-                (0.0, 0.0, 0.0),
-                (0.9, 0.9, 0.0),
-                (0.9, -0.9, 0.0),
-                (1.6, 1.2, 0.0),
-                (1.6, -1.2, 0.0),
-            ),
-            bonds=((0, 1, 1.0), (1, 2, 1.0), (1, 3, 1.0), (2, 4, 1.0), (3, 5, 1.0)),
-        )
-        catechol = MonomerSpec(
-            id="catechol",
-            name="minimal catechol",
-            motifs=(
-                ReactiveMotif(
-                    id="cat1",
-                    kind="catechol",
-                    atom_ids=(0, 1, 2, 3, 4, 5),
-                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
-                    allowed_reaction_templates=("boronate_ester_bridge",),
-                    metadata={
-                        "reactive_atom_id": 0,
-                        "anchor_atom_id": 4,
-                        "reactive_atom_ids": (0, 1),
-                        "anchor_atom_ids": (4, 5),
-                        "hydrogen_atom_ids": (2, 3),
-                    },
-                ),
-            ),
-            atom_symbols=("O", "O", "H", "H", "C", "C"),
-            atom_positions=(
-                (0.0, 0.7, 0.0),
-                (0.0, -0.7, 0.0),
-                (-0.7, 1.2, 0.0),
-                (-0.7, -1.2, 0.0),
-                (-1.0, 0.7, 0.0),
-                (-1.0, -0.7, 0.0),
-            ),
-            bonds=((0, 2, 1.0), (1, 3, 1.0), (0, 4, 1.0), (1, 5, 1.0)),
-        )
+        boronic_acid, catechol = _boronate_ester_monomers()
         candidate = _single_event_candidate(
             "boronate_ester_bridge",
             MotifRef(monomer_instance_id="m1", monomer_id="boronic_acid", motif_id="bor1"),
@@ -666,6 +675,37 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertTrue(all(bond.label_1 == "m1_B2" for bond in result.bonds))
         self.assertEqual({bond.label_2 for bond in result.bonds}, {"m2_O1", "m2_O2"})
         self.assertNotIn("hydrogen_cleanup", result.metadata)
+
+    def test_boronate_ester_realization_closes_both_bonds_at_target_distance(self):
+        boronic_acid, catechol = _boronate_ester_monomers()
+        candidate = _single_event_candidate(
+            "boronate_ester_bridge",
+            MotifRef(monomer_instance_id="m1", monomer_id="boronic_acid", motif_id="bor1"),
+            MotifRef(monomer_instance_id="m2", monomer_id="catechol", motif_id="cat1"),
+            distance=1.4,
+        )
+
+        result = ReactionRealizer().realize(
+            candidate,
+            {"boronic_acid": boronic_acid, "catechol": catechol},
+            {"m1": "boronic_acid", "m2": "catechol"},
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        for bond in result.bonds:
+            self.assertAlmostEqual(bond.distance, BORONATE_ESTER_BOND_TARGET_DISTANCE, places=6)
+        # The closure fit keeps every anchor-to-reactive bond length fixed: the boron
+        # moves on its C-B sphere and each catechol oxygen on its C-O sphere.
+        boron_atom = next(atom for atom in result.atoms_by_instance["m1"] if atom.atom_id == 1)
+        self.assertAlmostEqual(self._distance(boron_atom.local_position, (-1.2, 0.0, 0.0)), 1.2, places=6)
+        oxygen_positions = {
+            atom.atom_id: atom.local_position
+            for atom in result.atoms_by_instance["m2"]
+            if atom.atom_id in (0, 1)
+        }
+        self.assertAlmostEqual(self._distance(oxygen_positions[0], (-1.0, 0.7, 0.0)), 1.0, places=6)
+        self.assertAlmostEqual(self._distance(oxygen_positions[1], (-1.0, -0.7, 0.0)), 1.0, places=6)
 
     def test_vinylene_realization_removes_aldehyde_oxygen_and_two_activated_hydrogens(self):
         activated_methylene = MonomerSpec(

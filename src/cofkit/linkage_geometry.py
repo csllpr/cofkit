@@ -7,6 +7,11 @@ from .model import MonomerSpec
 IMINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.11
 AZINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.08
 
+# Realized B-O bond length target for the five-membered boronate ester ring
+# (B-O-C-C-O). Distinct from the boronate profile's bridge_target_distance,
+# which is a boron-to-oxygen-centroid placement distance, not a bond length.
+BORONATE_ESTER_BOND_TARGET_DISTANCE = 1.47
+
 
 def effective_motif_origin(
     template_id: str | None,

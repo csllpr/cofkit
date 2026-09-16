@@ -6,6 +6,7 @@ from math import acos, atan2, cos, pi, sin
 from typing import Callable, Mapping
 
 from .geometry import Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub, transpose
+from .linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE
 from .model import Candidate, MonomerSpec, MotifRef, Pose, ReactionEvent
 from .reactions import bridge_target_distance, linkage_event_realizer
 
@@ -1451,6 +1452,99 @@ class ReactionRealizer:
             ),
         )
 
+    def _fit_boronate_ester_bridge_positions(
+        self,
+        *,
+        boron_world: Vec3,
+        boronic_anchor_world: Vec3,
+        boronic_normal: Vec3,
+        catechol_anchor_worlds: tuple[Vec3, Vec3],
+        catechol_oxygen_worlds: tuple[Vec3, Vec3],
+        catechol_normal: Vec3,
+        target_bo_distance: float,
+    ) -> tuple[Vec3, Vec3, Vec3] | None:
+        anchor_centroid_world = scale(add(catechol_anchor_worlds[0], catechol_anchor_worlds[1]), 0.5)
+        bridge_axis = sub(boronic_anchor_world, anchor_centroid_world)
+        if norm(bridge_axis) < 1e-8:
+            return None
+        axis = normalize(bridge_axis)
+
+        plane_normal = self._orthogonal_component(add(boronic_normal, catechol_normal), axis)
+        if norm(plane_normal) < 1e-8:
+            plane_normal = self._orthogonal_component(
+                cross(axis, sub(catechol_oxygen_worlds[0], catechol_oxygen_worlds[1])),
+                axis,
+            )
+        if norm(plane_normal) < 1e-8:
+            plane_normal = self._orthogonal_component(cross(axis, sub(boron_world, anchor_centroid_world)), axis)
+        if norm(plane_normal) < 1e-8:
+            plane_normal = (0.0, 0.0, 1.0) if abs(axis[2]) < 0.9 else (1.0, 0.0, 0.0)
+        plane_normal = normalize(plane_normal)
+        lateral_axis = cross(plane_normal, axis)
+        if norm(lateral_axis) < 1e-8:
+            return None
+        lateral_axis = normalize(lateral_axis)
+
+        def to_2d(world: Vec3) -> tuple[float, float]:
+            relative = sub(world, anchor_centroid_world)
+            return (dot(relative, axis), dot(relative, lateral_axis))
+
+        boronic_anchor_2d = to_2d(boronic_anchor_world)
+        boron_current_2d = to_2d(boron_world)
+        anchor_pairs_2d = tuple(
+            (to_2d(anchor_world), to_2d(oxygen_world))
+            for anchor_world, oxygen_world in zip(catechol_anchor_worlds, catechol_oxygen_worlds)
+        )
+        boron_radius = self._distance(boronic_anchor_world, boron_world)
+        oxygen_radii = tuple(
+            self._distance(anchor_world, oxygen_world)
+            for anchor_world, oxygen_world in zip(catechol_anchor_worlds, catechol_oxygen_worlds)
+        )
+        if boron_radius < 1e-8 or any(radius < 1e-8 for radius in oxygen_radii):
+            return None
+        oxygen_sides = tuple(
+            self._signed_value(oxygen_2d[1], default=1.0) for _, oxygen_2d in anchor_pairs_2d
+        )
+
+        best: tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]] | None = None
+        for step in range(721):
+            alpha = 2.0 * pi * step / 720.0
+            boron_2d = (
+                boronic_anchor_2d[0] + boron_radius * cos(alpha),
+                boronic_anchor_2d[1] + boron_radius * sin(alpha),
+            )
+            oxygen_candidates: list[tuple[tuple[float, float], ...]] = []
+            for (anchor_2d, _), radius in zip(anchor_pairs_2d, oxygen_radii):
+                intersections = self._circle_intersections_2d(anchor_2d, radius, boron_2d, target_bo_distance)
+                if not intersections:
+                    break
+                oxygen_candidates.append(intersections)
+            if len(oxygen_candidates) != 2:
+                continue
+            for oxygen_2d_1 in oxygen_candidates[0]:
+                if oxygen_sides[0] * oxygen_2d_1[1] <= 1e-6:
+                    continue
+                for oxygen_2d_2 in oxygen_candidates[1]:
+                    if oxygen_sides[1] * oxygen_2d_2[1] <= 1e-6:
+                        continue
+                    objective = 0.5 * self._squared_distance_2d(boron_2d, boron_current_2d)
+                    objective += 0.5 * self._squared_distance_2d(oxygen_2d_1, anchor_pairs_2d[0][1])
+                    objective += 0.5 * self._squared_distance_2d(oxygen_2d_2, anchor_pairs_2d[1][1])
+                    if best is None or objective < best[0]:
+                        best = (objective, boron_2d, oxygen_2d_1, oxygen_2d_2)
+
+        if best is None:
+            return None
+
+        def to_world(point_2d: tuple[float, float]) -> Vec3:
+            return add(
+                anchor_centroid_world,
+                add(scale(axis, point_2d[0]), scale(lateral_axis, point_2d[1])),
+            )
+
+        _, boron_2d, oxygen_2d_1, oxygen_2d_2 = best
+        return (to_world(boron_2d), to_world(oxygen_2d_1), to_world(oxygen_2d_2))
+
     def _orthogonal_component(self, vector: Vec3, axis: Vec3) -> Vec3:
         return sub(vector, scale(axis, dot(vector, axis)))
 
@@ -2533,32 +2627,93 @@ class ReactionRealizer:
         )
         if len(boronic_oxygen_atom_ids) != 2 or len(catechol_oxygen_atom_ids) != 2:
             raise ValueError(f"event {event.id!r} requires exactly two boronic and two catechol oxygen atoms")
+        catechol_anchor_atom_ids = self._motif_atom_ids_from_metadata(
+            catechol_motif,
+            "anchor_atom_ids",
+            fallback_symbol="C",
+            monomer=catechol_spec,
+        )
+        if len(catechol_anchor_atom_ids) != 2:
+            raise ValueError(f"event {event.id!r} requires exactly two catechol anchor carbon atoms")
         boronic_hydrogen_atom_ids = self._hydrogen_atom_ids_for_atoms(boronic_spec, boronic_motif, boronic_oxygen_atom_ids)
         catechol_hydrogen_atom_ids = self._hydrogen_atom_ids_for_atoms(catechol_spec, catechol_motif, catechol_oxygen_atom_ids)
         boron_world = self._world_atom_position(candidate, boronic_ref, boronic_spec, boron_atom_id)
+        catechol_oxygen_worlds = tuple(
+            self._world_atom_position(candidate, catechol_ref, catechol_spec, oxygen_atom_id)
+            for oxygen_atom_id in catechol_oxygen_atom_ids
+        )
+
+        atom_position_overrides: dict[str, dict[int, Vec3]] = {}
+        boronic_anchor_atom_id = self._motif_atom_id_from_metadata(
+            boronic_motif,
+            "anchor_atom_id",
+            context=f"{event.id} boronate boronic anchor",
+        )
+        closed_positions = self._fit_boronate_ester_bridge_positions(
+            boron_world=boron_world,
+            boronic_anchor_world=self._world_atom_position(candidate, boronic_ref, boronic_spec, boronic_anchor_atom_id),
+            boronic_normal=matmul_vec(
+                candidate.state.monomer_poses[boronic_ref.monomer_instance_id].rotation_matrix,
+                boronic_motif.frame.normal,
+            ),
+            catechol_anchor_worlds=tuple(
+                self._world_atom_position(candidate, catechol_ref, catechol_spec, anchor_atom_id)
+                for anchor_atom_id in catechol_anchor_atom_ids
+            ),
+            catechol_oxygen_worlds=catechol_oxygen_worlds,
+            catechol_normal=matmul_vec(
+                candidate.state.monomer_poses[catechol_ref.monomer_instance_id].rotation_matrix,
+                catechol_motif.frame.normal,
+            ),
+            target_bo_distance=BORONATE_ESTER_BOND_TARGET_DISTANCE,
+        )
+        if closed_positions is not None:
+            boron_world, *catechol_oxygen_worlds = closed_positions
+            atom_position_overrides = {
+                boronic_ref.monomer_instance_id: {
+                    boron_atom_id: self._local_position_from_world(
+                        candidate.state.monomer_poses[boronic_ref.monomer_instance_id],
+                        boron_world,
+                        image_shift=self._periodic_offset(candidate.state.cell, boronic_ref.periodic_image),
+                    ),
+                },
+                catechol_ref.monomer_instance_id: {
+                    oxygen_atom_id: self._local_position_from_world(
+                        candidate.state.monomer_poses[catechol_ref.monomer_instance_id],
+                        oxygen_world,
+                        image_shift=self._periodic_offset(candidate.state.cell, catechol_ref.periodic_image),
+                    )
+                    for oxygen_atom_id, oxygen_world in zip(catechol_oxygen_atom_ids, catechol_oxygen_worlds)
+                },
+            }
 
         bonds = tuple(
             RealizedBond(
                 label_1=self.atom_label(boronic_ref.monomer_instance_id, boronic_spec.atom_symbols[boron_atom_id], boron_atom_id),
                 label_2=self.atom_label(catechol_ref.monomer_instance_id, catechol_spec.atom_symbols[oxygen_atom_id], oxygen_atom_id),
-                distance=self._distance(
-                    boron_world,
-                    self._world_atom_position(candidate, catechol_ref, catechol_spec, oxygen_atom_id),
-                ),
+                distance=self._distance(boron_world, oxygen_world),
                 symmetry_1=".",
                 symmetry_2=self._symmetry_code(catechol_ref.periodic_image),
             )
-            for oxygen_atom_id in catechol_oxygen_atom_ids
+            for oxygen_atom_id, oxygen_world in zip(catechol_oxygen_atom_ids, catechol_oxygen_worlds)
+        )
+        closure_note = (
+            "The exported product applies a local five-membered ring-closure fit that moves the boron and both "
+            "catechol oxygens around their anchor bonds so both inter-monomer B-O bonds close at the "
+            f"{BORONATE_ESTER_BOND_TARGET_DISTANCE:.2f} angstrom target."
+            if closed_positions is not None
+            else "The exported product realizes the two inter-monomer B-O bonds to the catechol oxygens while keeping monomer-internal coordinates rigid."
         )
         return EventRealization(
             removed_atom_ids={
                 boronic_ref.monomer_instance_id: tuple(sorted((*boronic_oxygen_atom_ids, *boronic_hydrogen_atom_ids))),
                 catechol_ref.monomer_instance_id: tuple(sorted(catechol_hydrogen_atom_ids)),
             },
+            atom_position_overrides=atom_position_overrides,
             bonds=bonds,
             notes=(
                 "Boronate ester realization removes both boronic-acid hydroxyl oxygens and all four condensation hydrogens per reacting pair.",
-                "The exported product realizes the two inter-monomer B-O bonds to the catechol oxygens while keeping monomer-internal coordinates rigid.",
+                closure_note,
             ),
         )
 

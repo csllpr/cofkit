@@ -74,6 +74,9 @@ class ReactionLibraryTests(unittest.TestCase):
         self.assertAlmostEqual(lib.bridge_target_distance("hydrazone_bridge"), 1.3, places=6)
         self.assertTrue(lib.supports_binary_bridge_pair_generation("hydrazone_bridge"))
         self.assertAlmostEqual(lib.bridge_target_distance("vinylene_bridge"), 1.34, places=6)
+        # Boronate ester targets the boron-to-catechol-oxygen-centroid placement
+        # distance of the five-membered ring, not a B-O bond length.
+        self.assertAlmostEqual(lib.bridge_target_distance("boronate_ester_bridge"), 0.55, places=6)
 
 
 class ProductGraphTests(unittest.TestCase):

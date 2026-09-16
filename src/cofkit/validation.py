@@ -34,6 +34,12 @@ class CoarseValidationThresholds:
     min_nonbonded_heavy_distance: float = 1.05
     min_2d_cell_area: float = 10.0
     min_3d_cell_volume: float = 20.0
+    # Per-template acceptable distance windows for the realized inter-monomer
+    # linkage bonds written to the CIF, keyed by template id. The boronate ester
+    # window brackets the ~1.47 angstrom B-O bonds of the five-membered ring.
+    realized_bridge_bond_distance_windows: Mapping[str, tuple[float, float]] = field(
+        default_factory=lambda: {"boronate_ester_bridge": (1.25, 1.65)}
+    )
     skip_cif_checks_when_metadata_invalid: bool = True
 
 
@@ -84,6 +90,7 @@ class CoarseStructureValidator:
             "bridge_distance_residual_mean_hard",
             "bridge_distance_too_short",
             "bridge_distance_too_long",
+            "realized_bridge_bond_distance",
         }
     )
 
@@ -183,6 +190,7 @@ class CoarseStructureValidator:
                 cif_path,
                 topology_id=self._string(record.get("topology_id")),
                 stacking_metadata=stacking_metadata,
+                template_id=self._string(metadata.get("template_id")),
             )
             metrics.update(cif_metrics)
             hard_invalid_reasons.extend(cif_reasons)
@@ -235,6 +243,7 @@ class CoarseStructureValidator:
         *,
         topology_id: str | None,
         stacking_metadata: Mapping[str, object] | None = None,
+        template_id: str | None = None,
     ) -> tuple[dict[str, object], tuple[str, ...]]:
         if gemmi is None:  # pragma: no cover - import guard for incomplete environments
             raise ModuleNotFoundError(
@@ -280,7 +289,37 @@ class CoarseStructureValidator:
         if clash_distance is not None and clash_distance < self.thresholds.min_nonbonded_heavy_distance:
             reasons.append("heavy_atom_clash")
 
+        bond_window = self.thresholds.realized_bridge_bond_distance_windows.get(template_id or "")
+        if bond_window is not None:
+            realized_distances = self._realized_bridge_bond_distances(block)
+            metrics["realized_bridge_bond_count"] = len(realized_distances)
+            if realized_distances:
+                min_realized = min(realized_distances)
+                max_realized = max(realized_distances)
+                metrics["realized_bridge_bond_distance_min"] = min_realized
+                metrics["realized_bridge_bond_distance_max"] = max_realized
+                if min_realized < bond_window[0] or max_realized > bond_window[1]:
+                    reasons.append("realized_bridge_bond_distance")
+
         return metrics, tuple(dict.fromkeys(reasons))
+
+    def _realized_bridge_bond_distances(self, block) -> tuple[float, ...]:
+        label_1 = block.find_loop("_geom_bond_atom_site_label_1")
+        label_2 = block.find_loop("_geom_bond_atom_site_label_2")
+        bond_distance = block.find_loop("_geom_bond_distance")
+        if len(label_1) == 0 or len(label_2) == 0 or len(bond_distance) == 0:
+            return ()
+        distances: list[float] = []
+        for index in range(min(len(label_1), len(label_2), len(bond_distance))):
+            instance_1 = self._instance_id(cif_value_str(label_1[index]))
+            instance_2 = self._instance_id(cif_value_str(label_2[index]))
+            if instance_1 == instance_2:
+                continue
+            try:
+                distances.append(float(cif_value_str(bond_distance[index])))
+            except ValueError:
+                continue
+        return tuple(distances)
 
     def _bonded_pairs(self, block) -> set[frozenset[str]]:
         label_1 = block.find_loop("_geom_bond_atom_site_label_1")
