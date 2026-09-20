@@ -75,7 +75,7 @@ def test_optimizer_adapter_convergence(lmp, tmp_path):
         ),
     )
     assert result.convergence["converged"]
-    assert result.convergence["stages"][-1]["force_norm_kcal_mol_angstrom"] <= 1e-6
+    assert result.convergence["stages"][-1]["force_norm_kcal_mol_angstrom"] <= 1e-4
 
 
 def test_dreiding_hbond_optimizer_run(lmp, tmp_path):

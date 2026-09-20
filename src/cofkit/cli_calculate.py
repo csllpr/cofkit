@@ -397,8 +397,8 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--force-tolerance",
         type=float,
-        default=1.0e-6,
-        help="Stage-1 LAMMPS minimization force tolerance. Default: 1e-6.",
+        default=LammpsOptimizationSettings().force_tolerance,
+        help="Stage-1 LAMMPS minimization force tolerance. Default: 1e-4.",
     )
     parser.add_argument(
         "--max-iterations",
@@ -534,8 +534,8 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--box-relax-force-tolerance",
         type=float,
-        default=None,
-        help="Optional final box-relax force tolerance. Defaults to the previous stage value.",
+        default=LammpsOptimizationSettings().box_relax_force_tolerance,
+        help="Final box-relax force tolerance, looser than the fixed-cell stages. Default: 1e-3.",
     )
     parser.add_argument(
         "--box-relax-max-iterations",

@@ -56,6 +56,24 @@ def test_zero_tolerances_survive_stage_overrides():
     ]
 
 
+def test_force_tolerance_defaults_loosen_for_the_box_relax_stage():
+    settings = LammpsOptimizationSettings()
+    assert settings.force_tolerance == 1e-4
+    assert settings.box_relax_force_tolerance == 1e-3
+    _validate_settings(settings)
+    assert [s.force_tolerance for s in _build_minimization_stages(settings)] == [
+        1e-4,
+        1e-4,
+        1e-3,
+    ]
+    inherited = LammpsOptimizationSettings(box_relax_force_tolerance=None)
+    assert [s.force_tolerance for s in _build_minimization_stages(inherited)] == [
+        1e-4,
+        1e-4,
+        1e-4,
+    ]
+
+
 @pytest.mark.parametrize(
     "reason,force",
     [

@@ -542,7 +542,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("min_style sd", script_text)
             self.assertIn("pair_coeff * * 2", script_text)
             self.assertIn("pair_coeff * * 10", script_text)
-            self.assertIn("minimize 0 1e-06 12 120", script_text)
+            self.assertIn("minimize 0 0.0001 12 120", script_text)
             self.assertIn("pair_style lj/cut 12.000000", script_text)
             self.assertIn("pair_coeff 1 1", script_text)
             self.assertNotIn("velocity all create", script_text)

@@ -186,7 +186,7 @@ class LammpsOptimizationSettings:
     two_stage_protocol: bool = True
     stage2_position_restraint_force_constant: float | None = None
     energy_tolerance: float = 0.0
-    force_tolerance: float = 1.0e-6
+    force_tolerance: float = 1.0e-4
     dump_interval: int = 100
     pressure_tolerance: float = 1.0  # atm; numerical acceptance, not model accuracy
     max_iterations: int = 200000
@@ -211,7 +211,7 @@ class LammpsOptimizationSettings:
     box_relax_nreset: int | None = None
     box_relax_min_style: str = "cg"
     box_relax_energy_tolerance: float | None = None
-    box_relax_force_tolerance: float | None = None
+    box_relax_force_tolerance: float | None = 1.0e-3
     box_relax_max_iterations: int | None = None
     box_relax_max_evaluations: int | None = None
 
