@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
@@ -41,6 +42,7 @@ from .node_shape import (
     shapes_compatible,
 )
 from .optimizer import ContinuousOptimizer, OptimizerConfig
+from .soft_relax import SoftRelaxConfig, relax_cif_clashes
 from .planner import AssignmentPlan, NetPlan, NetPlanner
 from .product_graph import PeriodicProductGraph
 from .post_build_conversions import annotate_post_build_conversions
@@ -141,6 +143,10 @@ class BatchGenerationConfig:
             relax_cell=True,
         )
     )
+    # Experimental in-process clash-repair / strain-relief pass applied to the
+    # staged CIF before validation bucketing. Not a physical relaxation.
+    soft_relax: bool = False
+    soft_relax_config: SoftRelaxConfig = field(default_factory=SoftRelaxConfig)
     validation_thresholds: CoarseValidationThresholds = field(default_factory=CoarseValidationThresholds)
     embedding_config: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     engine_config: COFEngineConfig = field(default_factory=COFEngineConfig)
@@ -4403,7 +4409,8 @@ class BatchStructureGenerator:
                 cofid=cofid_value,
                 cofid_comment_suffix=cofid_comment_suffix,
             )
-            return str(out_path), None
+            soft_relax_metadata = self._maybe_soft_relax_cif(out_path)
+            return str(out_path), soft_relax_metadata
 
         staging_dir = Path(out_dir) / ".staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
@@ -4416,6 +4423,7 @@ class BatchStructureGenerator:
             cofid=cofid_value,
             cofid_comment_suffix=cofid_comment_suffix,
         )
+        soft_relax_metadata = self._maybe_soft_relax_cif(staging_path)
         validation_record = self._summary_to_dict(replace(provisional_summary, cif_path=str(staging_path)))
         try:
             report = self.structure_validator.validate_manifest_record(validation_record)
@@ -4429,10 +4437,16 @@ class BatchStructureGenerator:
             )
             final_path.parent.mkdir(parents=True, exist_ok=True)
             staging_path.replace(final_path)
-            return str(final_path), self._validation_unavailable_metadata(cif_path=str(final_path), error=str(exc))
+            return str(final_path), self._merge_soft_relax_metadata(
+                self._validation_unavailable_metadata(cif_path=str(final_path), error=str(exc)),
+                soft_relax_metadata,
+            )
         if report.classification == "hard_hard_invalid":
             staging_path.unlink(missing_ok=True)
-            return None, self._validation_metadata(report, cif_path=None)
+            return None, self._merge_soft_relax_metadata(
+                self._validation_metadata(report, cif_path=None),
+                soft_relax_metadata,
+            )
         final_path = self._classified_cif_destination(
             out_dir,
             structure_id=structure_id,
@@ -4440,7 +4454,50 @@ class BatchStructureGenerator:
         )
         final_path.parent.mkdir(parents=True, exist_ok=True)
         staging_path.replace(final_path)
-        return str(final_path), self._validation_metadata(report, cif_path=str(final_path))
+        return str(final_path), self._merge_soft_relax_metadata(
+            self._validation_metadata(report, cif_path=str(final_path)),
+            soft_relax_metadata,
+        )
+
+    def _maybe_soft_relax_cif(self, cif_path: Path) -> dict[str, object] | None:
+        """Experimental pre-validation clash-repair pass on the exported CIF.
+
+        Runs the in-process soft-repulsion relaxer in place so the subsequent
+        validation bucketing sees the relieved geometry. Failures never abort
+        the build: they warn on stderr and leave the CIF untouched.
+        """
+        if not self.config.soft_relax:
+            return None
+        try:
+            report = relax_cif_clashes(cif_path, cif_path, self.config.soft_relax_config)
+        except Exception as exc:
+            print(
+                f"warning: soft-relax pass failed for {cif_path.name} "
+                f"({type(exc).__name__}: {exc}); keeping the unrelaxed structure.",
+                file=sys.stderr,
+            )
+            return {"applied": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "applied": True,
+            "converged": report.converged,
+            "min_nonbonded_heavy_distance_before": report.min_heavy_distance_before,
+            "min_nonbonded_heavy_distance_after": report.min_heavy_distance_after,
+            "clashes_before": report.clashes_before,
+            "clashes_after": report.clashes_after,
+            "max_bond_drift": report.max_bond_drift,
+            "warnings": list(report.warnings),
+        }
+
+    @staticmethod
+    def _merge_soft_relax_metadata(
+        metadata: dict[str, object],
+        soft_relax_metadata: dict[str, object] | None,
+    ) -> dict[str, object]:
+        if soft_relax_metadata is None:
+            return metadata
+        merged = dict(metadata)
+        merged["soft_relax"] = soft_relax_metadata
+        return merged
 
     def _generate_pair_candidates_from_monomers(
         self,

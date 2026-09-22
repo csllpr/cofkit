@@ -152,6 +152,16 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
 
 def _add_geometry_repair_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--soft-relax",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Experimental: run the in-process soft-repulsion clash-repair pass on each exported CIF "
+            "before validation bucketing. Rough strain relief only, not a physical relaxation. "
+            "Disabled by default."
+        ),
+    )
+    parser.add_argument(
         "--repair-geometry",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -193,6 +203,7 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             repair_geometry=args.repair_geometry,
             repair_geometry_lmp_path=args.repair_lmp_path,
             repair_geometry_timeout_seconds=args.repair_timeout_seconds,
+            soft_relax=getattr(args, "soft_relax", False),
             enable_legacy_scoring=getattr(args, "legacy_scoring", False),
             repair_geometry_settings=LammpsOptimizationSettings(
                 forcefield="dreiding",

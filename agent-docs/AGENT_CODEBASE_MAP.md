@@ -85,6 +85,8 @@ Then go straight to the module that matches the task.
   - Initial periodic placement.
 - [src/cofkit/optimizer.py](../src/cofkit/optimizer.py)
   - Lightweight continuous refinement.
+- [src/cofkit/soft_relax.py](../src/cofkit/soft_relax.py)
+  - Experimental in-process clash-repair / strain-relief pass (bond springs + Urey-Bradley 1-3 restraints + ramped soft repulsion) applied to the staged CIF before validation bucketing when `BatchGenerationConfig.soft_relax` / `--soft-relax` is on; not a physical relaxation.
 - [src/cofkit/scoring.py](../src/cofkit/scoring.py)
   - Candidate scoring and bridge-geometry metrics.
 - [src/cofkit/validation.py](../src/cofkit/validation.py)
@@ -184,6 +186,8 @@ These are important before editing:
   - CIF-to-COFid decomposition and generated hcb round trips across buildable binary-bridge linkages.
 - [tests/test_lammps.py](../tests/test_lammps.py)
   - LAMMPS data/input generation, force-field parameter paths, optimization/MD orchestration, and CIF preservation behavior.
+- [tests/test_soft_relax.py](../tests/test_soft_relax.py)
+  - Soft-relax clash repair on synthetic CIFs plus the `--soft-relax` build-pipeline wiring.
 - [tests/test_graspa.py](../tests/test_graspa.py)
   - EQeq/gRASPA/RASPA2 workflow staging, CLI parsing, guest bundles, force-field asset generation, and parser behavior.
 - [tests/test_hybrid_mdmc.py](../tests/test_hybrid_mdmc.py)

@@ -45,6 +45,8 @@
   - shared topology-family builder registry for supported one-node and indexed-topology pair generation across batch and direct single-pair flows
 - `cofkit.embedding`
   - simple periodic cell and monomer-pose initialization from topology hints and motif/reaction geometry, including lower-symmetry `hcb` cells when asymmetric trigonal monomers cannot satisfy a symmetric hexagonal metric
+- `cofkit.soft_relax`
+  - experimental in-process soft-repulsion clash-repair pass on the staged CIF before validation bucketing (opt-in via `--soft-relax` / `BatchGenerationConfig.soft_relax`); strain relief, not physical relaxation
 - `cofkit.optimizer`
   - dependency-free continuous refinement of initial cell scale and rigid monomer poses
 - `cofkit.scoring`
