@@ -11,8 +11,10 @@ LAMMPS backend (``lammps.py``), but runs in-process with only gemmi:
   geometry from ``reaction_realization`` is preserved, not relaxed away),
 - Urey-Bradley-style harmonic 1-3 distance springs at the initial 1-3
   distances, restraining angles against collapse without angle gradients,
-- a ramped cosine soft-repulsion between non-bonded, non-1-3 atom pairs,
-  with per-element radii from the DREIDING reference table,
+- a ramped cosine soft-repulsion between non-bonded, non-1-3, non-1-4 atom
+  pairs, with per-element radii from the DREIDING reference table (hydrogen
+  uses a smaller radius so physical pore-facing / stacked C-H contacts are
+  left alone) and an X-H...Y hydrogen-bond guard window,
 - fixed unit cell; periodicity is handled through the explicit bond-image
   shifts in the ``_geom_bond`` loop plus ``periodic_geometry.images_within``.
 
@@ -58,6 +60,23 @@ class SoftRelaxConfig:
     neighbor_margin: float = 2.0
     """Extra pair-list margin (A) so the list can be built once."""
     repel_hydrogen: bool = True
+    hydrogen_radius: float = 1.2
+    """Repulsion radius (A) used for H instead of the DREIDING table value
+    (1.6): the table radius repels ordinary pore-facing and stacked C-H
+    contacts at 2.4-2.9 A, which are physical, not clashes."""
+    exclude_one_four: bool = True
+    """Exclude 1-4 (torsionally related) pairs from repulsion, matching
+    standard force-field practice; repelling them distorts torsions."""
+    one_four_clash_floor: float = 1.2
+    """1-3 / 1-4 pairs closer than this (A) are genuine clashes, not geometry
+    to preserve: they stay repelled despite the exclusion, and their
+    Urey-Bradley restraint is dropped."""
+    hbond_guard: bool = True
+    """Skip repulsion for H...Y contacts (Y in hbond_elements) whose distance
+    lies in hbond_window, so plausible hydrogen bonds are preserved. Genuine
+    overlaps still resolve indirectly through the heavy-atom pairs."""
+    hbond_elements: tuple[str, ...] = ("N", "O", "F")
+    hbond_window: tuple[float, float] = (1.4, 2.6)
     initial_step: float = 0.05
     max_displacement: float = 0.1
     """Per-step Cartesian displacement cap (A) for the adaptive descent."""
@@ -101,6 +120,10 @@ class _System:
     # 1-3 pairs (same encoding as bonds) used for Urey-Bradley angle restraints.
     angles13: list[tuple[int, int, tuple[int, int, int]]]
     excluded: set[tuple[int, int, tuple[int, int, int]]]
+    # 1-3 and 1-4 exclusions, applied only while the contact distance is above
+    # config.one_four_clash_floor; below that they are genuine clashes.
+    excluded13: set[tuple[int, int, tuple[int, int, int]]]
+    excluded14: set[tuple[int, int, tuple[int, int, int]]]
     bonded_label_images: set[tuple[str, str, tuple[int, int, int]]]
 
 
@@ -161,6 +184,9 @@ def _parse_system(block: gemmi.cif.Block, config: SoftRelaxConfig) -> tuple[_Sys
         excluded.add((j, i, tuple(-v for v in s)))
     # Image-consistent 1-3 exclusion around every bonded center, kept both as
     # repulsion exclusions and as Urey-Bradley restraint pairs (deduplicated).
+    # Kept in its own set: pairs below the clash floor stay repelled and lose
+    # their restraint.
+    excluded13: set[tuple[int, int, tuple[int, int, int]]] = set()
     angles13: list[tuple[int, int, tuple[int, int, int]]] = []
     seen13: set[tuple[int, int, tuple[int, int, int]]] = set()
     for center, neighbors in adjacency.items():
@@ -179,10 +205,32 @@ def _parse_system(block: gemmi.cif.Block, config: SoftRelaxConfig) -> tuple[_Sys
                 if (i, j, s) in seen13:
                     continue
                 seen13.add((i, j, s))
-                excluded.add((i, j, s))
-                excluded.add((j, i, tuple(-v for v in s)))
+                excluded13.add((i, j, s))
+                excluded13.add((j, i, tuple(-v for v in s)))
                 if i != j or s != (0, 0, 0):
                     angles13.append((i, j, s))
+
+    # 1-4 exclusion across bond paths a--i--j--b, so torsional neighbors are
+    # not repelled. Relative image of b seen from a is (s_ij + tb) - ta.
+    # Kept separate from `excluded`: pairs below the clash floor stay repelled.
+    excluded14: set[tuple[int, int, tuple[int, int, int]]] = set()
+    if config.exclude_one_four:
+        for bi, bj, bs in bonds:
+            ends = ((bi, bj, bs), (bj, bi, tuple(-v for v in bs)))
+            for i, j, s in ends:
+                for a, ta in adjacency.get(i, ()):
+                    if a == j:
+                        continue
+                    for b, tb in adjacency.get(j, ()):
+                        if b == i:
+                            continue
+                        shift = tuple(sj + vtb - vta for sj, vtb, vta in zip(s, tb, ta))
+                        x, y = (a, b) if a <= b else (b, a)
+                        t = shift if a <= b else tuple(-v for v in shift)
+                        if (x, y, t) in excluded14:
+                            continue
+                        excluded14.add((x, y, t))
+                        excluded14.add((y, x, tuple(-v for v in t)))
 
     orth = [list(row) for row in small.cell.orth.mat.tolist()]
     system = _System(
@@ -194,6 +242,8 @@ def _parse_system(block: gemmi.cif.Block, config: SoftRelaxConfig) -> tuple[_Sys
         bonds=bonds,
         angles13=angles13,
         excluded=excluded,
+        excluded13=excluded13,
+        excluded14=excluded14,
         bonded_label_images=bonded_label_images,
     )
     return system, warnings
@@ -205,8 +255,26 @@ def _build_pair_list(
     radii = [_element_radius(symbol, config) for symbol in system.symbols]
     if not config.repel_hydrogen:
         radii = [0.0 if s == "H" else r for s, r in zip(system.symbols, radii)]
+    else:
+        radii = [
+            config.hydrogen_radius if s == "H" else r
+            for s, r in zip(system.symbols, radii)
+        ]
     max_r0 = 2.0 * max(radii, default=config.fallback_radius) * config.repulsion_scale
     cutoff = max_r0 + config.neighbor_margin
+    hetero_elements = set(config.hbond_elements)
+    hb_lo, hb_hi = config.hbond_window
+
+    def hbond_guarded(i: int, j: int, distance: float) -> bool:
+        if not config.hbond_guard or not (hb_lo <= distance <= hb_hi):
+            return False
+        if system.symbols[i] == "H":
+            _h, other = i, j
+        elif system.symbols[j] == "H":
+            _h, other = j, i
+        else:
+            return False
+        return system.symbols[other] in hetero_elements
 
     pairs: list[tuple[int, int, list[float], float]] = []
     n = len(system.frac)
@@ -215,10 +283,16 @@ def _build_pair_list(
             r0 = (radii[i] + radii[j]) * config.repulsion_scale
             if r0 <= 1e-9:
                 continue
-            for shift, _distance in images_within(system.cell, system.frac[i], system.frac[j], cutoff):
+            for shift, distance in images_within(system.cell, system.frac[i], system.frac[j], cutoff):
                 if i == j and shift == (0, 0, 0):
                     continue
                 if (i, j, shift) in system.excluded:
+                    continue
+                if (i, j, shift) in system.excluded13 and distance >= config.one_four_clash_floor:
+                    continue
+                if (i, j, shift) in system.excluded14 and distance >= config.one_four_clash_floor:
+                    continue
+                if hbond_guarded(i, j, distance):
                     continue
                 shift_cart = _frac_to_cart(system.orth, shift)
                 pairs.append((i, j, shift_cart, r0))
@@ -460,13 +534,21 @@ def relax_cif_clashes(
 
     cart = [_frac_to_cart(system.orth, f) for f in system.frac]
 
-    def _springs(bond_like, k_spring):
+    def _springs(bond_like, k_spring, min_rest=0.0):
         indexed = [((i, j), _frac_to_cart(system.orth, s)) for i, j, s in bond_like]
         rest = _bond_distances(cart, indexed)
-        return [((ij), sc, r0, k_spring) for (ij, sc), r0 in zip(indexed, rest)]
+        return [
+            (ij, sc, r0, k_spring)
+            for (ij, sc), r0 in zip(indexed, rest)
+            if r0 >= min_rest
+        ]
 
     springs = _springs(system.bonds, config.bond_force_constant)
-    springs += _springs(system.angles13, config.urey_bradley_force_constant)
+    # Urey-Bradley restraints below the clash floor would hold pathological
+    # 1-3 contacts in place; drop them and let repulsion act instead.
+    springs += _springs(
+        system.angles13, config.urey_bradley_force_constant, config.one_four_clash_floor
+    )
     bond_count = len(system.bonds)
     bond_rest = [s[2] for s in springs[:bond_count]]
     bonds_cart = [(s[0], s[1]) for s in springs[:bond_count]]
