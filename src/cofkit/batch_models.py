@@ -103,6 +103,66 @@ class BatchPairSummary:
 
 
 @dataclass(frozen=True)
+class StackingSummary:
+    """Structured record of stacking geometry for a single registry variant.
+
+    ``interlayer_clearance`` is the nuclear-plane-to-nuclear-plane gap between
+    the extreme atomic planes of adjacent layers (not the mean-plane repeat).
+    The full centre-to-centre distance is ``c2c = interlayer_clearance + layer_z_span``
+    and the bilayer c axis is ``c = 2 * c2c``.  The literature interlayer
+    repeat (what one compares to experiment) is ``c / 2``.
+
+    ``interlayer_distance`` is kept as a deprecated alias for one release.
+    """
+
+    id: str
+    layer_count: int = 2
+    interlayer_clearance: float = 3.4
+    registry_shift_fractional: tuple[float, float] = (0.0, 0.0)
+    cell_classification: Mapping[str, object] = field(default_factory=dict)
+    layer_z_span: float = 0.0
+    layer_z_span_mode: str = ""
+    layer_z_span_axis: str = "c_hat"
+    center_to_center_distance: float = 0.0
+    derivation: str = "c2c = interlayer_clearance + layer_z_span; c = layer_count * c2c"
+    min_interlayer_contact: float | None = None
+    comment_suffix: str = ""
+    source_candidate_id: str = ""
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def interlayer_distance(self) -> float:
+        """Deprecated alias for ``interlayer_clearance``."""
+        return self.interlayer_clearance
+
+    @property
+    def lateral_shift_fractional(self) -> tuple[float, float]:
+        """Deprecated alias for ``registry_shift_fractional``."""
+        return self.registry_shift_fractional
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialise to a plain dict, emitting both canonical and alias keys."""
+        return {
+            "id": self.id,
+            "layer_count": self.layer_count,
+            "interlayer_clearance": self.interlayer_clearance,
+            "interlayer_distance": self.interlayer_clearance,  # deprecated alias
+            "registry_shift_fractional": self.registry_shift_fractional,
+            "lateral_shift_fractional": self.registry_shift_fractional,  # deprecated alias
+            "cell_classification": dict(self.cell_classification),
+            "layer_z_span": self.layer_z_span,
+            "layer_z_span_mode": self.layer_z_span_mode,
+            "layer_z_span_axis": self.layer_z_span_axis,
+            "center_to_center_distance": self.center_to_center_distance,
+            "derivation": self.derivation,
+            "min_interlayer_contact": self.min_interlayer_contact,
+            "comment_suffix": self.comment_suffix,
+            "source_candidate_id": self.source_candidate_id,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass(frozen=True)
 class BatchRunSummary:
     input_dir: str
     output_dir: str

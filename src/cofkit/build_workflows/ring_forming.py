@@ -102,6 +102,7 @@ class RingFormingStructureGenerator:
         return enumerate_candidate_stackings(
             result.candidate,
             registry_ids=self.config.stacking_ids if stacking_ids is None else stacking_ids,
+            monomer_specs={monomer.id: monomer},
         )
 
     def build(

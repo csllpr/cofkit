@@ -4600,6 +4600,7 @@ class BatchStructureGenerator:
             for stacked_candidate in enumerate_candidate_stackings(
                 candidate,
                 registry_ids=self.config.stacking_ids,
+                monomer_specs={first.id: first, second.id: second},
             )
         )
         ordered_candidates = tuple(order_candidates(expanded_candidates))
@@ -5001,17 +5002,15 @@ class BatchStructureGenerator:
         return replace(candidate, metadata=metadata)
 
     def _single_node_cell_kind(self, cell: tuple[Vec3, Vec3, Vec3]) -> str:
-        first, second, _ = cell
-        first_norm = norm(first)
-        second_norm = norm(second)
-        if first_norm < 1e-8 or second_norm < 1e-8:
-            return "oblique"
-        cosine = dot(first, second) / (first_norm * second_norm)
-        if abs(first_norm - second_norm) < 1e-3 and abs(cosine) < 1e-3:
-            return "square"
-        if abs(first_norm - second_norm) < 1e-3 and abs(cosine - 0.5) < 1e-3:
-            return "hexagonal"
-        return "oblique"
+        """Classify a 2D cell using the shared classify_2d_cell helper (W2.1).
+
+        The old cosine tolerance (abs(cosine - 0.5) < 1e-3) failed for
+        fitted cells with γ ≈ 60.09° (cosine ≈ 0.50019).  The shared helper
+        uses a ±0.5° angle tolerance instead.
+        """
+        from .geometry import classify_2d_cell
+        kind, _setting = classify_2d_cell(cell)
+        return kind
 
     def _topology_cell_kind(self, cell: tuple[Vec3, Vec3, Vec3], dimensionality: str) -> str:
         if dimensionality == "3D":

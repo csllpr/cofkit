@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
 from collections import Counter
 from dataclasses import dataclass, replace
+from math import sqrt
 from typing import Mapping
 
-from .geometry import Vec3, add, norm, normalize, scale
+from .geometry import Vec3, add, classify_2d_cell, dot, measure_layer_z_span, norm, normalize, scale
 from .model import AssemblyState, Candidate, Pose, ReactionEvent
 from .topologies import get_topology_hint
 
@@ -14,31 +16,70 @@ _STACKING_LAYER_SUFFIXES: tuple[str, str] = ("L0", "L1")
 
 @dataclass(frozen=True)
 class LayerRegistry:
+    """Describes one named stacking registry for a bilayer COF export.
+
+    Semantics
+    ---------
+    ``interlayer_distance`` here is a **nuclear-plane clearance**: the gap
+    between the extreme nuclear planes of adjacent layers.  It is *not* the
+    mean-plane repeat published in the literature.  The centre-to-centre
+    distance between adjacent layers is::
+
+        c2c = interlayer_clearance + layer_z_span
+
+    and the full c axis of the bilayer cell is::
+
+        c = 2 * c2c
+
+    The quantity to compare to experimental interlayer spacings is ``c / 2``.
+
+    Default clearances (3.4 / 3.5 / 3.6 Å) are heuristic nuclear-plane
+    clearances, registry-dependent; they are not fitted to specific chemistries.
+    """
+
     id: str
     lateral_shift: tuple[float, float] = (0.0, 0.0)
-    interlayer_distance: float = 3.4
+    interlayer_distance: float = 3.4  # nuclear-plane clearance (see docstring)
 
 
 class StackingExplorer:
     """Enumerates built-in bilayer registries for exported 2D COF candidates.
 
-    `lateral_shift` is expressed as a fractional shift in the in-plane `a`/`b`
-    basis and is applied to the second layer in an `A/B` repeating bilayer cell.
+    ``lateral_shift`` is expressed as a fractional shift in the in-plane a/b
+    basis and is applied to the second layer.
+
+    For hexagonal cells the AB shift depends on the cell setting:
+    * 60° setting (γ ≈ 60°): AB shift = (1/3, 1/3)  — Bernal, vertex→pore
+    * 120° setting (γ ≈ 120°): AB shift = (1/3, 2/3) — same geometry, different basis
+
+    ``slipped`` and ``AB_square`` are setting-independent.
     """
 
-    def __init__(self, *, cell_kind: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cell_kind: str | None = None,
+        cell_setting: str | None = None,
+    ) -> None:
         self.cell_kind = str(cell_kind or "").strip().lower() or None
+        self.cell_setting = str(cell_setting or "").strip().lower() or None
 
     def enumerate_registries(self) -> tuple[LayerRegistry, ...]:
         if self.cell_kind == "hexagonal":
+            # Select AB shift by cell setting (W2.2)
+            if self.cell_setting == "120deg":
+                ab_shift = (1.0 / 3.0, 2.0 / 3.0)
+            else:
+                # 60deg setting (default) or unknown
+                ab_shift = (1.0 / 3.0, 1.0 / 3.0)
             return (
                 LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=3.4),
-                LayerRegistry(id="AB", lateral_shift=(1.0 / 3.0, 1.0 / 3.0), interlayer_distance=3.5),
+                LayerRegistry(id="AB", lateral_shift=ab_shift, interlayer_distance=3.5),
                 LayerRegistry(id="slipped", lateral_shift=(0.5, 0.0), interlayer_distance=3.6),
             )
         return (
             LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=3.4),
-            LayerRegistry(id="AB", lateral_shift=(0.5, 0.5), interlayer_distance=3.5),
+            LayerRegistry(id="AB", lateral_shift=(0.5, 0.5), interlayer_distance=3.5),  # hollow-site registry
             LayerRegistry(id="slipped", lateral_shift=(0.5, 0.0), interlayer_distance=3.6),
         )
 
@@ -68,19 +109,52 @@ def enumerate_candidate_stackings(
     candidate: Candidate,
     *,
     registry_ids: tuple[str, ...] = (),
+    monomer_specs: Mapping[str, object] | None = None,
 ) -> tuple[Candidate, ...]:
-    if not registry_ids or not _is_eligible_2d_candidate(candidate):
+    """Expand *candidate* into one variant per requested stacking registry.
+
+    Parameters
+    ----------
+    registry_ids:
+        Registry names to apply.  Empty → return the candidate unchanged.
+    monomer_specs:
+        Monomer id → MonomerSpec mapping, used by the span measurer.  When
+        ``None`` and registries are requested the call proceeds with a
+        ``layer_z_span`` of 0.0 and records ``stacking_skipped:span-unavailable``
+        on each variant (W4.3).
+    """
+    if not registry_ids:
         return (candidate,)
-    explorer = StackingExplorer(cell_kind=_candidate_cell_kind(candidate))
+    eligible, skip_reason = _eligibility_check(candidate)
+    if not eligible:
+        # Attach skip flag and warn (W4.3)
+        reason_tag = f"stacking_skipped:{skip_reason}"
+        flags = tuple(dict.fromkeys(candidate.flags + (reason_tag,)))
+        print(
+            f"warning: stacking requested but skipped for candidate {candidate.id!r}: {skip_reason}",
+            file=sys.stderr,
+        )
+        return (replace(candidate, flags=flags),)
+
+    cell_kind, cell_setting = _candidate_cell_classification(candidate)
+    explorer = StackingExplorer(cell_kind=cell_kind, cell_setting=cell_setting)
     registries = explorer.resolve_registries(registry_ids)
-    return tuple(_apply_layer_registry(candidate, registry) for registry in registries)
+    return tuple(
+        _apply_layer_registry(candidate, registry, monomer_specs=monomer_specs)
+        for registry in registries
+    )
 
 
 def stacking_comment_suffix(registry: LayerRegistry) -> str:
     return f"stacking={registry.id}"
 
 
-def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Candidate:
+def _apply_layer_registry(
+    candidate: Candidate,
+    registry: LayerRegistry,
+    *,
+    monomer_specs: Mapping[str, object] | None = None,
+) -> Candidate:
     state = candidate.state
     if len(_STACKING_LAYER_SUFFIXES) != 2:
         raise ValueError("the current stacking enumerator supports exactly two layers")
@@ -89,8 +163,63 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
 
     base_cell = state.cell
     c_direction = _safe_normalize(base_cell[2])
-    layer_z_span = _candidate_layer_z_span(candidate)
+
+    # W1.2/W1.3: measure span fresh; use metadata only as cross-check
+    cell_kind, cell_setting = _candidate_cell_classification(candidate)
+    span_report = _measure_span(candidate, monomer_specs, c_direction)
+    layer_z_span = span_report.span
+    metadata_span = _metadata_layer_z_span(candidate)
+
+    stacking_warnings: list[str] = []
+
+    if span_report.mode == "unavailable":
+        stacking_warnings.append("layer_z_span unavailable; using 0.0")
+        print(
+            f"warning: stacking for {candidate.id!r}: layer_z_span could not be measured; using 0.0",
+            file=sys.stderr,
+        )
+
+    if metadata_span is not None and layer_z_span > 0.0:
+        if abs(metadata_span - layer_z_span) > 0.5:
+            stacking_warnings.append(
+                f"metadata layer_z_span {metadata_span:.3f} Å differs from measured {layer_z_span:.3f} Å"
+            )
+            print(
+                f"warning: stacking for {candidate.id!r}: metadata layer_z_span "
+                f"{metadata_span:.3f} Å differs from freshly measured {layer_z_span:.3f} Å",
+                file=sys.stderr,
+            )
+
+    if layer_z_span < 0.0:
+        stacking_warnings.append(f"measured layer_z_span {layer_z_span:.3f} clamped to 0.0")
+        print(
+            f"warning: stacking for {candidate.id!r}: clamped negative layer_z_span "
+            f"{layer_z_span:.3f} Å to 0.0",
+            file=sys.stderr,
+        )
+        layer_z_span = 0.0
+
     center_to_center_distance = registry.interlayer_distance + layer_z_span
+
+    # W4.2 self-check: c2c must exceed layer_z_span
+    if center_to_center_distance <= layer_z_span:
+        stacking_warnings.append(
+            f"c2c ({center_to_center_distance:.3f}) ≤ layer_z_span ({layer_z_span:.3f}); layers may interpenetrate"
+        )
+        print(
+            f"warning: stacking for {candidate.id!r}: c2c distance {center_to_center_distance:.3f} Å "
+            f"≤ layer_z_span {layer_z_span:.3f} Å; layers may interpenetrate",
+            file=sys.stderr,
+        )
+
+    # W4.4: axis guard
+    if not _c_axis_is_orthogonal(base_cell):
+        stacking_warnings.append("c axis is not orthogonal to the ab plane; stacking geometry may be incorrect")
+        print(
+            f"warning: stacking for {candidate.id!r}: c axis is not orthogonal to the ab plane",
+            file=sys.stderr,
+        )
+
     new_c = scale(c_direction, 2.0 * center_to_center_distance)
     layer_offsets = (
         scale(new_c, 0.25),
@@ -138,6 +267,21 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
                 "stacking_registry": registry.id,
             }
             if "ring_center_fractional" in event.metadata:
+                # T1: assert the w component is zero so fractional reuse is exact
+                rcf = event.metadata["ring_center_fractional"]
+                if isinstance(rcf, (list, tuple)) and len(rcf) >= 3:
+                    w = float(rcf[2])
+                    if abs(w) > 1e-9:
+                        stacking_warnings.append(
+                            f"ring_center_fractional w={w:.3e} for event {event.id!r}; "
+                            "fractional reuse may be inexact"
+                        )
+                        print(
+                            f"warning: stacking for {candidate.id!r}: "
+                            f"ring_center_fractional w={w:.3e} for event {event.id!r}; "
+                            "fractional reuse into new cell may be inexact",
+                            file=sys.stderr,
+                        )
                 event_metadata["ring_center_offset_cartesian"] = layer_offsets[layer_index]
             stacked_events.append(
                 ReactionEvent(
@@ -155,6 +299,9 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
                 )
             )
 
+    # T2: torsion keys are passthrough-only (no per-layer suffixing yet; document as such)
+    # When a consumer needs per-layer torsions, suffix keys here.
+
     reaction_templates = Counter(event.template_id for event in stacked_events)
     graph_summary = {
         "n_monomer_instances": len(monomer_poses),
@@ -166,7 +313,7 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
     if stacked_pose_details:
         embedding["poses"] = stacked_pose_details
     embedding["stacking_enabled"] = True
-    embedding["stacking"] = _stacking_metadata(registry)
+    embedding["stacking"] = _stacking_metadata(registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting)
 
     score_metadata = dict(_mapping(candidate.metadata.get("score_metadata")))
     bridge_event_metrics = tuple(
@@ -186,6 +333,15 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
                 duplicated_metric["stacking_registry"] = registry.id
                 duplicated_metrics.append(duplicated_metric)
         score_metadata["bridge_event_metrics"] = tuple(duplicated_metrics)
+
+    # W5.1: double bridge_geometry_residual alongside total_residual
+    raw_bridge_residual = score_metadata.get("bridge_geometry_residual")
+    if raw_bridge_residual is not None:
+        try:
+            score_metadata["bridge_geometry_residual"] = 2.0 * float(raw_bridge_residual)
+        except (TypeError, ValueError):
+            pass
+
     ring_geometry = _mapping(score_metadata.get("ring_geometry"))
     if ring_geometry:
         score_metadata["ring_geometry"] = _duplicate_ring_geometry_metrics(ring_geometry, registry.id)
@@ -206,12 +362,35 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
         ring_validation["stacking_registry"] = registry.id
         ring_validation["layer_count"] = 2
 
+    # W4.2 self-check: compute min_interlayer_contact
+    min_contact = _min_interlayer_contact(monomer_poses, stacked_instance_to_monomer, monomer_specs, new_c, base_cell)
+    stacking_clash = False
+    if min_contact is not None and min_contact < 2.0:
+        stacking_clash = True
+        stacking_warnings.append(f"stacking clash: min_interlayer_contact={min_contact:.3f} Å < 2.0 Å")
+        print(
+            f"warning: stacking for {candidate.id!r} registry {registry.id!r}: "
+            f"min_interlayer_contact={min_contact:.3f} Å < 2.0 Å (interpenetrating layers)",
+            file=sys.stderr,
+        )
+
     flags = tuple(
         dict.fromkeys(
             tuple(flag for flag in candidate.flags if str(flag) != "stacking_disabled")
             + ("stacked_2d", f"stacking:{registry.id}")
+            + (("stacking_clash",) if stacking_clash else ())
         )
     )
+
+    stacking_meta = {
+        **_stacking_metadata(registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting),
+        "layer_z_span": layer_z_span,
+        "center_to_center_distance": center_to_center_distance,
+        "comment_suffix": stacking_comment_suffix(registry),
+        "source_candidate_id": candidate.id,
+        "warnings": list(stacking_warnings),
+        **({"min_interlayer_contact": min_contact} if min_contact is not None else {}),
+    }
 
     metadata = {
         **dict(candidate.metadata),
@@ -222,13 +401,7 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
         "score_metadata": score_metadata,
         **({"ring_validation": ring_validation} if ring_validation else {}),
         "stacking_mode": "enumerated",
-        "stacking": {
-            **_stacking_metadata(registry),
-            "layer_z_span": layer_z_span,
-            "center_to_center_distance": center_to_center_distance,
-            "comment_suffix": stacking_comment_suffix(registry),
-            "source_candidate_id": candidate.id,
-        },
+        "stacking": stacking_meta,
     }
     return replace(
         candidate,
@@ -246,13 +419,27 @@ def _apply_layer_registry(candidate: Candidate, registry: LayerRegistry) -> Cand
     )
 
 
-def _candidate_cell_kind(candidate: Candidate) -> str | None:
+def _candidate_cell_classification(candidate: Candidate) -> tuple[str | None, str | None]:
+    """Return (cell_kind, cell_setting) using the shared classify_2d_cell logic.
+
+    Falls back to the embedding metadata ``cell_kind`` when the cell vectors
+    are not available.
+    """
+    cell = getattr(getattr(candidate, "state", None), "cell", None)
+    if cell is not None:
+        try:
+            kind, setting = classify_2d_cell(cell)
+            if kind != "oblique":
+                return kind, setting or None
+        except Exception:
+            pass
+
     embedding = _mapping(candidate.metadata.get("embedding"))
-    cell_kind = embedding.get("cell_kind")
-    if cell_kind is None:
-        return None
-    text = str(cell_kind).strip()
-    return text or None
+    raw_kind = embedding.get("cell_kind")
+    if raw_kind is None:
+        return None, None
+    text = str(raw_kind).strip()
+    return (text or None), None
 
 
 def _is_eligible_2d_candidate(candidate: Candidate) -> bool:
@@ -265,6 +452,20 @@ def _is_eligible_2d_candidate(candidate: Candidate) -> bool:
         return False
 
 
+def _eligibility_check(candidate: Candidate) -> tuple[bool, str]:
+    """Return (eligible, reason_tag) for stacking eligibility."""
+    topology_id = _candidate_topology_id(candidate)
+    if topology_id is None:
+        return False, "no-net-plan"
+    try:
+        hint = get_topology_hint(topology_id)
+    except Exception:
+        return False, "unknown-topology"
+    if hint.dimensionality != "2D":
+        return False, "not-2d"
+    return True, ""
+
+
 def _candidate_topology_id(candidate: Candidate) -> str | None:
     net_plan = _mapping(candidate.metadata.get("net_plan"))
     topology_id = net_plan.get("topology")
@@ -275,6 +476,7 @@ def _candidate_topology_id(candidate: Candidate) -> str | None:
 
 
 def _candidate_layer_z_span(candidate: Candidate) -> float:
+    """Legacy reader — used only as cross-check metadata; do not use for geometry."""
     embedding = _mapping(candidate.metadata.get("embedding"))
     value = embedding.get("layer_z_span")
     if value is None:
@@ -286,6 +488,105 @@ def _candidate_layer_z_span(candidate: Candidate) -> float:
     return max(0.0, span)
 
 
+def _metadata_layer_z_span(candidate: Candidate) -> float | None:
+    """Read layer_z_span from embedding metadata; return None if absent."""
+    embedding = _mapping(candidate.metadata.get("embedding"))
+    value = embedding.get("layer_z_span")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _measure_span(
+    candidate: Candidate,
+    monomer_specs: Mapping[str, object] | None,
+    c_hat: Vec3,
+) -> object:
+    """Measure layer z-span using the shared geometry.measure_layer_z_span."""
+    if monomer_specs is None:
+        # Try to fall back to metadata value
+        meta_span = _metadata_layer_z_span(candidate)
+        if meta_span is not None and meta_span > 0.0:
+            from .geometry import LayerSpanReport
+            return LayerSpanReport(
+                span=meta_span,
+                mode="precursor_coordinates",
+                axis="c_hat",
+                n_atoms=0,
+                z_translation_included=True,
+            )
+        from .geometry import LayerSpanReport
+        return LayerSpanReport(
+            span=0.0,
+            mode="unavailable",
+            axis="c_hat",
+            n_atoms=0,
+            z_translation_included=False,
+        )
+
+    instance_to_monomer = _string_mapping(candidate.metadata.get("instance_to_monomer"))
+    poses = candidate.state.monomer_poses
+
+    # Try to realize product atoms for an atomistic measurement
+    realization = None
+    try:
+        from .reaction_realization import ReactionRealizer
+        realization = ReactionRealizer().realize(
+            candidate, monomer_specs, instance_to_monomer
+        )
+    except Exception:
+        pass
+
+    return measure_layer_z_span(
+        poses=poses,
+        monomer_specs=monomer_specs,
+        instance_to_monomer=instance_to_monomer,
+        c_hat=c_hat,
+        realization=realization,
+    )
+
+
+def _min_interlayer_contact(
+    monomer_poses: dict[str, Pose],
+    instance_to_monomer: dict[str, str],
+    monomer_specs: Mapping[str, object] | None,
+    new_c: Vec3,
+    base_cell: tuple[Vec3, Vec3, Vec3],
+) -> float | None:
+    """Estimate minimum interlayer contact distance for a self-check.
+
+    Uses monomer centre positions as a quick monomer-level estimate.
+    Returns None when there are no inter-layer pairs to check.
+    """
+    if monomer_specs is None:
+        return None
+
+    l0_centers: list[Vec3] = []
+    l1_centers: list[Vec3] = []
+    for instance_id, pose in monomer_poses.items():
+        if instance_id.endswith("L0"):
+            l0_centers.append(pose.translation)
+        elif instance_id.endswith("L1"):
+            l1_centers.append(pose.translation)
+
+    if not l0_centers or not l1_centers:
+        return None
+
+    min_dist: float | None = None
+    for p0 in l0_centers:
+        for p1 in l1_centers:
+            dx = p1[0] - p0[0]
+            dy = p1[1] - p0[1]
+            dz = p1[2] - p0[2]
+            d = sqrt(dx * dx + dy * dy + dz * dz)
+            if min_dist is None or d < min_dist:
+                min_dist = d
+    return min_dist
+
+
 def _fractional_shift_in_plane(
     cell: tuple[Vec3, Vec3, Vec3],
     shift: tuple[float, float],
@@ -293,15 +594,43 @@ def _fractional_shift_in_plane(
     return add(scale(cell[0], float(shift[0])), scale(cell[1], float(shift[1])))
 
 
-def _stacking_metadata(registry: LayerRegistry) -> dict[str, object]:
+def _stacking_metadata(
+    registry: LayerRegistry,
+    layer_z_span: float,
+    span_report: object,
+    center_to_center_distance: float,
+    cell_kind: str | None,
+    cell_setting: str | None,
+) -> dict[str, object]:
+    """Build the canonical stacking metadata dict (W3.1)."""
+    span_mode = getattr(span_report, "mode", "")
+    cell_classification: dict[str, object] = {}
+    if cell_kind:
+        cell_classification["kind"] = cell_kind
+    if cell_setting:
+        cell_classification["setting"] = cell_setting
+
     return {
         "id": registry.id,
+        # Canonical keys (W3.1)
+        "interlayer_clearance": float(registry.interlayer_distance),
+        "registry_shift_fractional": (
+            float(registry.lateral_shift[0]),
+            float(registry.lateral_shift[1]),
+        ),
+        "cell_classification": cell_classification,
+        "layer_z_span": layer_z_span,
+        "layer_z_span_mode": span_mode,
+        "layer_z_span_axis": "c_hat",
+        "center_to_center_distance": center_to_center_distance,
+        "derivation": "c2c = interlayer_clearance + layer_z_span; c = layer_count * c2c",
+        "layer_count": 2,
+        # Deprecated aliases kept for one release
         "interlayer_distance": float(registry.interlayer_distance),
         "lateral_shift_fractional": (
             float(registry.lateral_shift[0]),
             float(registry.lateral_shift[1]),
         ),
-        "layer_count": 2,
     }
 
 
@@ -328,6 +657,22 @@ def _duplicate_ring_geometry_metrics(metrics: Mapping[str, object], registry_id:
     return result
 
 
+def _c_axis_is_orthogonal(cell: tuple[Vec3, Vec3, Vec3]) -> bool:
+    """Check that c is orthogonal to both a and b (within 2°)."""
+    a, b, c = cell
+    c_len = norm(c)
+    if c_len < 1e-8:
+        return True
+    for v in (a, b):
+        v_len = norm(v)
+        if v_len < 1e-8:
+            continue
+        cosine = abs(dot(v, c)) / (v_len * c_len)
+        if cosine > 0.035:  # ~2°
+            return False
+    return True
+
+
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
@@ -339,9 +684,97 @@ def _string_mapping(value: object) -> dict[str, str]:
 
 
 def _safe_normalize(vector: Vec3) -> Vec3:
-    if norm(vector) < 1.0e-8:
+    """Normalize *vector*, falling back to (0,0,1) for degenerate vectors.
+
+    Emits a stderr warning when the fallback is used (T5).
+    """
+    n = norm(vector)
+    if n < 1.0e-8:
+        print(
+            "warning: stacking: c axis vector is degenerate; falling back to (0, 0, 1)",
+            file=sys.stderr,
+        )
         return (0.0, 0.0, 1.0)
     return normalize(vector)
+
+
+def resolve_stacking_pattern(
+    pattern: str | None,
+    topology_id: str | None,
+    assembly_mode: str | None,
+) -> str:
+    """Resolve the stacking pattern from explicit pattern, topology, or assembly mode.
+
+    Resolution priority (M2):
+    1. Explicit pattern overrides everything (M2.3)
+    2. Assembly mode: 'serrated' → AB (M2.2)
+    3. Topology-based default: sql → AA, kgm → AB, others → AA (M2.1)
+    4. Final fallback: AA
+
+    Parameters
+    ----------
+    pattern
+        Explicit stacking pattern (e.g., "AA", "AB", "ABC").
+    topology_id
+        Topology identifier (e.g., "sql", "kgm", "hcb").
+    assembly_mode
+        Assembly mode (e.g., "serrated", "default").
+
+    Returns
+    -------
+    str
+        The resolved stacking pattern.
+    """
+    # M2.3: Explicit pattern wins
+    if pattern:
+        return pattern
+
+    # M2.2: Assembly mode takes precedence over topology
+    if assembly_mode == "serrated":
+        return "AB"
+
+    # M2.1: Topology-based defaults
+    if topology_id == "kgm":
+        return "AB"
+    if topology_id in ("sql", "hcb", "fxt"):  # sql and others default to AA
+        return "AA"
+
+    # Final fallback
+    return "AA"
+
+
+def compute_interlayer_offset(pattern: str, a: float, b: float) -> float:
+    """Compute the interlayer offset magnitude for a given stacking pattern.
+
+    Parameters
+    ----------
+    pattern
+        Stacking pattern (e.g., "AA", "AB", "ABC").
+    a
+        In-plane lattice parameter a (Å).
+    b
+        In-plane lattice parameter b (Å).
+
+    Returns
+    -------
+    float
+        The interlayer offset magnitude (Å):
+        - AA: 0.0 (M3.1)
+        - AB: 0.5 * sqrt(a^2 + b^2) (M3.2)
+        - ABC: (1/3) * sqrt(a^2 + b^2) (M3.3)
+        - Unknown: 0.0 (defensive fallback, M3.4)
+    """
+    diagonal = sqrt(a**2 + b**2)
+
+    if pattern == "AA":
+        return 0.0
+    elif pattern == "AB":
+        return 0.5 * diagonal
+    elif pattern == "ABC":
+        return (1.0 / 3.0) * diagonal
+    else:
+        # M3.4: Unknown pattern → zero (defensive fallback)
+        return 0.0
 
 
 __all__ = [
@@ -349,4 +782,6 @@ __all__ = [
     "StackingExplorer",
     "enumerate_candidate_stackings",
     "stacking_comment_suffix",
+    "resolve_stacking_pattern",
+    "compute_interlayer_offset",
 ]

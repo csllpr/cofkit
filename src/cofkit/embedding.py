@@ -365,6 +365,17 @@ class PeriodicEmbedder:
             return "hexagonal"
         return "orthogonal"
 
+    def _cell_kind_from_vectors(self, cell: "tuple | None") -> str:
+        """Classify a built cell using the shared classify_2d_cell helper (W2.1)."""
+        if cell is None:
+            return "orthogonal"
+        from .geometry import classify_2d_cell
+        try:
+            kind, _setting = classify_2d_cell(cell)
+            return kind
+        except Exception:
+            return "orthogonal"
+
     def _is_single_node_bipartite_case(
         self,
         topology: TopologyHint | None,

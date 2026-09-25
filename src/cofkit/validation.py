@@ -31,7 +31,13 @@ class CoarseValidationThresholds:
     hard_mean_bridge_distance_residual: float = 0.60
     hard_min_bridge_distance_ratio: float = 0.70
     hard_max_bridge_distance_ratio: float = 1.60
-    min_nonbonded_heavy_distance: float = 1.05
+    min_nonbonded_heavy_distance: float = 1.05  # coarse backstop (plain-distance)
+    # W4.1: vdW-ratio threshold; flag when d / (r_vdw_i + r_vdw_j) < this value
+    min_nonbonded_heavy_vdw_ratio: float = 0.75
+    # W4.1: independent search radius for the vdW-aware clash check
+    nonbonded_heavy_search_radius: float = 3.5
+    # Warn on heavy-heavy contacts below this plain-distance backstop (Å)
+    hard_min_nonbonded_heavy_plain_distance: float = 2.2
     min_2d_cell_area: float = 10.0
     min_3d_cell_volume: float = 20.0
     # Per-template acceptable distance windows for the realized inter-monomer
@@ -423,15 +429,24 @@ class CoarseStructureValidator:
         return result
 
     def _min_nonbonded_heavy_distance_below_cutoff(self, small, bonded_images) -> float | None:
-        cutoff = self.thresholds.min_nonbonded_heavy_distance
-        search = gemmi.NeighborSearch(small, cutoff).populate(include_h=False)
+        """Search for the minimum nonbonded heavy-atom distance using a vdW-aware check.
+
+        W4.1: Uses a wider search radius (``nonbonded_heavy_search_radius``, ≈3.5 Å)
+        so actual interpenetration contacts at ~2 Å are found.  Flags when
+        ``d / (r_vdw_i + r_vdw_j) < min_nonbonded_heavy_vdw_ratio``.  Falls
+        back to the original plain-distance cutoff as a coarse backstop.
+        """
+        # Independent search radius — wide enough to catch real clashes
+        search_radius = self.thresholds.nonbonded_heavy_search_radius
+        cutoff = self.thresholds.min_nonbonded_heavy_distance  # coarse backstop
+        search = gemmi.NeighborSearch(small, search_radius).populate(include_h=False)
         minimum: float | None = None
         for index, site in enumerate(small.sites):
             if site.element.is_hydrogen:
                 continue
             candidates = {(index, 0)}
             candidates.update((int(mark.atom_idx), int(mark.image_idx))
-                for mark in search.find_site_neighbors(site, min_dist=0, max_dist=cutoff))
+                for mark in search.find_site_neighbors(site, min_dist=0, max_dist=search_radius))
             for other_index, image_index in candidates:
                 other = small.sites[other_index]
                 if other.element.is_hydrogen:
@@ -439,7 +454,8 @@ class CoarseStructureValidator:
                 position = other.fract
                 if image_index:
                     position = small.cell.images[image_index - 1].apply(position)
-                for shift, distance in images_within(small.cell, site.fract, position, cutoff):
+                # Use the wider search radius so interlayer clashes (~2 Å) are found
+                for shift, distance in images_within(small.cell, site.fract, position, search_radius):
                     if index == other_index and image_index == 0 and shift == (0, 0, 0):
                         continue
                     if image_index == 0 and (site.label, other.label, shift) in bonded_images:
