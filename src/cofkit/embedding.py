@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from math import atan2, cos, pi, sin, sqrt
 from typing import Mapping
@@ -9,12 +10,13 @@ from .geometry import (
     Vec3,
     add,
     centroid,
+    classify_2d_cell,
     dot,
     mat3_identity,
     matmul_vec,
     norm,
-    normalize,
     rotation_from_frame_to_axes,
+    safe_normalize,
     scale,
     sub,
 )
@@ -106,7 +108,7 @@ class PeriodicEmbedder:
             "mode": "topology-guided" if topology is not None else "motif-guided",
             "topology": topology.id if topology is not None else None,
             "target_distance": target_distance,
-            "cell_kind": self._cell_kind(topology),
+            "cell_kind": self._cell_kind_from_vectors(cell),
             "stacking_enabled": False,
             "poses": pose_details,
         }
@@ -203,7 +205,7 @@ class PeriodicEmbedder:
             "target_distance": bridge_target,
             "reactive_site_distance": sum(edge_reactive_site_distances) / len(edge_reactive_site_distances),
             "edge_reactive_site_distances": tuple(round(value, 6) for value in edge_reactive_site_distances),
-            "cell_kind": self._single_node_bipartite_cell_kind(topology, cell),
+            "cell_kind": self._cell_kind_from_vectors(cell),
             "stacking_enabled": False,
             "placement_mode": "single-node-bipartite",
             "topology_family": "single-node-2d" if topology_layout is not None else None,
@@ -360,21 +362,30 @@ class PeriodicEmbedder:
     def _fallback_center(self, index: int, spacing: float) -> Vec3:
         return (index * spacing, 0.0, 0.0)
 
-    def _cell_kind(self, topology: TopologyHint | None) -> str:
-        if topology is not None and topology.id == "hcb":
-            return "hexagonal"
-        return "orthogonal"
-
     def _cell_kind_from_vectors(self, cell: "tuple | None") -> str:
-        """Classify a built cell using the shared classify_2d_cell helper (W2.1)."""
+        """Classify a built cell from its vectors via classify_2d_cell (W2.1).
+
+        Answers from the actual cell geometry, not the topology id.  An
+        unclassifiable cell is reported as ``"oblique"`` (the shared
+        classifier's unknown) with a stderr warning, never silently promoted
+        to a symmetric family.
+        """
         if cell is None:
-            return "orthogonal"
-        from .geometry import classify_2d_cell
+            print(
+                "warning: embedding: no cell available for classification; reporting cell_kind 'oblique'",
+                file=sys.stderr,
+            )
+            return "oblique"
         try:
             kind, _setting = classify_2d_cell(cell)
-            return kind
-        except Exception:
-            return "orthogonal"
+        except (TypeError, ValueError, IndexError) as exc:
+            print(
+                f"warning: embedding: cell classification failed ({type(exc).__name__}: {exc}); "
+                "reporting cell_kind 'oblique'",
+                file=sys.stderr,
+            )
+            return "oblique"
+        return kind
 
     def _is_single_node_bipartite_case(
         self,
@@ -558,23 +569,6 @@ class PeriodicEmbedder:
             return next(iter(template_ids))
         return None
 
-    def _single_node_bipartite_cell_kind(
-        self,
-        topology: TopologyHint | None,
-        cell: tuple[Vec3, Vec3, Vec3],
-    ) -> str:
-        first, second, _ = cell
-        first_norm = norm(first)
-        second_norm = norm(second)
-        if first_norm < 1e-8 or second_norm < 1e-8:
-            return "oblique"
-        cosine = dot(first, second) / (first_norm * second_norm)
-        if abs(first_norm - second_norm) < 1e-3 and abs(cosine) < 1e-3:
-            return "square"
-        if abs(first_norm - second_norm) < 1e-3 and abs(cosine - 0.5) < 1e-3:
-            return "hexagonal"
-        return "oblique"
-
     def _single_node_topology_layout(
         self,
         topology: TopologyHint | None,
@@ -650,6 +644,7 @@ class PeriodicEmbedder:
         return add(pose.translation, matmul_vec(pose.rotation_matrix, local_position))
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        if norm(vector) < 1e-8:
-            return (1.0, 0.0, 0.0)
-        return normalize(vector)
+        # Fallback (1, 0, 0) is a fabricated +x direction preserved from the
+        # pre-consolidation implementation; degenerate inputs here indicate a
+        # data problem upstream (audit A10).
+        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))

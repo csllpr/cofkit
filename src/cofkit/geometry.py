@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from math import acos, degrees, sqrt
-from typing import Iterable, Mapping
+from math import acos, cos, degrees, radians, sin, sqrt
+from typing import Iterable, Mapping, Sequence
 
 Vec3 = tuple[float, float, float]
 Mat3 = tuple[Vec3, Vec3, Vec3]
@@ -62,6 +62,75 @@ def centroid(points: Iterable[Vec3]) -> Vec3:
 
 def distance(a: Vec3, b: Vec3) -> float:
     return norm(sub(a, b))
+
+
+def safe_normalize(
+    vector: Vec3,
+    *,
+    fallback: Vec3 = (0.0, 0.0, 1.0),
+    warn_context: str | None = None,
+) -> Vec3:
+    """Normalize *vector*; return *fallback* verbatim when it is degenerate.
+
+    Fallback policy (explicit per call site): a (near-)zero vector has no
+    direction, so the caller-supplied *fallback* is returned unchanged.  It
+    is a fabricated direction, not something derived from the input — callers
+    whose fallback feeds a physically meaningful axis should treat a triggered
+    fallback as a data problem.  When *warn_context* is given, a ``warning:``
+    line naming the context is printed to stderr; otherwise the fallback is
+    silent by the caller's choice (e.g. hot loops that handle degeneracy
+    upstream).
+    """
+    length = norm(vector)
+    if length < 1e-8:
+        if warn_context is not None:
+            print(
+                f"warning: {warn_context}; using fallback direction {fallback}",
+                file=sys.stderr,
+            )
+        return fallback
+    return scale(vector, 1.0 / length)
+
+
+def orthogonal_component(vector: Vec3, axis: Vec3, *, axis_is_unit: bool = False) -> Vec3:
+    """Return the component of *vector* orthogonal to *axis*.
+
+    Degenerate-axis policy: a (near-)zero axis defines no projection
+    direction, so *vector* is returned unchanged.  Pass
+    ``axis_is_unit=True`` when the caller guarantees ``norm(axis) == 1`` to
+    skip re-normalization (the projection formula is only correct for a unit
+    axis).
+    """
+    if not axis_is_unit:
+        length = norm(axis)
+        if length < 1e-8:
+            return vector
+        axis = scale(axis, 1.0 / length)
+    return sub(vector, scale(axis, dot(vector, axis)))
+
+
+def angle_degrees(
+    point_a: Sequence[float],
+    point_b: Sequence[float],
+    point_c: Sequence[float],
+    *,
+    on_degenerate: float | None,
+) -> float | None:
+    """Angle ∠abc (vertex at *point_b*) in degrees; works for 2D or 3D points.
+
+    Degenerate policy: when either arm has (near-)zero length the angle is
+    undefined, and the caller-chosen *on_degenerate* value is returned
+    (``180.0`` where a straight angle is the safe neutral default, ``None``
+    where the caller must handle the failure explicitly).
+    """
+    ba = tuple(x - y for x, y in zip(point_a, point_b))
+    bc = tuple(x - y for x, y in zip(point_c, point_b))
+    norm_ba = sqrt(sum(x * x for x in ba))
+    norm_bc = sqrt(sum(x * x for x in bc))
+    if norm_ba < 1e-8 or norm_bc < 1e-8:
+        return on_degenerate
+    cosine = sum(x * y for x, y in zip(ba, bc)) / (norm_ba * norm_bc)
+    return degrees(acos(max(-1.0, min(1.0, cosine))))
 
 
 def mat3_identity() -> Mat3:
@@ -146,23 +215,66 @@ class Frame:
 
 @dataclass(frozen=True)
 class LayerSpanReport:
-    """Result of measuring the z-extent of a layer's atoms along the c axis."""
+    """Result of measuring the z-extent of a layer's atoms.
+
+    ``axis`` is a *label* honestly naming the measurement axis actually used
+    (e.g. ``"layer_normal"``, ``"c_hat"``, or ``"unknown"`` for values taken
+    from upstream metadata), never a hard-coded claim.
+    """
 
     span: float
-    mode: str           # "atomistic_product" | "precursor_coordinates" | "unavailable"
-    axis: str           # "c_hat"
+    mode: str           # "atomistic_product" | "precursor_coordinates" | "embedding_metadata" | "unavailable"
+    axis: str           # label of the axis actually used: "layer_normal" | "c_hat" | "unknown"
     n_atoms: int
     z_translation_included: bool
+
+
+def layer_normal_axis(
+    a_vec: Vec3,
+    b_vec: Vec3,
+    *,
+    fallback_axis: Vec3 = (0.0, 0.0, 1.0),
+) -> tuple[Vec3, str]:
+    """Return ``(unit_axis, label)`` for layer z-span measurement.
+
+    The preferred axis is the layer normal ``n = normalize(a × b)`` (label
+    ``"layer_normal"``): a span measured along ``c_hat`` is not invariant
+    under in-plane periodic images when c is tilted away from the ab normal
+    (real fitted cells tilt ~0.5°), whereas the layer normal is.
+
+    Degenerate policy: when ``a × b`` is (near-)zero (collinear or missing
+    in-plane vectors) a ``warning:`` is printed and the normalized
+    *fallback_axis* is used with the honest label ``"c_hat"``; if that is
+    degenerate too, ``(0, 0, 1)`` is returned with the same label.
+    """
+    normal = cross(a_vec, b_vec)
+    if norm(normal) >= 1e-8:
+        return normalize(normal), "layer_normal"
+    print(
+        "warning: geometry: degenerate in-plane cell vectors (a × b ≈ 0); "
+        "falling back to the fallback axis for layer-span measurement",
+        file=sys.stderr,
+    )
+    if norm(fallback_axis) >= 1e-8:
+        return normalize(fallback_axis), "c_hat"
+    return (0.0, 0.0, 1.0), "c_hat"
 
 
 def measure_layer_z_span(
     poses: "Mapping[str, object]",
     monomer_specs: "Mapping[str, object]",
     instance_to_monomer: "Mapping[str, str]",
-    c_hat: Vec3 = (0.0, 0.0, 1.0),
+    *,
+    axis: Vec3 = (0.0, 0.0, 1.0),
+    axis_label: str = "c_hat",
     realization: object = None,
 ) -> LayerSpanReport:
-    """Measure the layer z-span (nuclear-plane extent along *c_hat*).
+    """Measure the layer z-span (nuclear-plane extent along *axis*).
+
+    The axis choice is explicit: pass ``axis``/``axis_label`` from
+    :func:`layer_normal_axis` when a cell is available (preferred — invariant
+    under in-plane periodic images in tilted cells), or an explicit c-axis
+    unit vector with ``axis_label="c_hat"`` when only a c axis exists.
 
     Works in one of two modes depending on what is available:
 
@@ -171,9 +283,10 @@ def measure_layer_z_span(
     * ``precursor_coordinates``: monomer ``atom_positions`` rotated and
       translated via the pose.
 
-    The pose translation **is** included so that the result is independent of
-    the layer offset applied later (it contributes only a rigid shift along
-    ``c_hat`` which cancels in max-min).
+    The pose translation **is** included: different instances of a layer can
+    sit at different heights along the axis, and omitting the translation
+    collapses their contributions (the documented root cause of shipped
+    interpenetrated stacks).
 
     Parameters
     ----------
@@ -184,8 +297,11 @@ def measure_layer_z_span(
         Mapping ``monomer_id → MonomerSpec``-like with ``.atom_positions``.
     instance_to_monomer:
         Maps instance ids to monomer ids.
-    c_hat:
-        Unit vector along the c axis (already normalised by caller).
+    axis:
+        Unit vector along the measurement axis (already normalised by
+        caller; see :func:`layer_normal_axis`).
+    axis_label:
+        Honest label for *axis*, reported verbatim in the report.
     realization:
         Optional ``ReactionRealizationResult``-like with
         ``.atoms_by_instance`` mapping ``instance_id → sequence of atoms``
@@ -219,13 +335,13 @@ def measure_layer_z_span(
 
         for local_pos in positions:
             world = add(matmul_vec(rotation, local_pos), translation)
-            z_values.append(dot(world, c_hat))
+            z_values.append(dot(world, axis))
 
     if not z_values:
         return LayerSpanReport(
             span=0.0,
             mode="unavailable",
-            axis="c_hat",
+            axis=axis_label,
             n_atoms=0,
             z_translation_included=True,
         )
@@ -235,7 +351,7 @@ def measure_layer_z_span(
     return LayerSpanReport(
         span=span,
         mode=mode,
-        axis="c_hat",
+        axis=axis_label,
         n_atoms=len(z_values),
         z_translation_included=True,
     )
@@ -281,3 +397,38 @@ def classify_2d_cell(
     if abs(gamma_deg - 90.0) <= angle_tolerance_deg:
         return "orthogonal", ""
     return "oblique", ""
+
+
+def classify_2d_cell_parameters(
+    cell_parameters: "tuple[float, ...]",
+    *,
+    angle_tolerance_deg: float = 0.5,
+    length_rtol: float = 0.01,
+) -> "tuple[str, str]":
+    """Classify a 2D cell from RCSR-style cell *parameters*.
+
+    Accepts ``(a, b, c, alpha, beta, gamma)`` or ``(a, b, gamma)``; only the
+    in-plane metric (a, b, γ) is used.  This is an adapter over
+    :func:`classify_2d_cell` for topology *definition* cells, which are stored
+    as parameters in the γ = 120° convention — the same tolerances and the
+    same ``(kind, setting)`` contract apply, so a definition cell and a built
+    cell classify identically.  Returns ``("unknown", "")`` when the
+    parameter count is not recognized.
+    """
+    if len(cell_parameters) >= 6:
+        a, b, _c, _alpha, _beta, gamma = cell_parameters[:6]
+    elif len(cell_parameters) == 3:
+        a, b, gamma = cell_parameters
+    else:
+        return "unknown", ""
+    gamma_radians = radians(gamma)
+    cell = (
+        (a, 0.0, 0.0),
+        (b * cos(gamma_radians), b * sin(gamma_radians), 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    return classify_2d_cell(
+        cell,
+        angle_tolerance_deg=angle_tolerance_deg,
+        length_rtol=length_rtol,
+    )

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from math import atan2, cos, pi, sin
 
-from .geometry import Vec3, add, norm, normalize, scale, sub
+from .geometry import Vec3, add, classify_2d_cell_parameters, norm, normalize, scale, sub
 from .topology_index import TopologyDefinition
 from .topologies import load_topology
 
@@ -334,20 +334,11 @@ def _explicit_edge_directions(definition) -> tuple[Vec3, ...]:
 
 
 def _metric_family(cell_parameters: tuple[float, ...]) -> str:
-    if len(cell_parameters) >= 6:
-        a, b, _c, _alpha, _beta, gamma = cell_parameters[:6]
-    elif len(cell_parameters) == 3:
-        a, b, gamma = cell_parameters
-    else:
-        return "unknown"
-
-    if abs(a - b) < 1e-3 and abs(gamma - 120.0) < 1e-2:
-        return "hexagonal"
-    if abs(a - b) < 1e-3 and abs(gamma - 90.0) < 1e-2:
-        return "square"
-    if abs(gamma - 90.0) < 1e-2:
-        return "orthogonal"
-    return "oblique"
+    # Delegates to the shared geometry classifier via the parameter adapter
+    # (audit A8).  Definition cells use the γ = 120° convention; the setting
+    # string is dropped here because callers only consume the family.
+    kind, _setting = classify_2d_cell_parameters(cell_parameters)
+    return kind
 
 
 def _mirror_inferred_direction(explicit_directions: tuple[Vec3, Vec3], metric_family: str) -> Vec3:

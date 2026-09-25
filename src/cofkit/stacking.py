@@ -6,7 +6,18 @@ from dataclasses import dataclass, replace
 from math import sqrt
 from typing import Mapping
 
-from .geometry import Vec3, add, classify_2d_cell, dot, measure_layer_z_span, norm, normalize, scale
+from .geometry import (
+    LayerSpanReport,
+    Vec3,
+    add,
+    classify_2d_cell,
+    dot,
+    layer_normal_axis,
+    measure_layer_z_span,
+    norm,
+    safe_normalize,
+    scale,
+)
 from .model import AssemblyState, Candidate, Pose, ReactionEvent
 from .topologies import get_topology_hint
 
@@ -163,11 +174,16 @@ def _apply_layer_registry(
 
     base_cell = state.cell
     c_direction = _safe_normalize(base_cell[2])
+    # Measure the span along the layer normal n = normalize(a × b): a c_hat
+    # span is not invariant under in-plane periodic images when c is tilted
+    # (stacking review point 2).  c_direction is still used to build new_c,
+    # preserving the existing cell-construction behaviour.
+    span_axis, span_axis_label = layer_normal_axis(base_cell[0], base_cell[1], fallback_axis=base_cell[2])
 
     # W1.2/W1.3: measure span fresh; use metadata only as cross-check
     cell_kind, cell_setting = _candidate_cell_classification(candidate)
     stacking_warnings: list[str] = []
-    span_report = _measure_span(candidate, monomer_specs, c_direction, warnings=stacking_warnings)
+    span_report = _measure_span(candidate, monomer_specs, span_axis, axis_label=span_axis_label, warnings=stacking_warnings)
     layer_z_span = span_report.span
     metadata_span = _metadata_layer_z_span(candidate)
 
@@ -484,27 +500,32 @@ def _metadata_layer_z_span(candidate: Candidate) -> float | None:
 def _measure_span(
     candidate: Candidate,
     monomer_specs: Mapping[str, object] | None,
-    c_hat: Vec3,
+    axis: Vec3,
+    *,
+    axis_label: str,
     warnings: list[str] | None = None,
 ) -> object:
     """Measure layer z-span using the shared geometry.measure_layer_z_span."""
     if monomer_specs is None:
-        # Try to fall back to metadata value
+        # Fall back to the value recorded in embedding metadata; provenance
+        # (mode/axis) is propagated from that metadata when present, never
+        # stamped as a fresh measurement.
         meta_span = _metadata_layer_z_span(candidate)
         if meta_span is not None and meta_span > 0.0:
-            from .geometry import LayerSpanReport
+            embedding = _mapping(candidate.metadata.get("embedding"))
+            meta_mode = str(embedding.get("layer_z_span_mode") or "embedding_metadata")
+            meta_axis = str(embedding.get("layer_z_span_axis") or "unknown")
             return LayerSpanReport(
                 span=meta_span,
-                mode="precursor_coordinates",
-                axis="c_hat",
+                mode=meta_mode,
+                axis=meta_axis,
                 n_atoms=0,
                 z_translation_included=True,
             )
-        from .geometry import LayerSpanReport
         return LayerSpanReport(
             span=0.0,
             mode="unavailable",
-            axis="c_hat",
+            axis=axis_label,
             n_atoms=0,
             z_translation_included=False,
         )
@@ -535,7 +556,8 @@ def _measure_span(
         poses=poses,
         monomer_specs=monomer_specs,
         instance_to_monomer=instance_to_monomer,
-        c_hat=c_hat,
+        axis=axis,
+        axis_label=axis_label,
         realization=realization,
     )
 
@@ -595,6 +617,7 @@ def _stacking_metadata(
 ) -> dict[str, object]:
     """Build the canonical stacking metadata dict (W3.1)."""
     span_mode = getattr(span_report, "mode", "")
+    span_axis = getattr(span_report, "axis", "unknown") or "unknown"
     cell_classification: dict[str, object] = {}
     if cell_kind:
         cell_classification["kind"] = cell_kind
@@ -612,7 +635,7 @@ def _stacking_metadata(
         "cell_classification": cell_classification,
         "layer_z_span": layer_z_span,
         "layer_z_span_mode": span_mode,
-        "layer_z_span_axis": "c_hat",
+        "layer_z_span_axis": span_axis,
         "center_to_center_distance": center_to_center_distance,
         "derivation": "c2c = interlayer_clearance + layer_z_span; c = layer_count * c2c",
         "layer_count": 2,
@@ -673,14 +696,11 @@ def _safe_normalize(vector: Vec3) -> Vec3:
 
     Emits a stderr warning when the fallback is used (T5).
     """
-    n = norm(vector)
-    if n < 1.0e-8:
-        print(
-            "warning: stacking: c axis vector is degenerate; falling back to (0, 0, 1)",
-            file=sys.stderr,
-        )
-        return (0.0, 0.0, 1.0)
-    return normalize(vector)
+    return safe_normalize(
+        vector,
+        fallback=(0.0, 0.0, 1.0),
+        warn_context="stacking: c axis vector is degenerate",
+    )
 
 
 __all__ = [

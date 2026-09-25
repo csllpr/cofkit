@@ -319,7 +319,10 @@ class EmbeddingTests(unittest.TestCase):
 
         self.assertEqual(embedding.metadata["mode"], "topology-guided")
         self.assertEqual(embedding.metadata["topology"], "car")
-        self.assertEqual(embedding.metadata["cell_kind"], "orthogonal")
+        # The built cell has equal-length, 90° in-plane vectors, so the
+        # shared classifier honestly reports "square" (previously the
+        # topology-id-derived answer claimed "orthogonal").
+        self.assertEqual(embedding.metadata["cell_kind"], "square")
         self.assertEqual(embedding.state.stacking_state, "disabled")
         self.assertEqual(len(embedding.state.monomer_poses), 2)
         self.assertAlmostEqual(embedding.state.cell[1][0], 0.0)

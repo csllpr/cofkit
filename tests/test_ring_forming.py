@@ -202,6 +202,30 @@ class RingFormingWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(export.text.splitlines()[0], f"# COFid: {cofid} stacking=AA")
 
+    def test_stacking_span_provenance_and_fitted_cell_classification(self):
+        """Audit A7/A8: the span is measured along the layer normal with
+        honest mode/axis provenance, and the embedding cell_kind classifies
+        the fitted cell (declared RCSR family kept as provenance only)."""
+        stacked = RingFormingStructureGenerator(
+            RingFormationConfig(stacking_ids=("AA",))
+        ).generate(
+            self.cof1_precursor,
+            "boroxine_trimerization",
+        )
+        stacking_meta = stacked.metadata["stacking"]
+        embedding = stacked.metadata["embedding"]
+
+        self.assertEqual(embedding["layer_z_span_mode"], "atomistic_product")
+        self.assertEqual(embedding["layer_z_span_axis"], "layer_normal")
+        self.assertGreaterEqual(embedding["layer_z_span"], 0.0)
+        self.assertEqual(embedding["cell_kind"], "hexagonal")
+        self.assertEqual(embedding["declared_metric_family"], "hexagonal")
+
+        # Stacking metadata honestly propagates the measurement provenance.
+        self.assertEqual(stacking_meta["layer_z_span_mode"], "atomistic_product")
+        self.assertEqual(stacking_meta["layer_z_span_axis"], "layer_normal")
+        self.assertAlmostEqual(stacking_meta["layer_z_span"], embedding["layer_z_span"], places=6)
+
     def test_triazine_ab_stacking_uses_hexagonal_registry_and_passes_coarse_validation(self):
         stacked = RingFormingStructureGenerator(
             RingFormationConfig(stacking_ids=("AB",))

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from math import atan2, cos, pi, sin, sqrt
 
-from .geometry import Vec3, add, norm, normalize, scale, sub
+from .geometry import Vec3, add, classify_2d_cell_parameters, safe_normalize, scale, sub
 from .topologies import load_topology
 from .topology_index import TopologyDefinition
 from .topology_symmetry import expand_topology_definition
@@ -171,19 +171,10 @@ def _cell_vectors(definition: TopologyDefinition) -> tuple[Vec3, Vec3, Vec3]:
 def _metric_family(definition: TopologyDefinition) -> str:
     cell_parameters = tuple(float(value) for value in definition.metadata.get("cell_parameters", ()))
     if definition.dimensionality == "2D":
-        if len(cell_parameters) >= 6:
-            a, b, _c, _alpha, _beta, gamma = cell_parameters[:6]
-        elif len(cell_parameters) == 3:
-            a, b, gamma = cell_parameters
-        else:
-            return "unknown"
-        if abs(a - b) < 1e-3 and abs(gamma - 120.0) < 1e-2:
-            return "hexagonal"
-        if abs(a - b) < 1e-3 and abs(gamma - 90.0) < 1e-2:
-            return "square"
-        if abs(gamma - 90.0) < 1e-2:
-            return "orthogonal"
-        return "oblique"
+        # Delegates to the shared geometry classifier via the parameter
+        # adapter (audit A8); definition cells use the γ = 120° convention.
+        kind, _setting = classify_2d_cell_parameters(cell_parameters)
+        return kind
 
     if len(cell_parameters) >= 6:
         a, b, c, alpha, beta, gamma = cell_parameters[:6]
@@ -274,9 +265,10 @@ def _incident_sort_key(direction: Vec3, dimensionality: str) -> object:
 
 
 def _safe_normalize(vector: Vec3) -> Vec3:
-    if norm(vector) < 1e-8:
-        return (0.0, 0.0, 1.0)
-    return normalize(vector)
+    # Fallback (0, 0, 1) is a fabricated +z direction preserved from the
+    # pre-consolidation implementation (audit A10); degenerate inputs here
+    # indicate a data problem upstream.
+    return safe_normalize(vector, fallback=(0.0, 0.0, 1.0))
 
 
 def _edge_endpoint_key(edge_id: str, endpoint: str) -> str:

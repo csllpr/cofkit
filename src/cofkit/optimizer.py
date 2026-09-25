@@ -9,8 +9,9 @@ from .geometry import (
     dot,
     matmul_vec,
     norm,
-    normalize,
+    orthogonal_component,
     rotation_from_frame_to_axes,
+    safe_normalize,
     scale,
     sub,
 )
@@ -346,9 +347,11 @@ class ContinuousOptimizer:
         )
 
     def _orthogonal_component(self, vector: Vec3, axis: Vec3) -> Vec3:
-        return sub(vector, scale(axis, dot(vector, axis)))
+        # Call sites pass pre-normalized axes (unit vectors built above).
+        return orthogonal_component(vector, axis, axis_is_unit=True)
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        if norm(vector) < 1e-8:
-            return (1.0, 0.0, 0.0)
-        return normalize(vector)
+        # Fallback (1, 0, 0) is a fabricated +x direction preserved from the
+        # pre-consolidation implementation; it feeds rotation targets, so a
+        # triggered fallback indicates a data problem upstream (audit A10).
+        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))

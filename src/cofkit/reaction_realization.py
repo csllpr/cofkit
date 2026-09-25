@@ -2,10 +2,24 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
-from math import acos, atan2, cos, pi, sin
+from math import atan2, cos, pi, sin
 from typing import Callable, Mapping
 
-from .geometry import Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub, transpose
+from .geometry import (
+    Vec3,
+    add,
+    angle_degrees,
+    cross,
+    distance,
+    dot,
+    matmul_vec,
+    norm,
+    normalize,
+    orthogonal_component,
+    scale,
+    sub,
+    transpose,
+)
 from .linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG
 from .model import Candidate, MonomerSpec, MotifRef, Pose, ReactionEvent
 from .reactions import bridge_target_distance, linkage_event_realizer
@@ -1158,17 +1172,9 @@ class ReactionRealizer:
         oxygen_2d_1: tuple[float, float],
         oxygen_2d_2: tuple[float, float],
     ) -> float | None:
-        vector_1 = (oxygen_2d_1[0] - boron_2d[0], oxygen_2d_1[1] - boron_2d[1])
-        vector_2 = (oxygen_2d_2[0] - boron_2d[0], oxygen_2d_2[1] - boron_2d[1])
-        norm_1 = (vector_1[0] ** 2 + vector_1[1] ** 2) ** 0.5
-        norm_2 = (vector_2[0] ** 2 + vector_2[1] ** 2) ** 0.5
-        if norm_1 < 1e-8 or norm_2 < 1e-8:
-            return None
-        cosine = max(-1.0, min(1.0, (vector_1[0] * vector_2[0] + vector_1[1] * vector_2[1]) / (norm_1 * norm_2)))
-        return acos(cosine) * 180.0 / pi
-
-    def _orthogonal_component(self, vector: Vec3, axis: Vec3) -> Vec3:
-        return sub(vector, scale(axis, dot(vector, axis)))
+        # Degenerate policy: None — the caller treats an undefined O-B-O angle
+        # as a failed fit candidate and keeps searching.
+        return angle_degrees(oxygen_2d_1, boron_2d, oxygen_2d_2, on_degenerate=None)
 
     def _signed_value(self, value: float, *, default: float) -> float:
         if value > 1e-8:
@@ -1211,14 +1217,9 @@ class ReactionRealizer:
         point_b: tuple[float, float],
         point_c: tuple[float, float],
     ) -> float:
-        vector_ba = (point_a[0] - point_b[0], point_a[1] - point_b[1])
-        vector_bc = (point_c[0] - point_b[0], point_c[1] - point_b[1])
-        norm_ba = (vector_ba[0] * vector_ba[0] + vector_ba[1] * vector_ba[1]) ** 0.5
-        norm_bc = (vector_bc[0] * vector_bc[0] + vector_bc[1] * vector_bc[1]) ** 0.5
-        if norm_ba < 1e-8 or norm_bc < 1e-8:
-            return 180.0
-        cosine = (vector_ba[0] * vector_bc[0] + vector_ba[1] * vector_bc[1]) / (norm_ba * norm_bc)
-        return 180.0 * acos(max(-1.0, min(1.0, cosine))) / pi
+        # Degenerate policy: 180.0 — a straight angle is the neutral default
+        # for the grid-search objectives that consume this.
+        return angle_degrees(point_a, point_b, point_c, on_degenerate=180.0)
 
     def _fit_azine_bridge_geometries(
         self,
@@ -1761,14 +1762,9 @@ class ReactionRealizer:
         return refreshed_bonds
 
     def _angle(self, point_a: Vec3, point_b: Vec3, point_c: Vec3) -> float:
-        vector_ba = sub(point_a, point_b)
-        vector_bc = sub(point_c, point_b)
-        norm_ba = norm(vector_ba)
-        norm_bc = norm(vector_bc)
-        if norm_ba < 1e-8 or norm_bc < 1e-8:
-            return 180.0
-        cosine = dot(vector_ba, vector_bc) / (norm_ba * norm_bc)
-        return 180.0 * acos(max(-1.0, min(1.0, cosine))) / pi
+        # Degenerate policy: 180.0 (straight angle) is the neutral default
+        # for the metric dicts that consume this.
+        return angle_degrees(point_a, point_b, point_c, on_degenerate=180.0)
 
     def _squared_distance_2d(self, first: tuple[float, float], second: tuple[float, float]) -> float:
         delta_x = first[0] - second[0]
@@ -2825,10 +2821,7 @@ class ReactionRealizer:
         return add(pose.translation, matmul_vec(pose.rotation_matrix, local_position))
 
     def _distance(self, left: Vec3, right: Vec3) -> float:
-        dx = left[0] - right[0]
-        dy = left[1] - right[1]
-        dz = left[2] - right[2]
-        return (dx * dx + dy * dy + dz * dz) ** 0.5
+        return distance(left, right)
 
     def _shorten_bond_local_position(
         self,
@@ -3471,10 +3464,11 @@ class ReactionRealizer:
         return self._normalize_or_none(repulsion)
 
     def _orthogonal_component(self, vector: Vec3, axis: Vec3) -> Vec3:
-        axis_unit = self._normalize_or_none(axis)
-        if axis_unit is None:
-            return vector
-        return sub(vector, scale(axis_unit, dot(vector, axis_unit)))
+        # Shared helper (audit A10): normalizes the axis; a degenerate axis
+        # returns the vector unchanged.  An earlier duplicate of this method
+        # assuming a pre-normalized axis was dead (shadowed by this
+        # definition) and was removed.
+        return orthogonal_component(vector, axis)
 
     def _any_orthogonal_unit(self, axis: Vec3) -> Vec3 | None:
         axis_unit = self._normalize_or_none(axis)

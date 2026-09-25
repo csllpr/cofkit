@@ -5,7 +5,21 @@ from dataclasses import dataclass, replace
 from math import atan2, cos, sin
 from typing import Mapping
 
-from ..geometry import Frame, Vec3, add, centroid, dot, matmul_vec, norm, rotation_from_frame_to_axes, scale, sub
+from ..geometry import (
+    Frame,
+    Vec3,
+    add,
+    centroid,
+    classify_2d_cell,
+    dot,
+    layer_normal_axis,
+    matmul_vec,
+    measure_layer_z_span,
+    norm,
+    rotation_from_frame_to_axes,
+    scale,
+    sub,
+)
 from ..indexed_topology_layouts import expand_indexed_topology
 from ..model import (
     AssemblyState,
@@ -315,7 +329,7 @@ class RingFormingStructureGenerator:
         candidate = self._annotate_ring_embedding(
             candidate,
             monomer,
-            cell_kind=expanded.metric_family,
+            declared_metric_family=expanded.metric_family,
             placement_mode="virtual-ring-nodes/precursor-edges",
         )
         return RingBuildResult(candidate=candidate, graph=graph, outcome=outcome)
@@ -534,7 +548,7 @@ class RingFormingStructureGenerator:
         candidate = self._annotate_ring_embedding(
             candidate,
             monomer,
-            cell_kind=expanded.metric_family,
+            declared_metric_family=expanded.metric_family,
             placement_mode="precursor-nodes/virtual-ring-nodes",
         )
         return RingBuildResult(candidate=candidate, graph=graph, outcome=outcome)
@@ -544,7 +558,7 @@ class RingFormingStructureGenerator:
         candidate: Candidate,
         monomer: MonomerSpec,
         *,
-        cell_kind: str,
+        declared_metric_family: str,
         placement_mode: str,
     ) -> Candidate:
         from ..reaction_realization import ReactionRealizer
@@ -564,16 +578,21 @@ class RingFormingStructureGenerator:
                 file=sys.stderr,
             )
             realization = None
-        z_values: list[float] = []
-        for instance_id, pose in candidate.state.monomer_poses.items():
-            realized_atoms = None if realization is None else realization.atoms_by_instance.get(instance_id)
-            local_positions = (
-                tuple(atom.local_position for atom in realized_atoms)
-                if realized_atoms is not None
-                else monomer.atom_positions
-            )
-            z_values.extend(add(matmul_vec(pose.rotation_matrix, position), pose.translation)[2] for position in local_positions)
-        layer_z_span = max(z_values) - min(z_values) if z_values else 0.0
+        # W1.2: measure the span with the shared measurer, along the fitted
+        # cell's layer normal (the fitted a/b lie in the layer plane).
+        axis, axis_label = layer_normal_axis(candidate.state.cell[0], candidate.state.cell[1])
+        span_report = measure_layer_z_span(
+            poses=candidate.state.monomer_poses,
+            monomer_specs={monomer.id: monomer},
+            instance_to_monomer=candidate.metadata["instance_to_monomer"],
+            axis=axis,
+            axis_label=axis_label,
+            realization=realization,
+        )
+        layer_z_span = span_report.span if span_report.n_atoms else 0.0
+        # W2.1: classify the actually fitted cell; the declared RCSR metric
+        # family is recorded as provenance only.
+        fitted_cell_kind, fitted_cell_setting = classify_2d_cell(candidate.state.cell)
         pose_details = {
             instance_id: {
                 "translation": pose.translation,
@@ -584,10 +603,13 @@ class RingFormingStructureGenerator:
         embedding = {
             "mode": "virtual-node-topology",
             "topology": candidate.metadata["net_plan"]["topology"],
-            "cell_kind": cell_kind,
+            "cell_kind": fitted_cell_kind,
+            "cell_setting": fitted_cell_setting or None,
+            "declared_metric_family": declared_metric_family,
             "placement_mode": placement_mode,
             "layer_z_span": layer_z_span,
-            "layer_z_span_mode": "atomistic_product" if realization is not None else "precursor_coordinates",
+            "layer_z_span_mode": span_report.mode,
+            "layer_z_span_axis": span_report.axis,
             "stacking_enabled": False,
             "poses": pose_details,
         }

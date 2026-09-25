@@ -21,13 +21,16 @@ from .geometry import (
     Mat3,
     Vec3,
     Frame,
+    LayerSpanReport,
     add,
     cross,
     dot,
+    layer_normal_axis,
     matmul_vec,
+    measure_layer_z_span,
     norm,
-    normalize,
     rotation_from_frame_to_axes,
+    safe_normalize,
     scale,
     sub,
 )
@@ -1766,11 +1769,12 @@ class BatchStructureGenerator:
             reactive_site_distances.append(norm(edge_vector))
 
         fit = self._fit_decorated_bex_placement(expanded, target_edge_vectors)
-        layer_spacing, layer_z_span = self._decorated_bex_layer_spacing(
+        layer_spacing, layer_z_span, _precursor_span_report = self._decorated_bex_layer_spacing(
             node_spec=node_spec,
             node_rotation=node_placement.rotation,
             composite_spec=composite_spec,
             composite_rotation=composite_placement.rotation,
+            layer_plane=(fit.cell[0], fit.cell[1]),
         )
         cell = (
             fit.cell[0],
@@ -1809,7 +1813,7 @@ class BatchStructureGenerator:
                 "radial_offsets": tuple(round(value, 6) for value in composite_placement.offsets),
             },
         }
-        layer_spacing, layer_z_span = self._realized_decorated_bex_layer_spacing(
+        layer_spacing, layer_z_span, span_report = self._realized_decorated_bex_layer_spacing(
             outcome=outcome,
             monomer_specs={node_spec.id: node_spec, composite_spec.id: composite_spec},
             state=AssemblyState(cell=cell, monomer_poses=monomer_poses, stacking_state="disabled"),
@@ -1847,6 +1851,8 @@ class BatchStructureGenerator:
                 "decorated_topology_unit": "c3-edge-c3",
                 "assignment_variant": variant_index,
                 "layer_z_span": round(layer_z_span, 6),
+                "layer_z_span_mode": span_report.mode,
+                "layer_z_span_axis": span_report.axis,
                 "c_axis_source": "decorated-bex-layer-extent",
                 "poses": pose_details,
             },
@@ -1859,19 +1865,31 @@ class BatchStructureGenerator:
         node_rotation: Mat3,
         composite_spec: MonomerSpec,
         composite_rotation: Mat3,
-    ) -> tuple[float, float]:
-        z_values: list[float] = []
-        for spec, rotation in ((node_spec, node_rotation), (composite_spec, composite_rotation)):
-            for position in spec.atom_positions:
-                z_values.append(matmul_vec(rotation, position)[2])
-        if not z_values:
-            return self.config.embedding_config.default_layer_spacing, 0.0
-        layer_z_span = max(z_values) - min(z_values)
+        layer_plane: tuple[Vec3, Vec3],
+    ) -> tuple[float, float, LayerSpanReport]:
+        """Precursor span estimate before poses exist (rotations solved, no
+        translations yet); measured along the fitted layer normal via the
+        shared measurer (W1.2)."""
+        axis, axis_label = layer_normal_axis(layer_plane[0], layer_plane[1])
+        poses = {
+            "bex_node": Pose(translation=(0.0, 0.0, 0.0), rotation_matrix=node_rotation),
+            "bex_composite": Pose(translation=(0.0, 0.0, 0.0), rotation_matrix=composite_rotation),
+        }
+        report = measure_layer_z_span(
+            poses=poses,
+            monomer_specs={node_spec.id: node_spec, composite_spec.id: composite_spec},
+            instance_to_monomer={"bex_node": node_spec.id, "bex_composite": composite_spec.id},
+            axis=axis,
+            axis_label=axis_label,
+        )
+        if report.n_atoms == 0:
+            return self.config.embedding_config.default_layer_spacing, 0.0, report
+        layer_z_span = report.span
         spacing = max(
             self.config.embedding_config.default_layer_spacing,
             layer_z_span + self.config.embedding_config.default_layer_spacing,
         )
-        return spacing, layer_z_span
+        return spacing, layer_z_span, report
 
     def _realized_decorated_bex_layer_spacing(
         self,
@@ -1880,7 +1898,7 @@ class BatchStructureGenerator:
         monomer_specs: Mapping[str, MonomerSpec],
         state: AssemblyState,
         fallback_layer_z_span: float,
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, LayerSpanReport]:
         instance_to_monomer = {
             instance.id: instance.monomer_id
             for instance in outcome.monomer_instances
@@ -1892,23 +1910,23 @@ class BatchStructureGenerator:
             events=outcome.events,
         )
         realization = ReactionRealizer().realize(temporary_candidate, monomer_specs, instance_to_monomer)
-        z_values: list[float] = []
-        for instance_id, pose in state.monomer_poses.items():
-            monomer = monomer_specs[instance_to_monomer[instance_id]]
-            realized_atoms = None if realization is None else realization.atoms_by_instance.get(instance_id)
-            atom_positions = (
-                (atom.local_position for atom in realized_atoms)
-                if realized_atoms is not None
-                else monomer.atom_positions
-            )
-            for local_position in atom_positions:
-                z_values.append(matmul_vec(pose.rotation_matrix, local_position)[2])
-        layer_z_span = max(z_values) - min(z_values) if z_values else fallback_layer_z_span
+        axis, axis_label = layer_normal_axis(state.cell[0], state.cell[1], fallback_axis=state.cell[2])
+        # W1.2/C1: the shared measurer includes pose.translation — the
+        # previous inline loop omitted it, collapsing the measured span.
+        report = measure_layer_z_span(
+            poses=state.monomer_poses,
+            monomer_specs=monomer_specs,
+            instance_to_monomer=instance_to_monomer,
+            axis=axis,
+            axis_label=axis_label,
+            realization=realization,
+        )
+        layer_z_span = report.span if report.n_atoms else fallback_layer_z_span
         spacing = max(
             self.config.embedding_config.default_layer_spacing,
             layer_z_span + self.config.embedding_config.default_layer_spacing,
         )
-        return spacing, layer_z_span
+        return spacing, layer_z_span, report
 
     def _resolve_node_linker_specs(
         self,
@@ -5355,9 +5373,10 @@ class BatchStructureGenerator:
         return add(add(scale(cell[0], image[0]), scale(cell[1], image[1])), scale(cell[2], image[2]))
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        if norm(vector) < 1e-8:
-            return (1.0, 0.0, 0.0)
-        return normalize(vector)
+        # Fallback (1, 0, 0) is a fabricated +x direction preserved from the
+        # pre-consolidation implementation; degenerate inputs here indicate a
+        # data problem upstream (audit A10).
+        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))
 
     def _solve_symmetric_3x3(self, matrix: list[list[float]], rhs: list[float]) -> tuple[float, float, float] | None:
         a = [row[:] for row in matrix]

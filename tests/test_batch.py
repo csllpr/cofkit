@@ -1641,6 +1641,13 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         )
         layer_z_span = candidate.metadata["embedding"]["layer_z_span"]
         self.assertGreater(layer_z_span, 0.0)
+        # A7: span provenance is reported honestly (shared measurer, layer
+        # normal axis).
+        self.assertEqual(candidate.metadata["embedding"]["layer_z_span_axis"], "layer_normal")
+        self.assertIn(
+            candidate.metadata["embedding"]["layer_z_span_mode"],
+            ("atomistic_product", "precursor_coordinates"),
+        )
         self.assertAlmostEqual(
             candidate.state.cell[2][2],
             layer_z_span + generator.config.embedding_config.default_layer_spacing,
@@ -1701,6 +1708,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             self.assertEqual(candidate.metadata["graph_summary"]["n_reaction_events"], 8)
             layer_z_span = float(summary.metadata["stacking"]["layer_z_span"])
             self.assertGreater(layer_z_span, 0.0)
+            self.assertEqual(summary.metadata["stacking"]["layer_z_span_axis"], "layer_normal")
             self.assertAlmostEqual(
                 candidate.state.cell[2][2],
                 2.0 * (layer_z_span + summary.metadata["stacking"]["interlayer_clearance"]),

@@ -9,7 +9,7 @@ from typing import Iterable, Mapping
 from .bond_types import bond_order_to_cif_type, normalize_bond_order
 from .chem.motif_registry import motif_pseudo_atom_symbol
 from .cofid import cofid_comment_line
-from .geometry import Vec3, add, cross, dot, matmul_vec, norm, scale
+from .geometry import Vec3, add, cross, distance, dot, matmul_vec, norm, scale
 from .model import Candidate, MonomerSpec, Pose
 from .reaction_realization import RealizedBond, ReactionRealizationResult, ReactionRealizer
 
@@ -509,10 +509,7 @@ class CIFWriter:
         return add(pose.translation, matmul_vec(pose.rotation_matrix, local_position))
 
     def _distance(self, left: Vec3, right: Vec3) -> float:
-        dx = left[0] - right[0]
-        dy = left[1] - right[1]
-        dz = left[2] - right[2]
-        return (dx * dx + dy * dy + dz * dz) ** 0.5
+        return distance(left, right)
 
     def _motif_symbol(self, kind: str) -> str:
         return motif_pseudo_atom_symbol(kind)
