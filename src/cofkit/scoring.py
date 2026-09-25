@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from math import fabs
 from typing import Mapping
 
-from .geometry import Vec3, add, distance, dot, matmul_vec, norm, normalize, scale, sub
+from .geometry import Vec3, add, distance, dot, matmul_vec, normalize, safe_normalize, scale, sub
 from .linkage_geometry import effective_motif_origin
 from .model import AssemblyState, MonomerSpec, ReactionTemplate
 from .reactions import bridge_target_distance
@@ -27,6 +27,17 @@ class BridgeEventMetrics:
 
 @dataclass(frozen=True)
 class BridgeGeometryReport:
+    """Residual aggregation contract: ``total_residual`` is the **sum** of the
+    per-event ``total_residual`` values over all bridge events — never a mean.
+
+    Ranking is the only place a mean is derived, and it does so by dividing
+    the sum by the number of per-event metric entries
+    (``cofkit.model.residual_ranking_key``); the validator likewise computes
+    its own mean from the per-event metrics.  Consumers that change the event
+    count (e.g. ``stacking.py`` duplicating a layer's events) must recompute
+    the sum from the per-event metrics so the derived mean stays consistent.
+    """
+
     event_metrics: tuple[BridgeEventMetrics, ...] = ()
     total_residual: float = 0.0
 
@@ -38,7 +49,9 @@ class CandidateScorer:
     they drive the continuous optimizer and the coarse structure validator, and
     ranking uses the mean per-bridge-event geometry residual (see
     ``cofkit.model.candidate_ranking_key``). :meth:`scoring_metadata` packages
-    those residuals for candidate metadata.
+    those residuals for candidate metadata; the exported
+    ``bridge_geometry_residual`` is the sum over events per the
+    :class:`BridgeGeometryReport` contract.
     """
 
     def scoring_metadata(
@@ -176,9 +189,7 @@ class CandidateScorer:
         )
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        if norm(vector) < 1e-8:
-            return (1.0, 0.0, 0.0)
-        return normalize(vector)
+        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))
 
     def _invert(self, vector: Vec3) -> Vec3:
         return (-vector[0], -vector[1], -vector[2])

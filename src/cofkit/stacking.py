@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from math import sqrt
 from typing import Mapping
@@ -340,13 +341,19 @@ def _apply_layer_registry(
                 duplicated_metrics.append(duplicated_metric)
         score_metadata["bridge_event_metrics"] = tuple(duplicated_metrics)
 
-    # W5.1: double bridge_geometry_residual alongside total_residual
-    raw_bridge_residual = score_metadata.get("bridge_geometry_residual")
-    if raw_bridge_residual is not None:
-        try:
-            score_metadata["bridge_geometry_residual"] = 2.0 * float(raw_bridge_residual)
-        except (TypeError, ValueError):
-            pass
+    # Residual contract (scoring.BridgeGeometryReport): aggregates are sums
+    # over per-event metrics.  The events were just duplicated, so recompute
+    # the sum from the duplicated per-event metrics in this one place; the
+    # per-event mean derived downstream (model.residual_ranking_key) is then
+    # invariant under stacking expansion.
+    if bridge_event_metrics:
+        recomputed = _recompute_total_residual(
+            duplicated_metrics,
+            lambda metric: float(metric.get("total_residual")),
+            context=f"bridge_geometry_residual for candidate {candidate.id!r}",
+        )
+        if recomputed is not None:
+            score_metadata["bridge_geometry_residual"] = recomputed
 
     ring_geometry = _mapping(score_metadata.get("ring_geometry"))
     if ring_geometry:
@@ -656,13 +663,47 @@ def _duplicate_ring_geometry_metrics(metrics: Mapping[str, object], registry_id:
             duplicated_events.append(duplicated)
     result = dict(metrics)
     result["events"] = tuple(duplicated_events)
-    total_residual = metrics.get("total_residual")
-    if total_residual is not None:
-        try:
-            result["total_residual"] = 2.0 * float(total_residual)
-        except (TypeError, ValueError):
-            pass
+    if duplicated_events:
+        # Same sum-over-events contract as the bridge residuals; the ring
+        # per-event residual mirrors ring_geometry.RingEventGeometry.residual.
+        recomputed = _recompute_total_residual(
+            tuple(duplicated_events),
+            _ring_event_residual,
+            context="ring_geometry total_residual",
+        )
+        if recomputed is not None:
+            result["total_residual"] = recomputed
     return result
+
+
+def _ring_event_residual(metric: Mapping[str, object]) -> float:
+    return (
+        float(metric.get("radial_rms"))
+        + float(metric.get("planarity_rms"))
+        + float(metric.get("angular_rms_degrees")) / 30.0
+    )
+
+
+def _recompute_total_residual(
+    event_metrics: tuple[Mapping[str, object], ...],
+    extract: Callable[[Mapping[str, object]], float],
+    *,
+    context: str,
+) -> float | None:
+    """Sum per-event residuals; warn and return None on non-numeric data."""
+    total = 0.0
+    for metric in event_metrics:
+        try:
+            total += extract(metric)
+        except (TypeError, ValueError) as exc:
+            print(
+                f"warning: stacking: cannot recompute {context}: non-numeric "
+                f"per-event residual data ({exc}); keeping the pre-stacking "
+                "aggregate unchanged",
+                file=sys.stderr,
+            )
+            return None
+    return total
 
 
 def _c_axis_is_orthogonal(cell: tuple[Vec3, Vec3, Vec3]) -> bool:

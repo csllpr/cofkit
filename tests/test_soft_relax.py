@@ -1,13 +1,18 @@
+import contextlib
+import io
 import math
 from pathlib import Path
+from unittest.mock import patch
 
 import gemmi
+import pytest
 
 from cofkit.batch import BatchStructureGenerator
 from cofkit.batch import BatchGenerationConfig
 from cofkit.batch_models import BatchMonomerRecord
-from cofkit.soft_relax import SoftRelaxConfig, relax_cif_clashes
-from cofkit.validation import CoarseStructureValidator
+from cofkit.periodic_geometry import images_within
+from cofkit.soft_relax import SoftRelaxConfig, _build_pair_list, _parse_system, relax_cif_clashes
+from cofkit.validation import CoarseStructureValidator, CoarseValidationThresholds
 
 TAPB = "C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)N"
 TEREPHTHALALDEHYDE = "O=Cc1ccc(C=O)cc1"
@@ -308,3 +313,140 @@ def test_soft_relax_leaves_stacked_layers_in_place(tmp_path):
     dy = (before[1][1] - before[0][1]) - 0.0
     assert math.hypot(dx, dy) < 0.05  # eclipsed alignment preserved
     assert report.max_bond_drift < 0.1
+
+
+def test_soft_relax_non_convergence_keeps_original_structure(tmp_path):
+    # max_steps_per_stage=1 with a near-zero force tolerance cannot converge
+    # on a genuinely clashing structure.
+    cif_path = tmp_path / "clashing.cif"
+    _write_clashing_cif(cif_path)
+    original_bytes = cif_path.read_bytes()
+
+    generator = BatchStructureGenerator(
+        BatchGenerationConfig(
+            soft_relax=True,
+            soft_relax_config=SoftRelaxConfig(max_steps_per_stage=1, force_tolerance=1e-12),
+        )
+    )
+
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        metadata = generator._maybe_soft_relax_cif(cif_path)
+
+    assert metadata["applied"] is False
+    assert metadata["converged"] is False
+    assert metadata["reason"] == "not-converged"
+    # The failure is still diagnosed, not silent.
+    assert metadata["clashes_before"] == 1
+    assert "did not converge" in stderr.getvalue()
+    assert "keeping the original structure" in stderr.getvalue()
+    # The relaxed coordinates must NOT replace the original geometry.
+    assert cif_path.read_bytes() == original_bytes
+
+
+def test_soft_relax_converged_pass_still_replaces_structure(tmp_path):
+    cif_path = tmp_path / "clashing.cif"
+    _write_clashing_cif(cif_path)
+    original_bytes = cif_path.read_bytes()
+
+    generator = BatchStructureGenerator(BatchGenerationConfig(soft_relax=True))
+    metadata = generator._maybe_soft_relax_cif(cif_path)
+
+    assert metadata["applied"] is True
+    assert metadata["converged"] is True
+    assert metadata["clashes_after"] == 0
+    assert cif_path.read_bytes() != original_bytes
+
+
+def _write_hbond_image_cif(path: Path) -> None:
+    # H1...N1 contact at 1.8 A in the identity image (inside the hbond guard
+    # window) but 4.2 A in the (-1,0,0) image, which images_within yields
+    # FIRST (lexicographic shift order). The pair-list decision must be made
+    # at the nearest image, not the first-yielded one.
+    _write_cif(
+        path,
+        atoms=[
+            ("O1", "O", (0.2, 7.5, 7.5)),
+            ("H1", "H", (1.2, 7.5, 7.5)),
+            ("N1", "N", (3.0, 7.5, 7.5)),
+            ("Cb", "C", (4.47, 7.5, 7.5)),
+        ],
+        bonds=[("O1", "H1", "."), ("N1", "Cb", ".")],
+        cell=(6.0, 15.0, 15.0),
+    )
+
+
+def test_pair_list_evaluates_hbond_guard_at_nearest_image(tmp_path):
+    cif_path = tmp_path / "hbond_images.cif"
+    _write_hbond_image_cif(cif_path)
+    block = gemmi.cif.read_file(str(cif_path)).sole_block()
+    system, _warnings = _parse_system(block, SoftRelaxConfig())
+
+    h_index = system.labels.index("H1")
+    n_index = system.labels.index("N1")
+
+    # Fixture sanity: the lexicographically-first in-cutoff image is (-1,0,0)
+    # at 4.2 A, NOT the nearest image (identity, 1.8 A).
+    hits = list(images_within(system.cell, system.frac[h_index], system.frac[n_index], 5.2))
+    assert hits[0][0] == (-1, 0, 0)
+    assert abs(hits[0][1] - 4.2) < 1e-3
+    nearest = min(hits, key=lambda hit: hit[1])
+    assert nearest[0] == (0, 0, 0)
+    assert abs(nearest[1] - 1.8) < 1e-3
+
+    # The 1.8 A H...N contact is inside the hbond guard window, so the pair
+    # must not be repelled — evaluated at the nearest image.
+    pairs = _build_pair_list(system, SoftRelaxConfig())
+    assert (h_index, n_index) not in {(i, j) for i, j, _shift, _r0 in pairs}
+
+    # With the guard disabled the pair IS listed, at the nearest image.
+    pairs_unguarded = _build_pair_list(system, SoftRelaxConfig(hbond_guard=False))
+    hn_pairs = [(i, j, sc) for i, j, sc, _r0 in pairs_unguarded if {i, j} == {h_index, n_index}]
+    assert len(hn_pairs) == 1
+    shift_cart = hn_pairs[0][2]
+    assert shift_cart == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_soft_relax_clash_cutoff_defaults_to_validation_threshold(tmp_path):
+    # The fixture clash is at 0.8 A: below the 1.05 A validation default,
+    # above a customized 0.5 A cutoff.
+    cif_path = tmp_path / "clashing.cif"
+    _write_clashing_cif(cif_path)
+
+    default_report = relax_cif_clashes(cif_path, tmp_path / "default.cif")
+    tight_report = relax_cif_clashes(cif_path, tmp_path / "tight.cif", clash_cutoff=0.5)
+
+    assert CoarseValidationThresholds().min_nonbonded_heavy_distance == 1.05
+    assert default_report.clashes_before == 1
+    assert tight_report.clashes_before == 0
+
+
+def test_batch_soft_relax_passes_configured_clash_threshold(tmp_path):
+    cif_path = tmp_path / "clashing.cif"
+    _write_clashing_cif(cif_path)
+
+    generator = BatchStructureGenerator(
+        BatchGenerationConfig(
+            soft_relax=True,
+            validation_thresholds=CoarseValidationThresholds(min_nonbonded_heavy_distance=0.9),
+        )
+    )
+
+    from cofkit import batch as batch_module
+
+    real_relax = batch_module.relax_cif_clashes
+    seen: dict[str, float] = {}
+
+    def spy(input_path, output_path=None, config=None, *, clash_cutoff=None):
+        seen["clash_cutoff"] = clash_cutoff
+        return real_relax(input_path, output_path, config, clash_cutoff=clash_cutoff)
+
+    with patch.object(batch_module, "relax_cif_clashes", spy):
+        metadata = generator._maybe_soft_relax_cif(cif_path)
+
+    assert seen["clash_cutoff"] == 0.9
+    # The customized threshold reaches the pass: the 0.8 A fixture clash is
+    # still below 0.9 A, so it is detected and repaired.
+    assert metadata["applied"] is True
+    assert metadata["clashes_before"] == 1
+    assert metadata["clashes_after"] == 0

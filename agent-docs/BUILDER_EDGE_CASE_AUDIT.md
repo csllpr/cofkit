@@ -124,7 +124,7 @@ returns 0.0 for missing data (missing masquerades as perfect).
 | 13 | Tilted-c cells: warn and ship wrong geometry anyway (`stacking.py:660-673`); derivation false exactly when the warning fires; 2° guard leaves a silent window | ~75% (lands with #1) |
 | 14 | Keto-enamine tautomerization half-realized: ring never re-bond-ordered → valence-5 aromatic carbon in exported CIFs (`reaction_realization.py:2558-2621`); vinylene same shape (`:2804`); inverse algorithm exists in `decompose_bond_orders.py` | ~60% (~95% for the honest-degradation variant: stop writing `_ccdc_geom_bond_type`) |
 | 15 | Two independent imine-collinearity compensators (`linkage_geometry.py:7-8` retraction 0.11/0.08 + realization 721-step fit toward uncited 127.2°/127.8° targets); retraction silently absent for mixed-linkage builds; constants don't match literature ~116–121° | ~55% |
-| 16 | Soft-relax is a symptom patch over #1 (`soft_relax.py` whole module): cannot fix fixed-cell problems, ignores `converged=False`, "nearest image" is "first image", second independent clash threshold | KEEP as an optional stopgap (decided 2026-09-25, off by default); the conditions — honor `converged=False`, nearest-image fix, shared thresholds — are handled by the follow-up A9/soft-relax workstream; drop long-term once #1 (A7, landed 2026-09-25) proves out |
+| 16 | Soft-relax is a symptom patch over #1 (`soft_relax.py` whole module): cannot fix fixed-cell problems, ignores `converged=False`, "nearest image" is "first image", second independent clash threshold | KEEP as an optional stopgap (decided 2026-09-25, off by default); the conditions are now implemented (2026-09-25): non-converged passes keep the original structure with diagnostics + stderr warning, the pair list evaluates decisions at the minimum-distance image, and the clash cutoff derives from `CoarseValidationThresholds.min_nonbonded_heavy_distance` (batch passes the configured value through); drop long-term once #1 (A7, landed 2026-09-25) proves out |
 | 17 | Optimizer proposals fight the objective: rotation moves the attachment endpoints it aligns (`optimizer.py:264-322`); sum-vs-mean inconsistency forced the W5.1 patch | ~65% |
 | 18 | Conformer quality degradation ladder invisible downstream (`chem/rdkit.py:336-413,522-642`): unminimized monomer indistinguishable from MMFF-optimized | ~75% |
 | 19 | Topology-inference heuristics: finite-patch bipartite coloring (`single_node_topologies.py:620-674`), handcrafted rotate/mirror-trigonal (`:288-304`), two-space-group ceiling with silent omission (`:482-493,:98-101`) | ~60% |
@@ -183,8 +183,23 @@ returns 0.0 for missing data (missing masquerades as perfect).
       `cell_kind` now classifies the fitted cell with the declared family
       kept as `declared_metric_family` provenance. The 60°/120° build
       convention itself deliberately not normalized.
-- [ ] A9. (#7) Define sum-vs-mean residual contract in `scoring.py`;
+- [x] A9. (#7) Define sum-vs-mean residual contract in `scoring.py`;
       remove doubling compensation.
+      Done 2026-09-25: the contract is documented on
+      `scoring.BridgeGeometryReport` — `total_residual` /
+      `bridge_geometry_residual` (and ring-geometry `total_residual`) are
+      sums over per-event metrics; only ranking derives a mean, by dividing
+      by the event count (`model.residual_ranking_key`). `stacking.py` no
+      longer doubles aggregates through a `try/except: pass`; it recomputes
+      each sum from the duplicated per-event metrics in one place
+      (`_recompute_total_residual`), warning on stderr and keeping the
+      pre-stacking aggregate when per-event data is non-numeric. Ranking
+      parity tests in `tests/test_stacking.py` assert the normalized
+      residual and unreacted-motif tie-breaker are invariant under stacking
+      expansion and that expanded/unexpanded ordering falls to the id
+      tie-breaker (W7 test 5, worded per the review). `scoring.py`'s
+      `_safe_normalize` copy (deferred from A10) now delegates to
+      `geometry.safe_normalize` with its `(1,0,0)` fallback preserved.
 - [x] A10. (#8) Consolidate `_safe_normalize`/angle/distance primitives
       into `geometry.py`.
       Done 2026-09-25: `geometry.safe_normalize` (explicit `fallback` +

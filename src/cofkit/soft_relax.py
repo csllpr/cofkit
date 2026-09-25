@@ -43,6 +43,7 @@ import gemmi
 from ._dreiding_reference import DREIDING_FRAMEWORK_TYPE_BY_ELEMENT, DREIDING_PARAMETERS
 from .cif_checks import cif_value_str
 from .periodic_geometry import images_within, p1_shift
+from .validation import CoarseValidationThresholds
 
 
 @dataclass(frozen=True)
@@ -283,20 +284,30 @@ def _build_pair_list(
             r0 = (radii[i] + radii[j]) * config.repulsion_scale
             if r0 <= 1e-9:
                 continue
+            # images_within yields in lexicographic shift order, not distance
+            # order: select the minimum-distance image first so the clash-floor
+            # and hbond-guard decisions below are evaluated at the nearest
+            # image, not at an arbitrary in-cutoff one.
+            nearest: tuple[float, tuple[int, int, int]] | None = None
             for shift, distance in images_within(system.cell, system.frac[i], system.frac[j], cutoff):
                 if i == j and shift == (0, 0, 0):
                     continue
-                if (i, j, shift) in system.excluded:
-                    continue
-                if (i, j, shift) in system.excluded13 and distance >= config.one_four_clash_floor:
-                    continue
-                if (i, j, shift) in system.excluded14 and distance >= config.one_four_clash_floor:
-                    continue
-                if hbond_guarded(i, j, distance):
-                    continue
-                shift_cart = _frac_to_cart(system.orth, shift)
-                pairs.append((i, j, shift_cart, r0))
-                break  # nearest image only; the margin covers drift during the run
+                if nearest is None or distance < nearest[0]:
+                    nearest = (distance, shift)
+            if nearest is None:
+                continue
+            distance, shift = nearest
+            if (i, j, shift) in system.excluded:
+                continue
+            if (i, j, shift) in system.excluded13 and distance >= config.one_four_clash_floor:
+                continue
+            if (i, j, shift) in system.excluded14 and distance >= config.one_four_clash_floor:
+                continue
+            if hbond_guarded(i, j, distance):
+                continue
+            shift_cart = _frac_to_cart(system.orth, shift)
+            # nearest image only; the margin covers drift during the run
+            pairs.append((i, j, shift_cart, r0))
     return pairs
 
 
@@ -527,15 +538,21 @@ def relax_cif_clashes(
     output_path: str | Path | None = None,
     config: SoftRelaxConfig | None = None,
     *,
-    clash_cutoff: float = 1.05,
+    clash_cutoff: float | None = None,
 ) -> SoftRelaxReport:
     """Relieve non-bonded clashes in a cofkit-style explicit-bond P1 CIF.
 
     Runs the staged soft-repulsion / bond-spring descent and writes a new CIF
     with updated coordinates (cell, connectivity, and all non-coordinate CIF
     content preserved). Returns a report with before/after clash metrics.
+
+    ``clash_cutoff`` defaults to
+    ``CoarseValidationThresholds.min_nonbonded_heavy_distance`` so the repair
+    pass and the validator share one clash definition.
     """
     config = config or SoftRelaxConfig()
+    if clash_cutoff is None:
+        clash_cutoff = CoarseValidationThresholds().min_nonbonded_heavy_distance
     input_path = Path(input_path)
     if output_path is None:
         output_path = input_path.with_name(input_path.stem + "_softrelaxed.cif")

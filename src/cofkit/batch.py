@@ -4463,23 +4463,33 @@ class BatchStructureGenerator:
     def _maybe_soft_relax_cif(self, cif_path: Path) -> dict[str, object] | None:
         """Experimental pre-validation clash-repair pass on the exported CIF.
 
-        Runs the in-process soft-repulsion relaxer in place so the subsequent
-        validation bucketing sees the relieved geometry. Failures never abort
-        the build: they warn on stderr and leave the CIF untouched.
+        Runs the in-process soft-repulsion relaxer so the subsequent
+        validation bucketing sees the relieved geometry. The relaxed
+        coordinates only replace the original structure when every stage
+        converges; a non-converged pass keeps the ORIGINAL structure (a
+        failed repair must not silently substitute geometry) and records the
+        outcome here. Failures never abort the build: they warn on stderr and
+        leave the CIF untouched.
         """
         if not self.config.soft_relax:
             return None
+        relaxed_path = cif_path.with_name(f"{cif_path.stem}.softrelax-tmp{cif_path.suffix}")
         try:
-            report = relax_cif_clashes(cif_path, cif_path, self.config.soft_relax_config)
+            report = relax_cif_clashes(
+                cif_path,
+                relaxed_path,
+                self.config.soft_relax_config,
+                clash_cutoff=self.config.validation_thresholds.min_nonbonded_heavy_distance,
+            )
         except Exception as exc:
+            relaxed_path.unlink(missing_ok=True)
             print(
                 f"warning: soft-relax pass failed for {cif_path.name} "
                 f"({type(exc).__name__}: {exc}); keeping the unrelaxed structure.",
                 file=sys.stderr,
             )
             return {"applied": False, "error": f"{type(exc).__name__}: {exc}"}
-        return {
-            "applied": True,
+        metadata: dict[str, object] = {
             "converged": report.converged,
             "min_nonbonded_heavy_distance_before": report.min_heavy_distance_before,
             "min_nonbonded_heavy_distance_after": report.min_heavy_distance_after,
@@ -4488,6 +4498,21 @@ class BatchStructureGenerator:
             "max_bond_drift": report.max_bond_drift,
             "warnings": list(report.warnings),
         }
+        if not report.converged:
+            relaxed_path.unlink(missing_ok=True)
+            print(
+                f"warning: soft-relax pass for {cif_path.name} did not converge "
+                f"(clashes {report.clashes_before} -> {report.clashes_after}); "
+                "keeping the original structure.",
+                file=sys.stderr,
+            )
+            return {
+                "applied": False,
+                **metadata,
+                "reason": "not-converged",
+            }
+        relaxed_path.replace(cif_path)
+        return {"applied": True, **metadata}
 
     @staticmethod
     def _merge_soft_relax_metadata(

@@ -63,8 +63,8 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 
 | Item | Status | Notes |
 |---|---|---|
-| W5.1 `bridge_geometry_residual` doubled on stacking | ✅ | `stacking.py:337-343` doubles `score_metadata["bridge_geometry_residual"]` alongside `total_residual` |
-| W5.1 Ranking parity test | ❌ | No test asserting `candidate_ranking_key` is invariant under stacking expansion |
+| W5.1 `bridge_geometry_residual` doubled on stacking | ✅ replaced | 2026-09-25 (audit A9): the doubling hack and its `try/except: pass` are gone; the sum-over-events contract is documented on `scoring.BridgeGeometryReport` and `stacking.py` recomputes each aggregate from the duplicated per-event metrics in one place (`_recompute_total_residual`, warns on non-numeric data) |
+| W5.1 Ranking parity test | ✅ | `tests/test_stacking.py` (2026-09-25): normalized residual + unreacted-motif tie-breaker invariant under stacking expansion (bridge and ring-geometry paths), expanded-vs-unexpanded ordering falls to the id tie-breaker — per the review, not the whole ranking-key tuple |
 | W5.2 Registry sort order documented | ❌ | `topology_rank`/`stacking_variant_index` separation not done; not documented in `docs/building.md` |
 
 ---
@@ -91,7 +91,7 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 | 2 | Span-never-zero gate: candidate without `embedding.layer_z_span` gets measured span | ⚠️ | 2026-09-25: `tests/test_geometry.py` distinguishes a measured 0.0 (planar layer, `n_atoms > 0`) from `mode="unavailable"`; the candidate-level gate test is still unwritten |
 | 3 | Hexagonal AB shift: vertex→pore-center in both 60° and 120° cells | ❌ |
 | 4 | `classify_2d_cell` on fitted γ=60.09° cell returns `("hexagonal", "60deg")` | ✅ | `tests/test_geometry.py::CellClassificationTests` (2026-09-25), plus a cross-module consistency test through both migrated `_metric_family` paths |
-| 5 | Ranking parity: `candidate_ranking_key` invariant under stacking expansion | ❌ |
+| 5 | Ranking parity: `candidate_ranking_key` invariant under stacking expansion | ✅ | `tests/test_stacking.py` (2026-09-25, audit A9) — normalized residual + tie-breaker invariance and expanded/unexpanded ordering; the id component intentionally changes |
 | 6 | Validator flags 2.0 Å heavy-heavy nonbonded pair | ❌ |
 | 7 | Stacking self-check flags original shipped interpenetrated geometry | ❌ |
 | 8 | `ring_center_fractional` w≠0 warns (T1) | ❌ |
@@ -123,7 +123,7 @@ From `STACKING_FIX_PLAN.md` §6:
 | 1. Regenerated evidence pack shows min contact ≥ 2.5 Å; shipped interpenetrated CIFs flagged by `cofkit validate` | ❌ — self-check infra is in place but evidence pack not regenerated |
 | 2. No code path can emit `layer_z_span: 0.0` without a measurement (grep gate in tests) | ❌ — `_decorated_bex_layer_spacing` can still return 0.0 without measurement |
 | 3. Hexagonal AB shift passes vertex→pore-center assertion in both 60° and 120° settings | ❌ — test not written |
-| 4. `candidate_ranking_key` parity test green | ❌ |
+| 4. `candidate_ranking_key` parity test green | ✅ — `tests/test_stacking.py` (2026-09-25, audit A9) |
 | 5. CIFs carry `# stacking-geometry:` derivation line; metadata carries full W3.1 schema | ✅ |
 | 6. `uv run pytest -q` green; ruff gate; `uv build --wheel` green; all doc/skill/changelog updates landed | ⚠️ — existing tests pass; new integration tests not yet written; docs/changelog not updated |
 
@@ -159,8 +159,9 @@ docstring is never attached — only eligibility skips tag flags); W2.1 canonica
 `classify_2d_cell` (all copies migrated 2026-09-25, audit A8); W2.2 setting-aware AB shift;
 **W2.3 now ✅** (test asserts the 120°-setting `(1/3, 2/3)` shift);
 W3.1 canonical metadata schema; W3.2 CIF derivation comment; W4.1 wider search
-radius only; W4.2/W4.3/W4.4 warn-only shells; W5.1 residual doubling (kept as a
-known symptom patch pending the sum-vs-mean contract, audit A9); W6 T1/T2/T5/T6.
+radius only; W4.2/W4.3/W4.4 warn-only shells; W5.1 residual handling (the
+doubling symptom patch was replaced by the sum-over-events contract fix on
+2026-09-25, audit A9); W6 T1/T2/T5/T6.
 Hardening beyond the plan: per-candidate exception isolation in batch stacking
 expansion and narrowed exception swallowing with stderr warnings (408fbec).
 
@@ -181,12 +182,19 @@ included; honest `layer_z_span_axis`/`layer_z_span_mode` provenance);
 built/fitted cell, keeping topology-declared families as provenance only);
 audit A10 primitive consolidation **landed 2026-09-25** (`safe_normalize` /
 `orthogonal_component` / `angle_degrees` / `distance` in `geometry.py`;
-`scoring.py`'s `_safe_normalize` copy stays with the A9 workstream).
+`scoring.py`'s `_safe_normalize` copy landed with A9, delegating to
+`geometry.safe_normalize` with its `(1,0,0)` fallback preserved);
+audit A9 **landed 2026-09-25** (sum-over-events residual contract on
+`scoring.BridgeGeometryReport`; stacking recomputes aggregates from duplicated
+per-event metrics via `_recompute_total_residual` instead of the doubling
+hack; ranking parity tests in `tests/test_stacking.py`); the finding-#16
+soft-relax keep-conditions **landed 2026-09-25** (non-converged passes keep
+the original structure; pair-list decisions evaluated at the minimum-distance
+image; clash cutoff shared with `CoarseValidationThresholds`).
 Still awaiting: W1.4 `c_axis_semantics`;
 W4.1 vdW wiring (audit #11 —
 threshold fields at `validation.py:37-41` still declared-but-unwired, docstring
 still claims the comparison); a real atomistic contact metric to replace the
-mathematically dead W4.2 check (audit #12); the proper W5.1 fix + parity test
-(audit A9); W5.2; and W7's remaining integration tests plus user-facing docs.
-Definition-of-done criteria 1, 3, 4 and 6 remain unmet; criterion 2's grep gate
+mathematically dead W4.2 check (audit #12); W5.2; and W7's remaining integration tests plus user-facing docs.
+Definition-of-done criteria 1, 3 and 6 remain unmet; criterion 2's grep gate
 is now covered behaviorally by the `tests/test_geometry.py` span tests.
