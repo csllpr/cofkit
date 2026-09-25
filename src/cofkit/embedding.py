@@ -126,6 +126,7 @@ class PeriodicEmbedder:
         ]
         bridge_target = sum(template_distances) / len(template_distances) if template_distances else self.config.bridge_target_distance
         template_id = self._shared_template_id(outcome)
+        motif_template_ids = self._motif_template_id_lookup(outcome)
         instances = outcome.monomer_instances
         topology_layout = self._single_node_topology_layout(topology, outcome, monomer_specs)
         canonical_a = topology_layout.directions if topology_layout is not None else self._trigonal_directions(pi / 6.0)
@@ -141,6 +142,7 @@ class PeriodicEmbedder:
                 spec,
                 target_directions,
                 template_id=template_id,
+                motif_template_ids=motif_template_ids.get(instance.id),
             )
             rotations[instance.id] = rotation
             projected_offsets[instance.id] = offsets
@@ -152,7 +154,6 @@ class PeriodicEmbedder:
                 monomer_specs,
                 rotations,
                 bridge_target,
-                template_id=template_id,
             )
             if single_node_layout is not None:
                 cell, centers, edge_reactive_site_distances = single_node_layout
@@ -440,8 +441,6 @@ class PeriodicEmbedder:
         monomer_specs: Mapping[str, MonomerSpec],
         rotations: Mapping[str, Mat3],
         bridge_target: float,
-        *,
-        template_id: str | None,
     ) -> tuple[tuple[Vec3, Vec3, Vec3], dict[str, Vec3], tuple[float, ...]] | None:
         instances = outcome.monomer_instances
         if len(instances) != 2:
@@ -479,7 +478,7 @@ class PeriodicEmbedder:
                 second_rotation=rotations[second_instance_id],
                 direction=direction,
                 bridge_target=bridge_target,
-                template_id=template_id,
+                template_id=event.template_id,
             )
             image_delta = (
                 second.periodic_image[0] - first.periodic_image[0],
@@ -569,6 +568,18 @@ class PeriodicEmbedder:
             return next(iter(template_ids))
         return None
 
+    def _motif_template_id_lookup(self, outcome: AssignmentOutcome) -> dict[str, dict[str, str]]:
+        """Map each reacting motif to its own event's template id.
+
+        Mixed-linkage builds have no shared template id, so the imine/azine
+        origin retraction must be resolved per motif instead of all-or-nothing.
+        """
+        lookup: dict[str, dict[str, str]] = {}
+        for event in outcome.events:
+            for participant in event.participants:
+                lookup.setdefault(participant.monomer_instance_id, {})[participant.motif_id] = event.template_id
+        return lookup
+
     def _single_node_topology_layout(
         self,
         topology: TopologyHint | None,
@@ -602,11 +613,21 @@ class PeriodicEmbedder:
         target_directions: tuple[Vec3, ...],
         *,
         template_id: str | None = None,
+        motif_template_ids: Mapping[str, str] | None = None,
     ) -> tuple[Mat3, tuple[float, ...]]:
+        # Per-motif template ids let mixed-linkage builds apply each motif's
+        # own template retraction; the shared template id remains the fallback
+        # so pure-template builds are unchanged.
+        def _motif_origin(motif) -> Vec3:
+            effective_template_id = template_id
+            if motif_template_ids is not None:
+                effective_template_id = motif_template_ids.get(motif.id, template_id)
+            return effective_motif_origin(effective_template_id, spec, motif)
+
         motif_vectors = [
             (
-                effective_motif_origin(template_id, spec, motif)
-                if norm(effective_motif_origin(template_id, spec, motif)) > 1e-6
+                _motif_origin(motif)
+                if norm(_motif_origin(motif)) > 1e-6
                 else motif.frame.primary
             )
             for motif in spec.motifs

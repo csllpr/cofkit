@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from math import atan2, cos, pi, sin
 from typing import Callable, Mapping
 
+import networkx as nx
+
+from .bond_types import is_aromatic_bond_order, normalize_bond_order
 from .geometry import (
     Vec3,
     add,
@@ -44,11 +48,28 @@ class RealizedBond:
 
 
 @dataclass(frozen=True)
+class QuinoidTautomerSite:
+    """One keto-enamine tautomerization whose aromatic host ring must be re-bond-ordered.
+
+    The carbonyl anchor keeps its two ring bonds single once the phenolic C-O
+    becomes C=O; the linkage anchor likewise goes single on both ring bonds
+    once the exocyclic anchor=C(H)-N double bond is written. The remaining
+    ring atoms take the alternating quinoid/cyclohexadienone double-bond
+    pattern, solved as a perfect matching over the aromatic bond component.
+    """
+
+    monomer_instance_id: str
+    carbonyl_anchor_atom_id: int
+    linkage_anchor_atom_id: int
+
+
+@dataclass(frozen=True)
 class EventRealization:
     removed_atom_ids: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
     atom_position_overrides: Mapping[str, Mapping[int, Vec3]] = field(default_factory=dict)
     bonds: tuple[RealizedBond, ...] = ()
     notes: tuple[str, ...] = ()
+    quinoid_tautomer_sites: tuple[QuinoidTautomerSite, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,6 +152,7 @@ class ReactionRealizer:
         notes: list[str] = []
         applied_events = 0
         applied_templates: Counter[str] = Counter()
+        quinoid_tautomer_sites: list[QuinoidTautomerSite] = []
 
         for event in candidate.events:
             realization = self._realize_event(event, candidate, monomer_specs)
@@ -144,6 +166,7 @@ class ReactionRealizer:
                 atom_position_overrides[instance_id].update(overrides)
             bonds.extend(realization.bonds)
             notes.extend(realization.notes)
+            quinoid_tautomer_sites.extend(realization.quinoid_tautomer_sites)
 
         notes.extend(
             self._fit_azine_bridge_geometries(
@@ -158,6 +181,16 @@ class ReactionRealizer:
             atom_position_overrides,
             bonds,
         )
+
+        quinoid_metadata: Mapping[str, object] = {}
+        if quinoid_tautomer_sites:
+            quinoid_bonds, quinoid_metadata = self._redistribute_quinoid_ring_bonds(
+                monomer_specs,
+                instance_to_monomer,
+                tuple(quinoid_tautomer_sites),
+            )
+            bonds.extend(quinoid_bonds)
+            notes.extend(quinoid_metadata["notes"])
 
         post_build_metadata: dict[str, object] = {}
         post_build_realization = self._apply_post_build_conversions(
@@ -228,6 +261,10 @@ class ReactionRealizer:
         }
         if hydrogen_cleanup_metadata:
             metadata["hydrogen_cleanup"] = hydrogen_cleanup_metadata
+        if quinoid_metadata:
+            metadata["quinoid_redistribution"] = {
+                key: value for key, value in quinoid_metadata.items() if key != "notes"
+            }
         if post_build_metadata:
             metadata["post_build_conversions"] = post_build_metadata
         return ReactionRealizationResult(
@@ -2235,6 +2272,13 @@ class ReactionRealizer:
                 "Beta-ketoenamine realization removes one amine hydrogen, the aldehydic oxygen, and the ortho-hydroxyl hydrogen per reacting pair.",
                 "The exported product writes the keto-enamine C-N/C=C tautomer, keeps the tautomerized ortho oxygen, and shortens its local C=O distance to a carbonyl-like value.",
             ),
+            quinoid_tautomer_sites=(
+                QuinoidTautomerSite(
+                    monomer_instance_id=keto_aldehyde_ref.monomer_instance_id,
+                    carbonyl_anchor_atom_id=carbonyl_anchor_atom_id,
+                    linkage_anchor_atom_id=linkage_anchor_atom_id,
+                ),
+            ),
         )
 
     def _realize_boronate_ester_bridge(
@@ -2418,7 +2462,20 @@ class ReactionRealizer:
             ),
             notes=(
                 "Vinylene realization removes the aldehydic oxygen and two activated-carbon hydrogens per reacting pair.",
-                "The exported product realizes the inter-monomer C=C connectivity only; internal bond-order redistribution within the activated precursor is not reoptimized.",
+                # Assessment vs. the keto-enamine quinoid problem (audit #14):
+                # no internal re-bond-ordering is required for valence
+                # correctness here. The activated carbon starts sp3 with only
+                # single bonds (motif detection requires >=2 attached H), so
+                # writing the inter-monomer C=C simply replaces the two removed
+                # C-H bonds; the anchor bond stays single and no aromatic ring
+                # bond borders a new double bond, so no valence-5 carbon can
+                # arise and the quinoid matching machinery does not apply.
+                # What remains unsolved is purely geometric: bond lengths and
+                # angles around the new C=C (and any conjugated
+                # quinoid-methide resonance geometry of the activating ring,
+                # e.g. for triazine-activated precursors) are not re-fit, so
+                # the exported coordinates keep precursor-internal geometry.
+                "The exported product realizes the inter-monomer C=C connectivity only; internal geometry around the activated precursor is not re-fit (no bond-order redistribution is needed for valence correctness).",
             ),
         )
 
@@ -2872,6 +2929,176 @@ class ReactionRealizer:
                 f"motif {motif.id!r} is missing ortho_hydroxyl_anchor_atom_id metadata and could not infer a unique carbonyl anchor from bonds"
             )
         return unique_neighbors[0]
+
+    def _redistribute_quinoid_ring_bonds(
+        self,
+        monomer_specs: Mapping[str, MonomerSpec],
+        instance_to_monomer: Mapping[str, str],
+        sites: tuple[QuinoidTautomerSite, ...],
+    ) -> tuple[tuple[RealizedBond, ...], dict[str, object]]:
+        """Rewrite aromatic host-ring bond orders to the quinoid/cyclohexadienone pattern.
+
+        The keto-enamine tautomerization writes C=O on the (aromatic ring)
+        carbonyl anchor and an exocyclic C=C on the linkage anchor while the
+        precursor ring bonds keep aromatic order 1.5, which would export a
+        valence-5 carbon (typed "A" in the CIF). Both anchors are saturated by
+        their new exocyclic double bonds, so their ring bonds become single;
+        the remaining atoms of the aromatic bond component take alternating
+        double bonds from a perfect matching — the inverse of the constrained
+        matching that ``decompose_bond_orders.normalize_imine_bond_orders``
+        uses to read quinoid imine assignments. All sites on one component
+        (e.g. the three sites of a triformylphloroglucinol ring) are solved
+        together so overlapping events cannot emit conflicting overrides. When
+        no perfect matching exists (odd or substituted ring systems) the
+        precursor orders are kept, a stderr warning is printed, and the site
+        is recorded in the returned metadata instead of silently exporting the
+        valence overflow.
+        """
+        sites_by_instance: dict[str, list[QuinoidTautomerSite]] = defaultdict(list)
+        for site in sites:
+            sites_by_instance[site.monomer_instance_id].append(site)
+
+        bonds: list[RealizedBond] = []
+        unresolved_sites: list[dict[str, object]] = []
+        redistributed_site_count = 0
+        non_aromatic_site_count = 0
+
+        for instance_id, instance_sites in sorted(sites_by_instance.items()):
+            monomer = monomer_specs[instance_to_monomer[instance_id]]
+            aromatic_adjacency: dict[int, set[int]] = defaultdict(set)
+            aromatic_edges: set[frozenset[int]] = set()
+            for first_atom_id, second_atom_id, order in monomer.bonds:
+                if is_aromatic_bond_order(order):
+                    aromatic_adjacency[first_atom_id].add(second_atom_id)
+                    aromatic_adjacency[second_atom_id].add(first_atom_id)
+                    aromatic_edges.add(frozenset((first_atom_id, second_atom_id)))
+
+            # Group the instance's sites by the aromatic bond component of
+            # their carbonyl anchor so fused or multiply-substituted rings are
+            # re-bond-ordered once, with every site anchor saturated.
+            component_sites: dict[frozenset[int], list[QuinoidTautomerSite]] = defaultdict(list)
+            for site in instance_sites:
+                if site.carbonyl_anchor_atom_id not in aromatic_adjacency:
+                    # Non-aromatic host (e.g. minimal synthetic motifs): no
+                    # aromatic ring bonds exist, so there is nothing to
+                    # redistribute and no valence overflow to repair.
+                    non_aromatic_site_count += 1
+                    continue
+                component = self._bond_component(aromatic_adjacency, site.carbonyl_anchor_atom_id)
+                if site.linkage_anchor_atom_id not in component:
+                    unresolved_sites.append(
+                        {
+                            "monomer_instance_id": instance_id,
+                            "carbonyl_anchor_atom_id": site.carbonyl_anchor_atom_id,
+                            "reason": "carbonyl and linkage anchors are not in the same aromatic bond component",
+                        }
+                    )
+                    continue
+                component_sites[component].append(site)
+
+            for component, group in sorted(component_sites.items(), key=lambda item: tuple(sorted(item[0]))):
+                saturated: set[int] = set()
+                for site in group:
+                    saturated.add(site.carbonyl_anchor_atom_id)
+                    saturated.add(site.linkage_anchor_atom_id)
+                # Ring atoms already carrying a multiple bond (e.g. an
+                # unreacted aldehyde's ring carbon is not one — that bond is
+                # single — but a fused quinone-like precursor carbonyl would
+                # be) take single bonds on every aromatic edge.
+                for atom_id in component:
+                    if atom_id in saturated:
+                        continue
+                    if any(
+                        atom_id in (first_atom_id, second_atom_id)
+                        and not is_aromatic_bond_order(order)
+                        and normalize_bond_order(order) >= 2.0
+                        for first_atom_id, second_atom_id, order in monomer.bonds
+                    ):
+                        saturated.add(atom_id)
+
+                residual_nodes = set(component) - saturated
+                residual = nx.Graph()
+                residual.add_nodes_from(sorted(residual_nodes))
+                for edge in aromatic_edges:
+                    if edge <= residual_nodes:
+                        residual.add_edge(*tuple(sorted(edge)))
+                matching = nx.max_weight_matching(residual, maxcardinality=True)
+                if len(matching) * 2 != len(residual_nodes):
+                    unresolved_sites.extend(
+                        {
+                            "monomer_instance_id": instance_id,
+                            "carbonyl_anchor_atom_id": site.carbonyl_anchor_atom_id,
+                            "reason": (
+                                f"no alternating double-bond pattern exists for the {len(component)}-atom "
+                                f"aromatic component with {len(saturated)} saturated anchor(s)"
+                            ),
+                        }
+                        for site in group
+                    )
+                    continue
+
+                double_edges = {frozenset(edge) for edge in matching}
+                for edge in sorted(aromatic_edges, key=lambda item: tuple(sorted(item))):
+                    if not edge <= component:
+                        continue
+                    first_atom_id, second_atom_id = sorted(edge)
+                    bonds.append(
+                        RealizedBond(
+                            label_1=self.atom_label(instance_id, monomer.atom_symbols[first_atom_id], first_atom_id),
+                            label_2=self.atom_label(instance_id, monomer.atom_symbols[second_atom_id], second_atom_id),
+                            distance=self._distance(
+                                monomer.atom_positions[first_atom_id],
+                                monomer.atom_positions[second_atom_id],
+                            ),
+                            bond_order=2.0 if edge in double_edges else 1.0,
+                        )
+                    )
+                redistributed_site_count += len(group)
+
+        metadata: dict[str, object] = {
+            "site_count": len(sites),
+            "redistributed_site_count": redistributed_site_count,
+            "non_aromatic_site_count": non_aromatic_site_count,
+            "changed_ring_bond_count": len(bonds),
+            "unresolved_sites": tuple(unresolved_sites),
+            "notes": (),
+        }
+        notes: list[str] = []
+        if redistributed_site_count:
+            notes.append(
+                f"Keto-enamine quinoid redistribution rewrote {len(bonds)} aromatic ring bond(s) across "
+                f"{redistributed_site_count} tautomerization site(s) to the cyclohexadienone bond pattern "
+                "(carbonyl and linkage anchors take single ring bonds; remaining ring bonds alternate)."
+            )
+        if unresolved_sites:
+            for unresolved in unresolved_sites:
+                print(
+                    "warning: keto-enamine quinoid redistribution unresolved for instance "
+                    f"{unresolved['monomer_instance_id']} carbonyl anchor "
+                    f"{unresolved['carbonyl_anchor_atom_id']}: {unresolved['reason']}; "
+                    "the exported CIF keeps the precursor aromatic ring bond orders for that ring, "
+                    "which may leave a valence overflow at the carbonyl carbon",
+                    file=sys.stderr,
+                )
+            notes.append(
+                "Keto-enamine quinoid redistribution could not determine a ring bond pattern for "
+                f"{len(unresolved_sites)} site(s); those rings keep the precursor aromatic bond orders "
+                "and may export a valence overflow at the carbonyl carbon."
+            )
+        metadata["notes"] = tuple(notes)
+        return tuple(bonds), metadata
+
+    @staticmethod
+    def _bond_component(adjacency: Mapping[int, set[int]], start_atom_id: int) -> frozenset[int]:
+        visited = {start_atom_id}
+        stack = [start_atom_id]
+        while stack:
+            atom_id = stack.pop()
+            for neighbor in adjacency.get(atom_id, ()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    stack.append(neighbor)
+        return frozenset(visited)
 
     def _symmetry_code(self, image: tuple[int, int, int]) -> str:
         if image == (0, 0, 0):

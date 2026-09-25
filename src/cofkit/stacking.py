@@ -4,6 +4,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from math import acos, degrees
 from typing import Mapping
 
 from .geometry import (
@@ -16,7 +17,6 @@ from .geometry import (
     matmul_vec,
     measure_layer_z_span,
     norm,
-    safe_normalize,
     scale,
 )
 from .model import AssemblyState, Candidate, Pose, ReactionEvent
@@ -25,6 +25,10 @@ from .vdw import DEFAULT_NONBONDED_SEARCH_RADIUS, min_periodic_pair_contact
 
 
 _STACKING_LAYER_SUFFIXES: tuple[str, str] = ("L0", "L1")
+
+# Base-cell c tilts at or below this angle (degrees) are numerical noise: the
+# stacked cell is still reported as built along the base c direction.
+_C_TILT_PROVENANCE_TOLERANCE_DEG = 1e-4
 
 _UNSET = object()
 
@@ -46,7 +50,11 @@ class LayerRegistry:
 
         c = 2 * c2c
 
-    The quantity to compare to experimental interlayer spacings is ``c / 2``.
+    built along the layer normal ``n = normalize(a × b)`` of the base cell, so
+    the normal repeat of the shipped cell is exactly ``c2c`` even when the
+    base cell's c was tilted (the tilt is recorded as provenance in the
+    stacking metadata).  The quantity to compare to experimental interlayer
+    spacings is ``c / 2``.
 
     Default clearances (3.4 / 3.5 / 3.6 Å) are heuristic nuclear-plane
     clearances, registry-dependent; they are not fitted to specific chemistries.
@@ -177,11 +185,12 @@ def _apply_layer_registry(
         raise ValueError("interlayer_distance must be positive")
 
     base_cell = state.cell
-    c_direction = _safe_normalize(base_cell[2])
     # Measure the span along the layer normal n = normalize(a × b): a c_hat
     # span is not invariant under in-plane periodic images when c is tilted
-    # (stacking review point 2).  c_direction is still used to build new_c,
-    # preserving the existing cell-construction behaviour.
+    # (stacking review point 2).  The same axis also builds new_c below, so
+    # the measured span and the shipped cell share one reference frame; for
+    # degenerate in-plane vectors layer_normal_axis warns and falls back to
+    # the c direction, preserving the prior cell-construction behaviour.
     span_axis, span_axis_label = layer_normal_axis(base_cell[0], base_cell[1], fallback_axis=base_cell[2])
 
     # W1.2/W1.3: measure span fresh; use metadata only as cross-check
@@ -229,15 +238,31 @@ def _apply_layer_registry(
             file=sys.stderr,
         )
 
-    # W4.4: axis guard
-    if not _c_axis_is_orthogonal(base_cell):
-        stacking_warnings.append("c axis is not orthogonal to the ab plane; stacking geometry may be incorrect")
-        print(
-            f"warning: stacking for {candidate.id!r}: c axis is not orthogonal to the ab plane",
-            file=sys.stderr,
-        )
+    # W4.4/W1.2 (route A): build the stacked c along the layer normal, so the
+    # advertised derivation (c2c = interlayer_clearance + layer_z_span) is the
+    # true normal repeat of the shipped cell even when the base cell's c was
+    # tilted.  A tilted base c is not a defect in the output — the geometry is
+    # correct by construction — but the basis change is recorded as provenance
+    # (stacking metadata: c_axis_basis / c_axis_orthogonalized /
+    # base_c_tilt_degrees) and noted on stderr.
+    base_c_tilt_degrees: float | None = None
+    if span_axis_label == "layer_normal":
+        base_c_length = norm(base_cell[2])
+        if base_c_length >= 1e-8:
+            cosine = min(1.0, abs(dot(base_cell[2], span_axis)) / base_c_length)
+            base_c_tilt_degrees = degrees(acos(cosine))
+            if base_c_tilt_degrees > _C_TILT_PROVENANCE_TOLERANCE_DEG:
+                note = (
+                    f"base cell c axis tilted {base_c_tilt_degrees:.3f}° from the layer normal; "
+                    "stacked c axis rebuilt along the layer normal"
+                )
+                stacking_warnings.append(note)
+                print(
+                    f"warning: stacking for {candidate.id!r}: {note}",
+                    file=sys.stderr,
+                )
 
-    new_c = scale(c_direction, 2.0 * center_to_center_distance)
+    new_c = scale(span_axis, 2.0 * center_to_center_distance)
     layer_offsets = (
         scale(new_c, 0.25),
         add(scale(new_c, 0.75), _fractional_shift_in_plane(base_cell, registry.lateral_shift)),
@@ -330,7 +355,10 @@ def _apply_layer_registry(
     if stacked_pose_details:
         embedding["poses"] = stacked_pose_details
     embedding["stacking_enabled"] = True
-    embedding["stacking"] = _stacking_metadata(registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting)
+    embedding["stacking"] = _stacking_metadata(
+        registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting,
+        c_axis_basis=span_axis_label, base_c_tilt_degrees=base_c_tilt_degrees,
+    )
 
     score_metadata = dict(_mapping(candidate.metadata.get("score_metadata")))
     bridge_event_metrics = tuple(
@@ -431,7 +459,10 @@ def _apply_layer_registry(
     )
 
     stacking_meta = {
-        **_stacking_metadata(registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting),
+        **_stacking_metadata(
+            registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting,
+            c_axis_basis=span_axis_label, base_c_tilt_degrees=base_c_tilt_degrees,
+        ),
         "layer_z_span": layer_z_span,
         "center_to_center_distance": center_to_center_distance,
         "comment_suffix": stacking_comment_suffix(registry),
@@ -756,6 +787,9 @@ def _stacking_metadata(
     center_to_center_distance: float,
     cell_kind: str | None,
     cell_setting: str | None,
+    *,
+    c_axis_basis: str,
+    base_c_tilt_degrees: float | None,
 ) -> dict[str, object]:
     """Build the canonical stacking metadata dict (W3.1)."""
     span_mode = getattr(span_report, "mode", "")
@@ -766,7 +800,17 @@ def _stacking_metadata(
     if cell_setting:
         cell_classification["setting"] = cell_setting
 
-    return {
+    c_axis_orthogonalized = (
+        base_c_tilt_degrees is not None
+        and base_c_tilt_degrees > _C_TILT_PROVENANCE_TOLERANCE_DEG
+    )
+    axis_phrase = (
+        "layer normal"
+        if c_axis_basis == "layer_normal"
+        else "base-cell c direction (degenerate in-plane fallback)"
+    )
+
+    metadata: dict[str, object] = {
         "id": registry.id,
         # Canonical keys (W3.1)
         "interlayer_clearance": float(registry.interlayer_distance),
@@ -779,9 +823,19 @@ def _stacking_metadata(
         "layer_z_span_mode": span_mode,
         "layer_z_span_axis": span_axis,
         "center_to_center_distance": center_to_center_distance,
-        "derivation": "c2c = interlayer_clearance + layer_z_span; c = layer_count * c2c",
+        "derivation": (
+            "c2c = interlayer_clearance + layer_z_span; "
+            f"c = layer_count * c2c along the {axis_phrase}"
+        ),
         "layer_count": 2,
+        # c-axis provenance: which axis the stacked c was built along, and
+        # whether that rebuilt (orthogonalized) a tilted base-cell c.
+        "c_axis_basis": c_axis_basis,
+        "c_axis_orthogonalized": c_axis_orthogonalized,
     }
+    if base_c_tilt_degrees is not None:
+        metadata["base_c_tilt_degrees"] = base_c_tilt_degrees
+    return metadata
 
 
 def _duplicate_ring_geometry_metrics(metrics: Mapping[str, object], registry_id: str) -> dict[str, object]:
@@ -841,22 +895,6 @@ def _recompute_total_residual(
     return total
 
 
-def _c_axis_is_orthogonal(cell: tuple[Vec3, Vec3, Vec3]) -> bool:
-    """Check that c is orthogonal to both a and b (within 2°)."""
-    a, b, c = cell
-    c_len = norm(c)
-    if c_len < 1e-8:
-        return True
-    for v in (a, b):
-        v_len = norm(v)
-        if v_len < 1e-8:
-            continue
-        cosine = abs(dot(v, c)) / (v_len * c_len)
-        if cosine > 0.035:  # ~2°
-            return False
-    return True
-
-
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
@@ -865,18 +903,6 @@ def _string_mapping(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): str(item) for key, item in value.items()}
-
-
-def _safe_normalize(vector: Vec3) -> Vec3:
-    """Normalize *vector*, falling back to (0,0,1) for degenerate vectors.
-
-    Emits a stderr warning when the fallback is used (T5).
-    """
-    return safe_normalize(
-        vector,
-        fallback=(0.0, 0.0, 1.0),
-        warn_context="stacking: c axis vector is degenerate",
-    )
 
 
 __all__ = [

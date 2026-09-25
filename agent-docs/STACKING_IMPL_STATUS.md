@@ -210,3 +210,17 @@ criterion; atom labels/image/H-involvement/cutoff recorded; CIF comment labels
 the value atomistic; per-candidate failure isolation).
 Definition-of-done criteria 1, 3 and 6 remain unmet; criterion 2's grep gate
 is now covered behaviorally by the `tests/test_geometry.py` span tests.
+
+**Second post-audit update — 2026-09-25 (later same day):** audit #13 **landed**
+(owner chose orthogonalize-on-stacking): `_apply_layer_registry` builds the
+stacked c along the layer normal with length `2·c2c`, so the W4.4 warn-only
+shell is superseded — the derivation is true by construction, tilt is recorded
+as provenance (`c_axis_basis` / `c_axis_orthogonalized` / `base_c_tilt_degrees`)
+and in the CIF comment, and the degenerate in-plane case falls back with a
+warning. Audit #14 **landed** (quinoid ring re-bond-ordering in keto-enamine
+realization via constrained perfect matching). Audit #15 consistency fix
+**landed** (per-template retraction in mixed-linkage builds); full calibration
+remains an explicitly documented future project. These close the remaining
+c-axis correctness half of review point 2; W1.4 `c_axis_semantics` (the
+vacuum-slab vs implicit-AA-repeat distinction for single-layer exports) is
+still open and is now the only remaining c-semantics item.

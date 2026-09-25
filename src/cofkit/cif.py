@@ -583,6 +583,13 @@ class CIFWriter:
         
         layer_count = stacking.get("layer_count", 2)
         parts.append(f"c={layer_count}*c2c")
+
+        if stacking.get("c_axis_orthogonalized"):
+            tilt = stacking.get("base_c_tilt_degrees")
+            tilt_text = f"{tilt:.3g}" if isinstance(tilt, (int, float)) else "unknown"
+            parts.append(f"c_rebuilt_along_layer_normal(base_c_tilt={tilt_text}deg)")
+        elif stacking.get("c_axis_basis") == "c_hat":
+            parts.append("c_axis=c_hat(degenerate in-plane fallback)")
         
         contact = stacking.get("min_interlayer_contact")
         contact_mode = stacking.get("min_interlayer_contact_mode")

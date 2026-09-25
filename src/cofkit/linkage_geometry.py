@@ -4,6 +4,17 @@ from .geometry import Vec3, norm, scale, sub
 from .model import MonomerSpec
 
 
+# Uncalibrated heuristics: these fractions retract the effective motif origin
+# along the anchor->reactive bond at embedding time so the seeded bridge
+# geometry roughly anticipates the imine/azine bend. They compose with the
+# realization-time chain-closure fit in reaction_realization.py (separate,
+# uncited ~127-degree angle targets), so the pair acts as one de-facto
+# collinearity compensation with two owners. As of 2026-09 the retraction is
+# applied per template/per event (each motif in a mixed-linkage build gets its
+# own template's correction via the per-event template id), which only makes
+# mixed and pure builds consistent with each other; it is NOT a calibration.
+# The planned real fix is a single-owner recalibration of both compensators
+# against CoRE-COF baselines — until then, treat the constants as provisional.
 IMINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.11
 AZINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.08
 

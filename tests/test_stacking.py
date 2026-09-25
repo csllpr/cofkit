@@ -12,10 +12,12 @@ intentionally changes).
 
 import contextlib
 import io
+from math import cos, radians, sin
 
 import pytest
 from unittest import mock
 
+from cofkit.geometry import cross, dot, norm
 from cofkit.model import (
     AssemblyState,
     Candidate,
@@ -182,15 +184,15 @@ def test_stacking_residual_recompute_warns_and_keeps_aggregate_on_non_numeric():
 # ---------------------------------------------------------------------------
 
 
-def _stackable_candidate(monomer, translation=(0.0, 0.0, 0.0)):
+def _stackable_candidate(monomer, translation=(0.0, 0.0, 0.0), cell=_CELL, events=()):
     return Candidate(
         id="stackme",
         score=None,
         state=AssemblyState(
-            cell=_CELL,
+            cell=cell,
             monomer_poses={"i0": Pose(translation=translation)},
         ),
-        events=(),
+        events=events,
         metadata={
             "net_plan": {"topology": "hcb"},
             "instance_to_monomer": {"i0": monomer.id},
@@ -399,3 +401,155 @@ def test_stacking_geometry_comment_reports_cutoff_bound_when_no_contact():
 
     assert "min_interlayer_contact>3.5" in comment
     assert "none below cutoff" in comment
+
+
+# ---------------------------------------------------------------------------
+# Tilted-c base cells: stacked c is built along the layer normal (route A,
+# audit #13 / stacking review point 2)
+# ---------------------------------------------------------------------------
+
+# c tilted 1° away from the ab-plane normal (real fitted cells tilt ~0.5°).
+_TILTED_CELL = (
+    (15.0, 0.0, 0.0),
+    (0.0, 15.0, 0.0),
+    (8.0 * sin(radians(1.0)), 0.0, 8.0 * cos(radians(1.0))),
+)
+
+
+def _expand_tilted(monomer, cell=_TILTED_CELL, registry_distance=3.4, events=()):
+    candidate = _stackable_candidate(monomer, cell=cell, events=events)
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        stacked = _apply_layer_registry(
+            candidate,
+            LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=registry_distance),
+            monomer_specs={monomer.id: monomer},
+        )
+    return stacked, stderr.getvalue()
+
+
+def test_stacking_tilted_base_cell_builds_c_along_layer_normal():
+    monomer = _rod_monomer()
+    stacked, stderr = _expand_tilted(monomer)
+
+    # a × b of the tilted cell is exactly +z; the stacked c must lie along it
+    # with length 2 * c2c (span of the rod along z is 3.0 Å).
+    expected_c2c = 3.4 + 3.0
+    assert stacked.state.cell[2] == pytest.approx((0.0, 0.0, 2.0 * expected_c2c))
+    assert stacked.state.cell[0] == _TILTED_CELL[0]
+    assert stacked.state.cell[1] == _TILTED_CELL[1]
+
+    meta = stacked.metadata["stacking"]
+    assert meta["c_axis_basis"] == "layer_normal"
+    assert meta["c_axis_orthogonalized"] is True
+    assert meta["base_c_tilt_degrees"] == pytest.approx(1.0)
+    assert "along the layer normal" in meta["derivation"]
+    assert any("rebuilt along the layer normal" in warning for warning in meta["warnings"])
+    assert "rebuilt along the layer normal" in stderr
+
+    # Layer offsets ride the orthogonalized c; lateral positions are untouched.
+    assert stacked.state.monomer_poses["i0L0"].translation == pytest.approx((0.0, 0.0, 0.25 * 2.0 * expected_c2c))
+    assert stacked.state.monomer_poses["i0L1"].translation == pytest.approx((0.0, 0.0, 0.75 * 2.0 * expected_c2c))
+
+
+def test_stacking_tilted_base_cell_realizes_advertised_normal_clearance():
+    """The atomistic interlayer contact equals the advertised clearance —
+    the derivation c2c = clearance + span is true in the shipped cell."""
+    monomer = _rod_monomer()
+    stacked, _ = _expand_tilted(monomer)
+
+    meta = stacked.metadata["stacking"]
+    assert meta["layer_z_span"] == pytest.approx(3.0)
+    assert meta["center_to_center_distance"] == pytest.approx(
+        meta["interlayer_clearance"] + meta["layer_z_span"]
+    )
+    assert meta["min_interlayer_contact"] == pytest.approx(meta["interlayer_clearance"])
+    assert "stacking_clash" not in stacked.flags
+
+
+def test_stacking_orthogonal_base_cell_is_bit_identical_to_prior_construction():
+    monomer = _rod_monomer()
+    candidate = _stackable_candidate(monomer)  # orthogonal _CELL
+
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        stacked = _apply_layer_registry(
+            candidate,
+            LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=3.4),
+            monomer_specs={"m1": monomer},
+        )
+
+    # Identical floats to the legacy scale(c_hat, 2*c2c) construction.
+    assert stacked.state.cell[2] == (0.0, 0.0, 2.0 * (3.4 + 3.0))
+    assert stacked.state.monomer_poses["i0L0"].translation == (0.0, 0.0, 3.2)
+
+    meta = stacked.metadata["stacking"]
+    assert meta["c_axis_basis"] == "layer_normal"
+    assert meta["c_axis_orthogonalized"] is False
+    assert meta["base_c_tilt_degrees"] == pytest.approx(0.0, abs=1e-9)
+    assert not any("rebuilt along the layer normal" in warning for warning in meta["warnings"])
+    assert "rebuilt along the layer normal" not in stderr.getvalue()
+
+
+def test_stacking_degenerate_ab_vectors_fall_back_to_c_direction_with_warning():
+    monomer = _rod_monomer()
+    degenerate_cell = ((15.0, 0.0, 0.0), (30.0, 0.0, 0.0), (1.0, 0.0, 8.0))  # collinear a, b
+    stacked, stderr = _expand_tilted(monomer, cell=degenerate_cell)
+
+    # Prior behaviour preserved: new c is the base c direction scaled to 2*c2c.
+    new_c = stacked.state.cell[2]
+    base_c = degenerate_cell[2]
+    assert norm(cross(new_c, base_c)) == pytest.approx(0.0, abs=1e-9)
+    assert dot(new_c, base_c) > 0.0
+    assert norm(new_c) == pytest.approx(2.0 * stacked.metadata["stacking"]["center_to_center_distance"])
+
+    meta = stacked.metadata["stacking"]
+    assert meta["c_axis_basis"] == "c_hat"
+    assert meta["c_axis_orthogonalized"] is False
+    assert "base_c_tilt_degrees" not in meta
+    assert "degenerate in-plane fallback" in meta["derivation"]
+    assert "degenerate in-plane cell vectors" in stderr
+
+
+def test_stacking_ring_center_nonzero_w_still_warns_when_basis_is_orthogonalized():
+    monomer = _rod_monomer()
+    events = (
+        ReactionEvent(
+            id="r1",
+            template_id="boroxine_ring",
+            participants=(MotifRef("i0", "m1", "mo1"),),
+            metadata={"ring_center_fractional": (0.5, 0.5, 0.1)},
+        ),
+    )
+    stacked, stderr = _expand_tilted(monomer, events=events)
+
+    assert "ring_center_fractional w=1.000e-01" in stderr
+    assert any(
+        "ring_center_fractional w=1.000e-01" in warning
+        for warning in stacked.metadata["stacking"]["warnings"]
+    )
+    # The cartesian offset rides the orthogonalized c for both layers.
+    new_c = stacked.state.cell[2]
+    offsets = {
+        event.id: event.metadata["ring_center_offset_cartesian"]
+        for event in stacked.events
+    }
+    assert offsets["r1L0"] == pytest.approx(tuple(0.25 * component for component in new_c))
+    assert offsets["r1L1"] == pytest.approx(tuple(0.75 * component for component in new_c))
+
+
+def test_stacking_geometry_comment_reports_c_axis_orthogonalization():
+    from cofkit.cif import CIFWriter
+
+    metadata = {
+        "stacking": {
+            "id": "AA",
+            "c_axis_basis": "layer_normal",
+            "c_axis_orthogonalized": True,
+            "base_c_tilt_degrees": 0.525,
+        }
+    }
+
+    comment = CIFWriter()._stacking_geometry_comment(metadata)
+
+    assert "c_rebuilt_along_layer_normal(base_c_tilt=0.525deg)" in comment

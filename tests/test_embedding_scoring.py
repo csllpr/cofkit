@@ -509,6 +509,127 @@ class EmbeddingTests(unittest.TestCase):
             {"hcb", "hca", "fes", "fxt"},
         )
 
+    def test_mixed_linkage_embedding_applies_per_template_origin_retraction(self):
+        from cofkit.planner import TopologyHint
+
+        def atomistic_radial_motifs(prefix: str, kinds: tuple[str, ...], radius: float):
+            motifs = []
+            atom_symbols = []
+            atom_positions = []
+            for idx, (kind, angle) in enumerate(zip(kinds, (0.0, 2.0 * pi / 3.0, -2.0 * pi / 3.0))):
+                direction = (cos(angle), sin(angle), 0.0)
+                reactive_atom_id = 2 * idx
+                anchor_atom_id = 2 * idx + 1
+                atom_symbols.extend(("C", "C"))
+                atom_positions.append((radius * direction[0], radius * direction[1], 0.0))
+                atom_positions.append(((radius - 1.0) * direction[0], (radius - 1.0) * direction[1], 0.0))
+                motifs.append(
+                    ReactiveMotif(
+                        id=f"{prefix}{idx + 1}",
+                        kind=kind,
+                        atom_ids=(reactive_atom_id, anchor_atom_id),
+                        frame=Frame(
+                            origin=(radius * direction[0], radius * direction[1], 0.0),
+                            primary=direction,
+                            normal=(0.0, 0.0, 1.0),
+                        ),
+                        metadata={"reactive_atom_id": reactive_atom_id, "anchor_atom_id": anchor_atom_id},
+                    )
+                )
+            return tuple(motifs), tuple(atom_symbols), tuple(atom_positions)
+
+        def build_outcome(node_kinds, event_template_ids):
+            node_motifs, node_symbols, node_positions = atomistic_radial_motifs("n", node_kinds, radius=4.5)
+            linker_motifs, linker_symbols, linker_positions = atomistic_radial_motifs(
+                "c", ("aldehyde", "aldehyde", "aldehyde"), radius=2.4
+            )
+            node = MonomerSpec(
+                id="node",
+                name="mixed node",
+                motifs=node_motifs,
+                atom_symbols=node_symbols,
+                atom_positions=node_positions,
+            )
+            linker = MonomerSpec(
+                id="linker",
+                name="trialdehyde linker",
+                motifs=linker_motifs,
+                atom_symbols=linker_symbols,
+                atom_positions=linker_positions,
+            )
+            topology = TopologyHint(
+                id="hcb",
+                dimensionality="2D",
+                node_coordination=(3,),
+                metadata={"n_node_definitions": 1},
+            )
+            assignment_plan = AssignmentPlan(
+                net_plan=NetPlan(topology=topology, monomer_ids=("node", "linker"), reaction_ids=tuple(event_template_ids)),
+                slot_to_monomer={"slot1": "node", "slot2": "linker"},
+            )
+            images = ((0, 0, 0), (-1, 0, 0), (0, -1, 0))
+            events = tuple(
+                ReactionEvent(
+                    id=f"rxn{idx + 1}",
+                    template_id=template_id,
+                    participants=(
+                        MotifRef(monomer_instance_id="m1", monomer_id="node", motif_id=f"n{idx + 1}"),
+                        MotifRef(monomer_instance_id="m2", monomer_id="linker", motif_id=f"c{idx + 1}", periodic_image=images[idx]),
+                    ),
+                )
+                for idx, template_id in enumerate(event_template_ids)
+            )
+            outcome = AssignmentOutcome(
+                assignment_plan=assignment_plan,
+                monomer_instances=(
+                    MonomerInstance(id="m1", monomer_id="node"),
+                    MonomerInstance(id="m2", monomer_id="linker"),
+                ),
+                events=events,
+                unreacted_motifs=(),
+                consumed_count=6,
+            )
+            templates = {template_id: ReactionLibrary.builtin().get(template_id) for template_id in set(event_template_ids)}
+            return {"node": node, "linker": linker}, templates, outcome
+
+        mixed_specs, mixed_templates, mixed_outcome = build_outcome(
+            ("amine", "amine", "hydrazine"),
+            ("imine_bridge", "imine_bridge", "azine_bridge"),
+        )
+        mixed_embedding = PeriodicEmbedder().embed(mixed_outcome, mixed_specs, mixed_templates)
+
+        self.assertEqual(mixed_embedding.metadata["placement_mode"], "single-node-bipartite")
+        node_offsets = mixed_embedding.metadata["poses"]["m1"]["radial_offsets"]
+        linker_offsets = mixed_embedding.metadata["poses"]["m2"]["radial_offsets"]
+        # Each bridge gets its own template's retraction: 0.11 for the two
+        # imine motifs, 0.08 for the azine motif — before the per-template fix
+        # the mixed build retracted nothing (all offsets stayed at 4.5/2.4).
+        self.assertAlmostEqual(node_offsets[0], 4.5 - 0.11, places=6)
+        self.assertAlmostEqual(node_offsets[1], 4.5 - 0.11, places=6)
+        self.assertAlmostEqual(node_offsets[2], 4.5 - 0.08, places=6)
+        self.assertAlmostEqual(linker_offsets[0], 2.4 - 0.11, places=6)
+        self.assertAlmostEqual(linker_offsets[1], 2.4 - 0.11, places=6)
+        self.assertAlmostEqual(linker_offsets[2], 2.4 - 0.08, places=6)
+
+        # A pure imine build over the same geometry is bit-identical to the
+        # shared-template behavior: its offsets equal a direct shared-template
+        # rotation computation, and the mixed build's imine motifs match it.
+        pure_specs, pure_templates, pure_outcome = build_outcome(
+            ("amine", "amine", "amine"),
+            ("imine_bridge", "imine_bridge", "imine_bridge"),
+        )
+        pure_embedding = PeriodicEmbedder().embed(pure_outcome, pure_specs, pure_templates)
+        reference_rotation, reference_offsets = PeriodicEmbedder()._rotation_for_planar_motifs(
+            pure_specs["node"],
+            tuple((cos(pi / 6.0 + offset), sin(pi / 6.0 + offset), 0.0) for offset in (0.0, 2.0 * pi / 3.0, -2.0 * pi / 3.0)),
+            template_id="imine_bridge",
+        )
+        self.assertEqual(
+            pure_embedding.metadata["poses"]["m1"]["radial_offsets"],
+            tuple(round(offset, 6) for offset in reference_offsets),
+        )
+        self.assertAlmostEqual(node_offsets[0], pure_embedding.metadata["poses"]["m1"]["radial_offsets"][0], places=12)
+
 
 class ScoringTests(unittest.TestCase):
     def test_optimizer_runs_and_does_not_worsen_imine_bridge_geometry(self):

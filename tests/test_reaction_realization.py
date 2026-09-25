@@ -1,10 +1,15 @@
+import contextlib
+import io
 import sys
+import tempfile
 import unittest
 from math import acos, pi
 from pathlib import Path
 
 
-from cofkit import AssemblyState, Candidate, Frame, MonomerSpec, Pose, ReactiveMotif, ReactionEvent, MotifRef
+from cofkit import AssemblyState, Candidate, CIFWriter, Frame, MonomerSpec, Pose, ReactiveMotif, ReactionEvent, MotifRef, build_rdkit_monomer
+from cofkit.bond_types import cif_type_to_bond_order
+from cofkit.decompose import _build_bonded_mol, _eligible_beta_ketoenamine_single_bonds, read_periodic_cif_atoms
 from cofkit.linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG
 from cofkit.reaction_realization import EventRealization, ReactionEventRealizationRegistry, ReactionRealizer
 
@@ -1069,6 +1074,229 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertIn(3, aldehyde_atoms)
         self.assertAlmostEqual(aldehyde_atoms[3].local_position[0], 0.0, places=6)
         self.assertGreater(aldehyde_atoms[3].local_position[1], 0.7)
+
+
+def _real_keto_enamine_candidate(keto_smiles: str, *, site_count: int = 1):
+    """Build a keto_enamine_bridge candidate from real RDKit-derived monomers.
+
+    Each site pairs a fresh aniline instance with one keto-aldehyde motif of
+    the keto monomer, placed so the reacting N...C atoms sit 1.36 angstrom
+    apart along +x.
+    """
+    keto = build_rdkit_monomer("keto", "keto-aldehyde precursor", keto_smiles, "keto_aldehyde")
+    amine = build_rdkit_monomer("aniline", "aniline", "Nc1ccccc1", "amine")
+    amine_motif = amine.motifs[0]
+    nitrogen_atom_id = amine_motif.metadata["reactive_atom_id"]
+    nitrogen_position = amine.atom_positions[nitrogen_atom_id]
+
+    poses = {"m_keto": Pose(translation=(15.0, 15.0, 7.5))}
+    instance_to_monomer = {"m_keto": "keto"}
+    events = []
+    for index in range(site_count):
+        keto_motif = keto.motifs[index]
+        carbon_atom_id = keto_motif.metadata["reactive_atom_id"]
+        carbon_position = keto.atom_positions[carbon_atom_id]
+        amine_instance_id = f"m_amine{index}"
+        instance_to_monomer[amine_instance_id] = "aniline"
+        poses[amine_instance_id] = Pose(
+            translation=(
+                15.0 + carbon_position[0] - nitrogen_position[0] + 1.36,
+                15.0 + carbon_position[1] - nitrogen_position[1],
+                7.5 + carbon_position[2] - nitrogen_position[2],
+            )
+        )
+        events.append(
+            ReactionEvent(
+                id=f"rxn{index}",
+                template_id="keto_enamine_bridge",
+                participants=(
+                    MotifRef(monomer_instance_id=amine_instance_id, monomer_id="aniline", motif_id=amine_motif.id),
+                    MotifRef(monomer_instance_id="m_keto", monomer_id="keto", motif_id=keto_motif.id),
+                ),
+            )
+        )
+    candidate = Candidate(
+        id="keto-enamine-real-monomer-demo",
+        score=0.0,
+        state=AssemblyState(
+            cell=((40.0, 0.0, 0.0), (0.0, 40.0, 0.0), (0.0, 0.0, 20.0)),
+            monomer_poses=poses,
+            stacking_state="disabled",
+        ),
+        events=tuple(events),
+        metadata={"instance_to_monomer": instance_to_monomer},
+    )
+    specs = {"keto": keto, "aniline": amine}
+    return candidate, specs, instance_to_monomer
+
+
+def _exported_bond_order_map(cif_text: str) -> dict[frozenset[str], float]:
+    """Parse the exported CIF bond loop into a label-pair -> bond-order map."""
+
+    orders: dict[frozenset[str], float] = {}
+    for line in cif_text.splitlines():
+        tokens = line.split()
+        if len(tokens) != 6 or "_" not in tokens[1]:
+            continue
+        order = cif_type_to_bond_order(tokens[5])
+        assert order is not None, f"unparseable bond type in line: {line}"
+        orders[frozenset((tokens[0], tokens[1]))] = order
+    return orders
+
+
+class KetoEnamineQuinoidRedistributionTests(unittest.TestCase):
+    """Quinoid/cyclohexadienone ring re-bond-ordering for real aromatic monomers."""
+
+    def test_quinoid_redistribution_fixes_carbonyl_valence_and_ring_pattern(self):
+        candidate, specs, instance_to_monomer = _real_keto_enamine_candidate("O=Cc1ccccc1O")
+
+        result = ReactionRealizer().realize(candidate, specs, instance_to_monomer)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        keto = specs["keto"]
+        motif = keto.motifs[0]
+        linkage_anchor_atom_id = motif.metadata["anchor_atom_id"]
+        carbonyl_anchor_atom_id = motif.metadata["ortho_hydroxyl_anchor_atom_id"]
+        report = result.metadata["quinoid_redistribution"]
+        self.assertEqual(report["site_count"], 1)
+        self.assertEqual(report["redistributed_site_count"], 1)
+        self.assertEqual(report["unresolved_sites"], ())
+        self.assertEqual(report["changed_ring_bond_count"], 6)
+
+        # The realization bond list now carries the rewritten ring bonds.
+        label = lambda atom_id: ReactionRealizer.atom_label("m_keto", "C", atom_id)
+        realized_orders = {
+            frozenset((bond.label_1, bond.label_2)): bond.bond_order for bond in result.bonds
+        }
+        ring_edges = [
+            (first, second)
+            for first, second, order in keto.bonds
+            if abs(order - 1.5) <= 1.0e-6
+        ]
+        self.assertEqual(len(ring_edges), 6)
+        for first, second in ring_edges:
+            order = realized_orders[frozenset((label(first), label(second)))]
+            if carbonyl_anchor_atom_id in (first, second) or linkage_anchor_atom_id in (first, second):
+                self.assertEqual(order, 1.0, f"anchor ring bond {first}-{second} must become single")
+        residual_atom_ids = {
+            atom_id for edge in ring_edges for atom_id in edge
+        } - {carbonyl_anchor_atom_id, linkage_anchor_atom_id}
+        self.assertEqual(len(residual_atom_ids), 4)
+        for atom_id in residual_atom_ids:
+            double_count = sum(
+                1
+                for first, second in ring_edges
+                if atom_id in (first, second)
+                and realized_orders[frozenset((label(first), label(second)))] == 2.0
+            )
+            self.assertEqual(double_count, 1, f"ring atom {atom_id} must take exactly one quinoid double bond")
+
+        # The exported CIF (the real output contract) carries no aromatic "A"
+        # type on the quinoid ring and a valence-4 carbonyl carbon.
+        exported = CIFWriter().export_candidate(candidate, specs)
+        exported_orders = _exported_bond_order_map(exported.text)
+        keto_internal = {
+            pair: order
+            for pair, order in exported_orders.items()
+            if all(label.startswith("m_keto_") for label in pair)
+        }
+        for first, second in ring_edges:
+            self.assertIn(frozenset((label(first), label(second))), keto_internal)
+        valences: dict[str, float] = {}
+        for pair, order in exported_orders.items():
+            for atom_label in pair:
+                valences[atom_label] = valences.get(atom_label, 0.0) + order
+        carbonyl_label = label(carbonyl_anchor_atom_id)
+        self.assertAlmostEqual(valences[carbonyl_label], 4.0, places=6)
+        for atom_id in residual_atom_ids | {linkage_anchor_atom_id}:
+            self.assertAlmostEqual(valences[label(atom_id)], 4.0, places=6)
+        for first, second in ring_edges:
+            pair = frozenset((label(first), label(second)))
+            self.assertIn(keto_internal[pair], (1.0, 2.0))
+
+    def test_quinoid_redistribution_saturates_triformylphloroglucinol_ring(self):
+        candidate, specs, instance_to_monomer = _real_keto_enamine_candidate(
+            "O=Cc1c(O)c(C=O)c(O)c(C=O)c1O",
+            site_count=3,
+        )
+
+        result = ReactionRealizer().realize(candidate, specs, instance_to_monomer)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        report = result.metadata["quinoid_redistribution"]
+        self.assertEqual(report["site_count"], 3)
+        self.assertEqual(report["redistributed_site_count"], 3)
+        self.assertEqual(report["unresolved_sites"], ())
+        keto = specs["keto"]
+        ring_edges = [
+            frozenset((first, second))
+            for first, second, order in keto.bonds
+            if abs(order - 1.5) <= 1.0e-6
+        ]
+        self.assertEqual(len(ring_edges), 6)
+        realized_orders = {
+            frozenset((bond.label_1, bond.label_2)): bond.bond_order for bond in result.bonds
+        }
+        label = lambda atom_id: ReactionRealizer.atom_label("m_keto", "C", atom_id)
+        # Every ring atom carries an exocyclic double bond (C=O or C=C), so
+        # the cyclohexanetrione-style ring is all single bonds.
+        for edge in ring_edges:
+            pair = frozenset((label(atom_id) for atom_id in sorted(edge)))
+            self.assertEqual(realized_orders[pair], 1.0)
+
+    def test_quinoid_redistribution_warns_and_reports_when_no_pattern_exists(self):
+        # 5-hydroxyfurfural: the five-membered aromatic ring admits no
+        # alternating double-bond pattern once both anchors are saturated.
+        candidate, specs, instance_to_monomer = _real_keto_enamine_candidate("O=Cc1occc1O")
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = ReactionRealizer().realize(candidate, specs, instance_to_monomer)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("warning: keto-enamine quinoid redistribution unresolved", stderr.getvalue())
+        report = result.metadata["quinoid_redistribution"]
+        self.assertEqual(report["site_count"], 1)
+        self.assertEqual(report["redistributed_site_count"], 0)
+        self.assertEqual(report["changed_ring_bond_count"], 0)
+        self.assertEqual(len(report["unresolved_sites"]), 1)
+        self.assertIn("no alternating double-bond pattern", report["unresolved_sites"][0]["reason"])
+        self.assertTrue(
+            any("quinoid redistribution could not determine" in note for note in result.metadata["notes"])
+        )
+        # Documented degradation: the ring keeps precursor aromatic orders.
+        exported = CIFWriter().export_candidate(candidate, specs)
+        keto_ring_orders = [
+            tokens[5]
+            for line in exported.text.splitlines()
+            if len((tokens := line.split())) == 6
+            and "_" in tokens[1]
+            and tokens[0].startswith("m_keto_")
+            and tokens[1].startswith("m_keto_")
+        ]
+        self.assertIn("A", keto_ring_orders)
+
+    def test_quinoid_product_is_recognized_by_decompose_side(self):
+        candidate, specs, instance_to_monomer = _real_keto_enamine_candidate("O=Cc1ccccc1O")
+        exported = CIFWriter().export_candidate(candidate, specs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cif_path = Path(temp_dir) / "product.cif"
+            cif_path.write_text(exported.text)
+            built = _build_bonded_mol(read_periodic_cif_atoms(cif_path))
+
+        # No valence overflow survives the export: every carbon is at most 4.
+        for atom in built.mol.GetAtoms():
+            valence = sum(bond.GetBondTypeAsDouble() for bond in atom.GetBonds())
+            if atom.GetAtomicNum() == 6:
+                self.assertLessEqual(valence, 4.0 + 1.0e-6)
+        # The decompose side's keto-enamine environment check recognizes the
+        # written C-N single bond with its C=C anchor and ring carbonyl.
+        eligible = _eligible_beta_ketoenamine_single_bonds(built.mol)
+        self.assertEqual(len(eligible), 1)
 
 
 if __name__ == "__main__":
