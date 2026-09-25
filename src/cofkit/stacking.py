@@ -189,15 +189,6 @@ def _apply_layer_registry(
                 file=sys.stderr,
             )
 
-    if layer_z_span < 0.0:
-        stacking_warnings.append(f"measured layer_z_span {layer_z_span:.3f} clamped to 0.0")
-        print(
-            f"warning: stacking for {candidate.id!r}: clamped negative layer_z_span "
-            f"{layer_z_span:.3f} Å to 0.0",
-            file=sys.stderr,
-        )
-        layer_z_span = 0.0
-
     center_to_center_distance = registry.interlayer_distance + layer_z_span
 
     # W4.2 self-check: c2c must exceed layer_z_span
@@ -344,7 +335,6 @@ def _apply_layer_registry(
     ring_geometry = _mapping(score_metadata.get("ring_geometry"))
     if ring_geometry:
         score_metadata["ring_geometry"] = _duplicate_ring_geometry_metrics(ring_geometry, registry.id)
-    score_metadata["stacking_considered"] = False
 
     ring_validation = dict(_mapping(candidate.metadata.get("ring_validation")))
     ring_validation_metrics = _mapping(ring_validation.get("metrics"))
@@ -477,19 +467,6 @@ def _candidate_topology_id(candidate: Candidate) -> str | None:
         return None
     text = str(topology_id).strip()
     return text or None
-
-
-def _candidate_layer_z_span(candidate: Candidate) -> float:
-    """Legacy reader — used only as cross-check metadata; do not use for geometry."""
-    embedding = _mapping(candidate.metadata.get("embedding"))
-    value = embedding.get("layer_z_span")
-    if value is None:
-        return 0.0
-    try:
-        span = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, span)
 
 
 def _metadata_layer_z_span(candidate: Candidate) -> float | None:
@@ -639,12 +616,6 @@ def _stacking_metadata(
         "center_to_center_distance": center_to_center_distance,
         "derivation": "c2c = interlayer_clearance + layer_z_span; c = layer_count * c2c",
         "layer_count": 2,
-        # Deprecated aliases kept for one release
-        "interlayer_distance": float(registry.interlayer_distance),
-        "lateral_shift_fractional": (
-            float(registry.lateral_shift[0]),
-            float(registry.lateral_shift[1]),
-        ),
     }
 
 
@@ -712,90 +683,9 @@ def _safe_normalize(vector: Vec3) -> Vec3:
     return normalize(vector)
 
 
-def resolve_stacking_pattern(
-    pattern: str | None,
-    topology_id: str | None,
-    assembly_mode: str | None,
-) -> str:
-    """Resolve the stacking pattern from explicit pattern, topology, or assembly mode.
-
-    Resolution priority (M2):
-    1. Explicit pattern overrides everything (M2.3)
-    2. Assembly mode: 'serrated' → AB (M2.2)
-    3. Topology-based default: sql → AA, kgm → AB, others → AA (M2.1)
-    4. Final fallback: AA
-
-    Parameters
-    ----------
-    pattern
-        Explicit stacking pattern (e.g., "AA", "AB", "ABC").
-    topology_id
-        Topology identifier (e.g., "sql", "kgm", "hcb").
-    assembly_mode
-        Assembly mode (e.g., "serrated", "default").
-
-    Returns
-    -------
-    str
-        The resolved stacking pattern.
-    """
-    # M2.3: Explicit pattern wins
-    if pattern:
-        return pattern
-
-    # M2.2: Assembly mode takes precedence over topology
-    if assembly_mode == "serrated":
-        return "AB"
-
-    # M2.1: Topology-based defaults
-    if topology_id == "kgm":
-        return "AB"
-    if topology_id in ("sql", "hcb", "fxt"):  # sql and others default to AA
-        return "AA"
-
-    # Final fallback
-    return "AA"
-
-
-def compute_interlayer_offset(pattern: str, a: float, b: float) -> float:
-    """Compute the interlayer offset magnitude for a given stacking pattern.
-
-    Parameters
-    ----------
-    pattern
-        Stacking pattern (e.g., "AA", "AB", "ABC").
-    a
-        In-plane lattice parameter a (Å).
-    b
-        In-plane lattice parameter b (Å).
-
-    Returns
-    -------
-    float
-        The interlayer offset magnitude (Å):
-        - AA: 0.0 (M3.1)
-        - AB: 0.5 * sqrt(a^2 + b^2) (M3.2)
-        - ABC: (1/3) * sqrt(a^2 + b^2) (M3.3)
-        - Unknown: 0.0 (defensive fallback, M3.4)
-    """
-    diagonal = sqrt(a**2 + b**2)
-
-    if pattern == "AA":
-        return 0.0
-    elif pattern == "AB":
-        return 0.5 * diagonal
-    elif pattern == "ABC":
-        return (1.0 / 3.0) * diagonal
-    else:
-        # M3.4: Unknown pattern → zero (defensive fallback)
-        return 0.0
-
-
 __all__ = [
     "LayerRegistry",
     "StackingExplorer",
     "enumerate_candidate_stackings",
     "stacking_comment_suffix",
-    "resolve_stacking_pattern",
-    "compute_interlayer_offset",
 ]

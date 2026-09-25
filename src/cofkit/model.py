@@ -135,8 +135,8 @@ class AssemblyState:
 @dataclass(frozen=True)
 class Candidate:
     id: str
-    # Legacy event-count heuristic score. ``None`` unless legacy scoring is
-    # explicitly enabled; ranking uses ``candidate_ranking_key`` instead.
+    # No score is attached by the builders; ranking uses
+    # ``candidate_ranking_key`` (mean per-bridge-event geometry residual).
     score: float | None
     state: AssemblyState
     events: tuple[ReactionEvent, ...]
@@ -187,18 +187,18 @@ def candidate_ranking_key(candidate: Candidate) -> tuple[float, int, str]:
 
 
 def _candidate_sort_key(candidate: Candidate) -> tuple[float, int, str]:
-    # Legacy mode attaches a total score (higher is better); the default mode
-    # ranks by ascending residual. Both map onto one ascending key.
+    # An externally attached score (higher is better) wins when present;
+    # otherwise rank by ascending residual. Both map onto one ascending key.
     if candidate.score is not None:
         return (-candidate.score, 0, candidate.id)
     return candidate_ranking_key(candidate)
 
 
 def order_candidates(candidates: Iterable[Candidate]) -> list[Candidate]:
-    """Return candidates best-first.
+    """Return candidates best-first by the residual-based ranking key.
 
-    Uses the legacy total score when it is attached (legacy scoring enabled),
-    otherwise the residual-based ranking key.
+    Candidates with an externally attached ``score`` rank ahead of unscored
+    ones, ordered by descending score.
     """
     return sorted(candidates, key=_candidate_sort_key)
 

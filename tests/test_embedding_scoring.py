@@ -508,38 +508,6 @@ class EmbeddingTests(unittest.TestCase):
 
 
 class ScoringTests(unittest.TestCase):
-    def test_topology_guided_assignment_scores_above_topology_free_assignment(self):
-        specs, templates, outcome = build_imine_case()
-        embedder = PeriodicEmbedder()
-        scorer = CandidateScorer()
-
-        topology_state = embedder.embed(outcome, specs, templates).state
-        topology_score = scorer.score(outcome, topology_state, specs, templates)
-
-        topology_free_assignment = AssignmentPlan(
-            net_plan=NetPlan(
-                topology=None,
-                monomer_ids=outcome.assignment_plan.net_plan.monomer_ids,
-                reaction_ids=outcome.assignment_plan.net_plan.reaction_ids,
-                metadata={"planning_mode": "topology-free"},
-            ),
-            slot_to_monomer=outcome.assignment_plan.slot_to_monomer,
-            metadata={"assignment_mode": "identity"},
-        )
-        topology_free_outcome = type(outcome)(
-            assignment_plan=topology_free_assignment,
-            monomer_instances=outcome.monomer_instances,
-            events=outcome.events,
-            unreacted_motifs=outcome.unreacted_motifs,
-            consumed_count=outcome.consumed_count,
-        )
-        topology_free_state = embedder.embed(topology_free_outcome, specs, templates).state
-        topology_free_score = scorer.score(topology_free_outcome, topology_free_state, specs, templates)
-
-        self.assertGreater(topology_score.total, topology_free_score.total)
-        self.assertGreater(topology_score.breakdown["bridge_geometry"], 0.0)
-        self.assertEqual(topology_score.breakdown["stacking_penalty"], 0.0)
-
     def test_optimizer_runs_and_does_not_worsen_imine_bridge_geometry(self):
         specs, templates, outcome = build_imine_case()
         embedder = PeriodicEmbedder()
@@ -554,7 +522,6 @@ class ScoringTests(unittest.TestCase):
 
         self.assertTrue(optimized.metrics["enabled"])
         self.assertLessEqual(final_report.total_residual, initial_report.total_residual + 1e-9)
-        self.assertGreaterEqual(final_report.score + 1e-9, initial_report.score)
 
     def test_optimizer_translation_step_moves_long_bridge_toward_target(self):
         specs, templates, outcome, base_state = build_single_imine_bridge_case()
@@ -628,7 +595,7 @@ class ScoringTests(unittest.TestCase):
 
 
 class EngineIntegrationTests(unittest.TestCase):
-    def test_engine_exposes_embedding_and_score_breakdown_metadata(self):
+    def test_engine_exposes_embedding_and_score_metadata(self):
         specs, _, _ = build_imine_case()
         project = COFProject(
             monomers=tuple(specs.values()),
@@ -641,38 +608,9 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertEqual(best.metadata["embedding"]["mode"], "topology-guided")
         self.assertIn("optimization", best.metadata)
         self.assertIn("final_residual", best.metadata["optimization"])
-        # Default mode: the legacy score breakdown is omitted; the residual
-        # metrics used for ranking and validation remain available.
         self.assertIsNone(best.score)
-        self.assertNotIn("score_breakdown", best.metadata)
         self.assertIn("bridge_geometry_residual", best.metadata["score_metadata"])
         self.assertIn("normal_misalignment_residual", best.metadata["score_metadata"]["bridge_event_metrics"][0])
-        self.assertFalse(best.metadata["score_metadata"]["stacking_considered"])
-
-    def test_engine_legacy_scoring_exposes_score_breakdown(self):
-        from cofkit import COFEngineConfig
-
-        specs, _, _ = build_imine_case()
-        project = COFProject(
-            monomers=tuple(specs.values()),
-            allowed_reactions=("imine_bridge",),
-            target_dimensionality="2D",
-        )
-        best = COFEngine(config=COFEngineConfig(enable_legacy_scoring=True)).run(project).top(1)[0]
-
-        self.assertIsNotNone(best.score)
-        self.assertIn("bridge_geometry", best.metadata["score_breakdown"])
-
-    def test_engine_rejects_non_disabled_stacking_modes(self):
-        specs, _, _ = build_imine_case()
-        project = COFProject(
-            monomers=tuple(specs.values()),
-            allowed_reactions=("imine_bridge",),
-            stacking_mode="explore",
-        )
-
-        with self.assertRaises(ValueError):
-            COFEngine().run(project)
 
 
 if __name__ == "__main__":

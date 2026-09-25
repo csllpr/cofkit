@@ -175,16 +175,37 @@ returns 0.0 for missing data (missing masquerades as perfect).
 
 ## Action list — Tier 3 (drop)
 
-- [ ] D1. (#21) Delete `resolve_stacking_pattern`/`compute_interlayer_offset`
+- [x] D1. (#21) Delete `resolve_stacking_pattern`/`compute_interlayer_offset`
       and their tests (or replace tests with live-machinery tests).
-- [ ] D2. (#23) Delete dead planner ring branch, vestigial `stacking_mode`,
+      Done 2026-09-25: both functions, `__all__` entries, and
+      `tests/test_stacking.py` (which covered only this dead API) deleted.
+- [x] D2. (#23) Delete dead planner ring branch, vestigial `stacking_mode`,
       dead `_candidate_layer_z_span`, unreachable span clamp,
       `geometry.py:194` self-import; route or delete `StackingSummary`.
-- [ ] D3. (#22) Stop invoking legacy `CandidateScorer.score` for metadata;
+      Done 2026-09-25: all deleted (`StackingSummary` deleted, not routed).
+      The `stacking_disabled` candidate flag is still emitted unconditionally
+      because `stacking.py` consumes it when expanding stackings; constant
+      `"stacking_mode"` metadata stamps in `ring_forming.py` / `stacking.py`
+      kept as informational. No CLI flag ever exposed `stacking_mode`.
+- [x] D3. (#22) Stop invoking legacy `CandidateScorer.score` for metadata;
       drop `total`/breakdown fields.
-- [ ] D4. (#20) Delete uncalled benzothiazole fit/relax functions and the
+      Done 2026-09-25: `score()`/`ScoreResult`/magic weights deleted; live
+      metadata now comes from `CandidateScorer.scoring_metadata`;
+      `enable_legacy_scoring` plumbing removed from all configs. The public
+      `--legacy-scoring` CLI flags were kept as accepted deprecated no-ops
+      with a stderr warning (repo deprecation convention).
+- [x] D4. (#20) Delete uncalled benzothiazole fit/relax functions and the
       hard-coded-False metric.
-- [ ] D5. (#24) Decide removal release for deprecated stacking aliases.
+      Done 2026-09-25: both functions plus the now-orphaned
+      `_project_onto_plane` helper and the `local_relaxation_applied`
+      metric/parameter removed.
+- [x] D5. (#24) Decide removal release for deprecated stacking aliases.
+      Done 2026-09-25: git archaeology showed the alias keys were introduced
+      in the unreleased checkpoint `cf9776d` (no tag contains it; the
+      `2026.9.12` release predates it), so the aliases never shipped and were
+      deleted outright; consumers switched to the canonical keys. Note:
+      `LayerRegistry.interlayer_distance` is the dataclass's actual field
+      name (not an alias property), so it was kept.
 
 ## Cross-cutting requirement
 

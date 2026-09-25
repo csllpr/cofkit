@@ -180,7 +180,7 @@ class RingFormingWorkflowTests(unittest.TestCase):
 
         self.assertEqual(stacked.id, "ring-candidate-1__AA")
         self.assertEqual(stacked.state.stacking_state, "AA")
-        self.assertEqual(stacked.metadata["stacking"]["lateral_shift_fractional"], (0.0, 0.0))
+        self.assertEqual(stacked.metadata["stacking"]["registry_shift_fractional"], (0.0, 0.0))
         self.assertEqual(len(stacked.state.monomer_poses), 2 * len(base.state.monomer_poses))
         self.assertEqual(len(stacked.events), 2 * len(base.events))
         self.assertEqual(stacked.metadata["graph_summary"]["n_reaction_events"], 4)
@@ -195,7 +195,7 @@ class RingFormingWorkflowTests(unittest.TestCase):
             structure.cell.c,
             2.0
             * (
-                stacked.metadata["stacking"]["interlayer_distance"]
+                stacked.metadata["stacking"]["interlayer_clearance"]
                 + stacked.metadata["stacking"]["layer_z_span"]
             ),
             places=5,
@@ -215,7 +215,7 @@ class RingFormingWorkflowTests(unittest.TestCase):
         # (1/3, 1/3); 120° cells (built by the ring-forming path) use (1/3, 2/3).
         self.assertEqual(cell_setting, "120deg")
         self.assertEqual(
-            stacking_meta["lateral_shift_fractional"],
+            stacking_meta["registry_shift_fractional"],
             (1.0 / 3.0, 2.0 / 3.0),
         )
         with tempfile.TemporaryDirectory() as temporary_dir:

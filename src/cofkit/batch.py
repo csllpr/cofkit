@@ -151,9 +151,6 @@ class BatchGenerationConfig:
     embedding_config: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     engine_config: COFEngineConfig = field(default_factory=COFEngineConfig)
     optimizer_config: OptimizerConfig = field(default_factory=OptimizerConfig)
-    # Attach (and rank by) the legacy event-count heuristic score. Disabled by
-    # default: candidates get score=None and are ranked by geometry residual.
-    enable_legacy_scoring: bool = False
 
 
 @dataclass(frozen=True)
@@ -3727,19 +3724,18 @@ class BatchStructureGenerator:
         extra_flags: tuple[str, ...] = (),
     ) -> Candidate:
         optimization = self.optimizer.optimize(outcome, embedding.state, monomer_specs, templates)
-        scoring = self.scorer.score(outcome, optimization.state, monomer_specs, templates)
+        score_metadata = self.scorer.scoring_metadata(outcome, optimization.state, monomer_specs, templates)
 
         flags: list[str] = list(extra_flags)
         if outcome.unreacted_motifs:
             flags.append(f"unreacted_motifs:{len(outcome.unreacted_motifs)}")
         if outcome.assignment_plan.net_plan.topology is None:
             flags.append("no_topology_hint")
-        if project.stacking_mode == "disabled":
-            flags.append("stacking_disabled")
+        flags.append("stacking_disabled")
 
         candidate = Candidate(
             id=candidate_id,
-            score=scoring.total if self.config.enable_legacy_scoring else None,
+            score=None,
             state=optimization.state,
             events=outcome.events,
             flags=tuple(flags),
@@ -3747,7 +3743,6 @@ class BatchStructureGenerator:
                 "graph_summary": graph.summary(),
                 "target_topologies": project.target_topologies,
                 "allowed_reactions": project.allowed_reactions,
-                "stacking_mode": project.stacking_mode,
                 "net_plan": {
                     "topology": outcome.assignment_plan.net_plan.topology.id
                     if outcome.assignment_plan.net_plan.topology is not None
@@ -3763,13 +3758,7 @@ class BatchStructureGenerator:
                 },
                 "embedding": dict(embedding.metadata),
                 "optimization": dict(optimization.metrics),
-                "scoring_mode": "legacy" if self.config.enable_legacy_scoring else "residual",
-                **(
-                    {"score_breakdown": dict(scoring.breakdown)}
-                    if self.config.enable_legacy_scoring
-                    else {}
-                ),
-                "score_metadata": dict(scoring.metadata),
+                "score_metadata": score_metadata,
             },
         )
         return annotate_post_build_conversions(
@@ -4271,12 +4260,6 @@ class BatchStructureGenerator:
                 "graph_summary": dict(candidate.metadata["graph_summary"]),
                 "embedding": dict(candidate.metadata["embedding"]),
                 "optimization": dict(candidate.metadata["optimization"]),
-                **(
-                    {"score_breakdown": dict(candidate.metadata["score_breakdown"])}
-                    if "score_breakdown" in candidate.metadata
-                    else {}
-                ),
-                "scoring_mode": str(candidate.metadata.get("scoring_mode", "residual")),
                 "score_metadata": dict(candidate.metadata["score_metadata"]),
                 "pair_mode": pair_mode,
                 "topology_rank": topology_rank,
@@ -5500,7 +5483,7 @@ class BatchStructureGenerator:
             lines.append("- No successful pairs were generated.")
         else:
             for result in summary.top_results[:10]:
-                score_text = f"{result.score:.6f}" if result.score is not None else "n/a (legacy scoring disabled)"
+                score_text = f"{result.score:.6f}" if result.score is not None else "n/a"
                 lines.append(
                     f"- `{result.structure_id}` ({result.pair_mode}) score `{score_text}` topology `{result.topology_id}`"
                 )

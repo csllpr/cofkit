@@ -210,23 +210,6 @@ class PlannerAndSolverTests(unittest.TestCase):
             ).net_planner.shape_aware_topology_filter
         )
 
-    def test_ring_planner_assigns_virtual_three_connected_topology(self):
-        precursor = MonomerSpec(
-            id="diboronic",
-            name="ditopic boronic precursor",
-            motifs=(
-                ReactiveMotif(id="b1", kind="boronic_acid", atom_ids=(0,), frame=Frame.xy()),
-                ReactiveMotif(id="b2", kind="boronic_acid", atom_ids=(1,), frame=Frame.xy()),
-            ),
-        )
-        template = ReactionLibrary.builtin().get("boroxine_trimerization")
-
-        plan = NetPlanner().propose((precursor,), (template,), "2D")[0]
-
-        self.assertEqual(plan.topology.id, "hcb")
-        self.assertEqual(plan.metadata["planning_mode"], "virtual-node-topology")
-        self.assertEqual(plan.metadata["product_node_connectivity"], 3)
-
 
 class EngineTests(unittest.TestCase):
     def test_imine_project_gets_topology_guided_candidate(self):
@@ -257,45 +240,10 @@ class EngineTests(unittest.TestCase):
         best = engine.run(project).top(1)[0]
 
         self.assertEqual(len(best.events), 3)
-        # The legacy event-count score is disabled by default.
         self.assertIsNone(best.score)
-        self.assertEqual(best.metadata["scoring_mode"], "residual")
-        self.assertNotIn("score_breakdown", best.metadata)
         self.assertEqual(best.metadata["graph_summary"]["n_reaction_events"], 3)
         self.assertEqual(best.metadata["net_plan"]["topology"], "car")
         self.assertNotIn("no_topology_hint", best.flags)
-
-    def test_imine_project_legacy_scoring_restores_total_score(self):
-        tri_amine = MonomerSpec(
-            id="tapb",
-            name="TAPB-like triamine",
-            motifs=(
-                ReactiveMotif(id="n1", kind="amine", atom_ids=(1,), frame=Frame.xy()),
-                ReactiveMotif(id="n2", kind="amine", atom_ids=(2,), frame=Frame.yz()),
-                ReactiveMotif(id="n3", kind="amine", atom_ids=(3,), frame=Frame.zx()),
-            ),
-        )
-        tri_aldehyde = MonomerSpec(
-            id="tfp",
-            name="TFP-like trialdehyde",
-            motifs=(
-                ReactiveMotif(id="c1", kind="aldehyde", atom_ids=(4,), frame=Frame.xy()),
-                ReactiveMotif(id="c2", kind="aldehyde", atom_ids=(5,), frame=Frame.yz()),
-                ReactiveMotif(id="c3", kind="aldehyde", atom_ids=(6,), frame=Frame.zx()),
-            ),
-        )
-        project = COFProject(
-            monomers=(tri_amine, tri_aldehyde),
-            allowed_reactions=("imine_bridge",),
-            target_dimensionality="2D",
-        )
-        engine = COFEngine(config=COFEngineConfig(enable_legacy_scoring=True))
-        best = engine.run(project).top(1)[0]
-
-        self.assertIsNotNone(best.score)
-        self.assertGreater(best.score, 30.0)
-        self.assertEqual(best.metadata["scoring_mode"], "legacy")
-        self.assertIn("score_breakdown", best.metadata)
 
     def test_ring_forming_project_uses_virtual_node_topology(self):
         diboronic = MonomerSpec(

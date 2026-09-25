@@ -227,7 +227,6 @@ class PostBuildConversionTests(unittest.TestCase):
             )
             self.assertIsNotNone(sulfur_world)
             self.assertEqual(event_geometry["sulfur_opposite_bend"], 1.0)
-            self.assertEqual(event_geometry["local_relaxation_applied"], 0.0)
             self.assertLess(event_geometry["actual_aldehyde_anchor_c_distance"], 1.6)
             self.assertLess(event_geometry["actual_carbon_s_distance"], 2.0)
             self.assertLess(event_geometry["actual_ortho_s_distance"], 2.5)

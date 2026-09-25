@@ -178,7 +178,7 @@ from .post_build_conversions import (
 from .product_graph import PeriodicProductGraph
 from .reaction_realization import ReactionEventRealizationRegistry, ReactionRealizer
 from .reactions import ReactionLibrary
-from .scoring import BridgeEventMetrics, BridgeGeometryReport, CandidateScorer, ScoreResult
+from .scoring import BridgeEventMetrics, BridgeGeometryReport, CandidateScorer
 from .search import AssignmentOutcome, AssignmentSolver
 from .topologies import (
     BuiltinTopologyFallback,
@@ -371,7 +371,6 @@ __all__ = [
     "ReactionRealizer",
     "ReactionLibrary",
     "ReactionTemplate",
-    "ScoreResult",
     "SUPPORTED_RASPA_BACKENDS",
     "TopologyHint",
     "TopologyDefinition",

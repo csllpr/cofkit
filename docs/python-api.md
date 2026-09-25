@@ -33,7 +33,7 @@ best = COFEngine().run(project).top(1)[0]
 write_candidate_cif("out/tapb_tfb_hcb.cif", best, project.monomers)
 ```
 
-`COFEngine` / `COFProject.stacking_mode` should remain `"disabled"`. For ring-forming projects, use `COFProject.stacking_ids=("AA", "AB")`; binary-bridge stacking remains the post-build registry path exposed by `BatchStructureGenerator` and CLI `--stacking`.
+`COFEngine` performs no stacking exploration; open-ended stacking search is out of scope. For ring-forming projects, use `COFProject.stacking_ids=("AA", "AB")`; binary-bridge stacking remains the post-build registry path exposed by `BatchStructureGenerator` and CLI `--stacking`.
 
 ## RingFormingStructureGenerator
 
@@ -104,11 +104,11 @@ summaries, candidates, attempted = generator.generate_monomer_pair_candidates(
 print("attempted:", attempted)
 for summary in summaries:
     # Summaries are returned best-first by mean bridge-geometry residual.
-    # summary.score is None unless legacy scoring is enabled.
+    # summary.score is always None.
     print(summary.topology_id, summary.cif_path)
 ```
 
-Candidates and summaries carry `metadata["scoring_mode"]` (`"residual"` by default). The deprecated event-count heuristic score can be restored with `BatchGenerationConfig(enable_legacy_scoring=True)` or `--legacy-scoring` on the CLI; it then populates `summary.score` / `candidate.score` and drives ranking again.
+Candidates carry `metadata["score_metadata"]` with per-event bridge-geometry residuals (`bridge_geometry_residual`, `bridge_event_metrics`). The legacy event-count heuristic score was removed; `--legacy-scoring` is still accepted but is a deprecated no-op that warns on stderr.
 
 Restrict topology selection with:
 

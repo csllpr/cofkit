@@ -10,7 +10,7 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 
 | Item | Status | Notes |
 |---|---|---|
-| W1.1 `LayerRegistry` clearance semantics docstring | ✅ | `stacking.py:17-38`; `interlayer_clearance` canonical key; `interlayer_distance` kept as deprecated alias in metadata |
+| W1.1 `LayerRegistry` clearance semantics docstring | ✅ | `stacking.py:17-38`; `interlayer_clearance` canonical key (deprecated `interlayer_distance` metadata alias removed 2026-09-25, pre-release) |
 | W1.2 `measure_layer_z_span` shared measurer in `geometry.py` | ✅ | `LayerSpanReport` dataclass + `measure_layer_z_span()` added; projects onto `c_hat`, includes `pose.translation` |
 | W1.2 `_decorated_bex_layer_spacing` in `batch.py` uses shared measurer | ❌ | `batch.py:1869` still does `matmul_vec(rotation, position)[2]` with no `pose.translation` — root cause of C1 |
 | W1.2 `_realized_decorated_bex_layer_spacing` in `batch.py` uses shared measurer | ❌ | `batch.py:1908` still does `matmul_vec(pose.rotation_matrix, local_position)[2]` with no `pose.translation` |
@@ -39,10 +39,10 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 
 | Item | Status | Notes |
 |---|---|---|
-| W3.1 `StackingSummary` dataclass in `batch_models.py` | ✅ | All canonical fields present; deprecated alias properties `interlayer_distance` and `lateral_shift_fractional`; `to_dict()` emits both |
-| W3.1 Full metadata schema in `_stacking_metadata()` | ✅ | `stacking.py:597-634`; canonical keys plus deprecated aliases; `cell_classification`, `layer_z_span_mode`, `layer_z_span_axis`, `derivation`, `warnings` all emitted |
+| W3.1 `StackingSummary` dataclass in `batch_models.py` | ❌ dropped | Removed 2026-09-25 (audit D2/#23): never routed — `batch.py` reads the raw metadata dict |
+| W3.1 Full metadata schema in `_stacking_metadata()` | ✅ | `stacking.py` `_stacking_metadata`; canonical keys only (deprecated aliases removed 2026-09-25, pre-release); `cell_classification`, `layer_z_span_mode`, `layer_z_span_axis`, `derivation`, `warnings` all emitted |
 | W3.2 CIF `# stacking-geometry:` derivation comment | ✅ | `cif.py:548-596` `_stacking_geometry_comment()` reads from `metadata["stacking"]`; emits single-line comment with registry, basis, shift, clearance, span, c2c, contact |
-| W3.1 `StackingSummary` routed through `batch.py` summary/console output | ❌ | `batch.py:4711-4713` and `cli_build.py:641-665` not yet updated to render `StackingSummary` |
+| W3.1 `StackingSummary` routed through `batch.py` summary/console output | ❌ | Obsolete — dataclass dropped (audit D2); `batch.py` keeps reading the raw metadata dict |
 
 ---
 
@@ -98,7 +98,7 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 | 9 | Metadata + CIF carry derivation block; lammps/graspa round-trips pass | ❌ |
 | 10 | `stacking_skipped:<reason>` + stderr warning when eligibility fails | ❌ |
 | 11 | `test_ring_forming.py:214` AB assertion made setting-aware | ❌ |
-| — | `resolve_stacking_pattern` and `compute_interlayer_offset` unit tests | ✅ (`tests/test_stacking.py`, 8 tests) |
+| — | `resolve_stacking_pattern` and `compute_interlayer_offset` unit tests | ❌ dropped | Dead API deleted with its tests 2026-09-25 (audit D1/#21) |
 
 ### Docs and changelog
 

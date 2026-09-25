@@ -191,8 +191,6 @@ def measure_layer_z_span(
         ``.atoms_by_instance`` mapping ``instance_id → sequence of atoms``
         where each atom has ``.local_position``.
     """
-    from .geometry import dot, matmul_vec, add  # re-import here avoids circular
-
     z_values: list[float] = []
     used_atomistic = False
 

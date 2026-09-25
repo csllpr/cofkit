@@ -88,7 +88,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/soft_relax.py](../src/cofkit/soft_relax.py)
   - Experimental in-process clash-repair / strain-relief pass (bond springs + Urey-Bradley 1-3 restraints + ramped soft repulsion) applied to the staged CIF before validation bucketing when `BatchGenerationConfig.soft_relax` / `--soft-relax` is on; not a physical relaxation.
 - [src/cofkit/scoring.py](../src/cofkit/scoring.py)
-  - Candidate scoring and bridge-geometry metrics.
+  - Bridge-geometry residual metrics (`bridge_geometry_report`) and the `scoring_metadata` packaging consumed by the optimizer, validator, and candidate ranking. The legacy event-count heuristic score was removed.
 - [src/cofkit/validation.py](../src/cofkit/validation.py)
   - `valid` / `warning` / `needs_optimization` / `hard_invalid` / `hard_hard_invalid` triage.
 - [src/cofkit/cif.py](../src/cofkit/cif.py)

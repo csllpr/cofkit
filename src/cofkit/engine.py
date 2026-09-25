@@ -23,7 +23,6 @@ class COFProject:
     allowed_reactions: tuple[str, ...]
     target_dimensionality: str = "2D"
     target_topologies: tuple[str, ...] = ()
-    stacking_mode: str = "disabled"
     stacking_ids: tuple[str, ...] = ()
     post_build_conversions: tuple[str, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
@@ -40,9 +39,6 @@ class COFEngineConfig:
     # 4-connecting monomers. Explicit target_topologies are planned anyway and
     # report the conflict as a warning.
     shape_aware_topology_filter: bool = True
-    # Attach (and rank by) the legacy event-count heuristic score. Disabled by
-    # default: candidates get score=None and are ranked by geometry residual.
-    enable_legacy_scoring: bool = False
 
 
 class COFEngine:
@@ -75,9 +71,6 @@ class COFEngine:
         )
 
     def run(self, project: COFProject) -> CandidateEnsemble:
-        if project.stacking_mode != "disabled":
-            raise ValueError("stacking exploration is out of scope; set stacking_mode='disabled'")
-
         templates = self.reaction_library.selected(project.allowed_reactions, project.target_dimensionality)
         if not templates:
             raise ValueError("project selected no reaction templates")
@@ -171,7 +164,6 @@ class COFEngine:
                     layer_spacing=self.config.default_ring_layer_spacing,
                     optimize_geometry=True,
                     stacking_ids=project.stacking_ids,
-                    enable_legacy_scoring=self.config.enable_legacy_scoring,
                 ),
                 reaction_library=self.reaction_library,
             )
@@ -217,7 +209,6 @@ class COFEngine:
                 embedding_config=self.embedder.config,
                 engine_config=self.config,
                 optimizer_config=self.optimizer.config,
-                enable_legacy_scoring=self.config.enable_legacy_scoring,
             ),
             reaction_library=self.reaction_library,
         )
@@ -311,7 +302,9 @@ class COFEngine:
         template_map = {t.id: t for t in templates}
         embedding = self.embedder.embed(outcome, monomer_specs, template_map)
         optimization = self.optimizer.optimize(outcome, embedding.state, monomer_specs, template_map)
-        scoring = self.scorer.score(outcome, optimization.state, monomer_specs, template_map)
+        score_metadata = self.scorer.scoring_metadata(
+            outcome, optimization.state, monomer_specs, template_map
+        )
 
         flags: list[str] = []
         if outcome.unreacted_motifs:
@@ -320,14 +313,12 @@ class COFEngine:
             flags.append("no_topology_hint")
         if any(t.topology_role == "ring" for t in templates):
             flags.append("contains_ring_forming_event")
-        if project.stacking_mode == "disabled":
-            flags.append("stacking_disabled")
+        flags.append("stacking_disabled")
 
         metadata = {
             "graph_summary": graph.summary(),
             "target_topologies": project.target_topologies,
             "allowed_reactions": project.allowed_reactions,
-            "stacking_mode": project.stacking_mode,
             "net_plan": {
                 "topology": outcome.assignment_plan.net_plan.topology.id
                 if outcome.assignment_plan.net_plan.topology is not None
@@ -343,13 +334,11 @@ class COFEngine:
             },
             "embedding": dict(embedding.metadata),
             "optimization": dict(optimization.metrics),
-            "scoring_mode": "legacy" if self.config.enable_legacy_scoring else "residual",
-            **({"score_breakdown": dict(scoring.breakdown)} if self.config.enable_legacy_scoring else {}),
-            "score_metadata": dict(scoring.metadata),
+            "score_metadata": score_metadata,
         }
         candidate = Candidate(
             id=candidate_id,
-            score=scoring.total if self.config.enable_legacy_scoring else None,
+            score=None,
             state=optimization.state,
             events=outcome.events,
             flags=tuple(flags),

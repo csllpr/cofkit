@@ -11,7 +11,7 @@ The long-term direction is:
 5. initial embedding followed by a lightweight continuous optimization pass over cell scale, rigid poses, and bridge geometry
 6. ranked candidate ensembles instead of a single structure
 
-`COFProject.stacking_mode` remains `"disabled"`; open-ended stacking search is still out of scope. Named ring-forming bilayers can be requested through `COFProject.stacking_ids`, while binary-bridge stacking remains in the batch/single-pair layer. Both routes reuse the same opt-in post-build registry enumerator for eligible `2D` outputs.
+Open-ended stacking search is out of scope. Named ring-forming bilayers can be requested through `COFProject.stacking_ids`, while binary-bridge stacking remains in the batch/single-pair layer. Both routes reuse the same opt-in post-build registry enumerator for eligible `2D` outputs.
 
 ## Topology repository
 
@@ -44,7 +44,7 @@ The engine currently runs:
 4. product graph construction
 5. initial embedding
 6. dependency-free continuous optimization
-7. bridge-geometry residual evaluation and residual-based candidate ranking (the deprecated event-count heuristic score is only attached when legacy scoring is explicitly enabled)
+7. bridge-geometry residual evaluation and residual-based candidate ranking (the legacy event-count heuristic score has been removed)
 8. optional post-generation coarse validation / triage over exported CIFs
 
 The batch binary-bridge pipeline builds on top of that:

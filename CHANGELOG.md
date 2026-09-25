@@ -44,6 +44,15 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 - CIF decomposition repairs geometrically unambiguous, H-explicit quinoid imine bond-order assignments before linkage detection using constrained perfect matchings; atom valences, charges, connectivity, and periodic image records are preserved. This restores missed imine cuts and prevents residual network fragments from being reported as additional precursor species. Inconclusive or unsatisfiable assignments are left unchanged and normalization diagnostics record every changed bond. The matching re-solves each conjugated component, so C=C and C-N double bonds inside that component can be reassigned as well and `changed_bonds` typically exceeds the number of restored imine links. Among equally conservative assignments the matching prefers the double bonds on the shorter contacts, so the repaired orders and their diagnostics are a function of the contact geometry rather than of the CIF atom row order.
 
+### Removed
+
+- builder audit dead-code drops (the full decision list is `agent-docs/BUILDER_EDGE_CASE_AUDIT.md`, action items D1-D5):
+  - the dead public stacking helpers `cofkit.stacking.resolve_stacking_pattern` / `compute_interlayer_offset` (zero call sites; contradicted the live Bernal-shift enumerator) and their dedicated test file
+  - the unreachable ring-forming branch of `NetPlanner.propose` (ring projects are intercepted by `COFEngine` before the planner, and the batch planner path is binary-bridge-only), the vestigial `COFProject.stacking_mode` field (only `"disabled"` was ever accepted; the `stacking_disabled` candidate flag is still emitted), the dead `stacking.py` `_candidate_layer_z_span` reader and unreachable negative-span clamp, the `geometry.py` self-import, and the unrouted `StackingSummary` dataclass from `batch_models.py`
+  - the legacy event-count heuristic score: `CandidateScorer.score` / `ScoreResult` and the `enable_legacy_scoring` gates on `COFEngineConfig`, `BatchGenerationConfig`, and `RingFormationConfig` are gone; the live per-event residuals are now produced by `CandidateScorer.scoring_metadata`. Candidates always carry `score=None` and rank by mean bridge-geometry residual; the `score_breakdown` / `scoring_mode` metadata keys and the never-nonzero `stacking_penalty` / `stacking_considered` placeholders are dropped. `--legacy-scoring` is still accepted on the CLI as a deprecated no-op that warns on stderr
+  - the never-called benzothiazole annulation fit / local-relaxation helpers in `reaction_realization.py` and the hard-coded-`False` `local_relaxation_applied` metric (the internal conversion prototype stays internal-only)
+  - the deprecated stacking metadata alias keys `interlayer_distance` / `lateral_shift_fractional` emitted by `_stacking_metadata` — they were introduced alongside the canonical `interlayer_clearance` / `registry_shift_fractional` keys after the `2026.9.12` release and never shipped, so they are removed outright instead of kept for a release
+
 ## 2026.9.10
 
 ### Added

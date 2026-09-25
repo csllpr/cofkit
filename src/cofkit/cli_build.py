@@ -141,11 +141,7 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         "--legacy-scoring",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help=(
-            "Attach the deprecated event-count heuristic score to outputs and rank candidates by it. "
-            "Disabled by default: outputs carry score=null and candidates are ranked by mean "
-            "bridge-geometry residual."
-        ),
+        help="Deprecated no-op: the legacy event-count heuristic score was removed. Candidates always carry score=null and are ranked by mean bridge-geometry residual.",
     )
     _add_geometry_repair_arguments(parser)
 
@@ -183,7 +179,17 @@ def _add_geometry_repair_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _warn_legacy_scoring_deprecated(args: argparse.Namespace) -> None:
+    if getattr(args, "legacy_scoring", False):
+        print(
+            "warning: --legacy-scoring is deprecated and has no effect; "
+            "the legacy event-count heuristic score was removed.",
+            file=sys.stderr,
+        )
+
+
 def _configure_generator(args: argparse.Namespace, *, template_id: str | None = None) -> BatchStructureGenerator:
+    _warn_legacy_scoring_deprecated(args)
     effective_template_id = template_id or getattr(args, "template_id", None) or "imine_bridge"
     allowed_reactions = (effective_template_id,)
     return BatchStructureGenerator(
@@ -204,7 +210,6 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             repair_geometry_lmp_path=args.repair_lmp_path,
             repair_geometry_timeout_seconds=args.repair_timeout_seconds,
             soft_relax=getattr(args, "soft_relax", False),
-            enable_legacy_scoring=getattr(args, "legacy_scoring", False),
             repair_geometry_settings=LammpsOptimizationSettings(
                 forcefield="dreiding",
                 charge_model="none",
@@ -310,11 +315,7 @@ def _add_single_pair_parser(subparsers) -> None:
         "--legacy-scoring",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help=(
-            "Attach the deprecated event-count heuristic score to outputs and rank candidates by it. "
-            "Disabled by default: outputs carry score=null and candidates are ranked by mean "
-            "bridge-geometry residual."
-        ),
+        help="Deprecated no-op: the legacy event-count heuristic score was removed. Candidates always carry score=null and are ranked by mean bridge-geometry residual.",
     )
     _add_geometry_repair_arguments(parser)
     parser.set_defaults(func=_run_single_pair)
@@ -523,10 +524,7 @@ def _add_ring_forming_parser(subparsers) -> None:
         "--legacy-scoring",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help=(
-            "Attach the deprecated heuristic score (20 - ring residual) to outputs. "
-            "Disabled by default: outputs carry score=null."
-        ),
+        help="Deprecated no-op: the legacy heuristic score (20 - ring residual) was removed. Outputs always carry score=null.",
     )
     parser.set_defaults(func=_run_ring_forming)
 
@@ -574,13 +572,13 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
     except AromaticityRestoreError as exc:
         raise SystemExit(f"error: {exc}") from exc
     _warn_unconverged_monomer(monomer)
+    _warn_legacy_scoring_deprecated(args)
     generator = RingFormingStructureGenerator(
         config=RingFormationConfig(
             topology_id=args.topology,
             layer_spacing=args.layer_spacing,
             optimize_geometry=True,
             stacking_ids=tuple(args.stacking),
-            enable_legacy_scoring=getattr(args, "legacy_scoring", False),
         ),
         reaction_library=library,
     )

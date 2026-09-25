@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import fabs
 from typing import Mapping
 
 from .geometry import Vec3, add, distance, dot, matmul_vec, norm, normalize, scale, sub
 from .linkage_geometry import effective_motif_origin
 from .model import AssemblyState, MonomerSpec, ReactionTemplate
-from .planner import TopologyHint
 from .reactions import bridge_target_distance
 from .search import AssignmentOutcome
 
@@ -29,55 +28,31 @@ class BridgeEventMetrics:
 @dataclass(frozen=True)
 class BridgeGeometryReport:
     event_metrics: tuple[BridgeEventMetrics, ...] = ()
-    score: float = 0.0
     total_residual: float = 0.0
 
 
-@dataclass(frozen=True)
-class ScoreResult:
-    total: float
-    breakdown: Mapping[str, float] = field(default_factory=dict)
-    metadata: Mapping[str, object] = field(default_factory=dict)
-
-
 class CandidateScorer:
-    """Computes first-pass candidate scores from discrete assignment and initial geometry.
+    """Computes per-bridge-event geometry residuals from assignment and geometry.
 
-    .. deprecated::
-        The ``total`` produced by :meth:`score` is a legacy heuristic whose
-        magnitude is dominated by the number of reaction events in the unit
-        cell (measured correlation with event count is 1.0), so it favors
-        larger unit cells over better geometry. It is only attached to
-        candidates when legacy scoring is explicitly enabled. Ranking uses the
-        mean per-bridge-event geometry residual (see
-        ``cofkit.model.candidate_ranking_key``). The per-event
-        :meth:`bridge_geometry_report` residuals remain the live metric: they
-        drive the continuous optimizer and the coarse structure validator.
+    The per-event :meth:`bridge_geometry_report` residuals are the live metric:
+    they drive the continuous optimizer and the coarse structure validator, and
+    ranking uses the mean per-bridge-event geometry residual (see
+    ``cofkit.model.candidate_ranking_key``). :meth:`scoring_metadata` packages
+    those residuals for candidate metadata.
     """
 
-    def score(
+    def scoring_metadata(
         self,
         outcome: AssignmentOutcome,
         state: AssemblyState,
         monomer_specs: Mapping[str, MonomerSpec],
         templates: Mapping[str, ReactionTemplate],
-    ) -> ScoreResult:
+    ) -> dict[str, object]:
         topology = outcome.assignment_plan.net_plan.topology
         bridge_report = self.bridge_geometry_report(outcome, state, monomer_specs, templates)
-        components = {
-            "event_coverage": float(len(outcome.events) * 10.0),
-            "motif_consumption": float(outcome.consumed_count),
-            "topology_bonus": self._topology_bonus(topology),
-            "bridge_geometry": bridge_report.score,
-            "ring_event_prior": self._ring_event_prior(outcome, templates),
-            "unreacted_penalty": float(-2.0 * len(outcome.unreacted_motifs)),
-            "stacking_penalty": 0.0,
-        }
-        total = sum(components.values())
-        metadata = {
+        return {
             "n_unreacted_motifs": len(outcome.unreacted_motifs),
             "topology": topology.id if topology is not None else None,
-            "stacking_considered": False,
             "bridge_geometry_residual": bridge_report.total_residual,
             "bridge_event_metrics": tuple(
                 {
@@ -95,7 +70,6 @@ class CandidateScorer:
                 for metrics in bridge_report.event_metrics
             ),
         }
-        return ScoreResult(total=total, breakdown=components, metadata=metadata)
 
     def bridge_geometry_report(
         self,
@@ -105,7 +79,6 @@ class CandidateScorer:
         templates: Mapping[str, ReactionTemplate],
     ) -> BridgeGeometryReport:
         event_metrics: list[BridgeEventMetrics] = []
-        score = 0.0
         total_residual = 0.0
         for event in outcome.events:
             template = templates[event.template_id]
@@ -132,12 +105,10 @@ class CandidateScorer:
                 separation = distance(origin1, origin2)
                 target = self._target_distance(template)
                 distance_residual = fabs(separation - target)
-                score += max(0.0, 6.0 - 3.0 * distance_residual)
 
                 normal1 = matmul_vec(pose1.rotation_matrix, motif1.frame.normal)
                 normal2 = matmul_vec(pose2.rotation_matrix, motif2.frame.normal)
                 normal_alignment = max(-1.0, min(1.0, dot(normalize(normal1), normalize(normal2))))
-                score += max(0.0, normal_alignment)
 
                 bridge_vector = sub(origin2, origin1)
                 unit_vector = self._safe_normalize(bridge_vector)
@@ -174,29 +145,10 @@ class CandidateScorer:
                         total_residual=total_event_residual,
                     )
                 )
-            elif template.topology_role == "ring":
-                score += 2.0
         return BridgeGeometryReport(
             event_metrics=tuple(event_metrics),
-            score=score,
             total_residual=total_residual,
         )
-
-    def _ring_event_prior(
-        self,
-        outcome: AssignmentOutcome,
-        templates: Mapping[str, ReactionTemplate],
-    ) -> float:
-        return float(
-            sum(2.5 for event in outcome.events if templates[event.template_id].topology_role == "ring")
-        )
-
-    def _topology_bonus(self, topology: TopologyHint | None) -> float:
-        if topology is None:
-            return 0.0
-        if int(topology.metadata.get("n_node_definitions", len(topology.node_coordination) or 0)) == 1:
-            return 6.0
-        return 4.0
 
     def _target_distance(self, template: ReactionTemplate) -> float:
         return bridge_target_distance(template)

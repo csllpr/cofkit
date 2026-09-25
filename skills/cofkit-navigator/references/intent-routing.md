@@ -522,7 +522,7 @@ Choose the API by how much the user already knows:
 - Do not assume an unspecified topology means one implicit default topology; the current `single-pair` and `batch-binary-bridge` CLIs enumerate all applicable topologies unless the user passes `--no-all-topologies` or explicit `--topology` values.
 - Do not report a `shape_warnings` entry as a build failure. Explicit `--topology` / `--cofid` requests are built on purpose even when the 4-connecting node-shape classifier disagrees with the requested net; the warning is informational, and `--no-shape-aware-topology-filter` turns the detection off.
 - Do not use `--auto-detect-libraries` on `examples/default_monomers_library`.
-- Do not claim engine-level stacking exploration is supported; `COFProject.stacking_mode` remains `"disabled"`. The supported stacking surface is opt-in post-build `2D` registry enumeration through CLI `--stacking` or `BatchGenerationConfig(stacking_ids=...)`.
+- Do not claim engine-level stacking exploration is supported. The supported stacking surface is opt-in post-build `2D` registry enumeration through CLI `--stacking` or `BatchGenerationConfig(stacking_ids=...)`.
 - Do not route users to the current internal benzothiazole/sulfur-enabled conversion prototype through the public CLI.
 - Do not send legacy atomistic CIFs without `_ccdc_geom_bond_type` into `cofkit calculate lammps-optimize`.
 - Do not treat separate pure-component `graspa-isotherm` loading ratios as mixture selectivity; use `graspa-mixture` for mixed-feed selectivity.
