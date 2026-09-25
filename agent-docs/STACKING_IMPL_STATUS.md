@@ -140,3 +140,38 @@ From `STACKING_FIX_PLAN.md` §6:
 4. **W2.1 remaining classifiers** — `single_node_topologies.py:336` and `indexed_topology_layouts.py:171` still have independent `_metric_family` implementations; both should delegate to `classify_2d_cell`.
 
 5. **Docs and changelog** — all seven doc files listed above are unmodified.
+
+---
+
+## Post-audit update — 2026-09-25 (commits cf9776d, 408fbec, 6c966e8)
+
+The builder edge-case audit (`agent-docs/BUILDER_EDGE_CASE_AUDIT.md`) re-bucketed
+this plan's remaining items. Current accounting:
+
+**Implemented and kept:** W1.1 docstring; W1.2 shared measurer (helper only —
+call sites unmigrated); W1.3 `monomer_specs` + skip-with-warning (caveat: the
+`stacking_skipped:span-unavailable` flag promised in the `stacking.py:123`
+docstring is never attached — only eligibility skips tag flags); W2.1 canonical
+`classify_2d_cell` (two modules unmigrated); W2.2 setting-aware AB shift;
+**W2.3 now ✅** (test asserts the 120°-setting `(1/3, 2/3)` shift);
+W3.1 canonical metadata schema; W3.2 CIF derivation comment; W4.1 wider search
+radius only; W4.2/W4.3/W4.4 warn-only shells; W5.1 residual doubling (kept as a
+known symptom patch pending the sum-vs-mean contract, audit A9); W6 T1/T2/T5/T6.
+Hardening beyond the plan: per-candidate exception isolation in batch stacking
+expansion and narrowed exception swallowing with stderr warnings (408fbec).
+
+**Strategically cancelled** (Tier 3 drops, 6c966e8): `StackingSummary` and its
+routing (W3.1's ❌ closed by deletion — the raw dict stays the channel); the
+"kept for one release" deprecated aliases (never shipped — removed outright);
+`tests/test_stacking.py` (the only ✅ test row above — it covered the deleted
+dead API); the `stacking_considered` / `stacking_penalty` stamps (removed with
+the legacy scorer).
+
+**Awaiting implementation:** W1.2 root cause (`batch.py:1860-1877` still omits
+`pose.translation` — audit A7, highest priority); W1.4 `c_axis_semantics`;
+W2.1's two remaining classifiers (audit A8); W4.1 vdW wiring (audit #11 —
+threshold fields at `validation.py:37-41` still declared-but-unwired, docstring
+still claims the comparison); a real atomistic contact metric to replace the
+mathematically dead W4.2 check (audit #12); the proper W5.1 fix + parity test
+(audit A9); W5.2; and W7's 11 integration tests plus user-facing docs.
+Definition-of-done criteria 1-4 and 6 remain unmet.
