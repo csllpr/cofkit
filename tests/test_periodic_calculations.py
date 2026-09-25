@@ -53,14 +53,14 @@ def test_self_images_and_specific_bond_exclusion():
     )
     small.add_site(site)
     validator = CoarseStructureValidator()
-    assert validator._min_nonbonded_heavy_distance_below_cutoff(
-        small, set()
-    ) == pytest.approx(0.5)
+    assert validator._nonbonded_contact_scan(
+        small, set(), set(), set()
+    )["min_nonbonded_heavy_distance"] == pytest.approx(0.5)
     # Excluding the nearest bonded image must not hide the next periodic contact.
     exclusions = {("C", "C", (0, 0, -1)), ("C", "C", (0, 0, 1))}
-    assert validator._min_nonbonded_heavy_distance_below_cutoff(
-        small, exclusions
-    ) == pytest.approx(1)
+    assert validator._nonbonded_contact_scan(
+        small, exclusions, set(), set()
+    )["min_nonbonded_heavy_distance"] == pytest.approx(1)
 
 
 def test_image_enumeration_matches_replicated_cell():

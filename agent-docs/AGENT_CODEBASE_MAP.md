@@ -91,8 +91,10 @@ Then go straight to the module that matches the task.
   - Experimental in-process clash-repair / strain-relief pass (bond springs + Urey-Bradley 1-3 restraints + ramped soft repulsion) applied to the staged CIF before validation bucketing when `BatchGenerationConfig.soft_relax` / `--soft-relax` is on; not a physical relaxation.
 - [src/cofkit/scoring.py](../src/cofkit/scoring.py)
   - Bridge-geometry residual metrics (`bridge_geometry_report`) and the `scoring_metadata` packaging consumed by the optimizer, validator, and candidate ranking. The legacy event-count heuristic score was removed.
+- [src/cofkit/vdw.py](../src/cofkit/vdw.py)
+  - Shared vdW contact capability: the Bondi radii table (`BONDI_VDW_RADII`, explicit supported-element set; unsupported elements warn on stderr once and use `FALLBACK_VDW_RADIUS` — deliberately not the DREIDING force-field radii), the shared clash criterion (`assess_pair`: `d / (r_i + r_j) < 0.75` or, heavy-heavy only, `d < 2.2 Å`), and `min_periodic_pair_contact` (minimum cross-set contact over every lattice image within the cutoff, including both `(0,0,±1)` c galleries). Consumed by `validation.py` (coarse clash scan) and `stacking.py` (interlayer contact self-check); extend here when a new element needs an exact radius.
 - [src/cofkit/validation.py](../src/cofkit/validation.py)
-  - `valid` / `warning` / `needs_optimization` / `hard_invalid` / `hard_hard_invalid` triage.
+  - `valid` / `warning` / `needs_optimization` / `hard_invalid` / `hard_hard_invalid` triage. The contact scan (`_nonbonded_contact_scan`) applies the `vdw.py` criterion with periodic-image-aware 1-2/1-3/1-4 bond-graph exclusions (`_bond_graph_exclusions`), a severe-overlap floor for excluded pairs, and a separate hydrogen-contact metric channel.
 - [src/cofkit/cif.py](../src/cofkit/cif.py)
   - CIF export, including realized inter-monomer bonds.
 - [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)

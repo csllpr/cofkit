@@ -19,6 +19,13 @@ except ImportError:  # pragma: no cover - import guard for incomplete environmen
 from .cif_checks import cif_value_str
 from .periodic_geometry import images_within, p1_shift
 from .topologies import get_topology_hint
+from .vdw import (
+    DEFAULT_HARD_MIN_NONBONDED_PLAIN_DISTANCE,
+    DEFAULT_NONBONDED_SEARCH_RADIUS,
+    DEFAULT_SEVERE_OVERLAP_BONDED_DISTANCE,
+    DEFAULT_VDW_CLASH_RATIO,
+    assess_pair,
+)
 
 
 @dataclass(frozen=True)
@@ -32,13 +39,26 @@ class CoarseValidationThresholds:
     hard_mean_bridge_distance_residual: float = 0.60
     hard_min_bridge_distance_ratio: float = 0.70
     hard_max_bridge_distance_ratio: float = 1.60
-    min_nonbonded_heavy_distance: float = 1.05  # coarse backstop (plain-distance)
-    # W4.1: vdW-ratio threshold; flag when d / (r_vdw_i + r_vdw_j) < this value
-    min_nonbonded_heavy_vdw_ratio: float = 0.75
-    # W4.1: independent search radius for the vdW-aware clash check
-    nonbonded_heavy_search_radius: float = 3.5
-    # Warn on heavy-heavy contacts below this plain-distance backstop (Å)
-    hard_min_nonbonded_heavy_plain_distance: float = 2.2
+    # Coarse plain-distance backstop: hard clash floor for non-excluded
+    # heavy-heavy pairs, and the severe-overlap floor for graph-excluded 1-3
+    # pairs (a heavy 1-3 contact below bond-length scale means a broken graph).
+    min_nonbonded_heavy_distance: float = 1.05
+    # W4.1: primary clash criterion; flag a non-excluded pair when
+    # d / (r_vdw_i + r_vdw_j) < this value (Bondi radii from cofkit.vdw).
+    min_nonbonded_heavy_vdw_ratio: float = DEFAULT_VDW_CLASH_RATIO
+    # W4.1: search radius for the contact scan; covers the largest flaggable
+    # vdW sum in the supported table (0.75 * 2 * 2.10 = 3.15 A for Si...Si)
+    # plus margin.
+    nonbonded_heavy_search_radius: float = DEFAULT_NONBONDED_SEARCH_RADIUS
+    # Severe-overlap floor (plain distance) applied to non-excluded and to
+    # graph-excluded heavy-heavy 1-4 pairs; flags independent of the radius
+    # table.  Cis/gauche 1-4 contacts can legitimately sit below
+    # 0.75 * sum(r_vdw) (~2.55 A for C...C) but never below this floor.
+    hard_min_nonbonded_heavy_plain_distance: float = DEFAULT_HARD_MIN_NONBONDED_PLAIN_DISTANCE
+    # Severe-overlap floor for directly bonded (1-2) pairs: below this the
+    # "bond" is fused nuclei, i.e. a broken structure.  Stays below genuine
+    # heavy-atom bonds (~1.16 A for C#N) and X-H bonds (~1.0 A).
+    severe_overlap_bonded_distance: float = DEFAULT_SEVERE_OVERLAP_BONDED_DISTANCE
     min_2d_cell_area: float = 10.0
     min_3d_cell_volume: float = 20.0
     # Per-template acceptable distance windows for the realized inter-monomer
@@ -200,7 +220,7 @@ class CoarseStructureValidator:
         if cif_path is None or not cif_path.is_file():
             hard_invalid_reasons.append("cif_missing")
         else:
-            cif_metrics, cif_reasons = self._validate_cif(
+            cif_metrics, cif_reasons, cif_warnings = self._validate_cif(
                 cif_path,
                 topology_id=self._string(record.get("topology_id")),
                 stacking_metadata=stacking_metadata,
@@ -211,6 +231,7 @@ class CoarseStructureValidator:
             )
             metrics.update(cif_metrics)
             hard_invalid_reasons.extend(cif_reasons)
+            warning_reasons.extend(cif_warnings)
 
         normalized_warning_reasons = tuple(dict.fromkeys(warning_reasons))
         normalized_hard_hard_invalid_reasons = tuple(dict.fromkeys(hard_hard_invalid_reasons))
@@ -260,7 +281,7 @@ class CoarseStructureValidator:
         stacking_metadata: Mapping[str, object] | None = None,
         template_id: str | None = None,
         skip_metadata_checks: bool = False,
-    ) -> tuple[dict[str, object], tuple[str, ...]]:
+    ) -> tuple[dict[str, object], tuple[str, ...], tuple[str, ...]]:
         if gemmi is None:  # pragma: no cover - import guard for incomplete environments
             raise ModuleNotFoundError(
                 "gemmi is required for CIF-backed coarse validation. Install gemmi into this environment."
@@ -268,12 +289,13 @@ class CoarseStructureValidator:
 
         metrics: dict[str, object] = {}
         reasons: list[str] = []
+        warnings: list[str] = []
         try:
             block = gemmi.cif.read_file(str(cif_path)).sole_block()
             small = gemmi.make_small_structure_from_block(block)
         except Exception as exc:  # pragma: no cover - defensive
             metrics["cif_parse_error"] = f"{type(exc).__name__}: {exc}"
-            return metrics, ("cif_parse_error",)
+            return metrics, ("cif_parse_error",), ()
 
         cell = small.cell
         dimensionality = self._topology_dimensionality(topology_id)
@@ -300,10 +322,14 @@ class CoarseStructureValidator:
             else:
                 reasons.append("disconnected_instance_graph")
 
-        clash_distance = self._min_nonbonded_heavy_distance_below_cutoff(small, self._bonded_images(block))
-        metrics["min_nonbonded_heavy_distance"] = clash_distance
-        if clash_distance is not None and clash_distance < self.thresholds.min_nonbonded_heavy_distance:
+        contact_scan = self._nonbonded_contact_scan(small, *self._bond_graph_exclusions(block))
+        metrics.update(contact_scan)
+        if int(contact_scan["n_heavy_atom_clash_pairs"]) > 0:
             reasons.append("heavy_atom_clash")
+        if int(contact_scan["n_excluded_pair_severe_overlaps"]) > 0:
+            reasons.append("excluded_pair_severe_overlap")
+        if int(contact_scan["n_hydrogen_atom_clash_pairs"]) > 0:
+            warnings.append("hydrogen_atom_clash")
 
         if skip_metadata_checks:
             bond_window = None
@@ -321,7 +347,7 @@ class CoarseStructureValidator:
                 if min_realized < bond_window[0] or max_realized > bond_window[1]:
                     reasons.append("realized_bridge_bond_distance")
 
-        return metrics, tuple(dict.fromkeys(reasons))
+        return metrics, tuple(dict.fromkeys(reasons)), tuple(dict.fromkeys(warnings))
 
     def _realized_bridge_bond_distances(self, block) -> tuple[float, ...]:
         label_1 = block.find_loop("_geom_bond_atom_site_label_1")
@@ -428,43 +454,125 @@ class CoarseStructureValidator:
             return False
         return len(set(component_sizes)) == 1
 
-    def _bonded_images(self, block) -> set[tuple[str, str, tuple[int, int, int]]]:
+    def _bond_graph_exclusions(
+        self, block
+    ) -> tuple[
+        set[tuple[str, str, tuple[int, int, int]]],
+        set[tuple[str, str, tuple[int, int, int]]],
+        set[tuple[str, str, tuple[int, int, int]]],
+    ]:
+        """Periodic-image-aware 1-2 / 1-3 / 1-4 exclusion sets from the bond loop.
+
+        Each set holds directed ``(label, other_label, relative_image)`` triples
+        meaning "``other_label`` at ``relative_image`` is graph-related to
+        ``label`` at the home image": 1-2 from the ``_geom_bond`` loop directly,
+        1-3 from pairs of bonded neighbors around a common center (relative
+        image ``tb - ta``), and 1-4 from bond paths ``a--i--j--b`` (relative
+        image ``s_ij + tb - ta``).  The image bookkeeping mirrors
+        ``soft_relax._parse_system`` and composes correctly for bonds that
+        cross a cell boundary.
+        """
         labels1 = block.find_loop("_geom_bond_atom_site_label_1")
         labels2 = block.find_loop("_geom_bond_atom_site_label_2")
         sym1 = block.find_loop("_geom_bond_site_symmetry_1")
         sym2 = block.find_loop("_geom_bond_site_symmetry_2")
-        result = set()
+        bonded: set[tuple[str, str, tuple[int, int, int]]] = set()
+        # Directed adjacency: adjacency[x] holds (y, t) meaning "y at image t
+        # is bonded to x at the home image".
+        adjacency: dict[str, set[tuple[str, tuple[int, int, int]]]] = defaultdict(set)
         for i in range(min(len(labels1), len(labels2))):
+            label_a = cif_value_str(labels1[i])
+            label_b = cif_value_str(labels2[i])
             first = p1_shift(cif_value_str(sym1[i]) if len(sym1) else ".")
             second = p1_shift(cif_value_str(sym2[i]) if len(sym2) else ".")
-            shift = tuple(b-a for a, b in zip(first, second))
-            result.add((cif_value_str(labels1[i]), cif_value_str(labels2[i]), shift))
-            result.add((cif_value_str(labels2[i]), cif_value_str(labels1[i]), tuple(-v for v in shift)))
-        return result
+            shift = tuple(b - a for a, b in zip(first, second))
+            bonded.add((label_a, label_b, shift))
+            bonded.add((label_b, label_a, tuple(-v for v in shift)))
+            adjacency[label_a].add((label_b, shift))
+            adjacency[label_b].add((label_a, tuple(-v for v in shift)))
 
-    def _min_nonbonded_heavy_distance_below_cutoff(self, small, bonded_images) -> float | None:
-        """Search for the minimum nonbonded heavy-atom distance using a vdW-aware check.
+        excluded13: set[tuple[str, str, tuple[int, int, int]]] = set()
+        for neighbors in adjacency.values():
+            ordered = sorted(neighbors)
+            for x, (label_a, ta) in enumerate(ordered):
+                for label_b, tb in ordered[x + 1 :]:
+                    if label_a == label_b and ta == tb:
+                        continue
+                    # Relative image of b seen from a is tb - ta.
+                    relative = tuple(vb - va for va, vb in zip(ta, tb))
+                    excluded13.add((label_a, label_b, relative))
+                    excluded13.add((label_b, label_a, tuple(-v for v in relative)))
 
-        W4.1: Uses a wider search radius (``nonbonded_heavy_search_radius``, ≈3.5 Å)
-        so actual interpenetration contacts at ~2 Å are found.  Flags when
-        ``d / (r_vdw_i + r_vdw_j) < min_nonbonded_heavy_vdw_ratio``.  Falls
-        back to the original plain-distance cutoff as a coarse backstop.
+        excluded14: set[tuple[str, str, tuple[int, int, int]]] = set()
+        for label_i, neighbors_i in adjacency.items():
+            for label_j, s_ij in neighbors_i:
+                for label_a, ta in adjacency.get(label_i, ()):
+                    if label_a == label_j:
+                        continue
+                    for label_b, tb in adjacency.get(label_j, ()):
+                        if label_b == label_i:
+                            continue
+                        # Relative image of b seen from a is (s_ij + tb) - ta.
+                        relative = tuple(s + vtb - vta for s, vtb, vta in zip(s_ij, tb, ta))
+                        excluded14.add((label_a, label_b, relative))
+                        excluded14.add((label_b, label_a, tuple(-v for v in relative)))
+        return bonded, excluded13, excluded14
+
+    def _nonbonded_contact_scan(
+        self,
+        small,
+        bonded: set[tuple[str, str, tuple[int, int, int]]],
+        excluded13: set[tuple[str, str, tuple[int, int, int]]],
+        excluded14: set[tuple[str, str, tuple[int, int, int]]],
+    ) -> dict[str, object]:
+        """vdW-aware periodic contact scan with bond-graph exclusions (W4.1).
+
+        Criterion: a pair that is not graph-excluded is a clash when
+        ``d / (r_vdw_i + r_vdw_j) < min_nonbonded_heavy_vdw_ratio`` (Bondi
+        radii from ``cofkit.vdw``) or — heavy-heavy pairs only — when the
+        plain distance falls below the severe-overlap floor
+        ``hard_min_nonbonded_heavy_plain_distance`` (radius-table-independent
+        backstop).  ``nonbonded_heavy_search_radius`` is sized to cover the
+        largest flaggable vdW sum for supported elements.
+
+        Bond-graph exclusion policy (periodic-image-aware label/image triples,
+        built by ``_bond_graph_exclusions``):
+
+        * 1-2 (bonded) pairs are excluded from the ratio check; below
+          ``severe_overlap_bonded_distance`` they are reported as
+          ``excluded_pair_severe_overlap`` — a "bonded" pair at fused-nuclei
+          distance means a broken structure, and the exclusion must not hide it.
+        * 1-3 (angle) pairs are excluded from the ratio check: ordinary angle
+          neighbors (benzene 1-3 C...C at 2.42 A, H-C-H at ~1.9 A) sit below
+          the naive 0.75-ratio cutoff.  Below ``min_nonbonded_heavy_distance``
+          a heavy 1-3 pair is a severe overlap.
+        * 1-4 (torsion) pairs are excluded from the ratio check: cis/gauche
+          torsion contacts legitimately sit below 0.75 * sum(r_vdw).  They
+          remain subject to the severe-overlap floor —
+          ``hard_min_nonbonded_heavy_plain_distance`` for heavy-heavy 1-4
+          pairs, ``min_nonbonded_heavy_distance`` for hydrogen-involving ones
+          (eclipsed X-H...H-C torsion contacts can sit near 2.3 A).
+
+        Hydrogen-involving contacts are reported in a separate metric channel
+        (``min_nonbonded_hydrogen_*``) and flagged as the warning reason
+        ``hydrogen_atom_clash`` rather than ``heavy_atom_clash``.
         """
-        # Independent search radius — wide enough to catch real clashes
-        search_radius = self.thresholds.nonbonded_heavy_search_radius
-        cutoff = self.thresholds.min_nonbonded_heavy_distance  # coarse backstop
-        search = gemmi.NeighborSearch(small, search_radius).populate(include_h=False)
-        minimum: float | None = None
+        thresholds = self.thresholds
+        search_radius = thresholds.nonbonded_heavy_search_radius
+        search = gemmi.NeighborSearch(small, search_radius).populate(include_h=True)
+        min_heavy_distance: float | None = None
+        min_heavy_ratio: float | None = None
+        min_hydrogen_distance: float | None = None
+        min_hydrogen_ratio: float | None = None
+        heavy_clash_details: list[dict[str, object]] = []
+        hydrogen_clash_details: list[dict[str, object]] = []
+        severe_overlap_details: list[dict[str, object]] = []
         for index, site in enumerate(small.sites):
-            if site.element.is_hydrogen:
-                continue
             candidates = {(index, 0)}
             candidates.update((int(mark.atom_idx), int(mark.image_idx))
                 for mark in search.find_site_neighbors(site, min_dist=0, max_dist=search_radius))
             for other_index, image_index in candidates:
                 other = small.sites[other_index]
-                if other.element.is_hydrogen:
-                    continue
                 position = other.fract
                 image_translation = (0, 0, 0)
                 if image_index:
@@ -472,10 +580,9 @@ class CoarseStructureValidator:
                     position = op.apply(position)
                     origin = op.apply(gemmi.Fractional(0.0, 0.0, 0.0))
                     image_translation = (round(origin.x), round(origin.y), round(origin.z))
-                # Use the wider search radius so interlayer clashes (~2 Å) are found
                 for shift, distance in images_within(small.cell, site.fract, position, search_radius):
                     # Compose the NeighborSearch image with the images_within
-                    # shift so the bonded-pair lookup sees the true relative
+                    # shift so the bond-graph lookup sees the true relative
                     # image even for bonds crossing a cell boundary.
                     relative_image = (
                         image_translation[0] + shift[0],
@@ -484,11 +591,85 @@ class CoarseStructureValidator:
                     )
                     if index == other_index and relative_image == (0, 0, 0):
                         continue
-                    if (site.label, other.label, relative_image) in bonded_images:
+                    involves_hydrogen = site.element.is_hydrogen or other.element.is_hydrogen
+                    triple = (site.label, other.label, relative_image)
+                    if triple in bonded:
+                        if distance < thresholds.severe_overlap_bonded_distance:
+                            severe_overlap_details.append(
+                                self._contact_detail(site, other, relative_image, distance, None, "bonded_1-2")
+                            )
                         continue
-                    if minimum is None or distance < minimum:
-                        minimum = distance
-        return minimum
+                    if triple in excluded13:
+                        if distance < thresholds.min_nonbonded_heavy_distance:
+                            severe_overlap_details.append(
+                                self._contact_detail(site, other, relative_image, distance, None, "angle_1-3")
+                            )
+                        continue
+                    if triple in excluded14:
+                        floor = (
+                            thresholds.min_nonbonded_heavy_distance
+                            if involves_hydrogen
+                            else thresholds.hard_min_nonbonded_heavy_plain_distance
+                        )
+                        if distance < floor:
+                            severe_overlap_details.append(
+                                self._contact_detail(site, other, relative_image, distance, None, "torsion_1-4")
+                            )
+                        continue
+                    assessment = assess_pair(
+                        distance,
+                        str(site.element.name),
+                        str(other.element.name),
+                        ratio_threshold=thresholds.min_nonbonded_heavy_vdw_ratio,
+                        plain_floor=thresholds.hard_min_nonbonded_heavy_plain_distance,
+                    )
+                    if involves_hydrogen:
+                        if min_hydrogen_distance is None or distance < min_hydrogen_distance:
+                            min_hydrogen_distance = distance
+                        if min_hydrogen_ratio is None or assessment.vdw_ratio < min_hydrogen_ratio:
+                            min_hydrogen_ratio = assessment.vdw_ratio
+                        if assessment.clash:
+                            hydrogen_clash_details.append(
+                                self._contact_detail(site, other, relative_image, distance, assessment.vdw_ratio, None)
+                            )
+                    else:
+                        if min_heavy_distance is None or distance < min_heavy_distance:
+                            min_heavy_distance = distance
+                        if min_heavy_ratio is None or assessment.vdw_ratio < min_heavy_ratio:
+                            min_heavy_ratio = assessment.vdw_ratio
+                        if assessment.clash:
+                            heavy_clash_details.append(
+                                self._contact_detail(site, other, relative_image, distance, assessment.vdw_ratio, None)
+                            )
+
+        # Every contact is found once per direction; report unordered counts.
+        return {
+            "min_nonbonded_heavy_distance": min_heavy_distance,
+            "min_nonbonded_heavy_vdw_ratio": min_heavy_ratio,
+            "min_nonbonded_hydrogen_distance": min_hydrogen_distance,
+            "min_nonbonded_hydrogen_vdw_ratio": min_hydrogen_ratio,
+            "n_heavy_atom_clash_pairs": len(heavy_clash_details) // 2,
+            "heavy_atom_clash_min": min(heavy_clash_details, key=lambda item: item["vdw_ratio"], default=None),
+            "n_hydrogen_atom_clash_pairs": len(hydrogen_clash_details) // 2,
+            "hydrogen_atom_clash_min": min(hydrogen_clash_details, key=lambda item: item["vdw_ratio"], default=None),
+            "n_excluded_pair_severe_overlaps": len(severe_overlap_details) // 2,
+            "excluded_pair_severe_overlap_min": min(
+                severe_overlap_details, key=lambda item: item["distance"], default=None
+            ),
+        }
+
+    @staticmethod
+    def _contact_detail(site, other, relative_image, distance, vdw_ratio, exclusion) -> dict[str, object]:
+        detail: dict[str, object] = {
+            "labels": (str(site.label), str(other.label)),
+            "image": tuple(int(v) for v in relative_image),
+            "distance": float(distance),
+        }
+        if vdw_ratio is not None:
+            detail["vdw_ratio"] = float(vdw_ratio)
+        if exclusion is not None:
+            detail["exclusion"] = exclusion
+        return detail
 
     def _resolve_cif_path(
         self,
@@ -883,6 +1064,10 @@ def _write_classification_summary(
         f"- hard min bridge distance ratio: {thresholds.hard_min_bridge_distance_ratio:.3f}",
         f"- hard max bridge distance ratio: {thresholds.hard_max_bridge_distance_ratio:.3f}",
         f"- minimum nonbonded heavy-atom distance: {thresholds.min_nonbonded_heavy_distance:.3f} A",
+        f"- nonbonded clash vdW-ratio threshold: {thresholds.min_nonbonded_heavy_vdw_ratio:.3f}",
+        f"- nonbonded contact search radius: {thresholds.nonbonded_heavy_search_radius:.3f} A",
+        f"- heavy severe-overlap plain-distance floor: {thresholds.hard_min_nonbonded_heavy_plain_distance:.3f} A",
+        f"- bonded-pair severe-overlap floor: {thresholds.severe_overlap_bonded_distance:.3f} A",
         f"- minimum 2D cell area: {thresholds.min_2d_cell_area:.3f} A^2",
         f"- minimum 3D cell volume: {thresholds.min_3d_cell_volume:.3f} A^3",
         "",

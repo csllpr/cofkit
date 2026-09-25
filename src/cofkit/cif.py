@@ -585,8 +585,26 @@ class CIFWriter:
         parts.append(f"c={layer_count}*c2c")
         
         contact = stacking.get("min_interlayer_contact")
+        contact_mode = stacking.get("min_interlayer_contact_mode")
         if contact is not None:
-            parts.append(f"min_interlayer_contact={contact:.3g}")
+            # Atomistic measurement over the realized layer atoms (both
+            # periodic c galleries enumerated), not a monomer-center estimate.
+            extras = [f"atomistic contact, mode={contact_mode}"] if contact_mode else ["atomistic contact"]
+            atoms = stacking.get("min_interlayer_contact_atoms")
+            if atoms is not None and len(atoms) >= 2:
+                extras.append(f"atoms={atoms[0]}..{atoms[1]}")
+            image = stacking.get("min_interlayer_contact_image")
+            if image is not None:
+                extras.append(f"image={tuple(image)}")
+            involves_h = stacking.get("min_interlayer_contact_involves_hydrogen")
+            if involves_h is not None:
+                extras.append(f"involves_hydrogen={involves_h}")
+            parts.append(f"min_interlayer_contact={contact:.3g} [{'; '.join(extras)}]")
+        elif contact_mode is not None:
+            # Measurement ran but found nothing below the cutoff: a bound.
+            cutoff = stacking.get("min_interlayer_contact_cutoff")
+            bound = f">{cutoff:.3g}" if isinstance(cutoff, (int, float)) else ""
+            parts.append(f"min_interlayer_contact{bound} [atomistic contact, mode={contact_mode}; none below cutoff]")
         
         if not parts:
             return ""

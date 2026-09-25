@@ -50,10 +50,10 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 
 | Item | Status | Notes |
 |---|---|---|
-| W4.1 Wider search radius for clash detection | ✅ | `nonbonded_heavy_search_radius: float = 3.5` in `CoarseValidationThresholds`; `_min_nonbonded_heavy_distance_below_cutoff` uses it |
-| W4.1 vdW-ratio criterion `d / (r_i + r_j) < 0.75` | ⚠️ | Threshold field `min_nonbonded_heavy_vdw_ratio = 0.75` added; plain-distance backstop `hard_min_nonbonded_heavy_plain_distance = 2.2` added; but the actual per-pair vdW-radius lookup and ratio comparison are not yet wired into the loop — only the wider search radius was applied |
+| W4.1 Wider search radius for clash detection | ✅ | `nonbonded_heavy_search_radius: float = 3.5` in `CoarseValidationThresholds`; sized to cover the largest flaggable vdW sum in the Bondi table (Si...Si 3.15 Å) plus margin |
+| W4.1 vdW-ratio criterion `d / (r_i + r_j) < 0.75` | ✅ | Done 2026-09-25 (audit #11): wired in `validation.py:_nonbonded_contact_scan` over the shared Bondi table `cofkit.vdw` (not DREIDING radii) with periodic-image-aware 1-2/1-3/1-4 exclusions (`_bond_graph_exclusions`), an explicit 1-4 policy (excluded from the ratio check, heavy-heavy pairs still floored at 2.2 Å), a severe-overlap check for excluded pairs (`excluded_pair_severe_overlap`), and a separate hydrogen channel (`min_nonbonded_hydrogen_*` metrics + `hydrogen_atom_clash` warning) |
 | W4.2 `c2c > layer_z_span` self-check | ✅ | `stacking.py:204-213` warns + records when `center_to_center_distance <= layer_z_span` |
-| W4.2 `min_interlayer_contact` computed and flagged | ✅ | `_min_interlayer_contact()` at `stacking.py:552-589`; `stacking_clash` flag on `candidate.flags` when contact < 2.0 Å |
+| W4.2 `min_interlayer_contact` computed and flagged | ✅ replaced | 2026-09-25 (audit #12): the monomer-center estimate (could never fire) is replaced by `_measure_interlayer_contact` — atomistic contact over the realized layer atoms (sharing the span path's `ReactionRealizer` realization; honest `atomistic_product`/`precursor_coordinates`/`mixed` mode) across both `(0,0,±1)` c galleries via `vdw.min_periodic_pair_contact`; `stacking_clash` uses the shared vdW-ratio + 2.2 Å-floor criterion; metadata records atoms/image/vdW ratio/H involvement/cutoff; the CIF `# stacking-geometry:` comment labels the value as an atomistic contact; measurement failures warn + degrade |
 | W4.3 `stacking_skipped:<reason>` flag + stderr warning | ✅ | `stacking.py:128-143`; eligibility failures attach flag to candidate and warn on stderr |
 | W4.4 c-axis orthogonality guard | ✅ | `_c_axis_is_orthogonal()` at `stacking.py:660-673`; warns when c is not ⊥ to ab within 2° |
 
@@ -92,8 +92,8 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 | 3 | Hexagonal AB shift: vertex→pore-center in both 60° and 120° cells | ❌ |
 | 4 | `classify_2d_cell` on fitted γ=60.09° cell returns `("hexagonal", "60deg")` | ✅ | `tests/test_geometry.py::CellClassificationTests` (2026-09-25), plus a cross-module consistency test through both migrated `_metric_family` paths |
 | 5 | Ranking parity: `candidate_ranking_key` invariant under stacking expansion | ✅ | `tests/test_stacking.py` (2026-09-25, audit A9) — normalized residual + tie-breaker invariance and expanded/unexpanded ordering; the id component intentionally changes |
-| 6 | Validator flags 2.0 Å heavy-heavy nonbonded pair | ❌ |
-| 7 | Stacking self-check flags original shipped interpenetrated geometry | ❌ |
+| 6 | Validator flags 2.0 Å heavy-heavy nonbonded pair | ✅ | `tests/test_validation.py::test_validator_flags_two_angstrom_nonbonded_heavy_pair` (2026-09-25, audit #11), plus benzene / angle-chain / cis-1-4 negative controls, severe-overlap tests, and hydrogen-channel tests |
+| 7 | Stacking self-check flags original shipped interpenetrated geometry | ✅ | `tests/test_stacking.py::test_stacking_self_check_flags_interpenetrated_bilayer` (synthetic sub-vdW bilayer, 2026-09-25, audit #12) plus a cross-c-boundary gallery regression at the shared-contact level |
 | 8 | `ring_center_fractional` w≠0 warns (T1) | ❌ |
 | 9 | Metadata + CIF carry derivation block; lammps/graspa round-trips pass | ❌ |
 | 10 | `stacking_skipped:<reason>` + stderr warning when eligibility fails | ❌ |
@@ -135,7 +135,11 @@ From `STACKING_FIX_PLAN.md` §6:
    both helpers delegate to `measure_layer_z_span` along the layer normal and
    include `pose.translation`; the C1 root cause is closed.
 
-2. **W4.1 vdW-ratio loop** — `_min_nonbonded_heavy_distance_below_cutoff` has the wider search radius but does not yet compute `d / (r_vdw_i + r_vdw_j)` per pair. Threshold fields are present; the per-element radius lookup needs wiring in.
+2. ~~**W4.1 vdW-ratio loop**~~ — **done 2026-09-25** (audit #11): the ratio
+   comparison is wired into `validation.py:_nonbonded_contact_scan` over the
+   shared `cofkit.vdw` Bondi table with graph-aware exclusions; W4.2's dead
+   monomer-center check is likewise replaced by the atomistic
+   `_measure_interlayer_contact` (audit #12).
 
 3. **W7 integration tests** — tests 1–11 from the plan are all absent. Tests 1, 2, 5, and 7 directly guard the four critical flaws.
 
@@ -191,10 +195,18 @@ hack; ranking parity tests in `tests/test_stacking.py`); the finding-#16
 soft-relax keep-conditions **landed 2026-09-25** (non-converged passes keep
 the original structure; pair-list decisions evaluated at the minimum-distance
 image; clash cutoff shared with `CoarseValidationThresholds`).
-Still awaiting: W1.4 `c_axis_semantics`;
-W4.1 vdW wiring (audit #11 —
-threshold fields at `validation.py:37-41` still declared-but-unwired, docstring
-still claims the comparison); a real atomistic contact metric to replace the
-mathematically dead W4.2 check (audit #12); W5.2; and W7's remaining integration tests plus user-facing docs.
+Still awaiting: W1.4 `c_axis_semantics`; W5.2; and W7's remaining integration tests plus user-facing docs.
+~~W4.1 vdW wiring (audit #11)~~ **landed 2026-09-25** (ratio criterion + 2.2 Å
+floor wired in `validation.py:_nonbonded_contact_scan` over the new shared
+`cofkit.vdw` Bondi table with periodic-image-aware 1-2/1-3/1-4 exclusions, an
+excluded-pair severe-overlap check, and a separate hydrogen metric channel;
+negative controls for ideal benzene, ordinary angle neighbors, and cis 1-4
+contacts in `tests/test_validation.py`) and ~~a real atomistic contact metric
+to replace the mathematically dead W4.2 check (audit #12)~~ **landed
+2026-09-25** (`stacking._measure_interlayer_contact` measures realized layer
+atoms — sharing the span realization — across both `(0,0,±1)` c galleries via
+`cofkit.vdw.min_periodic_pair_contact`; `stacking_clash` aligned to the shared
+criterion; atom labels/image/H-involvement/cutoff recorded; CIF comment labels
+the value atomistic; per-candidate failure isolation).
 Definition-of-done criteria 1, 3 and 6 remain unmet; criterion 2's grep gate
 is now covered behaviorally by the `tests/test_geometry.py` span tests.

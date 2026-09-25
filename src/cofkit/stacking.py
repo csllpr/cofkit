@@ -4,7 +4,6 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from math import sqrt
 from typing import Mapping
 
 from .geometry import (
@@ -14,6 +13,7 @@ from .geometry import (
     classify_2d_cell,
     dot,
     layer_normal_axis,
+    matmul_vec,
     measure_layer_z_span,
     norm,
     safe_normalize,
@@ -21,9 +21,12 @@ from .geometry import (
 )
 from .model import AssemblyState, Candidate, Pose, ReactionEvent
 from .topologies import get_topology_hint
+from .vdw import DEFAULT_NONBONDED_SEARCH_RADIUS, min_periodic_pair_contact
 
 
 _STACKING_LAYER_SUFFIXES: tuple[str, str] = ("L0", "L1")
+
+_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -184,7 +187,14 @@ def _apply_layer_registry(
     # W1.2/W1.3: measure span fresh; use metadata only as cross-check
     cell_kind, cell_setting = _candidate_cell_classification(candidate)
     stacking_warnings: list[str] = []
-    span_report = _measure_span(candidate, monomer_specs, span_axis, axis_label=span_axis_label, warnings=stacking_warnings)
+    # Realize the product atoms once; the same realization feeds both the span
+    # measurement and the W4.2 atomistic interlayer-contact self-check.
+    base_instance_to_monomer = _string_mapping(candidate.metadata.get("instance_to_monomer"))
+    realization = _realize_candidate(candidate, monomer_specs, base_instance_to_monomer, warnings=stacking_warnings)
+    span_report = _measure_span(
+        candidate, monomer_specs, span_axis, axis_label=span_axis_label,
+        warnings=stacking_warnings, realization=realization,
+    )
     layer_z_span = span_report.span
     metadata_span = _metadata_layer_z_span(candidate)
 
@@ -374,15 +384,41 @@ def _apply_layer_registry(
         ring_validation["stacking_registry"] = registry.id
         ring_validation["layer_count"] = 2
 
-    # W4.2 self-check: compute min_interlayer_contact
-    min_contact = _min_interlayer_contact(monomer_poses, stacked_instance_to_monomer, monomer_specs, new_c, base_cell)
-    stacking_clash = False
-    if min_contact is not None and min_contact < 2.0:
-        stacking_clash = True
-        stacking_warnings.append(f"stacking clash: min_interlayer_contact={min_contact:.3f} Å < 2.0 Å")
+    # W4.2 self-check: atomistic interlayer contact between the two stacked
+    # layers, measured on the realized product atoms (the same realization as
+    # the span measurement / CIF export) across BOTH periodic c galleries
+    # (images (0,0,±1)); the displayed layer pair alone can miss the minimum.
+    # Per-candidate isolation: a measurement failure warns and degrades to
+    # "no contact metadata" rather than aborting the stacking expansion.
+    new_cell = (base_cell[0], base_cell[1], new_c)
+    contact_info: dict[str, object] | None = None
+    try:
+        contact_info = _measure_interlayer_contact(
+            monomer_poses, stacked_instance_to_monomer, monomer_specs, realization, new_cell
+        )
+    except Exception as exc:  # noqa: BLE001 - per-candidate failure isolation
+        reason = f"{type(exc).__name__}: {exc}"
+        stacking_warnings.append(f"atomistic interlayer contact measurement failed ({reason})")
         print(
             f"warning: stacking for {candidate.id!r} registry {registry.id!r}: "
-            f"min_interlayer_contact={min_contact:.3f} Å < 2.0 Å (interpenetrating layers)",
+            f"atomistic interlayer contact measurement failed ({reason}); "
+            "no contact self-check available for this variant",
+            file=sys.stderr,
+        )
+
+    stacking_clash = False
+    if contact_info is not None and contact_info.get("clash"):
+        stacking_clash = True
+        contact_atoms = contact_info["atoms"]
+        clash_detail = (
+            f"stacking clash: min_interlayer_contact={contact_info['distance']:.3f} Å "
+            f"(vdW ratio {contact_info['vdw_ratio']:.2f}, atoms {contact_atoms[0]}..{contact_atoms[1]}, "
+            f"image {contact_info['image']})"
+        )
+        stacking_warnings.append(clash_detail)
+        print(
+            f"warning: stacking for {candidate.id!r} registry {registry.id!r}: "
+            f"{clash_detail} (interpenetrating layers)",
             file=sys.stderr,
         )
 
@@ -401,8 +437,18 @@ def _apply_layer_registry(
         "comment_suffix": stacking_comment_suffix(registry),
         "source_candidate_id": candidate.id,
         "warnings": list(stacking_warnings),
-        **({"min_interlayer_contact": min_contact} if min_contact is not None else {}),
     }
+    if contact_info is not None:
+        # Atomistic measurement; None distance means "no contact below the
+        # cutoff", i.e. a lower bound, not a missing value.
+        stacking_meta["min_interlayer_contact"] = contact_info["distance"]
+        stacking_meta["min_interlayer_contact_mode"] = contact_info["mode"]
+        stacking_meta["min_interlayer_contact_cutoff"] = contact_info["cutoff"]
+        if contact_info["distance"] is not None:
+            stacking_meta["min_interlayer_contact_atoms"] = contact_info["atoms"]
+            stacking_meta["min_interlayer_contact_image"] = contact_info["image"]
+            stacking_meta["min_interlayer_contact_involves_hydrogen"] = contact_info["involves_hydrogen"]
+            stacking_meta["min_interlayer_contact_vdw_ratio"] = contact_info["vdw_ratio"]
 
     metadata = {
         **dict(candidate.metadata),
@@ -504,6 +550,40 @@ def _metadata_layer_z_span(candidate: Candidate) -> float | None:
         return None
 
 
+def _realize_candidate(
+    candidate: Candidate,
+    monomer_specs: Mapping[str, object] | None,
+    instance_to_monomer: Mapping[str, str],
+    *,
+    warnings: list[str] | None = None,
+) -> object | None:
+    """Realize the product atoms once; warn + None on failure.
+
+    The result feeds both the span measurement and the W4.2 atomistic
+    interlayer-contact self-check, so both measure the same atoms that CIF
+    export realizes.  ``None`` (no events applied or realization failure)
+    downgrades callers to precursor coordinates; failures warn on stderr.
+    """
+    if monomer_specs is None:
+        return None
+    try:
+        from .reaction_realization import ReactionRealizer
+
+        return ReactionRealizer().realize(candidate, monomer_specs, instance_to_monomer)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        if warnings is not None:
+            warnings.append(
+                f"atomistic product realization failed ({reason}); using precursor coordinates"
+            )
+        print(
+            f"warning: stacking for {getattr(candidate, 'id', '?')!r}: atomistic product realization failed "
+            f"({reason}); falling back to precursor coordinates",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _measure_span(
     candidate: Candidate,
     monomer_specs: Mapping[str, object] | None,
@@ -511,8 +591,14 @@ def _measure_span(
     *,
     axis_label: str,
     warnings: list[str] | None = None,
+    realization: object = _UNSET,
 ) -> object:
-    """Measure layer z-span using the shared geometry.measure_layer_z_span."""
+    """Measure layer z-span using the shared geometry.measure_layer_z_span.
+
+    ``realization`` may carry a pre-computed ``ReactionRealizationResult``
+    (or None) so the span and the interlayer-contact self-check share one
+    realization; the default ``_UNSET`` realizes here.
+    """
     if monomer_specs is None:
         # Fall back to the value recorded in embedding metadata; provenance
         # (mode/axis) is propagated from that metadata when present, never
@@ -540,24 +626,8 @@ def _measure_span(
     instance_to_monomer = _string_mapping(candidate.metadata.get("instance_to_monomer"))
     poses = candidate.state.monomer_poses
 
-    # Try to realize product atoms for an atomistic measurement
-    realization = None
-    try:
-        from .reaction_realization import ReactionRealizer
-        realization = ReactionRealizer().realize(
-            candidate, monomer_specs, instance_to_monomer
-        )
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
-        reason = f"{type(exc).__name__}: {exc}"
-        if warnings is not None:
-            warnings.append(
-                f"atomistic span measurement failed ({reason}); using precursor coordinates"
-            )
-        print(
-            f"warning: stacking for {getattr(candidate, 'id', '?')!r}: atomistic span measurement failed "
-            f"({reason}); falling back to precursor coordinates",
-            file=sys.stderr,
-        )
+    if realization is _UNSET:
+        realization = _realize_candidate(candidate, monomer_specs, instance_to_monomer, warnings=warnings)
 
     return measure_layer_z_span(
         poses=poses,
@@ -569,42 +639,107 @@ def _measure_span(
     )
 
 
-def _min_interlayer_contact(
+def _measure_interlayer_contact(
     monomer_poses: dict[str, Pose],
-    instance_to_monomer: dict[str, str],
+    stacked_instance_to_monomer: dict[str, str],
     monomer_specs: Mapping[str, object] | None,
-    new_c: Vec3,
-    base_cell: tuple[Vec3, Vec3, Vec3],
-) -> float | None:
-    """Estimate minimum interlayer contact distance for a self-check.
+    realization: object | None,
+    new_cell: tuple[Vec3, Vec3, Vec3],
+) -> dict[str, object] | None:
+    """Atomistic minimum interlayer contact between the two stacked layers.
 
-    Uses monomer centre positions as a quick monomer-level estimate.
-    Returns None when there are no inter-layer pairs to check.
+    Measures on the realized product atoms (the same realization the span
+    measurement and CIF export use), falling back per instance to precursor
+    coordinates; the reported ``mode`` honestly distinguishes
+    ``atomistic_product`` / ``precursor_coordinates`` / ``mixed``.  Every
+    lattice translation within the cutoff competes — including both periodic
+    galleries across the c boundary (images ``(0, 0, ±1)``), whose minimum the
+    displayed layer pair alone can miss.
+
+    Cross-layer pairs are never bonded in stacked 2D COFs, so no bond-graph
+    exclusions are applied; the clash decision uses the shared vdW-ratio
+    criterion plus the heavy-pair plain-distance backstop (``cofkit.vdw``),
+    the same criterion as validation.
+
+    Returns None when there are no atoms to measure (e.g. no monomer_specs).
+    A ``distance`` of None in the result means "no contact below the cutoff"
+    — a lower-bound statement, not a missing measurement.
     """
     if monomer_specs is None:
         return None
 
-    l0_centers: list[Vec3] = []
-    l1_centers: list[Vec3] = []
+    layer_atoms: dict[str, list[tuple[str, str, Vec3]]] = {
+        suffix: [] for suffix in _STACKING_LAYER_SUFFIXES
+    }
+    n_product = 0
+    n_precursor = 0
     for instance_id, pose in monomer_poses.items():
-        if instance_id.endswith("L0"):
-            l0_centers.append(pose.translation)
-        elif instance_id.endswith("L1"):
-            l1_centers.append(pose.translation)
+        suffix = instance_id[-2:]
+        if suffix not in layer_atoms:
+            continue
+        base_instance_id = instance_id[: -len(suffix)]
+        atoms: list[tuple[str, str, Vec3]] | None = None
+        if realization is not None:
+            realized_atoms = getattr(realization, "atoms_by_instance", {}).get(base_instance_id)
+            if realized_atoms:
+                prefix = f"{base_instance_id}_"
+                atoms = [
+                    (
+                        f"{instance_id}_{atom.label[len(prefix):]}"
+                        if atom.label.startswith(prefix)
+                        else f"{instance_id}_{atom.label}",
+                        atom.symbol,
+                        atom.local_position,
+                    )
+                    for atom in realized_atoms
+                ]
+        if atoms is None:
+            monomer_id = stacked_instance_to_monomer.get(instance_id)
+            monomer = monomer_specs.get(monomer_id) if monomer_id else None
+            if monomer is None or not getattr(monomer, "atom_symbols", ()):
+                continue
+            atoms = [
+                (f"{instance_id}_{symbol}{atom_index + 1}", symbol, position)
+                for atom_index, (symbol, position) in enumerate(
+                    zip(monomer.atom_symbols, monomer.atom_positions)
+                )
+            ]
+            n_precursor += len(atoms)
+        else:
+            n_product += len(atoms)
+        for label, symbol, local_position in atoms:
+            world = add(matmul_vec(pose.rotation_matrix, local_position), pose.translation)
+            layer_atoms[suffix].append((label, symbol, world))
 
-    if not l0_centers or not l1_centers:
+    atoms_l0 = layer_atoms[_STACKING_LAYER_SUFFIXES[0]]
+    atoms_l1 = layer_atoms[_STACKING_LAYER_SUFFIXES[1]]
+    if not atoms_l0 or not atoms_l1:
         return None
+    if n_product and n_precursor:
+        mode = "mixed"
+    elif n_product:
+        mode = "atomistic_product"
+    else:
+        mode = "precursor_coordinates"
 
-    min_dist: float | None = None
-    for p0 in l0_centers:
-        for p1 in l1_centers:
-            dx = p1[0] - p0[0]
-            dy = p1[1] - p0[1]
-            dz = p1[2] - p0[2]
-            d = sqrt(dx * dx + dy * dy + dz * dz)
-            if min_dist is None or d < min_dist:
-                min_dist = d
-    return min_dist
+    cutoff = DEFAULT_NONBONDED_SEARCH_RADIUS
+    record = min_periodic_pair_contact(new_cell, atoms_l0, atoms_l1, cutoff=cutoff)
+    info: dict[str, object] = {"mode": mode, "cutoff": cutoff}
+    if record is None:
+        info["distance"] = None
+        info["clash"] = False
+        return info
+    info.update(
+        {
+            "distance": record.distance,
+            "vdw_ratio": record.vdw_ratio,
+            "atoms": (record.label_i, record.label_j),
+            "image": record.image,
+            "involves_hydrogen": record.involves_hydrogen,
+            "clash": record.clash,
+        }
+    )
+    return info
 
 
 def _fractional_shift_in_plane(

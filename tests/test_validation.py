@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -66,14 +67,16 @@ def _write_test_cif(path: Path, *, atoms: list[tuple[str, str, float, float, flo
 
 def _write_boundary_bond_cif(path: Path) -> None:
     """Single-instance CIF with a 0.8 A bond crossing the x cell boundary
-    (symmetry 1_455) plus a genuinely distant (2.0 A) nonbonded pair."""
+    (symmetry 1_455) plus a genuinely nonbonded pair at 2.9 A — above the
+    0.75 vdW-ratio cutoff for C...C (2.55 A) and the 2.2 A severe-overlap
+    floor, so it must not be flagged."""
     _write_test_cif(
         path,
         atoms=[
             ("mol_a_C1", "C", 0.05, 0.10, 0.10),
             ("mol_a_C2", "C", 0.97, 0.10, 0.10),
             ("mol_a_C3", "C", 0.40, 0.50, 0.50),
-            ("mol_a_C4", "C", 0.40, 0.50, 0.70),
+            ("mol_a_C4", "C", 0.40, 0.50, 0.79),
         ],
         bonds=[("mol_a_C1", "mol_a_C2", ".", "1_455", 0.8)],
     )
@@ -271,7 +274,285 @@ class CoarseValidationTests(unittest.TestCase):
         self.assertIn("heavy_atom_clash", report.hard_invalid_reasons)
         self.assertLess(report.metrics["min_nonbonded_heavy_distance"], 1.05)
 
-    def test_validator_flags_out_of_window_realized_boronate_bond_as_needs_optimization(self):
+    def test_validator_flags_two_angstrom_nonbonded_heavy_pair(self):
+        """Plan W7 test 6: a 2.0 A heavy-heavy nonbonded pair must be flagged.
+
+        2.0 A / (1.7 + 1.7) A = 0.588 < 0.75 (vdW ratio criterion) and below
+        the 2.2 A severe-overlap floor; the old 1.05 A backstop missed it.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "interpenetrated.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("x1_C1", "C", 0.40, 0.50, 0.50),
+                    ("x1_C2", "C", 0.60, 0.50, 0.50),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(cif_path, structure_id="interpenetrated")
+            record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "hard_invalid")
+        self.assertIn("heavy_atom_clash", report.hard_invalid_reasons)
+        self.assertAlmostEqual(report.metrics["min_nonbonded_heavy_distance"], 2.0, places=3)
+        self.assertAlmostEqual(report.metrics["min_nonbonded_heavy_vdw_ratio"], 2.0 / 3.4, places=3)
+        self.assertEqual(report.metrics["n_heavy_atom_clash_pairs"], 1)
+        detail = report.metrics["heavy_atom_clash_min"]
+        self.assertEqual(tuple(detail["labels"]), ("x1_C1", "x1_C2"))
+        self.assertEqual(tuple(detail["image"]), (0, 0, 0))
+
+    def test_ideal_benzene_ring_is_not_flagged(self):
+        """Negative control: ideal benzene (1.4 A bonds) has 1-3 C...C at 2.42 A,
+        below the naive 0.75 vdW-ratio cutoff (2.55 A); with bond-graph 1-3/1-4
+        exclusions nothing may be flagged."""
+        cell = 10.0
+        bond_cc = 1.397
+        bond_ch = 1.09
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "benzene.cif"
+            atoms = []
+            bonds = []
+            for k in range(6):
+                theta = math.radians(60 * k)
+                cx = 0.5 + bond_cc * math.cos(theta) / cell
+                cy = 0.5 + bond_cc * math.sin(theta) / cell
+                atoms.append((f"bz_C{k + 1}", "C", cx, cy, 0.5))
+                hx = 0.5 + (bond_cc + bond_ch) * math.cos(theta) / cell
+                hy = 0.5 + (bond_cc + bond_ch) * math.sin(theta) / cell
+                atoms.append((f"bz_H{k + 1}", "H", hx, hy, 0.5))
+            for k in range(6):
+                bonds.append((f"bz_C{k + 1}", f"bz_C{(k + 1) % 6 + 1}", ".", ".", bond_cc))
+                bonds.append((f"bz_C{k + 1}", f"bz_H{k + 1}", ".", ".", bond_ch))
+            _write_test_cif(cif_path, atoms=atoms, bonds=bonds)
+            record = _summary_record(cif_path, structure_id="benzene")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertNotIn("heavy_atom_clash", report.reasons)
+        self.assertNotIn("hydrogen_atom_clash", report.reasons)
+        self.assertNotIn("excluded_pair_severe_overlap", report.reasons)
+        # Every heavy pair is bonded / 1-3 / 1-4: no nonbonded contact remains.
+        self.assertIsNone(report.metrics["min_nonbonded_heavy_distance"])
+
+    def test_ordinary_angle_neighbors_are_not_flagged(self):
+        """Negative control: a C-C-C angle at 109.5 deg puts the 1-3 pair at
+        2.51 A — below the naive 2.55 A ratio cutoff — yet must not flag."""
+        bond = 1.54
+        half_angle = math.radians(109.5) / 2.0
+        ax, ay = 3.46, 5.0
+        bx, by = 5.0, 5.0
+        # BC makes a 109.5 deg angle with BA = (-1, 0)
+        bc_dir = (math.cos(math.radians(70.5)), math.sin(math.radians(70.5)))
+        cx = bx + bond * bc_dir[0]
+        cy = by + bond * bc_dir[1]
+        self.assertAlmostEqual(math.dist((ax, ay), (cx, cy)), 2.0 * bond * math.sin(half_angle), places=3)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "angle_chain.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("ch_C1", "C", ax / 10.0, ay / 10.0, 0.5),
+                    ("ch_C2", "C", bx / 10.0, by / 10.0, 0.5),
+                    ("ch_C3", "C", cx / 10.0, cy / 10.0, 0.5),
+                ],
+                bonds=[("ch_C1", "ch_C2", ".", ".", bond), ("ch_C2", "ch_C3", ".", ".", bond)],
+            )
+            record = _summary_record(cif_path, structure_id="angle_chain")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertNotIn("heavy_atom_clash", report.reasons)
+        self.assertIsNone(report.metrics["min_nonbonded_heavy_distance"])
+
+    def _write_cis_chain_cif(self, path: Path, angle_deg: float) -> float:
+        """Planar cis C-C-C-C chain (1.45 A bonds); returns the 1-4 distance."""
+        bond = 1.45
+        external = math.radians(180.0 - angle_deg)
+        a = (4.0, 4.0)
+        b = (a[0] + bond, a[1])
+        c = (b[0] + bond * math.cos(external), b[1] + bond * math.sin(external))
+        d = (c[0] + bond * math.cos(2.0 * external), c[1] + bond * math.sin(2.0 * external))
+        _write_test_cif(
+            path,
+            atoms=[
+                ("ch_C1", "C", a[0] / 10.0, a[1] / 10.0, 0.5),
+                ("ch_C2", "C", b[0] / 10.0, b[1] / 10.0, 0.5),
+                ("ch_C3", "C", c[0] / 10.0, c[1] / 10.0, 0.5),
+                ("ch_C4", "C", d[0] / 10.0, d[1] / 10.0, 0.5),
+            ],
+            bonds=[
+                ("ch_C1", "ch_C2", ".", ".", bond),
+                ("ch_C2", "ch_C3", ".", ".", bond),
+                ("ch_C3", "ch_C4", ".", ".", bond),
+            ],
+        )
+        return math.dist(a, d)
+
+    def test_cis_1_4_contact_below_ratio_cutoff_is_not_flagged(self):
+        """1-4 policy: cis torsion contacts legitimately sit below
+        0.75 * sum(r_vdw); excluded from the ratio check, above the 2.2 A
+        severe-overlap floor -> not flagged."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "cis_chain.cif"
+            d14 = self._write_cis_chain_cif(cif_path, 110.0)
+            self.assertGreater(d14, 2.2)  # above the severe-overlap floor
+            self.assertLess(d14, 0.75 * 3.4)  # below the naive ratio cutoff
+            record = _summary_record(cif_path, structure_id="cis_chain")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertNotIn("heavy_atom_clash", report.reasons)
+        self.assertNotIn("excluded_pair_severe_overlap", report.reasons)
+        self.assertIsNone(report.metrics["min_nonbonded_heavy_distance"])
+
+    def test_1_4_pair_below_severe_overlap_floor_is_flagged(self):
+        """1-4 policy: the exclusion never hides a severe overlap — a heavy 1-4
+        pair below the 2.2 A plain-distance floor means a broken structure."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "collapsed_chain.cif"
+            d14 = self._write_cis_chain_cif(cif_path, 100.0)
+            self.assertLess(d14, 2.2)
+            record = _summary_record(cif_path, structure_id="collapsed_chain")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "hard_invalid")
+        self.assertIn("excluded_pair_severe_overlap", report.hard_invalid_reasons)
+        self.assertEqual(report.metrics["n_excluded_pair_severe_overlaps"], 1)
+        detail = report.metrics["excluded_pair_severe_overlap_min"]
+        self.assertEqual(detail["exclusion"], "torsion_1-4")
+        self.assertAlmostEqual(detail["distance"], d14, places=3)
+
+    def test_bonded_pair_below_severe_overlap_floor_is_flagged(self):
+        """Even a bonded pair at fused-nuclei distance is a broken structure."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "fused_bond.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("f_C1", "C", 0.40, 0.50, 0.50),
+                    ("f_C2", "C", 0.45, 0.50, 0.50),
+                ],
+                bonds=[("f_C1", "f_C2", ".", ".", 0.5)],
+            )
+            record = _summary_record(cif_path, structure_id="fused_bond")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "hard_invalid")
+        self.assertIn("excluded_pair_severe_overlap", report.hard_invalid_reasons)
+        self.assertNotIn("heavy_atom_clash", report.hard_invalid_reasons)
+        self.assertEqual(report.metrics["excluded_pair_severe_overlap_min"]["exclusion"], "bonded_1-2")
+
+    def test_hydrogen_contacts_reported_in_hydrogen_channel_not_heavy_clash(self):
+        """An H...H contact below the heavy-atom thresholds lands in the
+        hydrogen metric channel as a warning, never as heavy_atom_clash."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "hydrogen_contact.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("h2_H1", "H", 0.40, 0.50, 0.50),
+                    ("h2_H2", "H", 0.57, 0.50, 0.50),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(cif_path, structure_id="hydrogen_contact")
+            record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "warning")
+        self.assertIn("hydrogen_atom_clash", report.warning_reasons)
+        self.assertNotIn("heavy_atom_clash", report.reasons)
+        self.assertIsNone(report.metrics["min_nonbonded_heavy_distance"])
+        self.assertAlmostEqual(report.metrics["min_nonbonded_hydrogen_distance"], 1.7, places=3)
+        self.assertAlmostEqual(report.metrics["min_nonbonded_hydrogen_vdw_ratio"], 1.7 / 2.4, places=3)
+
+    def test_hydrogen_contacts_skip_the_heavy_plain_distance_floor(self):
+        """A C...H contact at 2.0 A is below the 2.2 A heavy floor but that
+        floor is heavy-heavy only; and an H...H contact at 2.1 A (ratio 0.875)
+        is no clash at all."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "ch_contact.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("h2_C1", "C", 0.30, 0.50, 0.50),
+                    ("h2_H1", "H", 0.50, 0.50, 0.50),
+                    ("h2_H2", "H", 0.50, 0.71, 0.50),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(cif_path, structure_id="ch_contact")
+            record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "warning")
+        self.assertIn("hydrogen_atom_clash", report.warning_reasons)
+        self.assertNotIn("heavy_atom_clash", report.reasons)
+        # Min H contact is the 2.0 A C...H pair (ratio 0.69), not the 2.1 A H...H.
+        self.assertAlmostEqual(report.metrics["min_nonbonded_hydrogen_distance"], 2.0, places=3)
+
+    def test_hydrogen_contacts_above_ratio_cutoff_do_not_warn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "hh_ok.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("h2_H1", "H", 0.40, 0.50, 0.50),
+                    ("h2_H2", "H", 0.61, 0.50, 0.50),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(cif_path, structure_id="hh_ok")
+            record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertAlmostEqual(report.metrics["min_nonbonded_hydrogen_distance"], 2.1, places=3)
+
+    def test_unsupported_element_uses_fallback_radius_with_stderr_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "unsupported_element.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("z1_Zn1", "Zn", 0.40, 0.50, 0.50),
+                    ("z1_Zn2", "Zn", 0.64, 0.50, 0.50),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(cif_path, structure_id="unsupported_element")
+            record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                report = CoarseStructureValidator().validate_manifest_record(record)
+
+        # Fallback radius 1.70 A: 2.4 / 3.4 = 0.706 < 0.75 -> heavy clash.
+        self.assertIn("heavy_atom_clash", report.hard_invalid_reasons)
+        self.assertIn("warning: vdw: no Bondi vdW radius for element 'Zn'", stderr.getvalue())
+
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             cif_path = root / "stretched_boronate.cif"
@@ -371,7 +652,7 @@ class CoarseValidationTests(unittest.TestCase):
 
         self.assertEqual(report.classification, "valid")
         self.assertNotIn("heavy_atom_clash", report.hard_invalid_reasons)
-        self.assertAlmostEqual(report.metrics["min_nonbonded_heavy_distance"], 2.0, places=3)
+        self.assertAlmostEqual(report.metrics["min_nonbonded_heavy_distance"], 2.9, places=3)
 
     def test_soft_relax_excludes_bonded_pair_across_cell_boundary_from_clash_check(self):
         from cofkit import soft_relax
@@ -385,7 +666,7 @@ class CoarseValidationTests(unittest.TestCase):
             minimum, clashes = soft_relax._min_heavy_distance_and_clashes(system, 1.05)
 
         self.assertIsNotNone(minimum)
-        self.assertAlmostEqual(minimum, 2.0, places=3)
+        self.assertAlmostEqual(minimum, 2.9, places=3)
         self.assertEqual(clashes, 0)
 
     def test_validator_runs_clash_checks_even_when_metadata_invalid(self):

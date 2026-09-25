@@ -83,7 +83,7 @@ def test_soft_relax_relieves_clash_and_preserves_bonds(tmp_path):
     _write_clashing_cif(cif_path)
 
     validator = CoarseStructureValidator()
-    _metrics, reasons_before = validator._validate_cif(
+    _metrics, reasons_before, _warnings_before = validator._validate_cif(
         cif_path, topology_id=None, template_id=None
     )
     assert "heavy_atom_clash" in reasons_before
@@ -94,7 +94,7 @@ def test_soft_relax_relieves_clash_and_preserves_bonds(tmp_path):
     assert report.clashes_after == 0
     assert report.max_bond_drift < 0.1
 
-    _metrics, reasons_after = validator._validate_cif(
+    _metrics, reasons_after, _warnings_after = validator._validate_cif(
         Path(report.output_path), topology_id=None, template_id=None
     )
     assert "heavy_atom_clash" not in reasons_after
