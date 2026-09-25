@@ -1644,9 +1644,14 @@ class ReactionRealizer:
         target_cnn_angle = 120.0
         target_anchor_cn_angle = 120.0
         applied_count = 0
+        notes: list[str] = []
 
         for instance_id, grouped_events in azine_groups.items():
             if len(grouped_events) != 2:
+                notes.append(
+                    f"Azine bridge fit skipped for hydrazine instance {instance_id}: it participates in "
+                    f"{len(grouped_events)} reaction events (expected 2); the exported C=N-N=C segment retains its unfitted geometry."
+                )
                 continue
             hydrazine_spec = monomer_specs[grouped_events[0][1].monomer_id]
             hydrazine_pose = candidate.state.monomer_poses[instance_id]
@@ -1730,6 +1735,10 @@ class ReactionRealizer:
                 for entry in entries
             }
             if len(reactive_atom_ids) != 2:
+                notes.append(
+                    f"Azine bridge fit skipped for hydrazine instance {instance_id}: expected 2 distinct reactive "
+                    f"nitrogen atoms, found {len(reactive_atom_ids)}; the exported C=N-N=C segment retains its unfitted geometry."
+                )
                 continue
 
             current_nitrogen_positions = {
@@ -1838,6 +1847,10 @@ class ReactionRealizer:
                     target_anchor_cn_angle=target_anchor_cn_angle,
                 )
                 if fitted_world_positions is None:
+                    notes.append(
+                        f"Azine bridge fit skipped for hydrazine instance {instance_id}: the endpoint fit failed for "
+                        f"event {entry['event'].id}; the exported C=N-N=C segment retains its unfitted geometry."
+                    )
                     success = False
                     break
                 for atom_id, fitted_world in fitted_world_positions.items():
@@ -1866,11 +1879,12 @@ class ReactionRealizer:
                     )
             applied_count += 1
 
-        if applied_count == 0:
-            return ()
-        return (
-            "The exported azine product applies a coordinated bridge fit so the retained C=N-N=C segment is shortened and bent toward a ca. 120 degree geometry instead of remaining collinear.",
-        )
+        if applied_count > 0:
+            notes.insert(
+                0,
+                "The exported azine product applies a coordinated bridge fit so the retained C=N-N=C segment is shortened and bent toward a ca. 120 degree geometry instead of remaining collinear.",
+            )
+        return tuple(notes)
 
     def _fit_azine_endpoint_carbon_position(
         self,
@@ -2252,6 +2266,11 @@ class ReactionRealizer:
                 },
             }
 
+        closure_note = (
+            "The exported product applies a local imine chain-closure fit so the retained aryl-C/C=N/aryl-N segment is bent rather than left collinear."
+            if closed_positions is not None
+            else "The imine chain-closure fit could not run for this event (degenerate bridge geometry); the exported aryl-C/C=N/aryl-N segment retains its unfitted, near-collinear geometry."
+        )
         return EventRealization(
             removed_atom_ids={
                 amine_ref.monomer_instance_id: tuple(sorted(hydrogen_atom_ids)),
@@ -2270,7 +2289,7 @@ class ReactionRealizer:
             ),
             notes=(
                 "Imine realization removes the aldehyde oxygen and both amine hydrogens per reacting pair.",
-                "The exported product applies a local imine chain-closure fit so the retained aryl-C/C=N/aryl-N segment is bent rather than left collinear.",
+                closure_note,
             ),
         )
 

@@ -209,9 +209,14 @@ class RingFormingWorkflowTests(unittest.TestCase):
             self.ctf1_precursor,
             "triazine_trimerization",
         )
+        stacking_meta = stacked.metadata["stacking"]
+        cell_setting = stacking_meta["cell_classification"].get("setting")
+        # The hexagonal AB shift is cell-setting-aware (W2.2): 60° cells use
+        # (1/3, 1/3); 120° cells (built by the ring-forming path) use (1/3, 2/3).
+        self.assertEqual(cell_setting, "120deg")
         self.assertEqual(
-            stacked.metadata["stacking"]["lateral_shift_fractional"],
-            (1.0 / 3.0, 1.0 / 3.0),
+            stacking_meta["lateral_shift_fractional"],
+            (1.0 / 3.0, 2.0 / 3.0),
         )
         with tempfile.TemporaryDirectory() as temporary_dir:
             cif_path = Path(temporary_dir) / "ctf1_ab.cif"

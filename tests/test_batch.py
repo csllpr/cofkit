@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -1082,6 +1084,61 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         }
         self.assertEqual(instance_counts, {"hcb": 5, "hca": 15, "fes": 10, "fxt": 30, "srs": 20})
         self.assertTrue(all(summary.cif_path is None for summary in summaries))
+
+    def test_stacking_expansion_failure_isolates_failing_candidate(self):
+        from cofkit import batch as batch_module
+
+        real_expand = batch_module.enumerate_candidate_stackings
+
+        def flaky_expand(candidate, *, registry_ids=(), monomer_specs=None):
+            net_plan = candidate.metadata.get("net_plan", {})
+            if isinstance(net_plan, dict) and net_plan.get("topology") == "hcb":
+                raise RuntimeError("boom")
+            return real_expand(candidate, registry_ids=registry_ids, monomer_specs=monomer_specs)
+
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=2,
+                retain_top_results=5,
+                stacking_ids=("AA",),
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tpal",
+            name="tpal",
+            smiles=TEREPHTHALALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=2,
+        )
+
+        stderr = io.StringIO()
+        with (
+            patch.object(batch_module, "enumerate_candidate_stackings", flaky_expand),
+            contextlib.redirect_stderr(stderr),
+        ):
+            summaries, candidates, attempted_structures = generator.generate_pair_candidates(amine, aldehyde)
+
+        self.assertEqual(attempted_structures, 5)
+        self.assertEqual(len(summaries), 4)
+        self.assertEqual(len(candidates), 4)
+        self.assertEqual(
+            {summary.topology_id for summary in summaries},
+            {"hca", "fes", "fxt", "srs"},
+        )
+        self.assertTrue(all(summary.status == "ok" for summary in summaries))
+        for summary in summaries:
+            errors = summary.metadata["stacking_expansion_errors"]
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(list(errors.values()), ["RuntimeError: boom"])
+        self.assertIn("warning: stacking expansion failed for candidate", stderr.getvalue())
+        self.assertIn("RuntimeError: boom", stderr.getvalue())
 
     def test_four_plus_two_pair_uses_expanded_default_topology_pool(self):
         generator = BatchStructureGenerator(

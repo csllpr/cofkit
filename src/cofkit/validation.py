@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -46,6 +47,9 @@ class CoarseValidationThresholds:
     realized_bridge_bond_distance_windows: Mapping[str, tuple[float, float]] = field(
         default_factory=lambda: {"boronate_ester_bridge": (1.25, 1.65)}
     )
+    # When metadata-level hard reasons exist, skip only the metadata-dependent
+    # CIF checks (template bond windows); the geometry checks (clash scan,
+    # cell degeneracy, instance graph) always run.
     skip_cif_checks_when_metadata_invalid: bool = True
 
 
@@ -133,7 +137,9 @@ class CoarseStructureValidator:
                 hard_invalid_reasons.append("ring_geometry_invalid")
 
         bridge_metrics = tuple(self._mapping(item) for item in score_metadata.get("bridge_event_metrics", ()))
-        distance_residuals = tuple(self._distance_residual(item) for item in bridge_metrics)
+        raw_distance_residuals = tuple(self._distance_residual(item) for item in bridge_metrics)
+        distance_residuals = tuple(value for value in raw_distance_residuals if value is not None)
+        n_missing_distance_data = len(raw_distance_residuals) - len(distance_residuals)
         actual_distance_bounds = tuple(self._actual_distance_bounds(item) for item in bridge_metrics)
         if distance_residuals:
             max_residual = max(distance_residuals)
@@ -145,7 +151,9 @@ class CoarseStructureValidator:
             max_residual = 0.0
             mean_residual = 0.0
             bad_fraction = 0.0
-        metrics["n_bridge_events"] = len(distance_residuals)
+        metrics["n_bridge_events"] = len(bridge_metrics)
+        if n_missing_distance_data:
+            metrics["n_bridge_events_missing_distance_data"] = n_missing_distance_data
         metrics["max_bridge_distance_residual"] = max_residual
         metrics["mean_bridge_distance_residual"] = mean_residual
         metrics["bad_bridge_event_fraction"] = bad_fraction
@@ -191,17 +199,18 @@ class CoarseStructureValidator:
         metrics["cif_path"] = str(cif_path) if cif_path is not None else None
         if cif_path is None or not cif_path.is_file():
             hard_invalid_reasons.append("cif_missing")
-        elif not (self.thresholds.skip_cif_checks_when_metadata_invalid and hard_invalid_reasons):
+        else:
             cif_metrics, cif_reasons = self._validate_cif(
                 cif_path,
                 topology_id=self._string(record.get("topology_id")),
                 stacking_metadata=stacking_metadata,
                 template_id=self._string(metadata.get("template_id")),
+                skip_metadata_checks=bool(
+                    self.thresholds.skip_cif_checks_when_metadata_invalid and hard_invalid_reasons
+                ),
             )
             metrics.update(cif_metrics)
             hard_invalid_reasons.extend(cif_reasons)
-        else:
-            metrics["cif_checks_skipped"] = True
 
         normalized_warning_reasons = tuple(dict.fromkeys(warning_reasons))
         normalized_hard_hard_invalid_reasons = tuple(dict.fromkeys(hard_hard_invalid_reasons))
@@ -250,6 +259,7 @@ class CoarseStructureValidator:
         topology_id: str | None,
         stacking_metadata: Mapping[str, object] | None = None,
         template_id: str | None = None,
+        skip_metadata_checks: bool = False,
     ) -> tuple[dict[str, object], tuple[str, ...]]:
         if gemmi is None:  # pragma: no cover - import guard for incomplete environments
             raise ModuleNotFoundError(
@@ -295,7 +305,11 @@ class CoarseStructureValidator:
         if clash_distance is not None and clash_distance < self.thresholds.min_nonbonded_heavy_distance:
             reasons.append("heavy_atom_clash")
 
-        bond_window = self.thresholds.realized_bridge_bond_distance_windows.get(template_id or "")
+        if skip_metadata_checks:
+            bond_window = None
+            metrics["cif_metadata_checks_skipped"] = True
+        else:
+            bond_window = self.thresholds.realized_bridge_bond_distance_windows.get(template_id or "")
         if bond_window is not None:
             realized_distances = self._realized_bridge_bond_distances(block)
             metrics["realized_bridge_bond_count"] = len(realized_distances)
@@ -452,13 +466,25 @@ class CoarseStructureValidator:
                 if other.element.is_hydrogen:
                     continue
                 position = other.fract
+                image_translation = (0, 0, 0)
                 if image_index:
-                    position = small.cell.images[image_index - 1].apply(position)
+                    op = small.cell.images[image_index - 1]
+                    position = op.apply(position)
+                    origin = op.apply(gemmi.Fractional(0.0, 0.0, 0.0))
+                    image_translation = (round(origin.x), round(origin.y), round(origin.z))
                 # Use the wider search radius so interlayer clashes (~2 Å) are found
                 for shift, distance in images_within(small.cell, site.fract, position, search_radius):
-                    if index == other_index and image_index == 0 and shift == (0, 0, 0):
+                    # Compose the NeighborSearch image with the images_within
+                    # shift so the bonded-pair lookup sees the true relative
+                    # image even for bonds crossing a cell boundary.
+                    relative_image = (
+                        image_translation[0] + shift[0],
+                        image_translation[1] + shift[1],
+                        image_translation[2] + shift[2],
+                    )
+                    if index == other_index and relative_image == (0, 0, 0):
                         continue
-                    if image_index == 0 and (site.label, other.label, shift) in bonded_images:
+                    if (site.label, other.label, relative_image) in bonded_images:
                         continue
                     if minimum is None or distance < minimum:
                         minimum = distance
@@ -484,8 +510,6 @@ class CoarseStructureValidator:
             candidate = root.parent / path
             if candidate.exists():
                 return candidate
-        if path.exists():
-            return path
         return path
 
     def _topology_dimensionality(self, topology_id: str | None) -> str | None:
@@ -493,12 +517,21 @@ class CoarseStructureValidator:
             return None
         try:
             return get_topology_hint(topology_id).dimensionality
-        except Exception:
+        except KeyError:
+            return None
+        except Exception as exc:
+            print(
+                f"warning: topology dimensionality lookup failed for {topology_id!r}; "
+                f"falling back to the 3D cell-volume check: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
             return None
 
     def _instance_id(self, atom_label: str) -> str:
-        head, _separator, _tail = str(atom_label).partition("_")
-        return head or str(atom_label)
+        # Atom labels are written as "{instance_id}_{symbol}{n}" and instance
+        # ids themselves may contain underscores (e.g. "bex_node"), so split
+        # off only the trailing symbol tag. Matches decompose.py:_instance_id.
+        return str(atom_label).rsplit("_", 1)[0]
 
     def _n_unreacted_motifs(
         self,
@@ -520,14 +553,15 @@ class CoarseStructureValidator:
                     return 0
         return 0
 
-    def _distance_residual(self, item: Mapping[str, object]) -> float:
+    def _distance_residual(self, item: Mapping[str, object]) -> float | None:
         raw = item.get("distance_residual")
         if raw is not None:
             return float(raw)
         actual = item.get("actual_distance")
         target = item.get("target_distance")
         if actual is None or target is None:
-            return 0.0
+            # Missing data must not masquerade as a perfect bridge.
+            return None
         return abs(float(actual) - float(target))
 
     def _actual_distance_bounds(self, item: Mapping[str, object]) -> tuple[float, float] | None:

@@ -470,6 +470,122 @@ class ReactionRealizationTests(unittest.TestCase):
         self.assertLess(realizer._angle(left_c_world, left_n_world, right_n_world), 150.0)
         self.assertLess(realizer._angle(right_c_world, right_n_world, left_n_world), 150.0)
 
+    def test_imine_chain_closure_fit_failure_replaces_success_note(self):
+        amine = MonomerSpec(
+            id="amine",
+            name="minimal amine",
+            motifs=(
+                ReactiveMotif(
+                    id="ami1",
+                    kind="amine",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("imine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 1},
+                ),
+            ),
+            atom_symbols=("N", "C", "H", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.1, 1.0, 0.0), (0.1, -1.0, 0.0)),
+        )
+        aldehyde = MonomerSpec(
+            id="aldehyde",
+            name="minimal aldehyde",
+            motifs=(
+                ReactiveMotif(
+                    id="ald1",
+                    kind="aldehyde",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("imine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 2},
+                ),
+            ),
+            atom_symbols=("C", "O", "C", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+        )
+        # Place the aldehyde so its anchor atom coincides with the amine anchor:
+        # the degenerate bridge axis makes the chain-closure fit return None.
+        candidate = _single_event_candidate(
+            "imine_bridge",
+            MotifRef(monomer_instance_id="m1", monomer_id="amine", motif_id="ami1"),
+            MotifRef(monomer_instance_id="m2", monomer_id="aldehyde", motif_id="ald1"),
+            distance=-2.2,
+        )
+
+        result = ReactionRealizer().realize(candidate, {"amine": amine, "aldehyde": aldehyde}, {"m1": "amine", "m2": "aldehyde"})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.metadata["applied_event_count"], 1)
+        notes = " ".join(result.metadata["notes"])
+        self.assertNotIn("applies a local imine chain-closure fit", notes)
+        self.assertIn("imine chain-closure fit could not run", notes)
+        self.assertIn("near-collinear", notes)
+        # No fitted overrides: the exported bond keeps the unfitted geometry.
+        self.assertAlmostEqual(result.bonds[0].distance, 2.2, places=6)
+
+    def test_azine_fit_skip_reason_recorded_for_single_event_hydrazine(self):
+        hydrazine = MonomerSpec(
+            id="hydrazine",
+            name="minimal hydrazine",
+            motifs=(
+                ReactiveMotif(
+                    id="hyd1",
+                    kind="hydrazine",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={
+                        "reactive_atom_id": 0,
+                        "anchor_atom_id": 1,
+                        "hydrogen_atom_ids": (2, 3),
+                        "internal_nitrogen_atom_id": 1,
+                    },
+                ),
+            ),
+            atom_symbols=("N", "N", "H", "H", "H", "H"),
+            atom_positions=(
+                (0.0, 0.0, 0.0),
+                (-1.1, 0.0, 0.0),
+                (0.2, 1.0, 0.0),
+                (0.2, -1.0, 0.0),
+                (-1.3, 1.0, 0.0),
+                (-1.3, -1.0, 0.0),
+            ),
+            bonds=((0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0), (1, 4, 1.0), (1, 5, 1.0)),
+        )
+        aldehyde = MonomerSpec(
+            id="aldehyde",
+            name="minimal aldehyde",
+            motifs=(
+                ReactiveMotif(
+                    id="ald1",
+                    kind="aldehyde",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 2},
+                ),
+            ),
+            atom_symbols=("C", "O", "C", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+            bonds=((0, 1, 2.0), (0, 2, 1.0), (0, 3, 1.0)),
+        )
+        candidate = _single_event_candidate(
+            "azine_bridge",
+            MotifRef(monomer_instance_id="m1", monomer_id="hydrazine", motif_id="hyd1"),
+            MotifRef(monomer_instance_id="m2", monomer_id="aldehyde", motif_id="ald1"),
+        )
+
+        result = ReactionRealizer().realize(candidate, {"hydrazine": hydrazine, "aldehyde": aldehyde}, {"m1": "hydrazine", "m2": "aldehyde"})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        notes = " ".join(result.metadata["notes"])
+        self.assertIn("Azine bridge fit skipped for hydrazine instance m1", notes)
+        self.assertIn("1 reaction events (expected 2)", notes)
+        self.assertNotIn("coordinated bridge fit", notes)
+
     def test_keto_enamine_realization_removes_oxygen_and_one_amine_hydrogen(self):
         amine = MonomerSpec(
             id="amine",

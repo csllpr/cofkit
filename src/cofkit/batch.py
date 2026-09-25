@@ -4594,18 +4594,57 @@ class BatchStructureGenerator:
         summaries: list[BatchPairSummary] = []
         finalized_candidates: list[Candidate] = []
         local_cifs_written = 0
-        expanded_candidates = tuple(
-            stacked_candidate
-            for candidate in order_candidates(evaluation.candidates)
-            for stacked_candidate in enumerate_candidate_stackings(
-                candidate,
-                registry_ids=self.config.stacking_ids,
-                monomer_specs={first.id: first, second.id: second},
-            )
-        )
+        expanded_candidates: list[Candidate] = []
+        stacking_expansion_errors: dict[str, str] = {}
+        for candidate in order_candidates(evaluation.candidates):
+            try:
+                expanded_candidates.extend(
+                    enumerate_candidate_stackings(
+                        candidate,
+                        registry_ids=self.config.stacking_ids,
+                        monomer_specs={first.id: first, second.id: second},
+                    )
+                )
+            except Exception as exc:
+                error_text = f"{type(exc).__name__}: {exc}"
+                stacking_expansion_errors[candidate.id] = error_text
+                print(
+                    f"warning: stacking expansion failed for candidate {candidate.id} "
+                    f"({error_text}); continuing with the remaining candidates.",
+                    file=sys.stderr,
+                )
         ordered_candidates = tuple(order_candidates(expanded_candidates))
         if ordered_candidates:
             attempted_structures = max(attempted_structures, len(ordered_candidates))
+        if not ordered_candidates and stacking_expansion_errors:
+            return (
+                (
+                    BatchPairSummary(
+                        structure_id=pair_id,
+                        pair_id=pair_id,
+                        pair_mode=evaluation.pair_mode,
+                        status="generation-failed",
+                        reactant_a_record_id=first_id,
+                        reactant_b_record_id=second_id,
+                        reactant_a_connectivity=len(first.motifs),
+                        reactant_b_connectivity=len(second.motifs),
+                        metadata={
+                            "available_topologies": evaluation.available_topologies,
+                            "failed_topologies": dict(evaluation.failed_topologies),
+                            "error": "stacking expansion failed for all candidates",
+                            "stacking_expansion_errors": dict(stacking_expansion_errors),
+                            "reactant_record_ids": role_record_ids,
+                            "reactant_connectivities": role_connectivities,
+                            "reactant_node_shapes": role_node_shapes,
+                            "reactant_roles": pair.role_ids,
+                            "shape_warnings": evaluation.shape_warnings,
+                            "template_id": pair.template.id,
+                        },
+                    ),
+                ),
+                (),
+                attempted_structures,
+            )
         for topology_rank, candidate in enumerate(ordered_candidates, start=1):
             topology_id = candidate.metadata["net_plan"]["topology"]
             structure_id = f"{pair_id}__{topology_id}" if topology_id is not None else pair_id
@@ -4705,6 +4744,14 @@ class BatchStructureGenerator:
                     },
                 )
 
+            if stacking_expansion_errors:
+                summary = replace(
+                    summary,
+                    metadata={
+                        **dict(summary.metadata),
+                        "stacking_expansion_errors": dict(stacking_expansion_errors),
+                    },
+                )
             summaries.append(summary)
         return tuple(summaries), tuple(finalized_candidates), attempted_structures
 

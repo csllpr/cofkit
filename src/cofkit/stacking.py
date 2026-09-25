@@ -166,11 +166,10 @@ def _apply_layer_registry(
 
     # W1.2/W1.3: measure span fresh; use metadata only as cross-check
     cell_kind, cell_setting = _candidate_cell_classification(candidate)
-    span_report = _measure_span(candidate, monomer_specs, c_direction)
+    stacking_warnings: list[str] = []
+    span_report = _measure_span(candidate, monomer_specs, c_direction, warnings=stacking_warnings)
     layer_z_span = span_report.span
     metadata_span = _metadata_layer_z_span(candidate)
-
-    stacking_warnings: list[str] = []
 
     if span_report.mode == "unavailable":
         stacking_warnings.append("layer_z_span unavailable; using 0.0")
@@ -431,8 +430,13 @@ def _candidate_cell_classification(candidate: Candidate) -> tuple[str | None, st
             kind, setting = classify_2d_cell(cell)
             if kind != "oblique":
                 return kind, setting or None
-        except Exception:
-            pass
+        except (TypeError, ValueError) as exc:
+            print(
+                f"warning: stacking: cell classification failed for candidate "
+                f"{getattr(candidate, 'id', '?')!r} ({type(exc).__name__}: {exc}); "
+                "falling back to embedding metadata",
+                file=sys.stderr,
+            )
 
     embedding = _mapping(candidate.metadata.get("embedding"))
     raw_kind = embedding.get("cell_kind")
@@ -504,6 +508,7 @@ def _measure_span(
     candidate: Candidate,
     monomer_specs: Mapping[str, object] | None,
     c_hat: Vec3,
+    warnings: list[str] | None = None,
 ) -> object:
     """Measure layer z-span using the shared geometry.measure_layer_z_span."""
     if monomer_specs is None:
@@ -537,8 +542,17 @@ def _measure_span(
         realization = ReactionRealizer().realize(
             candidate, monomer_specs, instance_to_monomer
         )
-    except Exception:
-        pass
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        if warnings is not None:
+            warnings.append(
+                f"atomistic span measurement failed ({reason}); using precursor coordinates"
+            )
+        print(
+            f"warning: stacking for {getattr(candidate, 'id', '?')!r}: atomistic span measurement failed "
+            f"({reason}); falling back to precursor coordinates",
+            file=sys.stderr,
+        )
 
     return measure_layer_z_span(
         poses=poses,

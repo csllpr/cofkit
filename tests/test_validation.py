@@ -1,11 +1,14 @@
+import contextlib
+import io
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
-from cofkit.validation import CoarseStructureValidator, classify_batch_output
+from cofkit.validation import CoarseStructureValidator, CoarseValidationThresholds, classify_batch_output
 
 try:
     import gemmi  # noqa: F401
@@ -13,7 +16,7 @@ except ImportError:  # pragma: no cover - environment-dependent
     gemmi = None
 
 
-def _write_test_cif(path: Path, *, atoms: list[tuple[str, str, float, float, float]], bonds: list[tuple[str, str]], bond_distance: float = 1.5) -> None:
+def _write_test_cif(path: Path, *, atoms: list[tuple[str, str, float, float, float]], bonds: list[tuple], bond_distance: float = 1.5) -> None:
     lines = [
         f"data_{path.stem}",
         "_audit_creation_method 'cofkit test'",
@@ -52,9 +55,28 @@ def _write_test_cif(path: Path, *, atoms: list[tuple[str, str, float, float, flo
                 "_geom_bond_distance",
             ]
         )
-        for left, right in bonds:
-            lines.append(f"{left} {right} . . {bond_distance:.6f}")
+        for bond in bonds:
+            left, right = bond[0], bond[1]
+            sym1 = bond[2] if len(bond) > 2 else "."
+            sym2 = bond[3] if len(bond) > 3 else "."
+            distance = bond[4] if len(bond) > 4 else bond_distance
+            lines.append(f"{left} {right} {sym1} {sym2} {distance:.6f}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_boundary_bond_cif(path: Path) -> None:
+    """Single-instance CIF with a 0.8 A bond crossing the x cell boundary
+    (symmetry 1_455) plus a genuinely distant (2.0 A) nonbonded pair."""
+    _write_test_cif(
+        path,
+        atoms=[
+            ("mol_a_C1", "C", 0.05, 0.10, 0.10),
+            ("mol_a_C2", "C", 0.97, 0.10, 0.10),
+            ("mol_a_C3", "C", 0.40, 0.50, 0.50),
+            ("mol_a_C4", "C", 0.40, 0.50, 0.70),
+        ],
+        bonds=[("mol_a_C1", "mol_a_C2", ".", "1_455", 0.8)],
+    )
 
 
 def _summary_record(
@@ -305,6 +327,160 @@ class CoarseValidationTests(unittest.TestCase):
 
         self.assertEqual(report.classification, "valid")
         self.assertEqual(report.metrics["realized_bridge_bond_count"], 1)
+
+    def test_validator_parses_instance_ids_containing_underscores(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "underscore_instances.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("bex_node_B1", "B", 0.10, 0.10, 0.10),
+                    ("bex_node_B2", "B", 0.10, 0.40, 0.10),
+                    ("bex_link_O1", "O", 0.247, 0.10, 0.10),
+                    ("bex_link_O2", "O", 0.247, 0.40, 0.10),
+                ],
+                bonds=[("bex_node_B1", "bex_link_O1"), ("bex_node_B2", "bex_link_O2")],
+                bond_distance=1.47,
+            )
+            record = _summary_record(
+                cif_path,
+                structure_id="underscore_instances",
+                distance_residual=0.1,
+                actual_distance=0.55,
+                target_distance=0.55,
+                template_id="boronate_ester_bridge",
+            )
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.metrics["n_instance_nodes"], 2)
+        self.assertGreater(report.metrics["n_inter_instance_edges"], 0)
+        self.assertEqual(report.metrics["n_instance_components"], 1)
+        self.assertEqual(report.metrics["realized_bridge_bond_count"], 2)
+        self.assertEqual(report.classification, "valid")
+
+    def test_validator_excludes_bonded_pair_across_cell_boundary_from_clash_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "boundary_bond.cif"
+            _write_boundary_bond_cif(cif_path)
+            record = _summary_record(cif_path, structure_id="boundary_bond")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertNotIn("heavy_atom_clash", report.hard_invalid_reasons)
+        self.assertAlmostEqual(report.metrics["min_nonbonded_heavy_distance"], 2.0, places=3)
+
+    def test_soft_relax_excludes_bonded_pair_across_cell_boundary_from_clash_check(self):
+        from cofkit import soft_relax
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "boundary_bond.cif"
+            _write_boundary_bond_cif(cif_path)
+            block = gemmi.cif.read_file(str(cif_path)).sole_block()
+            system, _warnings = soft_relax._parse_system(block, soft_relax.SoftRelaxConfig())
+            minimum, clashes = soft_relax._min_heavy_distance_and_clashes(system, 1.05)
+
+        self.assertIsNotNone(minimum)
+        self.assertAlmostEqual(minimum, 2.0, places=3)
+        self.assertEqual(clashes, 0)
+
+    def test_validator_runs_clash_checks_even_when_metadata_invalid(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "metadata_bad_clash.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("x1_C1", "C", 0.1, 0.1, 0.1),
+                    ("x1_C2", "C", 0.15, 0.1, 0.1),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(
+                cif_path,
+                structure_id="metadata_bad_clash",
+                distance_residual=1.2,
+                actual_distance=2.4,
+            )
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "hard_invalid")
+        self.assertIn("heavy_atom_clash", report.hard_invalid_reasons)
+        self.assertNotIn("cif_checks_skipped", report.metrics)
+        self.assertLess(report.metrics["min_nonbonded_heavy_distance"], 1.05)
+
+    def test_validator_skips_only_metadata_dependent_cif_checks_when_metadata_invalid(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "metadata_bad_boronate.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("m1_B1", "B", 0.1, 0.1, 0.1),
+                    ("m2_O1", "O", 0.29, 0.1, 0.1),
+                ],
+                bonds=[("m1_B1", "m2_O1")],
+                bond_distance=1.9,
+            )
+            record = _summary_record(
+                cif_path,
+                structure_id="metadata_bad_boronate",
+                distance_residual=1.2,
+                actual_distance=2.4,
+                template_id="boronate_ester_bridge",
+            )
+
+            skipped = CoarseStructureValidator().validate_manifest_record(record)
+            enforced = CoarseStructureValidator(
+                thresholds=CoarseValidationThresholds(skip_cif_checks_when_metadata_invalid=False)
+            ).validate_manifest_record(record)
+
+        self.assertEqual(skipped.classification, "needs_optimization")
+        self.assertTrue(skipped.metrics["cif_metadata_checks_skipped"])
+        self.assertNotIn("realized_bridge_bond_distance", skipped.reasons)
+        self.assertIn("min_nonbonded_heavy_distance", skipped.metrics)
+        self.assertIn("realized_bridge_bond_distance", enforced.needs_optimization_reasons)
+
+    def test_validator_does_not_treat_missing_bridge_distance_data_as_zero_residual(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "missing_bridge_data.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("a1_C1", "C", 0.1, 0.1, 0.1),
+                    ("b1_C1", "C", 0.25, 0.1, 0.1),
+                ],
+                bonds=[("a1_C1", "b1_C1")],
+            )
+            record = _summary_record(cif_path, structure_id="missing_bridge_data")
+            record["metadata"]["score_metadata"]["bridge_event_metrics"] = [
+                {},
+                {"distance_residual": 0.8, "actual_distance": 2.1, "target_distance": 1.3},
+            ]
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.metrics["n_bridge_events"], 2)
+        self.assertEqual(report.metrics["n_bridge_events_missing_distance_data"], 1)
+        self.assertAlmostEqual(report.metrics["max_bridge_distance_residual"], 0.8)
+        self.assertAlmostEqual(report.metrics["mean_bridge_distance_residual"], 0.8)
+        self.assertIn("bridge_distance_residual_max", report.warning_reasons)
+
+    def test_topology_dimensionality_warns_on_unexpected_lookup_failure(self):
+        validator = CoarseStructureValidator()
+        self.assertIsNone(validator._topology_dimensionality("definitely-unknown-topology"))
+        stderr = io.StringIO()
+        with mock.patch("cofkit.validation.get_topology_hint", side_effect=RuntimeError("boom")):
+            with contextlib.redirect_stderr(stderr):
+                result = validator._topology_dimensionality("hcb")
+        self.assertIsNone(result)
+        self.assertIn("warning: topology dimensionality lookup failed", stderr.getvalue())
 
     def test_classifier_sorts_valid_and_invalid_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:

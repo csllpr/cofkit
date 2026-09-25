@@ -403,12 +403,24 @@ def _min_heavy_distance_and_clashes(
             if other.element.is_hydrogen:
                 continue
             position = other.fract
+            image_translation = (0, 0, 0)
             if image_index:
-                position = small.cell.images[image_index - 1].apply(position)
+                op = small.cell.images[image_index - 1]
+                position = op.apply(position)
+                origin = op.apply(gemmi.Fractional(0.0, 0.0, 0.0))
+                image_translation = (round(origin.x), round(origin.y), round(origin.z))
             for shift, distance in images_within(small.cell, site.fract, position, cutoff):
-                if index == other_index and image_index == 0 and shift == (0, 0, 0):
+                # Compose the NeighborSearch image with the images_within
+                # shift so the bonded-pair lookup sees the true relative
+                # image even for bonds crossing a cell boundary.
+                relative_image = (
+                    image_translation[0] + shift[0],
+                    image_translation[1] + shift[1],
+                    image_translation[2] + shift[2],
+                )
+                if index == other_index and relative_image == (0, 0, 0):
                     continue
-                if image_index == 0 and (site.label, other.label, shift) in system.bonded_label_images:
+                if (site.label, other.label, relative_image) in system.bonded_label_images:
                     continue
                 if distance < clash_cutoff:
                     directed_clashes += 1

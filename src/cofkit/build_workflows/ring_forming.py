@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, replace
 from math import atan2, cos, sin
 from typing import Mapping
@@ -559,9 +560,14 @@ class RingFormingStructureGenerator:
                 {monomer.id: monomer},
                 candidate.metadata["instance_to_monomer"],
             )
-        except (KeyError, ValueError):
+        except (KeyError, ValueError) as exc:
             # Coarse/synthetic MonomerSpec inputs can still be embedded even when
             # they do not carry enough atom metadata for product realization.
+            print(
+                f"warning: ring-forming embedding for candidate {candidate.id!r}: product realization failed "
+                f"({type(exc).__name__}: {exc}); annotating with coarse precursor coordinates",
+                file=sys.stderr,
+            )
             realization = None
         z_values: list[float] = []
         for instance_id, pose in candidate.state.monomer_poses.items():
