@@ -5,7 +5,8 @@ from math import cos, pi, sin, sqrt
 from pathlib import Path
 
 
-from cofkit.geometry import matmul, matmul_vec, normalize
+from cofkit.geometry import matmul, matmul_vec, normalize, rotation_from_frame_to_axes
+from cofkit.linkage_geometry import effective_motif_origin
 from cofkit import (
     AssignmentPlan,
     AssignmentOutcome,
@@ -308,6 +309,172 @@ def rotation_about_axis(axis: tuple[float, float, float], angle: float) -> tuple
             c + z * z * one_minus_c,
         ),
     )
+
+
+def build_offcenter_imine_bridge_case():
+    amine = MonomerSpec(
+        id="amine",
+        name="single amine, off-center motif",
+        motifs=(
+            ReactiveMotif(
+                id="n1",
+                kind="amine",
+                atom_ids=(1,),
+                frame=Frame(origin=(0.4, 0.2, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+            ),
+        ),
+    )
+    aldehyde = MonomerSpec(
+        id="aldehyde",
+        name="single aldehyde, off-center motif",
+        motifs=(
+            ReactiveMotif(
+                id="c1",
+                kind="aldehyde",
+                atom_ids=(2,),
+                frame=Frame(origin=(-0.5, 0.3, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+            ),
+        ),
+    )
+    template = ReactionLibrary.builtin().get("imine_bridge")
+    assignment_plan = AssignmentPlan(
+        net_plan=NetPlan(topology=None, monomer_ids=(amine.id, aldehyde.id), reaction_ids=(template.id,)),
+        slot_to_monomer={"slot1": amine.id, "slot2": aldehyde.id},
+    )
+    outcome = AssignmentOutcome(
+        assignment_plan=assignment_plan,
+        monomer_instances=(
+            MonomerInstance(id="m1", monomer_id=amine.id),
+            MonomerInstance(id="m2", monomer_id=aldehyde.id),
+        ),
+        events=(
+            ReactionEvent(
+                id="rxn1",
+                template_id=template.id,
+                participants=(
+                    MotifRef(monomer_instance_id="m1", monomer_id=amine.id, motif_id="n1"),
+                    MotifRef(monomer_instance_id="m2", monomer_id=aldehyde.id, motif_id="c1"),
+                ),
+            ),
+        ),
+        unreacted_motifs=(),
+        consumed_count=2,
+    )
+    specs = {amine.id: amine, aldehyde.id: aldehyde}
+    templates = {template.id: template}
+    base_state = AssemblyState(
+        cell=((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 8.0)),
+        monomer_poses={
+            "m1": Pose(),
+            "m2": Pose(
+                translation=(1.8, 0.1, 0.0),
+                rotation_matrix=rotation_about_axis((0.0, 0.0, 1.0), 0.4),
+            ),
+        },
+        stacking_state="disabled",
+    )
+    return specs, templates, outcome, base_state
+
+
+def build_two_event_linker_case():
+    linker = MonomerSpec(
+        id="linker",
+        name="ditopic dialdehyde, shared motif origin",
+        motifs=(
+            ReactiveMotif(
+                id="c1",
+                kind="aldehyde",
+                atom_ids=(1,),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+            ),
+            ReactiveMotif(
+                id="c2",
+                kind="aldehyde",
+                atom_ids=(2,),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+            ),
+        ),
+    )
+    amine_b = MonomerSpec(
+        id="amine_b",
+        name="amine at the c1 side",
+        motifs=(
+            ReactiveMotif(
+                id="n1",
+                kind="amine",
+                atom_ids=(1,),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+            ),
+        ),
+    )
+    amine_c = MonomerSpec(
+        id="amine_c",
+        name="amine at the c2 side",
+        motifs=(
+            ReactiveMotif(
+                id="n1",
+                kind="amine",
+                atom_ids=(1,),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+            ),
+        ),
+    )
+    template = ReactionLibrary.builtin().get("imine_bridge")
+    assignment_plan = AssignmentPlan(
+        net_plan=NetPlan(
+            topology=None,
+            monomer_ids=(linker.id, amine_b.id, amine_c.id),
+            reaction_ids=(template.id,),
+        ),
+        slot_to_monomer={"slot1": linker.id, "slot2": amine_b.id, "slot3": amine_c.id},
+    )
+    outcome = AssignmentOutcome(
+        assignment_plan=assignment_plan,
+        monomer_instances=(
+            MonomerInstance(id="mL", monomer_id=linker.id),
+            MonomerInstance(id="mB", monomer_id=amine_b.id),
+            MonomerInstance(id="mC", monomer_id=amine_c.id),
+        ),
+        events=(
+            ReactionEvent(
+                id="rxn_b",
+                template_id=template.id,
+                participants=(
+                    MotifRef(monomer_instance_id="mL", monomer_id=linker.id, motif_id="c1"),
+                    MotifRef(monomer_instance_id="mB", monomer_id=amine_b.id, motif_id="n1"),
+                ),
+            ),
+            ReactionEvent(
+                id="rxn_c",
+                template_id=template.id,
+                participants=(
+                    MotifRef(monomer_instance_id="mL", monomer_id=linker.id, motif_id="c2"),
+                    MotifRef(monomer_instance_id="mC", monomer_id=amine_c.id, motif_id="n1"),
+                ),
+            ),
+        ),
+        unreacted_motifs=(),
+        consumed_count=4,
+    )
+    specs = {linker.id: linker, amine_b.id: amine_b, amine_c.id: amine_c}
+    templates = {template.id: template}
+    # Both amines sit at exactly the 1.3 target distance along asymmetric
+    # off-axis directions, so the initial residual is purely orientational and
+    # worst-event-only steering of the linker over-rotates it away from the
+    # lower-residual event. The twisted linker pose (+5.7 deg) makes the two
+    # events disagree about the correction.
+    direction_b = (cos(math.radians(171.0)), sin(math.radians(171.0)), 0.0)
+    direction_c = (cos(math.radians(5.0)), sin(math.radians(5.0)), 0.0)
+    base_state = AssemblyState(
+        cell=((12.0, 0.0, 0.0), (0.0, 12.0, 0.0), (0.0, 0.0, 8.0)),
+        monomer_poses={
+            "mL": Pose(rotation_matrix=rotation_about_axis((0.0, 0.0, 1.0), 0.1)),
+            "mB": Pose(translation=tuple(1.3 * component for component in direction_b)),
+            "mC": Pose(translation=tuple(1.3 * component for component in direction_c)),
+        },
+        stacking_state="disabled",
+    )
+    return specs, templates, outcome, base_state
 
 
 class EmbeddingTests(unittest.TestCase):
@@ -716,6 +883,94 @@ class ScoringTests(unittest.TestCase):
             final_report.event_metrics[0].normal_misalignment_residual,
             twisted_report.event_metrics[0].normal_misalignment_residual,
         )
+
+    def test_orientation_proposal_rotates_about_attachment_point(self):
+        specs, templates, outcome, base_state = build_offcenter_imine_bridge_case()
+        optimizer = ContinuousOptimizer(scorer=CandidateScorer())
+
+        proposal = optimizer._refine_orientations(base_state, outcome, specs, templates)
+
+        event = outcome.events[0]
+        rotations_changed = False
+        for participant in event.participants:
+            instance_id = participant.monomer_instance_id
+            motif = specs[participant.monomer_id].motif_by_id(participant.motif_id)
+            local_origin = effective_motif_origin(event.template_id, specs[participant.monomer_id], motif)
+            before = optimizer._world_motif_origin(
+                base_state.cell,
+                base_state.monomer_poses[instance_id],
+                local_origin,
+                participant.periodic_image,
+            )
+            after = optimizer._world_motif_origin(
+                base_state.cell,
+                proposal.monomer_poses[instance_id],
+                local_origin,
+                participant.periodic_image,
+            )
+            for before_component, after_component in zip(before, after):
+                self.assertAlmostEqual(before_component, after_component, places=9)
+            if base_state.monomer_poses[instance_id].rotation_matrix != proposal.monomer_poses[instance_id].rotation_matrix:
+                rotations_changed = True
+        # The fixture is built so both proposals are genuine rotations; with
+        # off-center motif origins the pre-fix code (rotation applied at a
+        # fixed translation) would have displaced these attachment points.
+        self.assertTrue(rotations_changed)
+
+    def test_orientation_proposal_weights_all_incident_events(self):
+        specs, templates, outcome, base_state = build_two_event_linker_case()
+        scorer = CandidateScorer()
+        optimizer = ContinuousOptimizer(scorer=scorer)
+
+        initial_report = scorer.bridge_geometry_report(outcome, base_state, specs, templates)
+        proposal = optimizer._refine_orientations(base_state, outcome, specs, templates)
+        proposal_report = scorer.bridge_geometry_report(outcome, proposal, specs, templates)
+
+        self.assertLess(proposal_report.total_residual, initial_report.total_residual)
+
+        # Reconstruct the pre-fix behavior for the linker — steer by the single
+        # worst-residual event with the translation held fixed — and confirm
+        # that the blended, attachment-preserving proposal scores better.
+        residuals = {metrics.event_id: metrics.total_residual for metrics in initial_report.event_metrics}
+        worst_event = max(outcome.events, key=lambda event: residuals[event.id])
+        linker_participant = next(p for p in worst_event.participants if p.monomer_instance_id == "mL")
+        other_participant = next(p for p in worst_event.participants if p.monomer_instance_id != "mL")
+        linker_pose = base_state.monomer_poses["mL"]
+        other_pose = base_state.monomer_poses[other_participant.monomer_instance_id]
+        motif = specs[linker_participant.monomer_id].motif_by_id(linker_participant.motif_id)
+        origin = optimizer._world_motif_origin(
+            base_state.cell,
+            linker_pose,
+            effective_motif_origin(worst_event.template_id, specs[linker_participant.monomer_id], motif),
+            linker_participant.periodic_image,
+        )
+        other_origin = optimizer._world_motif_origin(
+            base_state.cell,
+            other_pose,
+            effective_motif_origin(
+                worst_event.template_id,
+                specs[other_participant.monomer_id],
+                specs[other_participant.monomer_id].motif_by_id(other_participant.motif_id),
+            ),
+            other_participant.periodic_image,
+        )
+        target_primary = normalize(tuple(o2 - o1 for o1, o2 in zip(origin, other_origin)))
+        worst_only_rotation = rotation_from_frame_to_axes(motif.frame, target_primary, (0.0, 0.0, 1.0))
+        worst_only_poses = dict(proposal.monomer_poses)
+        worst_only_poses["mL"] = Pose(
+            translation=linker_pose.translation,
+            rotation_matrix=worst_only_rotation,
+        )
+        worst_only_state = AssemblyState(
+            cell=base_state.cell,
+            monomer_poses=worst_only_poses,
+            torsions=base_state.torsions,
+            layer_offsets=base_state.layer_offsets,
+            stacking_state=base_state.stacking_state,
+        )
+        worst_only_report = scorer.bridge_geometry_report(outcome, worst_only_state, specs, templates)
+
+        self.assertGreater(worst_only_report.total_residual, proposal_report.total_residual)
 
 
 class EngineIntegrationTests(unittest.TestCase):
