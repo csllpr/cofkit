@@ -355,6 +355,9 @@ def _apply_layer_registry(
     if stacked_pose_details:
         embedding["poses"] = stacked_pose_details
     embedding["stacking_enabled"] = True
+    # The stacked c axis is a real periodic repeat (2·c2c along the layer
+    # normal), not the base candidate's vacuum-slab padding (W1.4).
+    embedding["c_axis_semantics"] = "periodic_bilayer"
     embedding["stacking"] = _stacking_metadata(
         registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting,
         c_axis_basis=span_axis_label, base_c_tilt_degrees=base_c_tilt_degrees,

@@ -31,7 +31,7 @@ class COFProject:
 @dataclass(frozen=True)
 class COFEngineConfig:
     default_layer_spacing: float = 8.0
-    default_ring_layer_spacing: float = 3.4
+    default_ring_layer_spacing: float = 8.0
     default_lateral_span: float = 30.0
     max_candidates: int = 16
     optimization_max_iterations: int = 8

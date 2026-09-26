@@ -9,12 +9,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from .cofid import cofid_comment_line, read_cofid_comment_from_cif
+from .cif import read_c_axis_semantics_from_cif
 from ._dreiding_reference import (
     DREIDING_FRAMEWORK_TYPE_BY_ELEMENT,
     DREIDING_PARAMETERS,
@@ -538,6 +540,14 @@ def optimize_cif_with_lammps(
     parsed = _parse_explicit_bond_cif(input_path)
     eqeq_result: EqeqChargeResult | None = None
     warnings: list[str] = []
+    if settings.relax_cell and read_c_axis_semantics_from_cif(input_path) == "vacuum_slab":
+        slab_warning = (
+            "the input CIF is labeled c-axis-semantics: vacuum_slab (a single 2D layer with vacuum padding "
+            "along c, not a stacked solid); fix box/relax can collapse the vacuum direction into a fake "
+            "stacked solid — consider --no-relax-cell or optimizing a stacked bilayer export instead"
+        )
+        warnings.append(slab_warning)
+        print(f"warning: {slab_warning}", file=sys.stderr)
     if _normalize_charge_model_name(settings.charge_model) == "eqeq":
         eqeq_result = assign_eqeq_charges_to_cif(
             input_path,

@@ -17,7 +17,7 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 | W1.2 `_annotate_ring_embedding` in `ring_forming.py` uses shared measurer | ✅ | Done 2026-09-25 (audit A7): inline loop deleted; delegates to `measure_layer_z_span` along the fitted cell's layer normal and reports `layer_z_span_mode`/`layer_z_span_axis` from the report |
 | W1.3 `enumerate_candidate_stackings` `monomer_specs` kwarg | ✅ | Keyword-only; both call sites updated: `batch.py:4600` passes `{first.id: first, second.id: second}`; `ring_forming.py:104` passes `{monomer.id: monomer}` |
 | W1.3 Silent `0.0` fallback replaced by skip-with-warning | ✅ | `stacking.py:503-550` (`_measure_span`): fresh measurement; falls back to `precursor_coordinates` mode; if unavailable records `stacking_skipped:span-unavailable` |
-| W1.4 `c_axis_semantics: "vacuum_slab"` for single-layer exports | ❌ | Not started; `RingFormationConfig.layer_spacing` and `default_ring_layer_spacing` still undocumented; no `c_axis_semantics` key emitted |
+| W1.4 `c_axis_semantics: "vacuum_slab"` for single-layer exports | ✅ | Done 2026-09-26: `RingFormationConfig.layer_spacing` / `COFEngineConfig.default_ring_layer_spacing` / CLI `--layer-spacing` unified to 8.0 Å (vacuum-slab padding, matching the embedding path); monolayer embedding metadata on both paths (plus the batch 2D builders) records `c_axis_semantics: "vacuum_slab"`, stacked exports are re-labeled `periodic_bilayer` in `_apply_layer_registry`, and the CIF writer emits `# c-axis-semantics: <label>`; `optimize_cif_with_lammps` warns on stderr when box-relax is enabled on a `vacuum_slab` CIF |
 
 ---
 
@@ -195,7 +195,13 @@ hack; ranking parity tests in `tests/test_stacking.py`); the finding-#16
 soft-relax keep-conditions **landed 2026-09-25** (non-converged passes keep
 the original structure; pair-list decisions evaluated at the minimum-distance
 image; clash cutoff shared with `CoarseValidationThresholds`).
-Still awaiting: W1.4 `c_axis_semantics`; W5.2; and W7's remaining integration tests plus user-facing docs.
+Still awaiting: W5.2; and W7's remaining integration tests plus user-facing docs.
+~~W1.4 `c_axis_semantics`~~ **landed 2026-09-26** (both single-layer paths
+unified on c = 8.0 Å vacuum-slab padding; monolayer exports carry
+`c_axis_semantics: "vacuum_slab"` in embedding metadata and a
+`# c-axis-semantics: vacuum_slab` CIF comment, stacked exports are labeled
+`periodic_bilayer`, and the LAMMPS optimize path warns when box-relax is
+requested on a `vacuum_slab`-labeled CIF).
 ~~W4.1 vdW wiring (audit #11)~~ **landed 2026-09-25** (ratio criterion + 2.2 Å
 floor wired in `validation.py:_nonbonded_contact_scan` over the new shared
 `cofkit.vdw` Bondi table with periodic-image-aware 1-2/1-3/1-4 exclusions, an
@@ -221,6 +227,6 @@ warning. Audit #14 **landed** (quinoid ring re-bond-ordering in keto-enamine
 realization via constrained perfect matching). Audit #15 consistency fix
 **landed** (per-template retraction in mixed-linkage builds); full calibration
 remains an explicitly documented future project. These close the remaining
-c-axis correctness half of review point 2; W1.4 `c_axis_semantics` (the
-vacuum-slab vs implicit-AA-repeat distinction for single-layer exports) is
-still open and is now the only remaining c-semantics item.
+c-axis correctness half of review point 2. ~~W1.4 `c_axis_semantics` (the
+vacuum-slab vs implicit-AA-repeat distinction for single-layer exports)~~
+**landed 2026-09-26** — see the W1 table row; no c-semantics items remain open.

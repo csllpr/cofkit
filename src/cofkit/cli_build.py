@@ -503,7 +503,15 @@ def _add_ring_forming_parser(subparsers) -> None:
     parser.add_argument("--motif-kind", choices=("boronic_acid", "nitrile"), default=None)
     parser.add_argument("--topology", default="hcb", help="Three-connected product topology. Default: hcb.")
     parser.add_argument("--num-conformers", type=int, default=4)
-    parser.add_argument("--layer-spacing", type=float, default=3.4)
+    parser.add_argument(
+        "--layer-spacing",
+        type=float,
+        default=8.0,
+        help=(
+            "Vacuum-slab padding along c for the single-layer export (default: 8.0). "
+            "This is padding around one layer, not an interlayer stacking distance."
+        ),
+    )
     parser.add_argument(
         "--stacking",
         action="append",

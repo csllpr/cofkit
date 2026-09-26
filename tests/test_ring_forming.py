@@ -266,6 +266,62 @@ class RingFormingWorkflowTests(unittest.TestCase):
         self.assertEqual(report.metrics["n_instance_components"], 2)
         self.assertTrue(report.metrics["disconnected_instance_graph_allowed"])
 
+    def test_monolayer_export_uses_unified_vacuum_slab_c_axis(self):
+        """W1.4: ring-forming monolayers export c = 8.0 (vacuum-slab padding,
+        unified with the embedding path) and label the semantics explicitly."""
+        candidate = RingFormingStructureGenerator().generate(
+            self.cof1_precursor,
+            "boroxine_trimerization",
+        )
+        export = CIFWriter().export_candidate(
+            candidate,
+            {self.cof1_precursor.id: self.cof1_precursor},
+        )
+        block = gemmi.cif.read_string(export.text).sole_block()
+        structure = gemmi.make_small_structure_from_block(block)
+
+        self.assertAlmostEqual(candidate.state.cell[2][2], 8.0)
+        self.assertAlmostEqual(structure.cell.c, 8.0)
+        self.assertEqual(candidate.metadata["embedding"]["c_axis_semantics"], "vacuum_slab")
+        self.assertEqual(export.metadata["c_axis_semantics"], "vacuum_slab")
+        self.assertIn("# c-axis-semantics: vacuum_slab", export.text)
+
+    def test_user_set_layer_spacing_is_still_vacuum_slab_padding(self):
+        """A user-overridden layer_spacing changes the padding thickness, not
+        the semantics: the c axis is still vacuum-slab padding, not a physical
+        stacking repeat."""
+        candidate = RingFormingStructureGenerator(
+            RingFormationConfig(layer_spacing=12.0)
+        ).generate(
+            self.cof1_precursor,
+            "boroxine_trimerization",
+        )
+        export = CIFWriter().export_candidate(
+            candidate,
+            {self.cof1_precursor.id: self.cof1_precursor},
+        )
+
+        self.assertAlmostEqual(candidate.state.cell[2][2], 12.0)
+        self.assertEqual(export.metadata["c_axis_semantics"], "vacuum_slab")
+        self.assertIn("# c-axis-semantics: vacuum_slab", export.text)
+
+    def test_stacked_export_labels_periodic_bilayer_not_vacuum_slab(self):
+        stacked = RingFormingStructureGenerator(
+            RingFormationConfig(stacking_ids=("AA",))
+        ).generate(
+            self.cof1_precursor,
+            "boroxine_trimerization",
+        )
+        export = CIFWriter().export_candidate(
+            stacked,
+            {self.cof1_precursor.id: self.cof1_precursor},
+        )
+
+        self.assertEqual(stacked.metadata["embedding"]["c_axis_semantics"], "periodic_bilayer")
+        self.assertEqual(export.metadata["c_axis_semantics"], "periodic_bilayer")
+        self.assertIn("# c-axis-semantics: periodic_bilayer", export.text)
+        self.assertNotIn("vacuum_slab", export.text)
+
     def test_engine_enumerates_requested_ring_stackings(self):
         ensemble = COFEngine().run(
             COFProject(

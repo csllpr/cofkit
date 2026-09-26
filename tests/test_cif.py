@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from math import cos, pi, sin
 from pathlib import Path
@@ -17,6 +18,7 @@ from cofkit import (
     Candidate,
     ReactionEvent,
 )
+from cofkit.cif import read_c_axis_semantics_from_cif
 from cofkit.reaction_realization import ReactionRealizationResult, RealizedAtom, RealizedBond
 
 
@@ -121,6 +123,73 @@ class CIFWriterTests(unittest.TestCase):
         self.assertIn("_geom_bond_atom_site_label_1", result.text)
         self.assertIn("_ccdc_geom_bond_type", result.text)
         self.assertIn("m1_C1 m1_N2 . . 1.500000 S", result.text)
+
+    def test_engine_monolayer_export_labels_c_axis_semantics(self):
+        """W1.4: the binary-bridge/embedding monolayer path labels its
+        vacuum-slab c axis in metadata and in a machine-readable CIF comment."""
+        project, monomers = build_imine_project()
+        candidate = COFEngine().run(project).top(1)[0]
+
+        result = CIFWriter().export_candidate(candidate, monomers)
+
+        self.assertEqual(candidate.metadata["embedding"]["c_axis_semantics"], "vacuum_slab")
+        self.assertEqual(result.metadata["c_axis_semantics"], "vacuum_slab")
+        self.assertIn("# c-axis-semantics: vacuum_slab", result.text)
+
+    def test_c_axis_semantics_comment_round_trip_and_absent_when_unlabeled(self):
+        monomer = MonomerSpec(
+            id="mono",
+            name="atomistic monomer",
+            motifs=(
+                ReactiveMotif(
+                    id="n1",
+                    kind="amine",
+                    atom_ids=(1,),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                ),
+            ),
+            atom_symbols=("C",),
+            atom_positions=((0.0, 0.0, 0.0),),
+            bonds=(),
+        )
+        state = AssemblyState(
+            cell=((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0)),
+            monomer_poses={"m1": Pose(translation=(0.0, 0.0, 0.0))},
+            stacking_state="AA",
+        )
+        labeled = Candidate(
+            id="labeled-demo",
+            score=0.0,
+            state=state,
+            events=(),
+            metadata={
+                "instance_to_monomer": {"m1": "mono"},
+                "embedding": {"c_axis_semantics": "periodic_bilayer"},
+            },
+        )
+        unlabeled = Candidate(
+            id="unlabeled-demo",
+            score=0.0,
+            state=state,
+            events=(),
+            metadata={"instance_to_monomer": {"m1": "mono"}},
+        )
+
+        labeled_result = CIFWriter().export_candidate(labeled, {"mono": monomer})
+        self.assertIn("# c-axis-semantics: periodic_bilayer", labeled_result.text)
+        self.assertEqual(labeled_result.metadata["c_axis_semantics"], "periodic_bilayer")
+
+        unlabeled_result = CIFWriter().export_candidate(unlabeled, {"mono": monomer})
+        self.assertNotIn("c-axis-semantics", unlabeled_result.text)
+        self.assertNotIn("c_axis_semantics", unlabeled_result.metadata)
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            labeled_path = Path(temporary_dir) / "labeled.cif"
+            labeled_path.write_text(labeled_result.text)
+            unlabeled_path = Path(temporary_dir) / "unlabeled.cif"
+            unlabeled_path.write_text(unlabeled_result.text)
+            self.assertEqual(read_c_axis_semantics_from_cif(labeled_path), "periodic_bilayer")
+            self.assertIsNone(read_c_axis_semantics_from_cif(unlabeled_path))
 
     def test_export_candidate_appends_stacking_suffix_to_cofid_comment_line(self):
         monomer = MonomerSpec(

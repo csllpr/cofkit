@@ -92,6 +92,8 @@ cofkit build ring-forming \
 
 The command writes `summary.json` and an atomistic CIF. Ring result rows use the same success contract as single-pair builds (`status: "ok"`), and the report includes attempted, successful, and CIF-written counters. Ring validation reports radial, angular, and planarity residuals. Boroxine realization removes three waters per ring event; triazine realization preserves atoms and rewrites the three nitrile bonds into alternating C–N ring bonds. One-precursor COFids using linkage codes `boroxine` and `triazine` are accepted through `--cofid`.
 
+Single-layer exports (ring-forming and binary-bridge alike) treat the c axis as vacuum-slab padding around one layer: the cell exports `c = 8.0` angstrom by default, and the CIF carries a machine-readable `# c-axis-semantics: vacuum_slab` comment line. The ring-forming `--layer-spacing` option changes the padding thickness only — it is not an interlayer stacking distance, and the export stays labeled `vacuum_slab`. Stacked bilayer exports (below) build a physical periodic c from the registry clearance plus the measured layer thickness and are labeled `# c-axis-semantics: periodic_bilayer` instead. Downstream cell-relaxation workflows should not box-relax a `vacuum_slab` CIF (the padding direction can collapse into a fake stacked solid); `cofkit calculate lammps-optimize` warns in that case.
+
 Request explicit bilayer registries with repeatable `--stacking` options:
 
 ```bash

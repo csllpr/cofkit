@@ -51,7 +51,10 @@ IMPLEMENTATION_STATUS = "available"
 @dataclass(frozen=True)
 class RingFormationConfig:
     topology_id: str = "hcb"
-    layer_spacing: float = 3.4
+    # Vacuum-slab padding along c for single-layer exports (NOT an interlayer
+    # distance; stacking registries carry their own clearances). Unified with
+    # the embedding path's default_layer_spacing.
+    layer_spacing: float = 8.0
     optimize_geometry: bool = True
     stacking_ids: tuple[str, ...] = ()
 
@@ -611,6 +614,9 @@ class RingFormingStructureGenerator:
             "layer_z_span_mode": span_report.mode,
             "layer_z_span_axis": span_report.axis,
             "stacking_enabled": False,
+            # The c axis is vacuum-slab padding around one layer (W1.4); a
+            # user-set layer_spacing is still padding, not a physical repeat.
+            "c_axis_semantics": "vacuum_slab",
             "poses": pose_details,
         }
         return replace(

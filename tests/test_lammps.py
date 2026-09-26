@@ -121,6 +121,76 @@ class LammpsTests(unittest.TestCase):
             optimized_text = Path(result.optimized_cif).read_text(encoding="utf-8")
             self.assertEqual(optimized_text.splitlines()[0], f"# COFid: {cofid} stacking=AA")
 
+    def test_box_relax_on_vacuum_slab_labeled_cif_warns(self):
+        """W1.4 guardrail: box-relax on a vacuum-slab monolayer CIF can
+        collapse the padding direction into a fake stacked solid; warn."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "slab_example.cif"
+            cif_path.write_text(
+                f"# c-axis-semantics: vacuum_slab\n{self._example_cif_text()}",
+                encoding="utf-8",
+            )
+
+            stderr = io.StringIO()
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                with contextlib.redirect_stderr(stderr):
+                    result = optimize_cif_with_lammps(
+                        cif_path,
+                        output_dir=temp_path / "slab_lammps_out",
+                        settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
+                    )
+
+            self.assertIn("warning:", stderr.getvalue())
+            self.assertIn("c-axis-semantics: vacuum_slab", stderr.getvalue())
+            self.assertTrue(any("vacuum_slab" in warning for warning in result.warnings))
+
+    def test_fixed_cell_relax_on_vacuum_slab_labeled_cif_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "slab_example.cif"
+            cif_path.write_text(
+                f"# c-axis-semantics: vacuum_slab\n{self._example_cif_text()}",
+                encoding="utf-8",
+            )
+
+            stderr = io.StringIO()
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                with contextlib.redirect_stderr(stderr):
+                    result = optimize_cif_with_lammps(
+                        cif_path,
+                        output_dir=temp_path / "slab_lammps_out",
+                        settings=LammpsOptimizationSettings(
+                            forcefield="uff",
+                            charge_model="none",
+                            relax_cell=False,
+                        ),
+                    )
+
+            self.assertNotIn("vacuum_slab", stderr.getvalue())
+            self.assertFalse(any("vacuum_slab" in warning for warning in result.warnings))
+
+    def test_box_relax_on_unlabeled_cif_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "plain_example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+
+            stderr = io.StringIO()
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                with contextlib.redirect_stderr(stderr):
+                    result = optimize_cif_with_lammps(
+                        cif_path,
+                        output_dir=temp_path / "plain_lammps_out",
+                        settings=LammpsOptimizationSettings(forcefield="uff", charge_model="none"),
+                    )
+
+            self.assertNotIn("vacuum_slab", stderr.getvalue())
+            self.assertFalse(any("vacuum_slab" in warning for warning in result.warnings))
+
     def test_run_lammps_md_on_cif_writes_md_report_and_handoff_cif(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

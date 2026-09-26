@@ -1847,6 +1847,7 @@ class BatchStructureGenerator:
                 "edge_reactive_site_distances": tuple(round(value, 6) for value in reactive_site_distances),
                 "cell_kind": self._topology_cell_kind(cell, topology.dimensionality),
                 "stacking_enabled": False,
+                "c_axis_semantics": "vacuum_slab",
                 "placement_mode": "decorated-bex-node-node",
                 "node_instance_count": len(monomer_poses),
                 "topology_family": "decorated-indexed-2d",
@@ -2204,6 +2205,7 @@ class BatchStructureGenerator:
                 "edge_reactive_site_distances": tuple(round(value, 6) for value in reactive_site_distances),
                 "cell_kind": self._single_node_cell_kind(cell),
                 "stacking_enabled": False,
+                "c_axis_semantics": "vacuum_slab",
                 "placement_mode": "node-linker-single-node",
                 "node_instance_count": 2,
                 "linker_instance_count": 3,
@@ -2515,6 +2517,7 @@ class BatchStructureGenerator:
                 "edge_reactive_site_distances": tuple(round(value, 6) for value in reactive_site_distances),
                 "cell_kind": self._topology_cell_kind(cell, topology.dimensionality),
                 "stacking_enabled": False,
+                **({"c_axis_semantics": "vacuum_slab"} if topology.dimensionality == "2D" else {}),
                 "placement_mode": (
                     "node-linker-single-node-3d" if topology.dimensionality == "3D" else "node-linker-single-node-expanded"
                 ),
@@ -2725,6 +2728,7 @@ class BatchStructureGenerator:
                 "edge_reactive_site_distances": tuple(round(value, 6) for value in reactive_site_distances),
                 "cell_kind": self._topology_cell_kind(cell, topology.dimensionality),
                 "stacking_enabled": False,
+                **({"c_axis_semantics": "vacuum_slab"} if topology.dimensionality == "2D" else {}),
                 "placement_mode": (
                     "single-node-bipartite"
                     if topology.dimensionality == "2D" and len(expanded.node_sites) == 2
@@ -3112,6 +3116,7 @@ class BatchStructureGenerator:
                 "edge_reactive_site_distances": tuple(round(value, 6) for value in reactive_site_distances),
                 "cell_kind": self._topology_cell_kind(cell, topology.dimensionality),
                 "stacking_enabled": False,
+                **({"c_axis_semantics": "vacuum_slab"} if topology.dimensionality == "2D" else {}),
                 "placement_mode": (
                     "node-linker-indexed-topology-3d"
                     if topology.dimensionality == "3D"
@@ -3317,6 +3322,7 @@ class BatchStructureGenerator:
                 "edge_reactive_site_distances": tuple(round(value, 6) for value in reactive_site_distances),
                 "cell_kind": self._topology_cell_kind(cell, topology.dimensionality),
                 "stacking_enabled": False,
+                **({"c_axis_semantics": "vacuum_slab"} if topology.dimensionality == "2D" else {}),
                 "placement_mode": (
                     "indexed-topology-node-node-3d"
                     if topology.dimensionality == "3D"

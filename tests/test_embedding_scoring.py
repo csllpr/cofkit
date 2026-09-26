@@ -499,6 +499,17 @@ class EmbeddingTests(unittest.TestCase):
             embedding.state.monomer_poses["m2"].translation,
         )
 
+    def test_2d_embedding_labels_c_axis_as_vacuum_slab(self):
+        """W1.4: single-layer embedding exports pad c with vacuum and say so."""
+        specs, templates, outcome = build_hcb_case()
+        embedding = PeriodicEmbedder().embed(outcome, specs, templates)
+
+        self.assertEqual(embedding.metadata["c_axis_semantics"], "vacuum_slab")
+        self.assertAlmostEqual(
+            embedding.state.cell[2][2],
+            EmbeddingConfig().default_layer_spacing,
+        )
+
     def test_hcb_embedding_uses_alternating_nodes_and_motif_radial_offsets(self):
         specs, templates, outcome = build_hcb_case()
         embedder = PeriodicEmbedder()

@@ -110,6 +110,13 @@ class PeriodicEmbedder:
             "target_distance": target_distance,
             "cell_kind": self._cell_kind_from_vectors(cell),
             "stacking_enabled": False,
+            **(
+                # c is vacuum-slab padding around one layer (W1.4); 3D nets
+                # route through the specialized builders, not this slab cell.
+                {"c_axis_semantics": "vacuum_slab"}
+                if topology is None or topology.dimensionality == "2D"
+                else {}
+            ),
             "poses": pose_details,
         }
         return EmbeddingResult(state=state, metadata=metadata)
@@ -208,6 +215,9 @@ class PeriodicEmbedder:
             "edge_reactive_site_distances": tuple(round(value, 6) for value in edge_reactive_site_distances),
             "cell_kind": self._cell_kind_from_vectors(cell),
             "stacking_enabled": False,
+            # Single-node bipartite placements are 2D slabs; c is vacuum-slab
+            # padding around one layer (W1.4).
+            "c_axis_semantics": "vacuum_slab",
             "placement_mode": "single-node-bipartite",
             "topology_family": "single-node-2d" if topology_layout is not None else None,
             "poses": pose_details,
