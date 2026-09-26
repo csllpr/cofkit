@@ -1060,8 +1060,15 @@ class ReactionRealizer:
             dot(sub(nitrogen_world, aldehyde_anchor_world), axis),
             dot(sub(nitrogen_world, aldehyde_anchor_world), lateral_axis),
         )
-        target_carbon_angle = 127.2
-        target_nitrogen_angle = 127.8
+        # Idealized sp2 priors for the aryl-C-C=N and C=N-aryl-C angles,
+        # consistent with the DREIDING equilibrium angle; not measured
+        # values. They are soft targets in the weighted objective below
+        # (displacement terms dominate 0.5 vs 0.12), so exported angles
+        # land between the seed geometry and these targets. The prior
+        # uncited 127.2/127.8 targets were ~6-7 degrees wider than
+        # literature aryl-imine angles (~117-123 degrees).
+        target_carbon_angle = 120.0
+        target_nitrogen_angle = 120.0
         best: tuple[float, tuple[float, float], tuple[float, float]] | None = None
 
         for step in range(721):
