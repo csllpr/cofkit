@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from collections import Counter
 from dataclasses import replace
-from math import cos, pi, sin
+from math import cos, pi, sin, sqrt
 from pathlib import Path
 
 
@@ -288,6 +288,23 @@ class RingFormingWorkflowTests(unittest.TestCase):
         self.assertEqual(
             stacking_meta["registry_shift_fractional"],
             (1.0 / 3.0, 2.0 / 3.0),
+        )
+        # W7 test 3 (120-degree half): the shift maps a vertex onto the pore
+        # center, so its cartesian magnitude is a/sqrt(3).
+        cell = stacked.state.cell
+        shift = stacking_meta["registry_shift_fractional"]
+        shift_cartesian = [
+            shift[0] * cell[0][axis] + shift[1] * cell[1][axis]
+            for axis in range(3)
+        ]
+        a_length = sqrt(sum(component**2 for component in cell[0]))
+        shift_length = sqrt(sum(component**2 for component in shift_cartesian))
+        # The fitted cell is only approximately hexagonal, so compare with a
+        # 1% relative tolerance rather than exactly.
+        self.assertAlmostEqual(
+            shift_length,
+            a_length / sqrt(3.0),
+            delta=0.01 * a_length / sqrt(3.0),
         )
         with tempfile.TemporaryDirectory() as temporary_dir:
             cif_path = Path(temporary_dir) / "ctf1_ab.cif"

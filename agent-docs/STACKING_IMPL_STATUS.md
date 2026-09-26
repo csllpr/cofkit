@@ -87,9 +87,9 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 
 | # | Description | Status |
 |---|---|---|
-| 1 | TAPB/TFB hcb AA: `c == 2*(clearance+span)`, span > 3 Å, min contact > 2.5 Å | ⚠️ | Span-pipeline half covered 2026-09-25 by `tests/test_geometry.py` (translation-inclusive spans, tilted-cell layer-normal invariance) and the decorated-bex tests in `tests/test_batch.py`; the full TAPB/TFB AA integration assertion is still unwritten |
+| 1 | TAPB/TFB hcb AA: `c == 2*(clearance+span)`, span > 3 Å, min contact > 2.5 Å | ✅ | `tests/test_batch.py::test_tapb_tfb_stacked_exports_carry_honest_span_and_cell_derivation` (2026-09-27): full AA/AB/slipped end-to-end build via `generate_pair_candidates`; asserts span > 3 Å with `atomistic_product`/`layer_normal` provenance, `c2c == clearance + span`, CIF `c == 2*c2c`, no contact below the 3.5 Å cutoff, `# stacking-geometry:` + `# c-axis-semantics: periodic_bilayer` comments, and an independent gemmi re-measurement of the min interlayer contact ≥ 2.5 Å from each exported CIF; companion `test_validator_flags_c_squashed_interpenetrated_variant` recreates the shipped 6.8 Å geometry and asserts `hard_invalid`/`heavy_atom_clash` |
 | 2 | Span-never-zero gate: candidate without `embedding.layer_z_span` gets measured span | ⚠️ | 2026-09-25: `tests/test_geometry.py` distinguishes a measured 0.0 (planar layer, `n_atoms > 0`) from `mode="unavailable"`; the candidate-level gate test is still unwritten |
-| 3 | Hexagonal AB shift: vertex→pore-center in both 60° and 120° cells | ❌ |
+| 3 | Hexagonal AB shift: vertex→pore-center in both 60° and 120° cells | ✅ | 2026-09-27: cartesian `|s_cart| == a/√3` asserted in both settings (1% relative tolerance — fitted cells are only approximately hexagonal): 60° half in `tests/test_batch.py::test_tapb_tfb_stacked_exports_carry_honest_span_and_cell_derivation` (TAPB/TFB AB candidate), 120° half added to `tests/test_ring_forming.py::test_triazine_ab_stacking_uses_hexagonal_registry_and_passes_coarse_validation` |
 | 4 | `classify_2d_cell` on fitted γ=60.09° cell returns `("hexagonal", "60deg")` | ✅ | `tests/test_geometry.py::CellClassificationTests` (2026-09-25), plus a cross-module consistency test through both migrated `_metric_family` paths |
 | 5 | Ranking parity: `candidate_ranking_key` invariant under stacking expansion | ✅ | `tests/test_stacking.py` (2026-09-25, audit A9) — normalized residual + tie-breaker invariance and expanded/unexpanded ordering; the id component intentionally changes |
 | 6 | Validator flags 2.0 Å heavy-heavy nonbonded pair | ✅ | `tests/test_validation.py::test_validator_flags_two_angstrom_nonbonded_heavy_pair` (2026-09-25, audit #11), plus benzene / angle-chain / cis-1-4 negative controls, severe-overlap tests, and hydrogen-channel tests |
@@ -120,9 +120,9 @@ From `STACKING_FIX_PLAN.md` §6:
 
 | Criterion | Status |
 |---|---|
-| 1. Regenerated evidence pack shows min contact ≥ 2.5 Å; shipped interpenetrated CIFs flagged by `cofkit validate` | ❌ — self-check infra is in place but evidence pack not regenerated |
+| 1. Regenerated evidence pack shows min contact ≥ 2.5 Å; shipped interpenetrated CIFs flagged by `cofkit validate` | ✅ — evidence regenerated 2026-09-27 (`out/_w7_evidence/`, gitignored): fresh AA/AB/slipped exports measure min interlayer contact 3.8–5.3 Å (none below the 3.5 Å atomistic cutoff) vs the shipped 2.02 Å; the shipped CIFs in `out/stacking_audit_evidence/` are now flagged `hard_invalid` with `heavy_atom_clash` by `CoarseStructureValidator` (the coarse-validation API; the `cofkit validate` CLI covers decompose-and-compare, not this check). Frozen in CI by the two new `tests/test_batch.py` tests |
 | 2. No code path can emit `layer_z_span: 0.0` without a measurement (grep gate in tests) | ❌ — `_decorated_bex_layer_spacing` can still return 0.0 without measurement |
-| 3. Hexagonal AB shift passes vertex→pore-center assertion in both 60° and 120° settings | ❌ — test not written |
+| 3. Hexagonal AB shift passes vertex→pore-center assertion in both 60° and 120° settings | ✅ — 2026-09-27 (`tests/test_batch.py` 60° half, `tests/test_ring_forming.py` 120° half) |
 | 4. `candidate_ranking_key` parity test green | ✅ — `tests/test_stacking.py` (2026-09-25, audit A9) |
 | 5. CIFs carry `# stacking-geometry:` derivation line; metadata carries full W3.1 schema | ✅ |
 | 6. `uv run pytest -q` green; ruff gate; `uv build --wheel` green; all doc/skill/changelog updates landed | ⚠️ — existing tests pass; new integration tests not yet written; docs/changelog not updated |
@@ -141,7 +141,8 @@ From `STACKING_FIX_PLAN.md` §6:
    monomer-center check is likewise replaced by the atomistic
    `_measure_interlayer_contact` (audit #12).
 
-3. **W7 integration tests** — tests 1–11 from the plan are all absent. Tests 1, 2, 5, and 7 directly guard the four critical flaws.
+3. **W7 integration tests** — tests 1, 3, 4, 5, 6, 7, and 11 are now ✅;
+   tests 2, 8, 9, and 10 remain unwritten (see the tests table).
 
 4. ~~**W2.1 remaining classifiers**~~ — **done 2026-09-25** (audit A8):
    `single_node_topologies.py:336` and `indexed_topology_layouts.py:171` both
@@ -214,8 +215,35 @@ atoms — sharing the span realization — across both `(0,0,±1)` c galleries v
 `cofkit.vdw.min_periodic_pair_contact`; `stacking_clash` aligned to the shared
 criterion; atom labels/image/H-involvement/cutoff recorded; CIF comment labels
 the value atomistic; per-candidate failure isolation).
-Definition-of-done criteria 1, 3 and 6 remain unmet; criterion 2's grep gate
-is now covered behaviorally by the `tests/test_geometry.py` span tests.
+Definition-of-done criterion 6 remains unmet; criterion 2's grep gate
+is now covered behaviorally by the `tests/test_geometry.py` span tests;
+criteria 1 and 3 were closed on 2026-09-27 (see the fourth update below).
+
+**Fourth post-audit update — 2026-09-27 (W7 evidence regeneration, tests 1
+and 3):** the canonical TAPB/TFB imine hcb case was rebuilt end-to-end via
+the public CLI (`cofkit build single-pair --stacking AA --stacking AB
+--stacking slipped`, note: multiple registries require the all-topologies
+plural path — `--no-all-topologies` exports only the best candidate) into
+`out/_w7_evidence/` (gitignored). Fresh exports: span 3.474 Å
+(`atomistic_product`, `layer_normal`) vs the shipped 0.0; `c2c ==
+clearance + span` and CIF `c == 2*c2c` hold exactly; independent gemmi
+re-measurement of the exported CIFs gives min interlayer contacts of
+4.26 Å (AA), 5.28 Å (AB), 3.82 Å (slipped) — none below the 3.5 Å
+atomistic cutoff, vs the shipped 2.02 Å that validated as `valid`. The
+old shipped CIFs in `out/stacking_audit_evidence/` are now flagged
+`hard_invalid` with `heavy_atom_clash` by `CoarseStructureValidator`
+(AA min heavy contact re-measured at 2.0247 Å — the documented value).
+Frozen into the suite: `tests/test_batch.py` gains
+`test_tapb_tfb_stacked_exports_carry_honest_span_and_cell_derivation`
+(all four evidence bullets at the metadata level + CIF comment presence +
+independent contact re-measurement, ~0.7 s with
+`rdkit_num_conformers=1`, default suite) and
+`test_validator_flags_c_squashed_interpenetrated_variant` (c squashed to
+the shipped 6.8 Å with cartesian coordinates kept → `hard_invalid` /
+`heavy_atom_clash`); W7 test 3's `|s_cart| == a/√3` assertion landed in
+both cell settings (60° in the same batch test, 120° in
+`tests/test_ring_forming.py`'s triazine AB test). No source behavior
+changed, so no CHANGELOG/docs updates were required.
 
 **Second post-audit update — 2026-09-25 (later same day):** audit #13 **landed**
 (owner chose orthogonalize-on-stacking): `_apply_layer_registry` builds the

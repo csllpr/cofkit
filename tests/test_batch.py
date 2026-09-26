@@ -1,6 +1,8 @@
 import contextlib
 import io
 import json
+import math
+import re
 import sys
 import tempfile
 import unittest
@@ -8,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import gemmi
 
 from cofkit import (
     AromaticityRestoreError,
@@ -24,6 +27,7 @@ from cofkit import (
 )
 from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 from cofkit.chem import rdkit as rdkit_module
+from cofkit.validation import CoarseStructureValidator
 
 try:
     from rdkit import Chem  # noqa: F401
@@ -440,6 +444,233 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             cif_text = Path(summary.cif_path).read_text(encoding="utf-8")
 
         self.assertEqual(cif_text.splitlines()[0], f"# COFid: {summary.metadata['cofid']} stacking=AA")
+
+    def _min_interlayer_contact_from_cif(self, cif_path: Path) -> float:
+        """Atomistic minimum-image contact between the two layers of a stacked
+        export, measured independently of the stacking metadata (layers are
+        identified by the L0/L1 atom-label suffix)."""
+        doc = gemmi.cif.read_file(str(cif_path))
+        block = doc.sole_block()
+        cell = gemmi.UnitCell(
+            float(block.find_value("_cell_length_a")),
+            float(block.find_value("_cell_length_b")),
+            float(block.find_value("_cell_length_c")),
+            float(block.find_value("_cell_angle_alpha")),
+            float(block.find_value("_cell_angle_beta")),
+            float(block.find_value("_cell_angle_gamma")),
+        )
+        labels = [str(value) for value in block.find_values("_atom_site_label")]
+        fract_x = [float(value) for value in block.find_values("_atom_site_fract_x")]
+        fract_y = [float(value) for value in block.find_values("_atom_site_fract_y")]
+        fract_z = [float(value) for value in block.find_values("_atom_site_fract_z")]
+        layer_zero: list[gemmi.Position] = []
+        layer_one: list[gemmi.Position] = []
+        for label, fx, fy, fz in zip(labels, fract_x, fract_y, fract_z):
+            position = cell.orthogonalize(gemmi.Fractional(fx, fy, fz))
+            if "L0" in label:
+                layer_zero.append(position)
+            elif "L1" in label:
+                layer_one.append(position)
+        self.assertTrue(layer_zero)
+        self.assertTrue(layer_one)
+        return min(
+            cell.find_nearest_image(first, second).dist()
+            for first in layer_zero
+            for second in layer_one
+        )
+
+    def test_tapb_tfb_stacked_exports_carry_honest_span_and_cell_derivation(self):
+        """Plan W7 test 1 / definition-of-done criterion 1: canonical TAPB/TFB
+        imine hcb AA+AB+slipped end-to-end regression. The originally shipped
+        exports recorded layer_z_span 0.0 with c = 6.8 A and a 2.02 A
+        interlayer C...C contact that validated as `valid`."""
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                single_node_topology_ids=("hcb",),
+                stacking_ids=("AA", "AB", "slipped"),
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tfb",
+            name="tfb",
+            smiles=TFB,
+            motif_kind="aldehyde",
+            expected_connectivity=3,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summaries, candidates, attempted_structures = generator.generate_pair_candidates(
+                amine,
+                aldehyde,
+                out_dir=temp_dir,
+                write_cif=True,
+            )
+
+            self.assertEqual(attempted_structures, 3)
+            self.assertEqual(len(summaries), 3)
+            self.assertEqual(len(candidates), 3)
+            summaries_by_registry = {}
+            for summary in summaries:
+                self.assertEqual(summary.status, "ok")
+                stacking = summary.metadata["stacking"]
+                registry = stacking["id"]
+                summaries_by_registry[registry] = summary
+                # The span must be a real atomistic measurement along the
+                # layer normal, well above the shipped 0.0 fallback.
+                self.assertGreater(stacking["layer_z_span"], 3.0)
+                self.assertEqual(stacking["layer_z_span_mode"], "atomistic_product")
+                self.assertEqual(stacking["layer_z_span_axis"], "layer_normal")
+                # c2c = interlayer_clearance + layer_z_span, and the stacked
+                # cell is built along the layer normal with c = 2*c2c.
+                self.assertAlmostEqual(
+                    stacking["center_to_center_distance"],
+                    stacking["interlayer_clearance"] + stacking["layer_z_span"],
+                    places=9,
+                )
+                self.assertEqual(stacking["layer_count"], 2)
+                self.assertEqual(stacking["c_axis_basis"], "layer_normal")
+                # Atomistic interlayer contact self-check ran and found no
+                # contact below the cutoff (None is a lower bound, not a
+                # missing value); the shipped AA export measured 2.02 A.
+                self.assertIsNone(stacking["min_interlayer_contact"])
+                self.assertEqual(stacking["min_interlayer_contact_mode"], "atomistic_product")
+                self.assertNotIn("stacking_clash", summary.flags)
+                self.assertIsNotNone(summary.cif_path)
+                cif_text = Path(summary.cif_path).read_text(encoding="utf-8")
+                cell_c = float(re.search(r"_cell_length_c (\S+)", cif_text).group(1))
+                self.assertAlmostEqual(
+                    cell_c,
+                    stacking["layer_count"] * stacking["center_to_center_distance"],
+                    places=4,
+                )
+                self.assertIn("# stacking-geometry:", cif_text)
+                self.assertIn(f"registry={registry}", cif_text)
+                self.assertIn("# c-axis-semantics: periodic_bilayer", cif_text)
+                self.assertEqual(summary.metadata["embedding"]["c_axis_semantics"], "periodic_bilayer")
+                self.assertEqual(
+                    summary.metadata["validation"]["classification"],
+                    "valid",
+                )
+
+            self.assertEqual(set(summaries_by_registry), {"AA", "AB", "slipped"})
+            for registry, summary in summaries_by_registry.items():
+                contact = self._min_interlayer_contact_from_cif(Path(summary.cif_path))
+                self.assertGreaterEqual(
+                    contact,
+                    2.5,
+                    f"{registry} min interlayer contact {contact:.3f} A regressed below 2.5 A",
+                )
+
+            # W7 test 3 (60-degree half): the hexagonal AB shift maps a vertex
+            # onto the pore center, so its cartesian magnitude is a/sqrt(3).
+            ab_candidate = next(
+                candidate
+                for candidate in candidates
+                if candidate.metadata["stacking"]["id"] == "AB"
+            )
+            ab_stacking = ab_candidate.metadata["stacking"]
+            self.assertEqual(ab_stacking["cell_classification"]["setting"], "60deg")
+            cell = ab_candidate.state.cell
+            shift = ab_stacking["registry_shift_fractional"]
+            shift_cartesian = [
+                shift[0] * cell[0][axis] + shift[1] * cell[1][axis]
+                for axis in range(3)
+            ]
+            a_length = math.sqrt(sum(component**2 for component in cell[0]))
+            shift_length = math.sqrt(sum(component**2 for component in shift_cartesian))
+            # The fitted cell is only approximately hexagonal, so compare
+            # with a 1% relative tolerance rather than exactly.
+            self.assertAlmostEqual(
+                shift_length,
+                a_length / math.sqrt(3.0),
+                delta=0.01 * a_length / math.sqrt(3.0),
+            )
+
+    def test_validator_flags_c_squashed_interpenetrated_variant(self):
+        """Squash the fresh AA export's c axis to the shipped 6.8 A while
+        keeping cartesian coordinates (recreating the original interpenetrated
+        geometry) and confirm the validator now flags it."""
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                single_node_topology_ids=("hcb",),
+                stacking_ids=("AA",),
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tfb",
+            name="tfb",
+            smiles=TFB,
+            motif_kind="aldehyde",
+            expected_connectivity=3,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summaries, _candidates, _attempted = generator.generate_pair_candidates(
+                amine,
+                aldehyde,
+                out_dir=temp_dir,
+                write_cif=True,
+            )
+            summary = summaries[0]
+            self.assertEqual(summary.status, "ok")
+            cif_text = Path(summary.cif_path).read_text(encoding="utf-8")
+            original_c = float(re.search(r"_cell_length_c (\S+)", cif_text).group(1))
+            squashed_c = 6.8
+            self.assertGreater(original_c, squashed_c)
+
+            # Keep cartesian coordinates fixed: fractional z scales by
+            # original_c / squashed_c, pushing each layer through the
+            # periodic image of the other (the shipped failure mode).
+            atom_site_pattern = re.compile(
+                r"^(\S+) (\S+) (\S+) (\S+) (\S+) (\S+)$"
+            )
+            squashed_lines = []
+            for line in cif_text.splitlines():
+                if line.startswith("_cell_length_c"):
+                    squashed_lines.append(f"_cell_length_c {squashed_c:.6f}")
+                    continue
+                match = atom_site_pattern.match(line)
+                if match and "L" in match.group(1):
+                    label, symbol, fx, fy, fz, occupancy = match.groups()
+                    scaled_z = float(fz) * original_c / squashed_c
+                    squashed_lines.append(f"{label} {symbol} {fx} {fy} {scaled_z:.6f} {occupancy}")
+                else:
+                    squashed_lines.append(line)
+            squashed_path = Path(temp_dir) / "squashed_AA.cif"
+            squashed_path.write_text("\n".join(squashed_lines) + "\n", encoding="utf-8")
+
+            record = {
+                "structure_id": "squashed_AA",
+                "pair_id": "squashed_AA",
+                "status": "ok",
+                "topology_id": "hcb",
+                "score": None,
+                "flags": [],
+                "cif_path": str(squashed_path),
+                "metadata": summary.metadata,
+            }
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "hard_invalid")
+        self.assertIn("heavy_atom_clash", report.hard_invalid_reasons)
+        self.assertGreater(report.metrics["n_heavy_atom_clash_pairs"], 0)
+        self.assertLess(report.metrics["min_nonbonded_heavy_distance"], 2.5)
 
     def test_generate_monomer_pair_candidate_accepts_direct_monomer_specs(self):
         amine_record = BatchMonomerRecord(
