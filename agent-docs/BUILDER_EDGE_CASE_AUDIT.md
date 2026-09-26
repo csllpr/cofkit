@@ -212,6 +212,23 @@ returns 0.0 for missing data (missing masquerades as perfect).
       angle-from-three-points variants; local `_distance` copies delegate
       to `geometry.distance`. `cif._angle_degrees` left as-is — it is a
       two-vector angle with its own clamped-denominator policy.
+      **Follow-up resolved 2026-09-26 (flagged `(1,0,0)` fallback):** the
+      silent `fallback=(1,0,0)` retained at the optimizer/embedding/batch
+      `_safe_normalize` delegates is removed. Instrumented probing (six
+      real CLI builds — 2D/3D, node-linker, stacked, ring-forming — plus
+      the full test suite) found the fallback never fired on any live
+      path; the only trigger anywhere was a dead call in
+      `optimizer._refine_translations` whose result was always overwritten
+      by the antiparallel-normals guard on the next line (that call now
+      normalizes only after the guard, geometry-identical). Degenerate
+      vectors at these sites now raise a descriptive `ValueError` naming
+      the class instead of fabricating a +x direction; per-topology build
+      loops absorb it via the standard
+      `f"{type(exc).__name__}: {exc}"` per-record convention.
+      `scoring.py`'s `(1,0,0)` delegate (A9 workstream) and the
+      warn-and-fallback sites in `stacking.py` are unchanged. Guard tests:
+      `tests/test_embedding_scoring.py` (DegenerateVectorPolicyTests),
+      `tests/test_batch.py` (DegenerateVectorPolicyTests).
 
 ## Action list — Tier 3 (drop)
 

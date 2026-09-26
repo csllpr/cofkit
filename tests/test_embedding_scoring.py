@@ -984,6 +984,64 @@ class ScoringTests(unittest.TestCase):
         self.assertGreater(worst_only_report.total_residual, proposal_report.total_residual)
 
 
+class DegenerateVectorPolicyTests(unittest.TestCase):
+    """Audit A10 follow-up: degenerate vectors raise instead of fabricating +x.
+
+    Probe evidence (2026-09-26): the old silent (1,0,0) fallback never fired
+    on any live path in optimizer/embedding/batch across real builds and the
+    full test suite, so degenerate geometry is now a visible ValueError.
+    """
+
+    def test_optimizer_safe_normalize_raises_on_degenerate_vector(self):
+        optimizer = ContinuousOptimizer(scorer=CandidateScorer())
+        with self.assertRaises(ValueError) as ctx:
+            optimizer._safe_normalize((0.0, 0.0, 0.0))
+        self.assertIn("ContinuousOptimizer", str(ctx.exception))
+        self.assertIn("degenerate", str(ctx.exception))
+
+    def test_embedder_safe_normalize_raises_on_degenerate_vector(self):
+        embedder = PeriodicEmbedder()
+        with self.assertRaises(ValueError) as ctx:
+            embedder._safe_normalize((0.0, 0.0, 0.0))
+        self.assertIn("PeriodicEmbedder", str(ctx.exception))
+        self.assertIn("degenerate", str(ctx.exception))
+
+    def test_refine_translations_uses_normal1_for_antiparallel_normals(self):
+        # A flat bridge has antiparallel motif normals whose sum is
+        # (near-)zero; the planarity correction must steer along normal1
+        # rather than any fabricated direction, and must not raise.
+        specs, templates, outcome, base_state = build_single_imine_bridge_case()
+        flip_about_x = (
+            (1.0, 0.0, 0.0),
+            (0.0, -1.0, 0.0),
+            (0.0, 0.0, -1.0),
+        )
+        poses = dict(base_state.monomer_poses)
+        poses["m2"] = Pose(translation=(0.0, 0.0, 1.3), rotation_matrix=flip_about_x)
+        state = AssemblyState(
+            cell=base_state.cell,
+            monomer_poses=poses,
+            torsions=base_state.torsions,
+            layer_offsets=base_state.layer_offsets,
+            stacking_state=base_state.stacking_state,
+        )
+        optimizer = ContinuousOptimizer(scorer=CandidateScorer())
+
+        refined = optimizer._refine_translations(state, outcome, specs, templates)
+
+        # The fixture monomers carry no atom positions, so both motif origins
+        # are their frame origins: delta = (0, 0, 1.3), normal1 = +z and
+        # normal2 = -z sum to zero, and the guard picks plane_normal =
+        # normal1 = +z. A fabricated in-plane plane_normal would zero the
+        # planarity term (dot(delta, plane_normal) == 0), so the expected z
+        # update discriminates the guard from any fabricated direction.
+        step = optimizer.config.translation_step
+        target = optimizer.scorer._target_distance(templates["imine_bridge"])
+        expected_z = (0.5 * (1.3 - target) + 0.35 * 1.3) * step
+        self.assertAlmostEqual(refined.monomer_poses["m1"].translation[2], expected_z)
+        self.assertAlmostEqual(refined.monomer_poses["m2"].translation[2], 1.3 - expected_z)
+
+
 class EngineIntegrationTests(unittest.TestCase):
     def test_engine_exposes_embedding_and_score_metadata(self):
         specs, _, _ = build_imine_case()

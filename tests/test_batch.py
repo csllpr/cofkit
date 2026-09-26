@@ -2280,5 +2280,22 @@ class BatchMonomerBuildFailureTests(unittest.TestCase):
         self.assertIn("AromaticityRestoreError", summary_text)
 
 
+class DegenerateVectorPolicyTests(unittest.TestCase):
+    """Audit A10 follow-up: degenerate vectors raise instead of fabricating +x.
+
+    Probe evidence (2026-09-26): the old silent (1,0,0) fallback never fired
+    on any live path in optimizer/embedding/batch across real builds and the
+    full test suite, so degenerate geometry is now a visible ValueError that
+    the per-topology build try/except records against the failed record.
+    """
+
+    def test_batch_safe_normalize_raises_on_degenerate_vector(self):
+        generator = BatchStructureGenerator(BatchGenerationConfig(write_cif=False))
+        with self.assertRaises(ValueError) as ctx:
+            generator._safe_normalize((0.0, 0.0, 0.0))
+        self.assertIn("BatchStructureGenerator", str(ctx.exception))
+        self.assertIn("degenerate", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

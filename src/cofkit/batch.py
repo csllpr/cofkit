@@ -29,8 +29,8 @@ from .geometry import (
     matmul_vec,
     measure_layer_z_span,
     norm,
+    normalize,
     rotation_from_frame_to_axes,
-    safe_normalize,
     scale,
     sub,
 )
@@ -5417,10 +5417,19 @@ class BatchStructureGenerator:
         return add(add(scale(cell[0], image[0]), scale(cell[1], image[1])), scale(cell[2], image[2]))
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        # Fallback (1, 0, 0) is a fabricated +x direction preserved from the
-        # pre-consolidation implementation; degenerate inputs here indicate a
-        # data problem upstream (audit A10).
-        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))
+        # Degenerate inputs here mean collapsed geometry (a zero-length
+        # topology edge vector, coincident bridge endpoints, a zero-length
+        # frame axis). Probe evidence (audit A10 follow-up): the
+        # pre-consolidation silent (1,0,0) fallback never fired on any live
+        # path, so a degenerate vector now raises instead of fabricating a
+        # direction; the per-topology build try/except records the failure
+        # per record and the batch run continues.
+        if norm(vector) < 1e-8:
+            raise ValueError(
+                f"{type(self).__name__}: degenerate (near-zero-length) vector has no "
+                f"direction to normalize (vector={vector!r}); refusing to fabricate a fallback"
+            )
+        return normalize(vector)
 
     def _solve_symmetric_3x3(self, matrix: list[list[float]], rhs: list[float]) -> tuple[float, float, float] | None:
         a = [row[:] for row in matrix]

@@ -11,9 +11,9 @@ from .geometry import (
     dot,
     matmul_vec,
     norm,
+    normalize,
     orthogonal_component,
     rotation_from_frame_to_axes,
-    safe_normalize,
     scale,
     sub,
 )
@@ -240,9 +240,13 @@ class ContinuousOptimizer:
 
             normal1 = self._safe_normalize(matmul_vec(pose1.rotation_matrix, motif1.frame.normal))
             normal2 = self._safe_normalize(matmul_vec(pose2.rotation_matrix, motif2.frame.normal))
-            plane_normal = self._safe_normalize(add(normal1, normal2))
-            if norm(add(normal1, normal2)) < 1e-8:
+            normal_sum = add(normal1, normal2)
+            if norm(normal_sum) < 1e-8:
+                # Antiparallel motif normals (a flat bridge) carry no plane
+                # direction; steer the planarity correction along normal1.
                 plane_normal = normal1
+            else:
+                plane_normal = self._safe_normalize(normal_sum)
             planarity_error = dot(delta, plane_normal)
 
             correction = add(
@@ -430,7 +434,15 @@ class ContinuousOptimizer:
         return orthogonal_component(vector, axis, axis_is_unit=True)
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        # Fallback (1, 0, 0) is a fabricated +x direction preserved from the
-        # pre-consolidation implementation; it feeds rotation targets, so a
-        # triggered fallback indicates a data problem upstream (audit A10).
-        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))
+        # Degenerate inputs here mean collapsed geometry (coincident motif
+        # origins, a zero-length frame axis). Probe evidence (audit A10
+        # follow-up): the pre-consolidation silent (1,0,0) fallback never
+        # fired on any live path, so a degenerate vector now raises instead
+        # of fabricating a direction; batch loops absorb the failure per
+        # record via the standard error convention.
+        if norm(vector) < 1e-8:
+            raise ValueError(
+                f"{type(self).__name__}: degenerate (near-zero-length) vector has no "
+                f"direction to normalize (vector={vector!r}); refusing to fabricate a fallback"
+            )
+        return normalize(vector)

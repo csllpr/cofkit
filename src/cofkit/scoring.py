@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from math import fabs
 from typing import Mapping
 
-from .geometry import Vec3, add, distance, dot, matmul_vec, normalize, safe_normalize, scale, sub
+from .geometry import Vec3, add, distance, dot, matmul_vec, norm, normalize, scale, sub
 from .linkage_geometry import effective_motif_origin
 from .model import AssemblyState, MonomerSpec, ReactionTemplate
 from .reactions import bridge_target_distance
@@ -189,7 +189,12 @@ class CandidateScorer:
         )
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))
+        if norm(vector) < 1e-8:
+            raise ValueError(
+                f"{type(self).__name__}: degenerate (near-zero-length) vector in bridge geometry "
+                "residual computation; refusing to fabricate a fallback direction"
+            )
+        return normalize(vector)
 
     def _invert(self, vector: Vec3) -> Vec3:
         return (-vector[0], -vector[1], -vector[2])

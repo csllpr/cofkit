@@ -15,8 +15,8 @@ from .geometry import (
     mat3_identity,
     matmul_vec,
     norm,
+    normalize,
     rotation_from_frame_to_axes,
-    safe_normalize,
     scale,
     sub,
 )
@@ -675,7 +675,15 @@ class PeriodicEmbedder:
         return add(pose.translation, matmul_vec(pose.rotation_matrix, local_position))
 
     def _safe_normalize(self, vector: Vec3) -> Vec3:
-        # Fallback (1, 0, 0) is a fabricated +x direction preserved from the
-        # pre-consolidation implementation; degenerate inputs here indicate a
-        # data problem upstream (audit A10).
-        return safe_normalize(vector, fallback=(1.0, 0.0, 0.0))
+        # Degenerate inputs here mean collapsed geometry (a zero-length motif
+        # direction seed). Probe evidence (audit A10 follow-up): the
+        # pre-consolidation silent (1,0,0) fallback never fired on any live
+        # path, so a degenerate vector now raises instead of fabricating a
+        # direction; batch loops absorb the failure per record via the
+        # standard error convention.
+        if norm(vector) < 1e-8:
+            raise ValueError(
+                f"{type(self).__name__}: degenerate (near-zero-length) vector has no "
+                f"direction to normalize (vector={vector!r}); refusing to fabricate a fallback"
+            )
+        return normalize(vector)
