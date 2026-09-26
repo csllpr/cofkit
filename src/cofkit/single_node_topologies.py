@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from math import atan2, cos, pi, sin
 
+import gemmi
+
 from .geometry import Vec3, add, classify_2d_cell_parameters, norm, normalize, scale, sub
 from .topology_index import TopologyDefinition
 from .topologies import load_topology
@@ -17,7 +19,6 @@ from .topologies import load_topology
 _OMITTED_TOPOLOGY_WARNING_SEEN: set[str] = set()
 
 _ANGLE_TOLERANCE = 1e-4
-_AXIS_TOLERANCE = pi / 18.0
 
 
 @dataclass(frozen=True)
@@ -68,13 +69,13 @@ class SingleNodeTopologyLayout:
 
 _SUPPORTED_SINGLE_NODE_TOPOLOGIES: dict[str, dict[str, object]] = {
     "hcb": {
-        "inference_mode": "rotate-trigonal",
+        "inference_mode": "expanded",
     },
     "hca": {
-        "inference_mode": "mirror-trigonal",
+        "inference_mode": "expanded",
     },
     "fes": {
-        "inference_mode": "mirror-trigonal",
+        "inference_mode": "expanded",
     },
     "fxt": {
         "inference_mode": "explicit",
@@ -142,9 +143,13 @@ def resolve_single_node_topology_layout(topology_id: str) -> SingleNodeTopologyL
     expanded = expand_single_node_topology(topology_id)
     if inference_mode == "expanded":
         directions = _layout_directions_from_expanded_topology(expanded, connectivity)
-    else:
+    elif inference_mode == "explicit":
         explicit_directions = _explicit_edge_directions(definition)
-        directions = _infer_directions(explicit_directions, connectivity, metric_family, inference_mode)
+        if len(explicit_directions) != connectivity:
+            raise ValueError("explicit single-node topology layout does not provide the full coordination shell")
+        directions = _sort_directions(explicit_directions)
+    else:
+        raise ValueError(f"unsupported single-node inference mode {inference_mode!r}")
     placement_model = "p1-two-node" if len(expanded.node_sites) == 2 else "p1-expanded"
 
     return SingleNodeTopologyLayout(
@@ -184,30 +189,25 @@ def expand_single_node_topology_definition(definition: TopologyDefinition) -> Ex
         )
 
     asymmetric_node = _fractional_point(definition.node_definitions[0].position)
-    asymmetric_node_cart = _fractional_to_cartesian(asymmetric_node, cell)
     node_positions: list[tuple[float, float, float]] = []
     for operation in operations:
-        transformed = _apply_point_operation(operation, asymmetric_node_cart)
-        wrapped = _wrap_fractional_point(_cartesian_to_fractional_2d(transformed, cell))
+        wrapped = _wrap_fractional_point(_apply_point_operation(operation, asymmetric_node))
         if any(_same_fractional_position(wrapped, existing) for existing in node_positions):
             continue
         node_positions.append(wrapped)
     node_positions = sorted(node_positions, key=lambda position: (position[0], position[1], position[2]))
     node_ids = tuple(f"n{index + 1}" for index in range(len(node_positions)))
-    node_index_by_id = {node_id: index for index, node_id in enumerate(node_ids)}
 
     raw_edges: dict[
         tuple[int, int, tuple[int, int, int]],
         tuple[Vec3, tuple[float, float, float]],
     ] = {}
     for definition_edge in definition.edge_definitions:
-        start_cart = _fractional_to_cartesian(_fractional_point(definition_edge.start), cell)
-        end_cart = _fractional_to_cartesian(_fractional_point(definition_edge.end), cell)
+        start_point = _fractional_point(definition_edge.start)
+        end_point = _fractional_point(definition_edge.end)
         for operation in operations:
-            transformed_start = _apply_point_operation(operation, start_cart)
-            transformed_end = _apply_point_operation(operation, end_cart)
-            start_fractional = _cartesian_to_fractional_2d(transformed_start, cell)
-            end_fractional = _cartesian_to_fractional_2d(transformed_end, cell)
+            start_fractional = _apply_point_operation(operation, start_point)
+            end_fractional = _apply_point_operation(operation, end_point)
             start_wrapped = _wrap_fractional_point(start_fractional)
             end_wrapped = _wrap_fractional_point(end_fractional)
             start_index = _match_fractional_position(start_wrapped, tuple(node_positions))
@@ -284,40 +284,6 @@ def expand_single_node_topology_definition(definition: TopologyDefinition) -> Ex
     )
 
 
-def _infer_directions(
-    explicit_directions: tuple[Vec3, ...],
-    connectivity: int,
-    metric_family: str,
-    inference_mode: str,
-) -> tuple[Vec3, ...]:
-    if inference_mode == "expanded":
-        raise ValueError("expanded inference mode requires topology-expanded site directions")
-    if inference_mode == "explicit":
-        if len(explicit_directions) != connectivity:
-            raise ValueError("explicit single-node topology layout does not provide the full coordination shell")
-        return _sort_directions(explicit_directions)
-
-    if inference_mode == "rotate-trigonal":
-        if connectivity != 3 or len(explicit_directions) != 1:
-            raise ValueError("rotate-trigonal inference requires one explicit 3-connected edge")
-        seed = explicit_directions[0]
-        return _sort_directions(
-            (
-                seed,
-                _rotate_about_z(seed, 2.0 * pi / 3.0),
-                _rotate_about_z(seed, -2.0 * pi / 3.0),
-            )
-        )
-
-    if inference_mode == "mirror-trigonal":
-        if connectivity != 3 or len(explicit_directions) != 2:
-            raise ValueError("mirror-trigonal inference requires two explicit 3-connected edges")
-        missing = _mirror_inferred_direction(explicit_directions, metric_family)
-        return _sort_directions(explicit_directions + (missing,))
-
-    raise ValueError(f"unsupported single-node inference mode {inference_mode!r}")
-
-
 def _explicit_edge_directions(definition) -> tuple[Vec3, ...]:
     cell = _cell_vectors_2d(tuple(definition.metadata.get("cell_parameters", ())))
     node_position = _fractional_point(definition.node_definitions[0].position)
@@ -351,51 +317,6 @@ def _metric_family(cell_parameters: tuple[float, ...]) -> str:
     # string is dropped here because callers only consume the family.
     kind, _setting = classify_2d_cell_parameters(cell_parameters)
     return kind
-
-
-def _mirror_inferred_direction(explicit_directions: tuple[Vec3, Vec3], metric_family: str) -> Vec3:
-    axis_angles = _axis_angles(metric_family)
-    if not axis_angles:
-        raise ValueError("mirror-trigonal inference requires a known metric axis family")
-
-    best_axis_index = None
-    best_axis_delta = None
-    for index, direction in enumerate(explicit_directions):
-        angle = atan2(direction[1], direction[0])
-        for axis_angle in axis_angles:
-            delta = abs(_wrap_angle(angle - axis_angle))
-            if best_axis_delta is None or delta < best_axis_delta:
-                best_axis_delta = delta
-                best_axis_index = index
-
-    if best_axis_index is None or best_axis_delta is None or best_axis_delta > _AXIS_TOLERANCE:
-        raise ValueError("could not identify a mirror axis for the single-node topology star")
-
-    axis_direction = explicit_directions[best_axis_index]
-    off_axis_direction = explicit_directions[1 - best_axis_index]
-    axis_angle = atan2(axis_direction[1], axis_direction[0])
-    off_axis_angle = atan2(off_axis_direction[1], off_axis_direction[0])
-    mirrored_angle = _wrap_angle(2.0 * axis_angle - off_axis_angle)
-    mirrored = (cos(mirrored_angle), sin(mirrored_angle), 0.0)
-    if any(_direction_distance(mirrored, direction) < _ANGLE_TOLERANCE for direction in explicit_directions):
-        raise ValueError("mirror-inferred direction duplicates an explicit direction")
-    return mirrored
-
-
-def _axis_angles(metric_family: str) -> tuple[float, ...]:
-    if metric_family == "hexagonal":
-        return tuple(index * pi / 3.0 for index in range(6))
-    if metric_family in {"square", "orthogonal"}:
-        return tuple(index * pi / 2.0 for index in range(4))
-    return ()
-
-
-def _rotate_about_z(vector: Vec3, angle: float) -> Vec3:
-    return (
-        vector[0] * cos(angle) - vector[1] * sin(angle),
-        vector[0] * sin(angle) + vector[1] * cos(angle),
-        vector[2],
-    )
 
 
 def _sort_directions(directions: tuple[Vec3, ...]) -> tuple[Vec3, ...]:
@@ -482,56 +403,72 @@ def _fractional_to_cartesian(
     )
 
 
-def _point_operations_2d(space_group: str) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
-    if space_group == "P6/mmm":
-        return _deduplicate_point_operations(
-            tuple(_rotation_operation(index * pi / 3.0) for index in range(6))
-            + tuple(_mirror_operation(index * pi / 6.0) for index in range(6))
+# A 2D point operation in fractional coordinates: a 2x2 in-plane matrix plus
+# an in-plane fractional translation.
+FractionalPointOperation2D = tuple[
+    tuple[tuple[float, float], tuple[float, float]],
+    tuple[float, float],
+]
+
+
+def _point_operations_2d(space_group: str) -> tuple[FractionalPointOperation2D, ...]:
+    # General 2D plane-group support via gemmi: take the 3D space-group
+    # operations and keep those that map the layer plane onto itself
+    # (z -> +z or z -> -z with no fractional z translation), projected to
+    # their in-plane fractional matrix and translation. This covers every
+    # plane group gemmi can parse (P6/mmm, P4/mmm, Cmmm, P4/mbm, Pbam, ...)
+    # instead of a hand-written per-group table.
+    if not space_group:
+        return ()
+    group = gemmi.find_spacegroup_by_name(space_group)
+    if group is None:
+        return ()
+    denominator = gemmi.Op.DEN
+    operations: list[FractionalPointOperation2D] = []
+    for operation in group.operations():
+        rot = operation.rot
+        if rot[0][2] != 0 or rot[1][2] != 0 or rot[2][0] != 0 or rot[2][1] != 0:
+            continue
+        if abs(rot[2][2]) != denominator:
+            continue
+        z_shift = operation.tran[2] / denominator
+        if abs(z_shift - round(z_shift)) > 1e-9:
+            continue
+        matrix = (
+            (rot[0][0] / denominator, rot[0][1] / denominator),
+            (rot[1][0] / denominator, rot[1][1] / denominator),
         )
-    if space_group == "P4/mmm":
-        return _deduplicate_point_operations(
-            tuple(_rotation_operation(index * pi / 2.0) for index in range(4))
-            + tuple(_mirror_operation(index * pi / 4.0) for index in range(4))
+        shift = (
+            _canonical_fractional(operation.tran[0] / denominator),
+            _canonical_fractional(operation.tran[1] / denominator),
         )
-    return ()
-
-
-def _rotation_operation(angle: float) -> tuple[tuple[float, float], tuple[float, float]]:
-    return (
-        (cos(angle), -sin(angle)),
-        (sin(angle), cos(angle)),
-    )
-
-
-def _mirror_operation(axis_angle: float) -> tuple[tuple[float, float], tuple[float, float]]:
-    double_angle = 2.0 * axis_angle
-    return (
-        (cos(double_angle), sin(double_angle)),
-        (sin(double_angle), -cos(double_angle)),
-    )
+        operations.append((matrix, shift))
+    return _deduplicate_point_operations(tuple(operations))
 
 
 def _deduplicate_point_operations(
-    operations: tuple[tuple[tuple[float, float], tuple[float, float]], ...],
-) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
-    unique: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    for operation in operations:
+    operations: tuple[FractionalPointOperation2D, ...],
+) -> tuple[FractionalPointOperation2D, ...]:
+    unique: list[FractionalPointOperation2D] = []
+    for matrix, shift in operations:
         if any(
-            all(abs(operation[row][col] - existing[row][col]) < 1e-8 for row in range(2) for col in range(2))
-            for existing in unique
+            all(abs(matrix[row][col] - existing_matrix[row][col]) < 1e-8 for row in range(2) for col in range(2))
+            and all(abs(shift[axis] - existing_shift[axis]) < 1e-8 for axis in range(2))
+            for existing_matrix, existing_shift in unique
         ):
             continue
-        unique.append(operation)
+        unique.append((matrix, shift))
     return tuple(unique)
 
 
 def _apply_point_operation(
-    operation: tuple[tuple[float, float], tuple[float, float]],
-    point: Vec3,
-) -> Vec3:
+    operation: FractionalPointOperation2D,
+    point: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    matrix, shift = operation
     return (
-        operation[0][0] * point[0] + operation[0][1] * point[1],
-        operation[1][0] * point[0] + operation[1][1] * point[1],
+        matrix[0][0] * point[0] + matrix[0][1] * point[1] + shift[0],
+        matrix[1][0] * point[0] + matrix[1][1] * point[1] + shift[1],
         point[2],
     )
 
@@ -624,49 +561,53 @@ def _bipartite_coloring(
     edge_sites: tuple[ExpandedSingleNodeEdge, ...],
     node_ids: tuple[str, ...],
 ) -> tuple[bool, dict[str, int]]:
+    # Exact quotient-graph test: each edge carries its integer image shift,
+    # and a periodic 2-coloring has the form
+    #     color(node, image) = sublattice(node) XOR q . image   (mod 2)
+    # for some parity wavevector q in (Z2)^3. Such a coloring exists iff the
+    # parity-expanded graph — states (node, image mod 2), with an edge from
+    # (start, p) to (end, p + end_image mod 2) — is bipartite, which this BFS
+    # checks directly. Cycles of any length are handled exactly, including
+    # self-loops with nonzero image (an odd-parity self-loop constrains two
+    # distinct parity states and stays bipartite; an even-parity self-loop is
+    # an immediate conflict). The test can report non-bipartite for a
+    # disconnected lifted net whose components are individually bipartite but
+    # admit no coloring of the realizable form above; that conservative
+    # direction is safe for sublattice role assignment.
     if not edge_sites:
         return True, {node_id: 0 for node_id in node_ids}
 
-    max_shift = max(
-        max(abs(edge.end_image[0]), abs(edge.end_image[1]))
-        for edge in edge_sites
-    )
-    reps = 2 * max_shift + 3
-    center = max_shift + 1
-    node_index_by_id = {node_id: index for index, node_id in enumerate(node_ids)}
-    colors: dict[tuple[str, int, int], int] = {}
-
+    colors: dict[tuple[str, int, int, int], int] = {}
     for node_id in node_ids:
-        seed = (node_id, center, center)
+        seed = (node_id, 0, 0, 0)
         if seed in colors:
             continue
         colors[seed] = 0
         queue = deque((seed,))
         while queue:
-            current_id, x_index, y_index = queue.popleft()
-            current_color = colors[(current_id, x_index, y_index)]
+            current_id, parity_x, parity_y, parity_z = queue.popleft()
+            current_color = colors[(current_id, parity_x, parity_y, parity_z)]
             for edge in edge_sites:
-                neighbors: list[tuple[str, int, int]] = []
+                neighbors: list[tuple[str, int, int, int]] = []
                 if edge.start_node_id == current_id:
                     neighbors.append(
                         (
                             edge.end_node_id,
-                            x_index + edge.end_image[0],
-                            y_index + edge.end_image[1],
+                            (parity_x + edge.end_image[0]) % 2,
+                            (parity_y + edge.end_image[1]) % 2,
+                            (parity_z + edge.end_image[2]) % 2,
                         )
                     )
                 if edge.end_node_id == current_id:
                     neighbors.append(
                         (
                             edge.start_node_id,
-                            x_index - edge.end_image[0],
-                            y_index - edge.end_image[1],
+                            (parity_x - edge.end_image[0]) % 2,
+                            (parity_y - edge.end_image[1]) % 2,
+                            (parity_z - edge.end_image[2]) % 2,
                         )
                     )
-                for other_id, other_x, other_y in neighbors:
-                    if not (0 <= other_x < reps and 0 <= other_y < reps):
-                        continue
-                    other_key = (other_id, other_x, other_y)
+                for other_key in neighbors:
                     if other_key not in colors:
                         colors[other_key] = 1 - current_color
                         queue.append(other_key)
@@ -674,7 +615,7 @@ def _bipartite_coloring(
                     if colors[other_key] == current_color:
                         return False, {}
 
-    return True, {node_id: colors[(node_id, center, center)] for node_id in node_ids}
+    return True, {node_id: colors[(node_id, 0, 0, 0)] for node_id in node_ids}
 
 
 def _layout_directions_from_expanded_topology(

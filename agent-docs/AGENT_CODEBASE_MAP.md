@@ -69,7 +69,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
   - Shared dispatch for supported topology-family builders.
 - [src/cofkit/single_node_topologies.py](../src/cofkit/single_node_topologies.py)
-  - Handcrafted / expanded `2D` one-node families.
+  - Space-group-expanded `2D` one-node families. Direction stars are measured from the expanded P1 node sites ("expanded" mode; `fxt` keeps an "explicit" mode), bipartiteness is exact on the quotient graph (parity-expanded BFS over image-shift mod-2 equations), and plane-group operations come from gemmi's 3D space-group tables projected onto the layer (any parseable group, not just `P6/mmm` / `P4/mmm`).
 - [src/cofkit/single_node_topologies_3d.py](../src/cofkit/single_node_topologies_3d.py)
   - Supported `3D` one-node families.
 - [src/cofkit/indexed_topology_layouts.py](../src/cofkit/indexed_topology_layouts.py)
