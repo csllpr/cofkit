@@ -12,7 +12,7 @@ from threading import Lock
 from typing import Iterable, Mapping
 
 from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
-from .chem.rdkit import build_rdkit_monomer
+from .chem.rdkit import build_rdkit_monomer, monomer_geometry_degradation_warnings
 from .cofid import try_generate_cofid
 from .cif import CIFWriter
 from .embedding import EmbeddingConfig, EmbeddingResult, PeriodicEmbedder
@@ -480,6 +480,8 @@ class BatchStructureGenerator:
                     f"expected {record.expected_connectivity} motifs from {record.motif_kind!r} detection, "
                     f"got {actual_connectivity}"
                 )
+            for geometry_warning in monomer_geometry_degradation_warnings(monomer):
+                print(f"warning: {geometry_warning}", file=sys.stderr)
             result = BuiltBatchMonomer(record=record, monomer=monomer)
         except Exception as exc:  # pragma: no cover - exercised against large fixture libraries
             result = BuiltBatchMonomer(record=record, error=f"{type(exc).__name__}: {exc}")
@@ -4253,6 +4255,7 @@ class BatchStructureGenerator:
         hard_hard_invalid_metrics: Mapping[str, object] | None = None,
         reactant_node_shapes: Mapping[str, str] | None = None,
         shape_warnings: tuple[str, ...] = (),
+        monomer_geometry_warnings: tuple[str, ...] = (),
     ) -> BatchPairSummary:
         export_blocked = bool(hard_hard_invalid_reasons)
         return BatchPairSummary(
@@ -4288,6 +4291,7 @@ class BatchStructureGenerator:
                 "reactant_node_shapes": dict(reactant_node_shapes or {}),
                 "reactant_roles": reactant_roles,
                 "shape_warnings": tuple(shape_warnings),
+                "monomer_geometry_warnings": tuple(monomer_geometry_warnings),
                 "template_id": template_id,
                 **(
                     {"stacking": dict(candidate.metadata["stacking"])}
@@ -4551,6 +4555,14 @@ class BatchStructureGenerator:
             first_role: classify_monomer_node_shape(first).label,
             second_role: classify_monomer_node_shape(second).label,
         }
+        monomer_geometry_warnings = tuple(
+            dict.fromkeys(
+                (
+                    *monomer_geometry_degradation_warnings(first),
+                    *monomer_geometry_degradation_warnings(second),
+                )
+            )
+        )
 
         try:
             evaluation = self._evaluate_pair_topologies(pair)
@@ -4710,6 +4722,7 @@ class BatchStructureGenerator:
                 template_id=pair.template.id,
                 cofid=cofid,
                 shape_warnings=evaluation.shape_warnings,
+                monomer_geometry_warnings=monomer_geometry_warnings,
                 hard_hard_invalid_reasons=hard_hard_invalid_reasons,
                 hard_hard_invalid_metrics=hard_hard_invalid_metrics,
             )

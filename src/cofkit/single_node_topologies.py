@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections import deque
 from dataclasses import dataclass
 from functools import lru_cache
@@ -9,6 +10,11 @@ from .geometry import Vec3, add, classify_2d_cell_parameters, norm, normalize, s
 from .topology_index import TopologyDefinition
 from .topologies import load_topology
 
+
+# Topology ids whose unsupported-expansion warning has already been printed.
+# list_supported_single_node_topology_ids runs inside per-pair batch loops, so
+# the omission warning must fire once per topology id, not once per call.
+_OMITTED_TOPOLOGY_WARNING_SEEN: set[str] = set()
 
 _ANGLE_TOLERANCE = 1e-4
 _AXIS_TOLERANCE = pi / 18.0
@@ -97,7 +103,13 @@ def list_supported_single_node_topology_ids(
     for topology_id in _SUPPORTED_SINGLE_NODE_TOPOLOGIES:
         try:
             layout = resolve_single_node_topology_layout(topology_id)
-        except (KeyError, ValueError):
+        except (KeyError, ValueError) as exc:
+            if topology_id not in _OMITTED_TOPOLOGY_WARNING_SEEN:
+                _OMITTED_TOPOLOGY_WARNING_SEEN.add(topology_id)
+                print(
+                    f"warning: single-node topology {topology_id!r} omitted from the supported list: {exc}",
+                    file=sys.stderr,
+                )
             continue
         if layout.connectivity != connectivity:
             continue

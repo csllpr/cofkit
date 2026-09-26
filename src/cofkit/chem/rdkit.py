@@ -325,6 +325,47 @@ def detect_rdkit_motif_count(
     return len(effective_builder._detect_motifs(molecule, conformer, definition))
 
 
+def monomer_geometry_degradation_warnings(monomer: MonomerSpec) -> tuple[str, ...]:
+    """Describe any geometry fallback rungs recorded in monomer metadata.
+
+    The conformer builder degrades through documented fallback ladders —
+    embedding: ETKDGv3 -> random-coordinate retries -> 2D planar depiction;
+    force-field optimization: MMFF -> UFF -> unconverged -> unminimized — and
+    records the rung in ``metadata`` (``embedding_method``,
+    ``embedding_fallback``, ``forcefield``, ``forcefield_optimization_status``,
+    ``forcefield_diagnostics``). Nothing downstream consumed those flags, so a
+    2D-planar or unminimized monomer was indistinguishable from an
+    MMFF-optimized one. This surfaces each off-top rung as a
+    ``monomer_geometry_degraded:<monomer_id>:<detail>`` warning string; a
+    top-rung monomer yields an empty tuple. Metadata-bearing monomers built by
+    other means simply produce no warnings when the keys are absent.
+    """
+    metadata = monomer.metadata
+    details: list[str] = []
+    embedding_method = metadata.get("embedding_method")
+    if embedding_method == "rdkit-2d":
+        details.append("conformer embedding fell back to a 2D planar depiction (rdkit-2d)")
+    elif metadata.get("embedding_fallback"):
+        details.append(f"conformer embedding fell back to random-coordinate embedding ({embedding_method})")
+    forcefield = metadata.get("forcefield")
+    status = metadata.get("forcefield_optimization_status")
+    if status == "unconverged" and forcefield == "none":
+        details.append(
+            "no supported force field produced a minimized conformer; using the unminimized embedded conformer"
+        )
+    elif status == "unconverged":
+        details.append(
+            f"force-field optimization did not converge; using the lowest-energy unconverged {forcefield} conformer"
+        )
+    elif status == "skipped" or forcefield == "none":
+        diagnostics = tuple(str(item) for item in metadata.get("forcefield_diagnostics", ()) or ())
+        reason = f" ({diagnostics[0]})" if diagnostics else ""
+        details.append(f"conformer is not force-field minimized{reason}")
+    elif forcefield == "UFF":
+        details.append("force-field optimization fell back to UFF because MMFF parameters were unavailable")
+    return tuple(f"monomer_geometry_degraded:{monomer.id}:{detail}" for detail in details)
+
+
 def _embed_conformers(
     molecule,
     *,

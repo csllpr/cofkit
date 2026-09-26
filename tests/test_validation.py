@@ -203,6 +203,57 @@ class CoarseValidationTests(unittest.TestCase):
         self.assertIn("bridge_distance_residual_mean", report.warning_reasons)
         self.assertIn("bridge_distance_residual_fraction", report.warning_reasons)
 
+    def test_validator_surfaces_monomer_geometry_degradation_as_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "degraded.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("a1_C1", "C", 0.1, 0.1, 0.1),
+                    ("b1_C1", "C", 0.25, 0.1, 0.1),
+                ],
+                bonds=[("a1_C1", "b1_C1")],
+            )
+            record = _summary_record(cif_path, structure_id="degraded")
+            record["metadata"]["monomer_geometry_warnings"] = [
+                "monomer_geometry_degraded:tapb:conformer embedding fell back to a 2D planar depiction (rdkit-2d)",
+                "monomer_geometry_degraded:tapb:conformer is not force-field minimized",
+            ]
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "warning")
+        self.assertTrue(report.passes_hard_validation)
+        self.assertIn("monomer_geometry_degraded", report.warning_reasons)
+        self.assertEqual(
+            tuple(report.metrics["monomer_geometry_degraded_details"]),
+            (
+                "monomer_geometry_degraded:tapb:conformer embedding fell back to a 2D planar depiction (rdkit-2d)",
+                "monomer_geometry_degraded:tapb:conformer is not force-field minimized",
+            ),
+        )
+
+    def test_validator_without_monomer_geometry_warnings_stays_valid(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "clean.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("a1_C1", "C", 0.1, 0.1, 0.1),
+                    ("b1_C1", "C", 0.25, 0.1, 0.1),
+                ],
+                bonds=[("a1_C1", "b1_C1")],
+            )
+            record = _summary_record(cif_path, structure_id="clean")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertNotIn("monomer_geometry_degraded", report.warning_reasons)
+        self.assertNotIn("monomer_geometry_degraded_details", report.metrics)
+
     def test_validator_rejects_disconnected_instance_graph(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from cofkit import CIFWriter, COFEngine, COFProject, build_rdkit_monomer
 from cofkit.chem import rdkit as rdkit_module
-from cofkit.chem.rdkit import detect_rdkit_motif_count
+from cofkit.chem.rdkit import detect_rdkit_motif_count, monomer_geometry_degradation_warnings
 from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 from cofkit.reaction_realization import ReactionRealizer
 
@@ -156,6 +156,96 @@ class RDKitMonomerTests(unittest.TestCase):
                     "nitrile",
                     num_conformers=1,
                 )
+
+    def test_geometry_degradation_warnings_empty_for_top_rung_monomer(self):
+        monomer = build_rdkit_monomer(
+            "tfb",
+            "1,3,5-benzenetricarbaldehyde",
+            "O=Cc1cc(C=O)cc(C=O)c1",
+            "aldehyde",
+            num_conformers=1,
+        )
+
+        self.assertEqual(monomer.metadata["embedding_method"], "etkdg-v3")
+        self.assertEqual(monomer.metadata["forcefield_optimization_status"], "optimized")
+        self.assertEqual(monomer.metadata["forcefield"], "MMFF")
+        self.assertEqual(monomer_geometry_degradation_warnings(monomer), ())
+
+    def test_geometry_degradation_warnings_for_random_coordinate_embedding_fallback(self):
+        original_embed = rdkit_module.AllChem.EmbedMultipleConfs
+
+        def fail_only_default_embedding(molecule, *, numConfs, params):
+            if not params.useRandomCoords:
+                return ()
+            return original_embed(molecule, numConfs=numConfs, params=params)
+
+        with patch.object(
+            rdkit_module.AllChem,
+            "EmbedMultipleConfs",
+            side_effect=fail_only_default_embedding,
+        ):
+            monomer = build_rdkit_monomer(
+                "tfb_fallback",
+                "1,3,5-benzenetricarbaldehyde",
+                "O=Cc1cc(C=O)cc(C=O)c1",
+                "aldehyde",
+                num_conformers=1,
+            )
+
+        warnings = monomer_geometry_degradation_warnings(monomer)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("monomer_geometry_degraded:tfb_fallback:", warnings[0])
+        self.assertIn("random-coordinate embedding (etkdg-v3-random)", warnings[0])
+
+    def test_geometry_degradation_warnings_for_planar_unminimized_fallback(self):
+        with patch.object(rdkit_module.AllChem, "EmbedMultipleConfs", return_value=()):
+            monomer = build_rdkit_monomer(
+                "charged_planar",
+                "charged planar nitrile",
+                "N#Cc1ccc(-[n+]2ccccc2)cc1",
+                "nitrile",
+                num_conformers=1,
+            )
+
+        warnings = monomer_geometry_degradation_warnings(monomer)
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(all(warning.startswith("monomer_geometry_degraded:charged_planar:") for warning in warnings))
+        self.assertTrue(any("2D planar depiction (rdkit-2d)" in warning for warning in warnings))
+        self.assertTrue(any("not force-field minimized" in warning for warning in warnings))
+
+    def test_geometry_degradation_warnings_for_uff_fallback(self):
+        with patch.object(rdkit_module.AllChem, "MMFFHasAllMoleculeParams", return_value=False):
+            monomer = build_rdkit_monomer(
+                "tfb_uff",
+                "1,3,5-benzenetricarbaldehyde",
+                "O=Cc1cc(C=O)cc(C=O)c1",
+                "aldehyde",
+                num_conformers=1,
+            )
+
+        self.assertEqual(monomer.metadata["forcefield"], "UFF")
+        self.assertEqual(monomer.metadata["forcefield_optimization_status"], "optimized")
+        warnings = monomer_geometry_degradation_warnings(monomer)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("monomer_geometry_degraded:tfb_uff:", warnings[0])
+        self.assertIn("UFF", warnings[0])
+        self.assertIn("MMFF", warnings[0])
+
+    def test_geometry_degradation_warnings_for_unconverged_forcefield(self):
+        with patch.object(rdkit_module, "_minimize_conformer", return_value=1):
+            monomer = build_rdkit_monomer(
+                "tfb_unconverged",
+                "1,3,5-benzenetricarbaldehyde",
+                "O=Cc1cc(C=O)cc(C=O)c1",
+                "aldehyde",
+                num_conformers=1,
+            )
+
+        self.assertEqual(monomer.metadata["forcefield_optimization_status"], "unconverged")
+        warnings = monomer_geometry_degradation_warnings(monomer)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("monomer_geometry_degraded:tfb_unconverged:", warnings[0])
+        self.assertIn("did not converge", warnings[0])
 
     def test_primary_amine_detection_rejects_resonance_deactivated_nitrogens(self):
         self.assertEqual(detect_rdkit_motif_count("Nc1ccc(N)cc1", "amine"), 2)

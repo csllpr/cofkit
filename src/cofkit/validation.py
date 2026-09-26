@@ -156,6 +156,13 @@ class CoarseStructureValidator:
             if ring_classification not in {None, "accepted", "valid"}:
                 hard_invalid_reasons.append("ring_geometry_invalid")
 
+        monomer_geometry_warnings = tuple(
+            str(warning) for warning in metadata.get("monomer_geometry_warnings", ()) or ()
+        )
+        if monomer_geometry_warnings:
+            warning_reasons.append("monomer_geometry_degraded")
+            metrics["monomer_geometry_degraded_details"] = monomer_geometry_warnings
+
         bridge_metrics = tuple(self._mapping(item) for item in score_metadata.get("bridge_event_metrics", ()))
         raw_distance_residuals = tuple(self._distance_residual(item) for item in bridge_metrics)
         distance_residuals = tuple(value for value in raw_distance_residuals if value is not None)

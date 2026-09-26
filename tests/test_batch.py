@@ -23,6 +23,7 @@ from cofkit import (
     build_rdkit_monomer,
 )
 from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
+from cofkit.chem import rdkit as rdkit_module
 
 try:
     from rdkit import Chem  # noqa: F401
@@ -303,6 +304,72 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.metadata["net_plan"]["topology"], "hcb")
         self.assertEqual(candidate.metadata["embedding"]["placement_mode"], "single-node-bipartite")
         self.assertEqual(candidate.metadata["graph_summary"]["n_reaction_events"], 3)
+
+    def test_top_rung_monomers_produce_no_geometry_degradation_warning(self):
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tfb",
+            name="tfb",
+            smiles=TFB,
+            motif_kind="aldehyde",
+            expected_connectivity=3,
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            summary, candidate = self.generator.generate_pair_candidate(amine, aldehyde)
+
+        self.assertEqual(summary.status, "ok")
+        self.assertIsNotNone(candidate)
+        self.assertEqual(summary.metadata["monomer_geometry_warnings"], ())
+        self.assertNotIn("monomer_geometry_degraded", stderr.getvalue())
+
+    def test_degraded_monomer_geometry_surfaces_in_summary_metadata_and_validation(self):
+        amine = BatchMonomerRecord(
+            id="tapb",
+            name="tapb",
+            smiles=TAPB,
+            motif_kind="amine",
+            expected_connectivity=3,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tfb",
+            name="tfb",
+            smiles=TFB,
+            motif_kind="aldehyde",
+            expected_connectivity=3,
+        )
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(rdkit_module.AllChem, "MMFFHasAllMoleculeParams", return_value=False):
+                with contextlib.redirect_stderr(stderr):
+                    summary, candidate = self.generator.generate_pair_candidate(
+                        amine,
+                        aldehyde,
+                        out_dir=temp_dir,
+                        write_cif=True,
+                    )
+
+        self.assertEqual(summary.status, "ok")
+        self.assertIsNotNone(candidate)
+        warnings = summary.metadata["monomer_geometry_warnings"]
+        self.assertTrue(
+            any("monomer_geometry_degraded:tapb:" in warning and "UFF" in warning for warning in warnings)
+        )
+        self.assertTrue(
+            any("monomer_geometry_degraded:tfb:" in warning and "UFF" in warning for warning in warnings)
+        )
+        self.assertIn("warning: monomer_geometry_degraded:tapb:", stderr.getvalue())
+        self.assertIn("warning: monomer_geometry_degraded:tfb:", stderr.getvalue())
+        validation = summary.metadata["validation"]
+        self.assertIn("monomer_geometry_degraded", validation["warning_reasons"])
+        details = validation["metrics"]["monomer_geometry_degraded_details"]
+        self.assertTrue(any("monomer_geometry_degraded:tapb:" in detail for detail in details))
 
     def test_three_plus_three_pair_can_enumerate_and_export_stacked_variant(self):
         base_generator = BatchStructureGenerator(

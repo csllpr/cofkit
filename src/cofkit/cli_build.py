@@ -11,7 +11,7 @@ from typing import Iterable, Mapping
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
-from .chem.rdkit import AromaticityRestoreError, build_rdkit_monomer
+from .chem.rdkit import AromaticityRestoreError, build_rdkit_monomer, monomer_geometry_degradation_warnings
 from .cif import CIFWriter
 from .cofid import cofid_to_build_request, try_generate_cofid
 from .lammps import LammpsOptimizationSettings
@@ -406,8 +406,8 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         )
     except AromaticityRestoreError as exc:
         raise SystemExit(f"error: {exc}") from exc
-    _warn_unconverged_monomer(first)
-    _warn_unconverged_monomer(second)
+    _warn_monomer_geometry_degradation(first)
+    _warn_monomer_geometry_degradation(second)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -571,7 +571,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         )
     except AromaticityRestoreError as exc:
         raise SystemExit(f"error: {exc}") from exc
-    _warn_unconverged_monomer(monomer)
+    _warn_monomer_geometry_degradation(monomer)
     _warn_legacy_scoring_deprecated(args)
     generator = RingFormingStructureGenerator(
         config=RingFormationConfig(
@@ -713,14 +713,9 @@ def _monomer_geometry_summary(monomer) -> dict[str, object]:
     }
 
 
-def _warn_unconverged_monomer(monomer) -> None:
-    if monomer.metadata.get("forcefield_optimization_status") != "unconverged":
-        return
-    print(
-        f"warning: monomer {monomer.id!r}: RDKit force-field optimization did not converge; "
-        "proceeding with the unconverged conformer (see geometry metadata in the summary)",
-        file=sys.stderr,
-    )
+def _warn_monomer_geometry_degradation(monomer) -> None:
+    for warning in monomer_geometry_degradation_warnings(monomer):
+        print(f"warning: {warning}", file=sys.stderr)
 
 
 def _summary_to_single_pair_result(summary) -> dict[str, object]:
