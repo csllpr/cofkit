@@ -41,7 +41,7 @@ Legend: ✅ done · ⚠️ partial · ❌ not started
 |---|---|---|
 | W3.1 `StackingSummary` dataclass in `batch_models.py` | ❌ dropped | Removed 2026-09-25 (audit D2/#23): never routed — `batch.py` reads the raw metadata dict |
 | W3.1 Full metadata schema in `_stacking_metadata()` | ✅ | `stacking.py` `_stacking_metadata`; canonical keys only (deprecated aliases removed 2026-09-25, pre-release); `cell_classification`, `layer_z_span_mode`, `layer_z_span_axis`, `derivation`, `warnings` all emitted |
-| W3.2 CIF `# stacking-geometry:` derivation comment | ✅ | `cif.py:548-596` `_stacking_geometry_comment()` reads from `metadata["stacking"]`; emits single-line comment with registry, basis, shift, clearance, span, c2c, contact |
+| W3.2 CIF `# stacking-geometry:` derivation comment | ✅ | `cif.py:560-634` `_stacking_geometry_comment()` reads from `metadata["stacking"]`; emits single-line comment with registry, basis, shift, clearance, span, c2c, contact. **Wiring fixed 2026-09-26**: `_build_sites` (`cif.py:140-142`) now copies the candidate's `stacking` metadata block into the export metadata — previously it never did, so the comment only fired in the helper's unit tests and real stacked exports (batch expansion, engine/ring-forming stacked candidates) never carried it |
 | W3.1 `StackingSummary` routed through `batch.py` summary/console output | ❌ | Obsolete — dataclass dropped (audit D2); `batch.py` keeps reading the raw metadata dict |
 
 ---
@@ -230,3 +230,17 @@ remains an explicitly documented future project. These close the remaining
 c-axis correctness half of review point 2. ~~W1.4 `c_axis_semantics` (the
 vacuum-slab vs implicit-AA-repeat distinction for single-layer exports)~~
 **landed 2026-09-26** — see the W1 table row; no c-semantics items remain open.
+
+**Third post-audit update — 2026-09-26:** a follow-up audit found the W3.2
+`# stacking-geometry:` comment was dead in production — `_build_sites` in
+`cif.py` assembled the per-structure export metadata without copying the
+candidate's `stacking` block, so only the helper's unit fixtures ever
+triggered it. **Fixed 2026-09-26**: `_build_sites` (`cif.py:140-142`) now
+forwards `candidate.metadata["stacking"]` into the export metadata, so the
+comment fires on every stacked export path that funnels through `CIFWriter`
+(batch stacking expansion, engine/ring-forming stacked candidates) with the
+real registry/shift/clearance/span/c2c/contact values and the
+`c_rebuilt_along_layer_normal` orthogonalization note; monolayer exports are
+unchanged and the W1.4 `# c-axis-semantics:` label coexists. End-to-end
+coverage: `tests/test_ring_forming.py::RingFormingWorkflowTests::test_boroxine_aa_stacked_export_renders_stacking_geometry_comment`
+and three wiring tests at the end of `tests/test_stacking.py`.

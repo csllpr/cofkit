@@ -137,6 +137,9 @@ class CIFWriter:
             c_axis_semantics = embedding_metadata.get("c_axis_semantics")
             if c_axis_semantics is not None:
                 metadata["c_axis_semantics"] = str(c_axis_semantics)
+        stacking_metadata = candidate.metadata.get("stacking")
+        if isinstance(stacking_metadata, Mapping):
+            metadata["stacking"] = dict(stacking_metadata)
         bonds.extend(self._atomistic_bonds(candidate, monomer_specs, instance_to_monomer, realization, cell, atomistic_shift))
         if realization is not None:
             metadata["reaction_realization"] = dict(realization.metadata)

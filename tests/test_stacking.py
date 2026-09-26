@@ -553,3 +553,70 @@ def test_stacking_geometry_comment_reports_c_axis_orthogonalization():
     comment = CIFWriter()._stacking_geometry_comment(metadata)
 
     assert "c_rebuilt_along_layer_normal(base_c_tilt=0.525deg)" in comment
+
+
+# ---------------------------------------------------------------------------
+# W3.2 wiring: the stacking metadata block must reach the exported CIF
+# ---------------------------------------------------------------------------
+
+
+def test_stacked_export_renders_stacking_geometry_comment_from_real_metadata():
+    """A stacked export carries the stacking-geometry derivation comment with
+    the real registry/shift/clearance/contact values, alongside the
+    periodic_bilayer c-axis-semantics label.  Previously the export metadata
+    never carried the stacking block and the comment was dead in production."""
+    from cofkit.cif import CIFWriter
+
+    monomer = _rod_monomer()
+    candidate = _stackable_candidate(monomer)
+    (stacked,) = enumerate_candidate_stackings(
+        candidate, registry_ids=("AA",), monomer_specs={"m1": monomer}
+    )
+
+    export = CIFWriter().export_candidate(stacked, {"m1": monomer})
+
+    comment_lines = [line for line in export.text.splitlines() if line.startswith("# stacking-geometry:")]
+    assert len(comment_lines) == 1
+    comment = comment_lines[0]
+    meta = stacked.metadata["stacking"]
+    assert "registry=AA" in comment
+    assert "shift_frac=0,0" in comment
+    assert "interlayer_clearance=3.4" in comment
+    assert f"layer_z_span={meta['layer_z_span']:.4g}" in comment
+    assert f"c2c={meta['center_to_center_distance']:.4g}" in comment
+    assert "c=2*c2c" in comment
+    assert "min_interlayer_contact=3.4" in comment
+    assert "atomistic contact, mode=precursor_coordinates" in comment
+    assert "atoms=" in comment
+    assert "image=" in comment
+    assert "involves_hydrogen=" in comment
+
+    # Coexists with the c-axis-semantics label (W1.4).
+    assert "# c-axis-semantics: periodic_bilayer" in export.text
+    assert export.metadata["stacking"]["id"] == "AA"
+
+
+def test_monolayer_export_omits_stacking_geometry_comment():
+    from cofkit.cif import CIFWriter
+
+    monomer = _rod_monomer()
+    candidate = _stackable_candidate(monomer)
+
+    export = CIFWriter().export_candidate(candidate, {"m1": monomer})
+
+    assert "# stacking-geometry:" not in export.text
+    assert "stacking" not in export.metadata
+
+
+def test_stacked_export_comment_reports_c_axis_orthogonalization_from_real_metadata():
+    from cofkit.cif import CIFWriter
+
+    monomer = _rod_monomer()
+    stacked, _ = _expand_tilted(monomer)
+
+    export = CIFWriter().export_candidate(stacked, {"m1": monomer})
+
+    comment = next(
+        line for line in export.text.splitlines() if line.startswith("# stacking-geometry:")
+    )
+    assert "c_rebuilt_along_layer_normal(base_c_tilt=1deg)" in comment

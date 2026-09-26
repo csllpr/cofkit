@@ -202,6 +202,53 @@ class RingFormingWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(export.text.splitlines()[0], f"# COFid: {cofid} stacking=AA")
 
+    def test_boroxine_aa_stacked_export_renders_stacking_geometry_comment(self):
+        """W3.2 wiring: real stacked ring-forming exports carry the
+        stacking-geometry derivation comment (registry/shift/clearance/span/
+        c2c/atomistic contact) next to the periodic_bilayer c-axis-semantics
+        label; the monolayer export carries neither the comment nor the
+        bilayer label."""
+        monolayer = RingFormingStructureGenerator().generate(
+            self.cof1_precursor,
+            "boroxine_trimerization",
+        )
+        monolayer_export = CIFWriter().export_candidate(
+            monolayer,
+            {self.cof1_precursor.id: self.cof1_precursor},
+        )
+        stacked = RingFormingStructureGenerator(
+            RingFormationConfig(stacking_ids=("AA",))
+        ).generate(
+            self.cof1_precursor,
+            "boroxine_trimerization",
+        )
+        stacked_export = CIFWriter().export_candidate(
+            stacked,
+            {self.cof1_precursor.id: self.cof1_precursor},
+        )
+
+        comment_lines = [
+            line for line in stacked_export.text.splitlines() if line.startswith("# stacking-geometry:")
+        ]
+        self.assertEqual(len(comment_lines), 1)
+        comment = comment_lines[0]
+        stacking_meta = stacked.metadata["stacking"]
+        self.assertIn("registry=AA", comment)
+        self.assertIn("shift_frac=0,0", comment)
+        self.assertIn("interlayer_clearance=3.4", comment)
+        self.assertIn(f"layer_z_span={stacking_meta['layer_z_span']:.4g}", comment)
+        self.assertIn(f"c2c={stacking_meta['center_to_center_distance']:.4g}", comment)
+        self.assertIn("c=2*c2c", comment)
+        self.assertIn("min_interlayer_contact=", comment)
+        self.assertIn("atomistic contact, mode=atomistic_product", comment)
+        self.assertIn("atoms=", comment)
+        self.assertIn("involves_hydrogen=", comment)
+        self.assertIn("# c-axis-semantics: periodic_bilayer", stacked_export.text)
+
+        self.assertNotIn("# stacking-geometry:", monolayer_export.text)
+        self.assertNotIn("stacking", monolayer_export.metadata)
+        self.assertIn("# c-axis-semantics: vacuum_slab", monolayer_export.text)
+
     def test_stacking_span_provenance_and_fitted_cell_classification(self):
         """Audit A7/A8: the span is measured along the layer normal with
         honest mode/axis provenance, and the embedding cell_kind classifies
