@@ -108,6 +108,23 @@ Then go straight to the module that matches the task.
 - [src/cofkit/decompose_bond_orders.py](../src/cofkit/decompose_bond_orders.py)
   - Shared graph normalization before event/legacy detection: geometry-constrained, valence-preserving repair of quinoid imine assignments; no new bonds or periodic edge removal. Receives periodic edge multiplicities, checks periodic valences, and retries failing components with parallel-image orders fixed before leaving them unresolved. ReDD-COFFEE regressions and independent CHK boundary labels live in `tests/test_decompose_bond_orders.py` and `tests/fixtures/redd_coffee/`.
 
+## Constant-owner modules
+
+Per the single-owner convention in [AGENTS.md](../AGENTS.md), every
+tunable numeric lives in the module that semantically owns it — new
+tunables must land here, not at consumer sites:
+
+- [src/cofkit/constants.py](../src/cofkit/constants.py)
+  - Cross-cutting assembly defaults (`DEFAULT_MONOLAYER_C_ANGSTROM`, `DEFAULT_LATERAL_SPAN_ANGSTROM`).
+- [src/cofkit/ring_geometry.py](../src/cofkit/ring_geometry.py)
+  - Ring-template bond lengths for boroxine/triazine ring formation.
+- [src/cofkit/validation.py](../src/cofkit/validation.py)
+  - `CoarseValidationThresholds` owns the nine validation thresholds; `cli_analyze.py` argparse defaults reference its fields.
+- [src/cofkit/graspa.py](../src/cofkit/graspa.py) and [src/cofkit/lammps.py](../src/cofkit/lammps.py)
+  - Config dataclasses own the simulation defaults (cutoffs, EQeq parameters, seeds, temperatures, Ewald tolerances); `cli_calculate.py` argparse defaults reference them.
+- [src/cofkit/vdw.py](../src/cofkit/vdw.py)
+  - Bondi radii table and clash-assessment constants (pre-existing owner).
+
 ## External calculation seams
 
 - [src/cofkit/lammps.py](../src/cofkit/lammps.py)

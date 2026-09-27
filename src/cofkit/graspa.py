@@ -52,6 +52,15 @@ DEFAULT_WIDOM_COMPONENTS = tuple(
 )
 AVAILABLE_WIDOM_COMPONENTS = tuple(metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA)
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
+# RASPA-family run-control defaults shared by the Widom/isotherm/mixture
+# settings dataclasses below (heuristic — pending calibration; values follow
+# the RASPA2/gRASPA example-input convention).
+DEFAULT_CUTOFF_ANGSTROM = 12.8
+DEFAULT_OVERLAP_CRITERIA = 1.0e5
+DEFAULT_EWALD_PRECISION = 1.0e-6
+# derived: kcal/mol -> K via 1/R with R = 1.987191e-3 kcal/(mol*K); converts
+# DREIDING/UFF LJ well depths into the Kelvin units gRASPA mixing rules expect.
+_KCAL_PER_MOL_TO_KELVIN = 503.222681
 _RASPA2_LOCAL_FORCEFIELD_NAME = "COFKit"
 _RASPA2_LOCAL_MOLECULE_DEFINITION = "COFKit"
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
@@ -222,10 +231,10 @@ class GraspaWidomSettings:
     charge_method: str = "Ewald"
     temperature: float = 300.0
     pressure: float = 100_000.0
-    overlap_criteria: float = 1.0e5
-    cutoff_vdw: float = 12.8
-    cutoff_coulomb: float = 12.8
-    ewald_precision: float = 1.0e-6
+    overlap_criteria: float = DEFAULT_OVERLAP_CRITERIA
+    cutoff_vdw: float = DEFAULT_CUTOFF_ANGSTROM
+    cutoff_coulomb: float = DEFAULT_CUTOFF_ANGSTROM
+    ewald_precision: float = DEFAULT_EWALD_PRECISION
     use_dnn_for_host_guest: bool = False
     save_output_to_file: bool = True
 
@@ -385,10 +394,10 @@ class GraspaIsothermSettings:
     framework_name: str = "framework"
     charge_method: str = "Ewald"
     temperature: float = 298.0
-    overlap_criteria: float = 1.0e5
-    cutoff_vdw: float = 12.8
-    cutoff_coulomb: float = 12.8
-    ewald_precision: float = 1.0e-6
+    overlap_criteria: float = DEFAULT_OVERLAP_CRITERIA
+    cutoff_vdw: float = DEFAULT_CUTOFF_ANGSTROM
+    cutoff_coulomb: float = DEFAULT_CUTOFF_ANGSTROM
+    ewald_precision: float = DEFAULT_EWALD_PRECISION
     translation_probability: float = 1.0
     rotation_probability: float = 1.0
     reinsertion_probability: float = 1.0
@@ -594,10 +603,10 @@ class GraspaMixtureSettings:
     framework_name: str = "framework"
     charge_method: str = "Ewald"
     temperature: float = 298.0
-    overlap_criteria: float = 1.0e5
-    cutoff_vdw: float = 12.8
-    cutoff_coulomb: float = 12.8
-    ewald_precision: float = 1.0e-6
+    overlap_criteria: float = DEFAULT_OVERLAP_CRITERIA
+    cutoff_vdw: float = DEFAULT_CUTOFF_ANGSTROM
+    cutoff_coulomb: float = DEFAULT_CUTOFF_ANGSTROM
+    ewald_precision: float = DEFAULT_EWALD_PRECISION
     use_dnn_for_host_guest: bool = False
     save_output_to_file: bool = True
 
@@ -2217,7 +2226,7 @@ def _graspa_framework_rows_for_forcefield(forcefield: str) -> list[str]:
         for element in _GRASPA_FRAMEWORK_ELEMENT_ORDER:
             atom_type = DREIDING_FRAMEWORK_TYPE_BY_ELEMENT[element]
             parameters = DREIDING_PARAMETERS[atom_type]
-            epsilon_kelvin = parameters.d0 * 503.222681
+            epsilon_kelvin = parameters.d0 * _KCAL_PER_MOL_TO_KELVIN
             sigma = parameters.r0 / _UFF_RMIN_TO_SIGMA_FACTOR
             rows.append(
                 f"{element:<14} lennard-jones {epsilon_kelvin:10.4f} {sigma:10.5f}      "
@@ -2229,7 +2238,7 @@ def _graspa_framework_rows_for_forcefield(forcefield: str) -> list[str]:
         for element in _GRASPA_FRAMEWORK_ELEMENT_ORDER:
             atom_type = _UFF_FRAMEWORK_TYPE_BY_ELEMENT[element]
             parameters = uff_parameters[atom_type]
-            epsilon_kelvin = parameters.d1 * 503.222681
+            epsilon_kelvin = parameters.d1 * _KCAL_PER_MOL_TO_KELVIN
             sigma = parameters.x1 / _UFF_RMIN_TO_SIGMA_FACTOR
             rows.append(
                 f"{element:<14} lennard-jones {epsilon_kelvin:10.4f} {sigma:10.5f}      "

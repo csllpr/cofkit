@@ -4,8 +4,20 @@ from dataclasses import dataclass, field
 from math import atan2, pi
 from typing import Mapping
 
-from .geometry import Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub
+from .geometry import ANGULAR_RESIDUAL_DOWN_WEIGHT, Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub
 from .model import AssemblyState, MonomerSpec, Pose, ReactionEvent
+
+# Cited from standard aromatic ring bond lengths: boroxine B-O ~1.38
+# angstrom (boroxine B3O3 ring), triazine C-N ~1.35 angstrom
+# (1,3,5-triazine ring). This module owns ring-template geometry, so these
+# are the single owner for both the ring profiles below and the
+# bridge_target_distance / default ring radius consumers in reactions.py
+# and reaction_realization.py.
+BOROXINE_BO_BOND_LENGTH = 1.38
+TRIAZINE_CN_BOND_LENGTH = 1.35
+
+# Numerical guard for "did the residual improve" comparisons.
+_RESIDUAL_IMPROVEMENT_EPSILON = 1e-10
 
 
 @dataclass(frozen=True)
@@ -35,7 +47,7 @@ class RingEventGeometry:
 
     @property
     def residual(self) -> float:
-        return self.radial_rms + self.planarity_rms + self.angular_rms_degrees / 30.0
+        return self.radial_rms + self.planarity_rms + self.angular_rms_degrees / ANGULAR_RESIDUAL_DOWN_WEIGHT
 
 
 @dataclass(frozen=True)
@@ -78,8 +90,8 @@ class RingOptimizationResult:
 def ring_geometry_profile(template_id: str) -> RingGeometryProfile:
     try:
         return {
-            "boroxine_trimerization": RingGeometryProfile(template_id, 1.38),
-            "triazine_trimerization": RingGeometryProfile(template_id, 1.35),
+            "boroxine_trimerization": RingGeometryProfile(template_id, BOROXINE_BO_BOND_LENGTH),
+            "triazine_trimerization": RingGeometryProfile(template_id, TRIAZINE_CN_BOND_LENGTH),
         }[template_id]
     except KeyError as exc:
         raise KeyError(f"no ring geometry profile for template {template_id!r}") from exc
@@ -170,7 +182,7 @@ class RingGeometryOptimizer:
         for _ in range(self.max_iterations):
             proposal = self._translation_proposal(events, best_state, monomer_specs)
             report = ring_geometry_report(events, proposal, monomer_specs)
-            if report.total_residual + 1e-10 < best.total_residual:
+            if report.total_residual + _RESIDUAL_IMPROVEMENT_EPSILON < best.total_residual:
                 best_state, best = proposal, report
                 accepted += 1
             else:
@@ -183,7 +195,7 @@ class RingGeometryOptimizer:
                 "accepted_iterations": accepted,
                 "initial_residual": initial.total_residual,
                 "final_residual": best.total_residual,
-                "improved": best.total_residual + 1e-10 < initial.total_residual,
+                "improved": best.total_residual + _RESIDUAL_IMPROVEMENT_EPSILON < initial.total_residual,
             },
         )
 

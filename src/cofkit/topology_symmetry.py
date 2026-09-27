@@ -4,6 +4,9 @@ from dataclasses import dataclass
 
 from .topology_index import TopologyDefinition
 
+# Fractional-coordinate tolerance for treating a value as sitting on a cell
+# boundary (wrapped to 0/1) during periodic wrap. Heuristic — pending
+# calibration. Single owner; topology_analysis imports this definition.
 _FRACTIONAL_WRAP_TOLERANCE = 1e-4
 
 

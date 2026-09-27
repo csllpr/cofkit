@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
+from .constants import DEFAULT_LATERAL_SPAN_ANGSTROM, DEFAULT_MONOLAYER_C_ANGSTROM
 from .geometry import Frame
 
 Image3 = tuple[int, int, int]
@@ -122,9 +123,9 @@ class Pose:
 @dataclass(frozen=True)
 class AssemblyState:
     cell: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] = (
-        (30.0, 0.0, 0.0),
-        (0.0, 30.0, 0.0),
-        (0.0, 0.0, 8.0),
+        (DEFAULT_LATERAL_SPAN_ANGSTROM, 0.0, 0.0),
+        (0.0, DEFAULT_LATERAL_SPAN_ANGSTROM, 0.0),
+        (0.0, 0.0, DEFAULT_MONOLAYER_C_ANGSTROM),
     )
     monomer_poses: Mapping[str, Pose] = field(default_factory=dict)
     torsions: Mapping[str, float] = field(default_factory=dict)

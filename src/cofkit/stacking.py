@@ -8,6 +8,7 @@ from math import acos, degrees
 from typing import Mapping
 
 from .geometry import (
+    ANGULAR_RESIDUAL_DOWN_WEIGHT,
     LayerSpanReport,
     Vec3,
     add,
@@ -872,7 +873,7 @@ def _ring_event_residual(metric: Mapping[str, object]) -> float:
     return (
         float(metric.get("radial_rms"))
         + float(metric.get("planarity_rms"))
-        + float(metric.get("angular_rms_degrees")) / 30.0
+        + float(metric.get("angular_rms_degrees")) / ANGULAR_RESIDUAL_DOWN_WEIGHT
     )
 
 

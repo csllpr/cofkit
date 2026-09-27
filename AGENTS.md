@@ -84,6 +84,15 @@ uv build --wheel               # packaging check (CI)
   `2026.4.7.post1` for same-day re-releases).
 - Keep scoring and optimization separate even when they share metrics;
   keep seed assembly honest about not being physical relaxation.
+- **Single-owner rule for tunable numerics.** Every tunable numeric lands
+  as a named constant in the module that semantically owns the quantity,
+  or as a field on the owning config dataclass — never as a bare literal
+  at a consumer site. Each owner carries a provenance comment of one of
+  three kinds: *derived* (formula shown), *cited* (source), or
+  *heuristic — pending calibration* (explicitly labeled). CLI argparse
+  defaults must reference the owner, never retype a literal. The same
+  quantity must never exist with two values: consolidate duplicates into
+  the owner, do not patch around them.
 
 ## Repository hygiene
 

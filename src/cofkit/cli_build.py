@@ -14,6 +14,7 @@ from .build_workflows.ring_forming import RingFormationConfig, RingFormingStruct
 from .chem.rdkit import AromaticityRestoreError, build_rdkit_monomer, monomer_geometry_degradation_warnings
 from .cif import CIFWriter
 from .cofid import cofid_to_build_request, try_generate_cofid
+from .constants import DEFAULT_MONOLAYER_C_ANGSTROM
 from .lammps import LammpsOptimizationSettings
 from .monomer_library import MonomerRoleResolver
 from .reactions import ReactionLibrary
@@ -506,9 +507,10 @@ def _add_ring_forming_parser(subparsers) -> None:
     parser.add_argument(
         "--layer-spacing",
         type=float,
-        default=8.0,
+        default=DEFAULT_MONOLAYER_C_ANGSTROM,
         help=(
-            "Vacuum-slab padding along c for the single-layer export (default: 8.0). "
+            "Vacuum-slab padding along c for the single-layer export "
+            "(cofkit.constants.DEFAULT_MONOLAYER_C_ANGSTROM). "
             "This is padding around one layer, not an interlayer stacking distance."
         ),
     )

@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from math import atan2, cos, sin
 from typing import Mapping
 
+from ..constants import DEFAULT_MONOLAYER_C_ANGSTROM
 from ..geometry import (
     Frame,
     Vec3,
@@ -52,9 +53,9 @@ IMPLEMENTATION_STATUS = "available"
 class RingFormationConfig:
     topology_id: str = "hcb"
     # Vacuum-slab padding along c for single-layer exports (NOT an interlayer
-    # distance; stacking registries carry their own clearances). Unified with
-    # the embedding path's default_layer_spacing.
-    layer_spacing: float = 8.0
+    # distance; stacking registries carry their own clearances). Owned by
+    # cofkit.constants.DEFAULT_MONOLAYER_C_ANGSTROM.
+    layer_spacing: float = DEFAULT_MONOLAYER_C_ANGSTROM
     optimize_geometry: bool = True
     stacking_ids: tuple[str, ...] = ()
 

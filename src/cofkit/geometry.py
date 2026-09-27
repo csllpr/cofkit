@@ -8,6 +8,13 @@ from typing import Iterable, Mapping, Sequence
 Vec3 = tuple[float, float, float]
 Mat3 = tuple[Vec3, Vec3, Vec3]
 
+# Heuristic — pending calibration: down-weight that scales an angular RMS
+# measured in degrees to be comparable with radial/planarity deviations
+# measured in angstroms, so both can share one additive geometry residual.
+# Single owner for ring_geometry.RingEventGeometry.residual and the
+# stacking-aggregated mirror of that residual in stacking.py.
+ANGULAR_RESIDUAL_DOWN_WEIGHT = 30.0
+
 
 def vec3(x: float, y: float, z: float) -> Vec3:
     return (float(x), float(y), float(z))

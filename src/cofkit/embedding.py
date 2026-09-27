@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from math import atan2, cos, pi, sin, sqrt
 from typing import Mapping
 
+from .constants import DEFAULT_LATERAL_SPAN_ANGSTROM, DEFAULT_MONOLAYER_C_ANGSTROM
 from .geometry import (
     Mat3,
     Vec3,
@@ -38,8 +39,8 @@ class EmbeddingResult:
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    default_layer_spacing: float = 8.0
-    default_lateral_span: float = 30.0
+    default_layer_spacing: float = DEFAULT_MONOLAYER_C_ANGSTROM
+    default_lateral_span: float = DEFAULT_LATERAL_SPAN_ANGSTROM
     bridge_target_distance: float = 1.4
 
 

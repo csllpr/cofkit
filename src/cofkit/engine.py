@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from .constants import DEFAULT_LATERAL_SPAN_ANGSTROM, DEFAULT_MONOLAYER_C_ANGSTROM
 from .embedding import EmbeddingConfig, PeriodicEmbedder
 from .model import Candidate, CandidateEnsemble, MonomerSpec, ReactionTemplate, order_candidates
 from .optimizer import ContinuousOptimizer, OptimizerConfig
@@ -30,9 +31,9 @@ class COFProject:
 
 @dataclass(frozen=True)
 class COFEngineConfig:
-    default_layer_spacing: float = 8.0
-    default_ring_layer_spacing: float = 8.0
-    default_lateral_span: float = 30.0
+    default_layer_spacing: float = DEFAULT_MONOLAYER_C_ANGSTROM
+    default_ring_layer_spacing: float = DEFAULT_MONOLAYER_C_ANGSTROM
+    default_lateral_span: float = DEFAULT_LATERAL_SPAN_ANGSTROM
     max_candidates: int = 16
     optimization_max_iterations: int = 8
     # Filter net-planner topology candidates by the classified node shape of

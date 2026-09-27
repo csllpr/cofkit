@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Mapping
 
 from .topology_index import TopologyDefinition, TopologyEdgeDefinition, TopologyIndexEntry
+from .topology_symmetry import _FRACTIONAL_WRAP_TOLERANCE
 
 
 _ZERO_LINKER_METADATA_KEYS = (
@@ -23,7 +24,6 @@ _ZERO_LINKER_METADATA_KEYS = (
     "two_monomer_node_linker_reason",
 )
 _ZERO_LINKER_SCAN_VERSION = 3
-_FRACTIONAL_WRAP_TOLERANCE = 1e-4
 _SUPPORTED_2D_SINGLE_NODE_IDS = {"hcb", "hca", "fes", "fxt", "sql", "kgm", "htb", "hxl"}
 _SUPPORTED_3D_SINGLE_NODE_NODE_NODE_SUPPORT = {"dia": True, "pcu": False}
 

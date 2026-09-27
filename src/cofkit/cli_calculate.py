@@ -11,6 +11,7 @@ from .graspa import (
     COFKIT_GRASPA_ENV_VAR,
     COFKIT_RASPA2_ENV_VAR,
     DEFAULT_WIDOM_MOVES_PER_COMPONENT,
+    DEFAULT_RASPA_BACKEND,
     EqeqChargeSettings,
     EqeqExecutionError,
     GraspaConfigurationError,
@@ -135,7 +136,7 @@ def _add_raspa_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--backend",
         choices=SUPPORTED_RASPA_BACKENDS,
-        default="graspa",
+        default=DEFAULT_RASPA_BACKEND,
         help="Monte Carlo engine backend. Default: graspa.",
     )
     parser.add_argument(
@@ -205,7 +206,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--dreiding-hbond",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=LammpsOptimizationSettings().dreiding_hbond,
         help=(
             "Export DREIDING Table V hydrogen-bond terms (LAMMPS hbond/dreiding/lj) for N/O/F-bound "
             "hydrogens with the DREIDING backend. Default: enabled. Use --no-dreiding-hbond to opt out; "
@@ -214,7 +215,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--charge-model",
-        default="eqeq",
+        default=LammpsOptimizationSettings().charge_model,
         choices=("none", "eqeq"),
         help=(
             "Charge assignment path for the LAMMPS export. "
@@ -229,13 +230,13 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--eqeq-lambda",
         type=float,
-        default=1.2,
+        default=EqeqChargeSettings().lambda_value,
         help="EQeq lambda parameter for the default LAMMPS charge-assignment stage. Default: 1.2.",
     )
     parser.add_argument(
         "--eqeq-h-i0",
         type=float,
-        default=-2.0,
+        default=EqeqChargeSettings().hydrogen_electron_affinity,
         help="EQeq hydrogen electron affinity for the default LAMMPS charge-assignment stage. Default: -2.0.",
     )
     _add_eqeq_charge_acceptance_arguments(parser)
@@ -248,55 +249,55 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--eqeq-method",
         choices=("ewald", "nonperiodic"),
-        default="ewald",
+        default=EqeqChargeSettings().method,
         help="EQeq method for the default LAMMPS charge stage. Default: ewald.",
     )
     parser.add_argument(
         "--eqeq-real-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().real_space_cells,
         help="EQeq real-space image count for the default LAMMPS charge stage. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-reciprocal-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().reciprocal_space_cells,
         help="EQeq reciprocal-space image count for the default LAMMPS charge stage. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-eta",
         type=float,
-        default=50.0,
+        default=EqeqChargeSettings().eta,
         help="EQeq eta parameter for the default LAMMPS charge stage. Default: 50.0.",
     )
     parser.add_argument(
         "--pair-cutoff",
         type=float,
-        default=12.0,
+        default=LammpsOptimizationSettings().pair_cutoff,
         help="Global LJ cutoff in angstrom for the selected forcefield backend. Default: 12.0.",
     )
     parser.add_argument(
         "--coulomb-cutoff",
         type=float,
-        default=12.0,
+        default=LammpsOptimizationSettings().coulomb_cutoff,
         help="Coulomb cutoff in angstrom when the LAMMPS export includes charges. Default: 12.0.",
     )
     parser.add_argument(
         "--ewald-precision",
         type=float,
-        default=1.0e-6,
+        default=LammpsOptimizationSettings().ewald_precision,
         help="LAMMPS Ewald precision when the export includes periodic charges. Default: 1e-6.",
     )
     parser.add_argument(
         "--position-restraint-force-constant",
         type=float,
-        default=0.20,
+        default=LammpsOptimizationSettings().position_restraint_force_constant,
         help="Stage-1 spring/self restraint in kcal/mol/A^2. Default: 0.20.",
     )
     parser.add_argument(
         "--pre-minimization-steps",
         type=int,
-        default=10000,
+        default=LammpsOptimizationSettings().pre_minimization_steps,
         help=(
             "Restrained pre-minimization MD run length in timesteps. "
             "Default: 10000. Set to 0 to disable the prerun."
@@ -305,7 +306,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--pre-minimization-mode",
         choices=("none", "md", "soft"),
-        default="md",
+        default=LammpsOptimizationSettings().pre_minimization_mode,
         help=(
             "Pre-minimization repair mode before the normal minimization stages. "
             "Use soft for staged LAMMPS pair_style soft minimizations without MD. Default: md."
@@ -314,62 +315,62 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--pre-minimization-temperature",
         type=float,
-        default=300.0,
+        default=LammpsOptimizationSettings().pre_minimization_temperature,
         help="Target temperature in K for the default prerun Langevin stage. Default: 300.0.",
     )
     parser.add_argument(
         "--pre-minimization-damping",
         type=float,
-        default=100.0,
+        default=LammpsOptimizationSettings().pre_minimization_damping,
         help="Langevin damping parameter in fs for the default prerun stage. Default: 100.0.",
     )
     parser.add_argument(
         "--pre-minimization-seed",
         type=int,
-        default=246813,
+        default=LammpsOptimizationSettings().pre_minimization_seed,
         help="Random seed for the default prerun velocity/Langevin setup. Default: 246813.",
     )
     parser.add_argument(
         "--pre-minimization-displacement-limit",
         type=float,
-        default=0.10,
+        default=LammpsOptimizationSettings().pre_minimization_displacement_limit,
         help="Per-step displacement cap in angstrom for the default prerun nve/limit stage. Default: 0.10.",
     )
     parser.add_argument(
         "--soft-pre-minimization-cutoff",
         type=float,
-        default=8.0,
+        default=LammpsOptimizationSettings().soft_pre_minimization_cutoff,
         help="Cutoff in angstrom for pre-minimization pair_style soft. Default: 8.0.",
     )
     parser.add_argument(
         "--soft-pre-minimization-coefficients",
         type=float,
         nargs="+",
-        default=(1.0, 5.0, 20.0, 50.0),
+        default=LammpsOptimizationSettings().soft_pre_minimization_coefficients,
         metavar="A",
         help="Repulsion coefficients for staged pair_style soft minimizations. Default: 1 5 20 50.",
     )
     parser.add_argument(
         "--soft-pre-minimization-min-style",
-        default="cg",
+        default=LammpsOptimizationSettings().soft_pre_minimization_min_style,
         help="LAMMPS minimizer for soft pre-minimization stages. Default: cg.",
     )
     parser.add_argument(
         "--soft-pre-minimization-max-iterations",
         type=int,
-        default=2000,
+        default=LammpsOptimizationSettings().soft_pre_minimization_max_iterations,
         help="Maximum iterations per soft pre-minimization coefficient. Default: 2000.",
     )
     parser.add_argument(
         "--soft-pre-minimization-max-evaluations",
         type=int,
-        default=20000,
+        default=LammpsOptimizationSettings().soft_pre_minimization_max_evaluations,
         help="Maximum force evaluations per soft pre-minimization coefficient. Default: 20000.",
     )
     parser.add_argument(
         "--two-stage",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=LammpsOptimizationSettings().two_stage_protocol,
         help=(
             "Enable or disable a second minimization stage. Default: enabled. "
             "When enabled and no explicit stage-2 restraint is provided, stage 2 is unrestrained."
@@ -403,18 +404,18 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=200000,
+        default=LammpsOptimizationSettings().max_iterations,
         help="Stage-1 maximum LAMMPS minimization iterations. Default: 200000.",
     )
     parser.add_argument(
         "--max-evaluations",
         type=int,
-        default=2000000,
+        default=LammpsOptimizationSettings().max_evaluations,
         help="Stage-1 maximum LAMMPS minimization force evaluations. Default: 2000000.",
     )
     parser.add_argument(
         "--min-style",
-        default="fire",
+        default=LammpsOptimizationSettings().min_style,
         help="Stage-1 LAMMPS minimization style. Default: fire.",
     )
     parser.add_argument(
@@ -490,7 +491,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--relax-cell",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=LammpsOptimizationSettings().relax_cell,
         help=(
             "Enable or disable a final box/relax minimization stage using a box-relax-compatible minimizer. "
             "Default: enabled."
@@ -499,19 +500,19 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--box-relax-mode",
         choices=("auto", "iso", "aniso", "tri"),
-        default="auto",
+        default=LammpsOptimizationSettings().box_relax_mode,
         help="Cell-relax mode for fix box/relax. Default: auto.",
     )
     parser.add_argument(
         "--box-relax-target-pressure",
         type=float,
-        default=0.0,
+        default=LammpsOptimizationSettings().box_relax_target_pressure,
         help="Target pressure for fix box/relax. Default: 0.0.",
     )
     parser.add_argument(
         "--box-relax-vmax",
         type=float,
-        default=0.001,
+        default=LammpsOptimizationSettings().box_relax_vmax,
         help="fix box/relax vmax setting. Default: 0.001.",
     )
     parser.add_argument(
@@ -522,7 +523,7 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--box-relax-min-style",
-        default="cg",
+        default=LammpsOptimizationSettings().box_relax_min_style,
         help="Minimization style for the final box/relax stage. Default: cg.",
     )
     parser.add_argument(
@@ -715,19 +716,19 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--forcefield",
         choices=_FORCEFIELD_SELECTORS,
-        default="dreiding",
+        default=GraspaWidomSettings().forcefield,
         help="Framework forcefield, selected independently from the tagged guest parameter model. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
         type=float,
-        default=1.2,
+        default=EqeqChargeSettings().lambda_value,
         help="EQeq dielectric screening parameter. Default: 1.2.",
     )
     parser.add_argument(
         "--eqeq-h-i0",
         type=float,
-        default=-2.0,
+        default=EqeqChargeSettings().hydrogen_electron_affinity,
         help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
     )
     _add_eqeq_charge_acceptance_arguments(parser)
@@ -740,37 +741,37 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--eqeq-method",
         choices=("ewald", "nonperiodic"),
-        default="ewald",
+        default=EqeqChargeSettings().method,
         help="EQeq Coulomb treatment. Default: ewald.",
     )
     parser.add_argument(
         "--eqeq-real-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().real_space_cells,
         help="EQeq real-space expansion count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-reciprocal-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().reciprocal_space_cells,
         help="EQeq reciprocal-space expansion count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-eta",
         type=float,
-        default=50.0,
+        default=EqeqChargeSettings().eta,
         help="EQeq Ewald splitting parameter. Default: 50.0.",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=300.0,
+        default=GraspaWidomSettings().temperature,
         help="gRASPA Widom temperature in K. Default: 300.0.",
     )
     parser.add_argument(
         "--pressure",
         type=float,
-        default=100000.0,
+        default=GraspaWidomSettings().pressure,
         help="gRASPA Widom pressure in Pa. Default: 100000.0.",
     )
     parser.add_argument(
@@ -806,13 +807,13 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--initialization-cycles",
         type=int,
-        default=0,
+        default=GraspaWidomSettings().initialization_cycles,
         help="gRASPA NumberOfInitializationCycles. Default: 0.",
     )
     parser.add_argument(
         "--equilibration-cycles",
         type=int,
-        default=0,
+        default=GraspaWidomSettings().equilibration_cycles,
         help="gRASPA NumberOfEquilibrationCycles. Default: 0.",
     )
     parser.add_argument(
@@ -828,31 +829,31 @@ def _add_graspa_widom_parser(subparsers) -> None:
     parser.add_argument(
         "--trial-positions",
         type=int,
-        default=10,
+        default=GraspaWidomSettings().number_of_trial_positions,
         help="gRASPA NumberOfTrialPositions. Default: 10.",
     )
     parser.add_argument(
         "--trial-orientations",
         type=int,
-        default=10,
+        default=GraspaWidomSettings().number_of_trial_orientations,
         help="gRASPA NumberOfTrialOrientations. Default: 10.",
     )
     parser.add_argument(
         "--cutoff-vdw",
         type=float,
-        default=12.8,
+        default=GraspaWidomSettings().cutoff_vdw,
         help="gRASPA CutOffVDW in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--cutoff-coulomb",
         type=float,
-        default=12.8,
+        default=GraspaWidomSettings().cutoff_coulomb,
         help="gRASPA CutOffCoulomb in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--ewald-precision",
         type=float,
-        default=1.0e-6,
+        default=GraspaWidomSettings().ewald_precision,
         help="gRASPA EwaldPrecision. Default: 1e-6.",
     )
     parser.add_argument(
@@ -992,19 +993,19 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
     parser.add_argument(
         "--forcefield",
         choices=_FORCEFIELD_SELECTORS,
-        default="dreiding",
+        default=GraspaIsothermSettings().forcefield,
         help="Framework forcefield, selected independently from the tagged guest parameter model. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
         type=float,
-        default=1.2,
+        default=EqeqChargeSettings().lambda_value,
         help="EQeq dielectric screening parameter. Default: 1.2.",
     )
     parser.add_argument(
         "--eqeq-h-i0",
         type=float,
-        default=-2.0,
+        default=EqeqChargeSettings().hydrogen_electron_affinity,
         help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
     )
     _add_eqeq_charge_acceptance_arguments(parser)
@@ -1017,25 +1018,25 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
     parser.add_argument(
         "--eqeq-method",
         choices=("ewald", "nonperiodic"),
-        default="ewald",
+        default=EqeqChargeSettings().method,
         help="EQeq Coulomb treatment. Default: ewald.",
     )
     parser.add_argument(
         "--eqeq-real-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().real_space_cells,
         help="EQeq real-space expansion count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-reciprocal-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().reciprocal_space_cells,
         help="EQeq reciprocal-space expansion count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-eta",
         type=float,
-        default=50.0,
+        default=EqeqChargeSettings().eta,
         help="EQeq Ewald splitting parameter. Default: 50.0.",
     )
     parser.add_argument(
@@ -1060,7 +1061,7 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
     parser.add_argument(
         "--temperature",
         type=float,
-        default=298.0,
+        default=GraspaIsothermSettings().temperature,
         help="gRASPA adsorption temperature in K. Default: 298.0.",
     )
     parser.add_argument(
@@ -1073,49 +1074,49 @@ def _add_graspa_isotherm_parser(subparsers) -> None:
     parser.add_argument(
         "--initialization-cycles",
         type=int,
-        default=50000,
+        default=GraspaIsothermSettings().initialization_cycles,
         help="gRASPA NumberOfInitializationCycles. Default: 50000.",
     )
     parser.add_argument(
         "--equilibration-cycles",
         type=int,
-        default=50000,
+        default=GraspaIsothermSettings().equilibration_cycles,
         help="gRASPA NumberOfEquilibrationCycles. Default: 50000.",
     )
     parser.add_argument(
         "--production-cycles",
         type=int,
-        default=200000,
+        default=GraspaIsothermSettings().production_cycles,
         help="gRASPA NumberOfProductionCycles per pressure point. Default: 200000.",
     )
     parser.add_argument(
         "--trial-positions",
         type=int,
-        default=10,
+        default=GraspaIsothermSettings().number_of_trial_positions,
         help="gRASPA NumberOfTrialPositions. Default: 10.",
     )
     parser.add_argument(
         "--trial-orientations",
         type=int,
-        default=10,
+        default=GraspaIsothermSettings().number_of_trial_orientations,
         help="gRASPA NumberOfTrialOrientations. Default: 10.",
     )
     parser.add_argument(
         "--cutoff-vdw",
         type=float,
-        default=12.8,
+        default=GraspaIsothermSettings().cutoff_vdw,
         help="gRASPA CutOffVDW in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--cutoff-coulomb",
         type=float,
-        default=12.8,
+        default=GraspaIsothermSettings().cutoff_coulomb,
         help="gRASPA CutOffCoulomb in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--ewald-precision",
         type=float,
-        default=1.0e-6,
+        default=GraspaIsothermSettings().ewald_precision,
         help="gRASPA EwaldPrecision. Default: 1e-6.",
     )
     parser.add_argument(
@@ -1237,22 +1238,24 @@ def _add_graspa_mixture_parser(subparsers) -> None:
     )
     _add_raspa_backend_arguments(parser)
     _add_guest_bundle_arguments(parser)
+    mixture_fields = GraspaMixtureSettings.__dataclass_fields__
+    component_fields = GraspaMixtureComponentSettings.__dataclass_fields__
     parser.add_argument(
         "--forcefield",
         choices=_FORCEFIELD_SELECTORS,
-        default="dreiding",
+        default=mixture_fields["forcefield"].default,
         help="Framework forcefield, selected independently from the tagged guest parameter model. Default: dreiding.",
     )
     parser.add_argument(
         "--eqeq-lambda",
         type=float,
-        default=1.2,
+        default=EqeqChargeSettings().lambda_value,
         help="EQeq dielectric screening parameter. Default: 1.2.",
     )
     parser.add_argument(
         "--eqeq-h-i0",
         type=float,
-        default=-2.0,
+        default=EqeqChargeSettings().hydrogen_electron_affinity,
         help="EQeq hydrogen electron affinity parameter. Default: -2.0.",
     )
     _add_eqeq_charge_acceptance_arguments(parser)
@@ -1265,25 +1268,25 @@ def _add_graspa_mixture_parser(subparsers) -> None:
     parser.add_argument(
         "--eqeq-method",
         choices=("ewald", "nonperiodic"),
-        default="ewald",
+        default=EqeqChargeSettings().method,
         help="EQeq Coulomb treatment. Default: ewald.",
     )
     parser.add_argument(
         "--eqeq-real-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().real_space_cells,
         help="EQeq real-space expansion count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-reciprocal-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().reciprocal_space_cells,
         help="EQeq reciprocal-space expansion count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-eta",
         type=float,
-        default=50.0,
+        default=EqeqChargeSettings().eta,
         help="EQeq Ewald splitting parameter. Default: 50.0.",
     )
     parser.add_argument(
@@ -1310,7 +1313,7 @@ def _add_graspa_mixture_parser(subparsers) -> None:
     parser.add_argument(
         "--temperature",
         type=float,
-        default=298.0,
+        default=mixture_fields["temperature"].default,
         help="gRASPA adsorption temperature in K. Default: 298.0.",
     )
     parser.add_argument(
@@ -1323,85 +1326,85 @@ def _add_graspa_mixture_parser(subparsers) -> None:
     parser.add_argument(
         "--initialization-cycles",
         type=int,
-        default=50000,
+        default=mixture_fields["initialization_cycles"].default,
         help="gRASPA NumberOfInitializationCycles. Default: 50000.",
     )
     parser.add_argument(
         "--equilibration-cycles",
         type=int,
-        default=50000,
+        default=mixture_fields["equilibration_cycles"].default,
         help="gRASPA NumberOfEquilibrationCycles. Default: 50000.",
     )
     parser.add_argument(
         "--production-cycles",
         type=int,
-        default=200000,
+        default=mixture_fields["production_cycles"].default,
         help="gRASPA NumberOfProductionCycles per pressure point. Default: 200000.",
     )
     parser.add_argument(
         "--trial-positions",
         type=int,
-        default=10,
+        default=mixture_fields["number_of_trial_positions"].default,
         help="gRASPA NumberOfTrialPositions. Default: 10.",
     )
     parser.add_argument(
         "--trial-orientations",
         type=int,
-        default=10,
+        default=mixture_fields["number_of_trial_orientations"].default,
         help="gRASPA NumberOfTrialOrientations. Default: 10.",
     )
     parser.add_argument(
         "--translation-probability",
         type=float,
-        default=1.0,
+        default=component_fields["translation_probability"].default,
         help="Per-component TranslationProbability. Default: 1.0.",
     )
     parser.add_argument(
         "--rotation-probability",
         type=float,
-        default=1.0,
+        default=component_fields["rotation_probability"].default,
         help="Per-component RotationProbability for rotatable components. Default: 1.0.",
     )
     parser.add_argument(
         "--reinsertion-probability",
         type=float,
-        default=1.0,
+        default=component_fields["reinsertion_probability"].default,
         help="Per-component ReinsertionProbability. Default: 1.0.",
     )
     parser.add_argument(
         "--identity-change-probability",
         type=float,
-        default=1.0,
+        default=component_fields["identity_change_probability"].default,
         help="Per-component IdentityChangeProbability. Default: 1.0.",
     )
     parser.add_argument(
         "--swap-probability",
         type=float,
-        default=1.0,
+        default=component_fields["swap_probability"].default,
         help="Per-component SwapProbability. Default: 1.0.",
     )
     parser.add_argument(
         "--create-number-of-molecules",
         type=int,
-        default=0,
+        default=component_fields["create_number_of_molecules"].default,
         help="Per-component CreateNumberOfMolecules. Default: 0.",
     )
     parser.add_argument(
         "--cutoff-vdw",
         type=float,
-        default=12.8,
+        default=mixture_fields["cutoff_vdw"].default,
         help="gRASPA CutOffVDW in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--cutoff-coulomb",
         type=float,
-        default=12.8,
+        default=mixture_fields["cutoff_coulomb"].default,
         help="gRASPA CutOffCoulomb in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--ewald-precision",
         type=float,
-        default=1.0e-6,
+        default=mixture_fields["ewald_precision"].default,
         help="gRASPA EwaldPrecision. Default: 1e-6.",
     )
     parser.add_argument(
@@ -1543,13 +1546,13 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--cycles",
         type=int,
-        default=3,
+        default=HybridMdMcSettings().cycles,
         help="Number of MD/GCMC cycles. Default: 3.",
     )
     parser.add_argument(
         "--exchange-mode",
         choices=("framework", "guest-restart"),
-        default="framework",
+        default=HybridMdMcSettings().exchange_mode,
         help=(
             "Hybrid handoff mode. framework keeps MD and GCMC coupled by framework CIF only; guest-restart "
             "also injects the final GCMC guest snapshot into the next LAMMPS MD segment and writes post-MD "
@@ -1583,13 +1586,13 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--lammps-forcefield",
         choices=_FORCEFIELD_SELECTORS,
-        default="dreiding",
+        default=LammpsMdSettings().forcefield,
         help="LAMMPS framework forcefield for each MD segment. Default: dreiding.",
     )
     parser.add_argument(
         "--dreiding-hbond",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=LammpsMdSettings().dreiding_hbond,
         help=(
             "Export DREIDING Table V hydrogen-bond terms (LAMMPS hbond/dreiding/lj) for N/O/F-bound "
             "hydrogens in LAMMPS MD segments with the DREIDING backend. Default: enabled. "
@@ -1599,37 +1602,37 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--charge-model",
         choices=("none", "eqeq"),
-        default="eqeq",
+        default=LammpsMdSettings().charge_model,
         help="Charge assignment path for LAMMPS MD data exports. Default: eqeq.",
     )
     parser.add_argument(
         "--raspa-forcefield",
         choices=_FORCEFIELD_SELECTORS,
-        default="dreiding",
+        default=HybridMdMcSettings().raspa_forcefield,
         help="Framework forcefield asset family for GCMC segments. Default: dreiding.",
     )
     parser.add_argument(
         "--pressure",
         type=float,
-        default=100000.0,
+        default=HybridMdMcSettings().pressure,
         help="GCMC pressure in Pa for every cycle. Default: 100000.",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=298.0,
+        default=HybridMdMcSettings().temperature,
         help="Shared MD/GCMC temperature in K. Default: 298.",
     )
     parser.add_argument(
         "--md-steps",
         type=int,
-        default=1000,
+        default=LammpsMdSettings().steps,
         help="LAMMPS MD timesteps per cycle. Default: 1000.",
     )
     parser.add_argument(
         "--md-timestep",
         type=float,
-        default=1.0,
+        default=LammpsMdSettings().timestep,
         help="LAMMPS MD timestep in fs. Default: 1.0.",
     )
     parser.add_argument(
@@ -1646,31 +1649,31 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--md-ensemble",
         choices=("nvt", "nve-langevin"),
-        default="nvt",
+        default=LammpsMdSettings().ensemble,
         help="LAMMPS MD thermostat/integrator. Default: nvt.",
     )
     parser.add_argument(
         "--md-thermostat-damping",
         type=float,
-        default=100.0,
+        default=LammpsMdSettings().thermostat_damping,
         help="LAMMPS thermostat damping in fs. Default: 100.",
     )
     parser.add_argument(
         "--md-seed",
         type=int,
-        default=246813,
+        default=LammpsMdSettings().velocity_seed,
         help="LAMMPS MD velocity seed. Default: 246813.",
     )
     parser.add_argument(
         "--md-dump-interval",
         type=int,
-        default=100,
+        default=LammpsMdSettings().dump_interval,
         help="LAMMPS trajectory dump interval. A final write_dump is always appended. Default: 100.",
     )
     parser.add_argument(
         "--md-position-restraint-force-constant",
         type=float,
-        default=0.0,
+        default=LammpsMdSettings().position_restraint_force_constant,
         help="Optional LAMMPS spring/self restraint in kcal/mol/A^2 during MD. Default: 0.",
     )
     parser.add_argument(
@@ -1681,19 +1684,19 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--pair-cutoff",
         type=float,
-        default=12.0,
+        default=LammpsMdSettings().pair_cutoff,
         help="LAMMPS LJ cutoff in angstrom. Default: 12.0.",
     )
     parser.add_argument(
         "--coulomb-cutoff",
         type=float,
-        default=12.0,
+        default=LammpsMdSettings().coulomb_cutoff,
         help="LAMMPS Coulomb cutoff in angstrom when charges are present. Default: 12.0.",
     )
     parser.add_argument(
         "--ewald-precision",
         type=float,
-        default=1.0e-6,
+        default=HybridMdMcSettings().ewald_precision,
         help="Shared Ewald precision for LAMMPS and GCMC segments. Default: 1e-6.",
     )
     parser.add_argument(
@@ -1706,55 +1709,55 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--gcmc-initialization-cycles",
         type=int,
-        default=50000,
+        default=HybridMdMcSettings().initialization_cycles,
         help="GCMC NumberOfInitializationCycles per cycle. Default: 50000.",
     )
     parser.add_argument(
         "--gcmc-equilibration-cycles",
         type=int,
-        default=50000,
+        default=HybridMdMcSettings().equilibration_cycles,
         help="GCMC NumberOfEquilibrationCycles per cycle. Default: 50000.",
     )
     parser.add_argument(
         "--gcmc-production-cycles",
         type=int,
-        default=200000,
+        default=HybridMdMcSettings().production_cycles,
         help="GCMC NumberOfProductionCycles per cycle. Default: 200000.",
     )
     parser.add_argument(
         "--trial-positions",
         type=int,
-        default=10,
+        default=HybridMdMcSettings().number_of_trial_positions,
         help="GCMC NumberOfTrialPositions. Default: 10.",
     )
     parser.add_argument(
         "--trial-orientations",
         type=int,
-        default=10,
+        default=HybridMdMcSettings().number_of_trial_orientations,
         help="GCMC NumberOfTrialOrientations. Default: 10.",
     )
     parser.add_argument(
         "--cutoff-vdw",
         type=float,
-        default=12.8,
+        default=HybridMdMcSettings().cutoff_vdw,
         help="GCMC CutOffVDW in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--cutoff-coulomb",
         type=float,
-        default=12.8,
+        default=HybridMdMcSettings().cutoff_coulomb,
         help="GCMC CutOffCoulomb in angstrom. Default: 12.8.",
     )
     parser.add_argument(
         "--eqeq-lambda",
         type=float,
-        default=1.2,
+        default=EqeqChargeSettings().lambda_value,
         help="EQeq lambda parameter for both charge-assignment stages. Default: 1.2.",
     )
     parser.add_argument(
         "--eqeq-h-i0",
         type=float,
-        default=-2.0,
+        default=EqeqChargeSettings().hydrogen_electron_affinity,
         help="EQeq hydrogen electron affinity for both charge-assignment stages. Default: -2.0.",
     )
     _add_eqeq_charge_acceptance_arguments(parser)
@@ -1767,25 +1770,25 @@ def _add_hybrid_mdmc_parser(subparsers) -> None:
     parser.add_argument(
         "--eqeq-method",
         choices=("ewald", "nonperiodic"),
-        default="ewald",
+        default=EqeqChargeSettings().method,
         help="EQeq method for both charge-assignment stages. Default: ewald.",
     )
     parser.add_argument(
         "--eqeq-real-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().real_space_cells,
         help="EQeq real-space image count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-reciprocal-space-cells",
         type=int,
-        default=2,
+        default=EqeqChargeSettings().reciprocal_space_cells,
         help="EQeq reciprocal-space image count. Default: 2.",
     )
     parser.add_argument(
         "--eqeq-eta",
         type=float,
-        default=50.0,
+        default=EqeqChargeSettings().eta,
         help="EQeq eta parameter. Default: 50.",
     )
     parser.add_argument(
