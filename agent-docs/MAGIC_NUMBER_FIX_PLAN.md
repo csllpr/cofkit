@@ -136,3 +136,45 @@ provenance comments. No behavior change.
   `7f893c3`'s evidence in `out/_rework_baseline/`.
 - CHANGELOG.md entry per tier; this document carries resolution notes per
   row as work lands.
+
+## Resolution log
+
+**2026-09-27 — Tier 1 landed (commit `d5391d3`).** W1.1: `cofkit.constants`
+created (`DEFAULT_MONOLAYER_C_ANGSTROM`, `DEFAULT_LATERAL_SPAN_ANGSTROM`),
+all five 8.0 owners and both 30.0 owners rewired. W1.2: all 12
+classify-output argparse defaults read from `CoarseValidationThresholds`.
+W1.3: ~118 argparse sites across the five `calculate` subcommands rewired
+to the owning dataclasses; graspa-internal duplicates hoisted to
+`DEFAULT_CUTOFF_ANGSTROM` / `DEFAULT_OVERLAP_CRITERIA` /
+`DEFAULT_EWALD_PRECISION` / `_KCAL_PER_MOL_TO_KELVIN`. W1.6: ring bond
+lengths owned by `ring_geometry` (`BOROXINE_BO_BOND_LENGTH`,
+`TRIAZINE_CN_BOND_LENGTH`), angular weight owned by
+`geometry.ANGULAR_RESIDUAL_DOWN_WEIGHT`. W1.7: wrap tolerance single
+definition in `topology_symmetry`. W5.3/W5.4: AGENTS.md convention +
+codebase-map owner list. W5.2: `tests/test_cli_defaults_wiring.py`.
+W1.4/W1.5 remain blocked on W3.1/W3.2 owner decisions. Left in place
+deliberately: `--timeout-seconds` 300.0 literals (owned by workflow
+function signatures, not config dataclasses — candidate for a later
+micro-consolidation), `HybridMdMcSettings` cutoffs (per-command owner,
+same pattern as the 300/298 K split), `guest_restart.py:688-689` retyped
+fallbacks (out of scope, minor).
+
+**2026-09-27 — Tier 2 landed (Route A).** Investigation verdict: the
+boronate fit is genuinely 1-DOF (B rotation α; oxygens exact via
+circle-circle intersection) — the scan was not load-bearing. Rework
+mirrors the imine/azine constructor: bracketed golden-section on the pure
+angle residual (analytic feasible intervals + branch-kink splitting;
+brackets proved necessary against a multi-well residual), exact closure at
+the priors when feasible, honest best-effort diagnostics otherwise. New
+constants: `linkage_geometry.BORONATE_OBO_EXACT_TOLERANCE_DEG` (derived),
+`reaction_realization.BORONATE_GOLDEN_SECTION_{BRACKETS_PER_PIECE,ITERATIONS}`
+(heuristic-labeled). Placement distance now derived (`t*cos(θ/2)` =
+0.8017). Corrections to this plan's Route-A text recorded: boronate's
+realized B–O target is 1.44 (1.38 is boroxine's); `reactions.py:434`'s
+1.36 is keto-enamine's; `chem/linkage.py:28` is a dead 1.38 duplicate
+(follow-up cleanup candidate). Regression screen
+(`out/_rework_boronate/EVIDENCE.md`): ∠OBO 113.8→112.4° exact at all six
+BDBA×HHTP ring sites, no new clashes or validation regressions, cells
++0.012%, LAMMPS fixed-cell converges ~89 kcal/mol closer to the minimum.
+W5.1 grep gate extended to the retired scan constants.
+

@@ -8,7 +8,7 @@ from cofkit.linkage_geometry import (
     derived_origin_retraction_fraction,
     required_bridge_span,
 )
-from cofkit.reactions import bridge_geometry_priors
+from cofkit.reactions import bridge_geometry_priors, bridge_target_distance
 
 
 class RequiredBridgeSpanTests(unittest.TestCase):
@@ -109,6 +109,23 @@ class PriorsOwnershipTests(unittest.TestCase):
         self.assertEqual(azine.carbon_angle_deg, 120.0)
         self.assertEqual(azine.nitrogen_angle_deg, 120.0)
         self.assertEqual(azine.nn_target_distance, 1.408)
+        boronate = bridge_geometry_priors("boronate_ester_bridge")
+        self.assertIsNotNone(boronate)
+        assert boronate is not None
+        self.assertIsNone(boronate.carbon_angle_deg)
+        self.assertIsNone(boronate.nitrogen_angle_deg)
+        self.assertEqual(boronate.bo_target_distance, linkage_geometry.BORONATE_ESTER_BOND_TARGET_DISTANCE)
+        self.assertEqual(boronate.obo_angle_deg, linkage_geometry.BORONATE_ESTER_OBO_TARGET_ANGLE_DEG)
+        # The boronate placement distance is derived, not hand-tuned: under
+        # exact closure the oxygen centroid sits t * cos(theta / 2) from the
+        # boron.
+        placement = bridge_target_distance("boronate_ester_bridge")
+        self.assertAlmostEqual(
+            placement,
+            linkage_geometry.BORONATE_ESTER_BOND_TARGET_DISTANCE
+            * math.cos(math.radians(linkage_geometry.BORONATE_ESTER_OBO_TARGET_ANGLE_DEG) / 2.0),
+            places=12,
+        )
 
     def test_no_hand_tuned_retraction_constants_remain(self):
         # Grep gate: the retired magic constants and the old imine scan
@@ -128,6 +145,13 @@ class PriorsOwnershipTests(unittest.TestCase):
             reaction_realization.ReactionRealizer._fit_azine_endpoint_carbon_position
         )
         self.assertNotIn("range(721)", azine_endpoint_source)
+        boronate_fit_source = inspect.getsource(
+            reaction_realization.ReactionRealizer._fit_boronate_ester_bridge_positions
+        )
+        self.assertNotIn("range(721)", boronate_fit_source)
+        self.assertNotIn("720.0", boronate_fit_source)
+        self.assertNotIn("0.01 *", boronate_fit_source)
+        self.assertNotIn("0.5 *", boronate_fit_source)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import cos, radians
 from typing import Iterable
 
 from .model import MonomerSpec, ReactionTemplate
+from .ring_geometry import BOROXINE_BO_BOND_LENGTH, TRIAZINE_CN_BOND_LENGTH
 
 
 @dataclass(frozen=True)
@@ -30,22 +32,33 @@ AZINE_NN_TARGET_DISTANCE = 1.408
 
 @dataclass(frozen=True)
 class BridgeGeometryPriors:
-    """Idealized sp2 geometry priors for a binary-bridge linkage.
+    """Idealized geometry priors for a binary-bridge linkage.
 
-    The angles are idealized 120-degree sp2 priors (consistent with the
-    DREIDING equilibrium angle), not measured values; they drive both the
-    realization-time bridge constructor and the embedding-time motif-origin
-    retraction, so the two compensators share a single owner.
+    For imine/azine the angles are idealized 120-degree sp2 priors
+    (consistent with the DREIDING equilibrium angle), not measured values;
+    they drive both the realization-time bridge constructor and the
+    embedding-time motif-origin retraction, so the two compensators share a
+    single owner. Boronate ester carries the five-membered-ring priors
+    instead (bo_target_distance / obo_angle_deg, owned by
+    BORONATE_ESTER_BOND_TARGET_DISTANCE / BORONATE_ESTER_OBO_TARGET_ANGLE_DEG
+    in linkage_geometry.py and referenced here); its chain-angle fields stay
+    None because the ring closure has no sp2 chain angles.
     """
 
     # Interior angle at the aldehyde-derived carbon: aryl-C(anchor)-C=N.
-    carbon_angle_deg: float
+    carbon_angle_deg: float | None = None
     # Interior angle at the reactive nitrogen: C=N-aryl-C (imine) or
     # C=N-N (azine, measured against the other azine nitrogen).
-    nitrogen_angle_deg: float
+    nitrogen_angle_deg: float | None = None
     # Azine only: the N-N target distance the coordinated fit closes the
     # shared hydrazine segment to (see AZINE_NN_TARGET_DISTANCE).
     nn_target_distance: float | None = None
+    # Boronate ester only: realized B-O bond length target for the
+    # five-membered ring (owner: BORONATE_ESTER_BOND_TARGET_DISTANCE).
+    bo_target_distance: float | None = None
+    # Boronate ester only: O-B-O ring angle prior (owner:
+    # BORONATE_ESTER_OBO_TARGET_ANGLE_DEG).
+    obo_angle_deg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -370,6 +383,15 @@ def _builtin_templates() -> tuple[ReactionTemplate, ...]:
 
 
 def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
+    # Deferred import: linkage_geometry imports reactions at module level
+    # (bridge_geometry_priors / bridge_target_distance), so the singly owned
+    # boronate ring priors are pulled in lazily here at library-construction
+    # time instead of creating a module cycle.
+    from .linkage_geometry import (
+        BORONATE_ESTER_BOND_TARGET_DISTANCE,
+        BORONATE_ESTER_OBO_TARGET_ANGLE_DEG,
+    )
+
     return (
         ReactionLinkageProfile(
             template_id="imine_bridge",
@@ -415,12 +437,16 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
         ),
         ReactionLinkageProfile(
             template_id="boronate_ester_bridge",
-            # This is the boron-to-catechol-oxygen-centroid placement distance for the
-            # five-membered B-O-C-C-O ring, not a bond length: measured baseline
-            # boronate rings sit at 0.80 angstrom (B-O ~1.44, O-B-O ~112 deg, with the
-            # catechol oxygens contracted to O-O ~2.38). The realized B-O bonds are
-            # closed at the true bond target during reaction realization.
-            bridge_target_distance=0.80,
+            # Boron-to-catechol-oxygen-centroid placement distance for the
+            # five-membered B-O-C-C-O ring, not a bond length (derived):
+            # under exact closure both B-O bonds sit at the realized bond
+            # target t with the O-B-O angle at its prior theta, so the
+            # oxygen centroid lies t * cos(theta / 2) from the boron
+            # (1.44 * cos(56.2 deg) = 0.8017 angstrom, matching the measured
+            # baseline 0.80). The realized B-O bonds are closed at the true
+            # bond target during reaction realization.
+            bridge_target_distance=BORONATE_ESTER_BOND_TARGET_DISTANCE
+            * cos(radians(BORONATE_ESTER_OBO_TARGET_ANGLE_DEG) / 2.0),
             binary_bridge_roles=(
                 BinaryBridgeRole(role_id="boronic_acid", motif_kind="boronic_acid", library_prefix="boronic_acids"),
                 BinaryBridgeRole(role_id="catechol", motif_kind="catechol", library_prefix="catechols"),
@@ -428,6 +454,10 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
             event_realizer="boronate_ester_bridge",
             geometry_profile_id="boronate_ester_bridge",
             validation_profile_id="boronate_ester_bridge",
+            bridge_geometry_priors=BridgeGeometryPriors(
+                bo_target_distance=BORONATE_ESTER_BOND_TARGET_DISTANCE,
+                obo_angle_deg=BORONATE_ESTER_OBO_TARGET_ANGLE_DEG,
+            ),
         ),
         ReactionLinkageProfile(
             template_id="keto_enamine_bridge",
@@ -457,7 +487,7 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
         ),
         ReactionLinkageProfile(
             template_id="boroxine_trimerization",
-            bridge_target_distance=1.38,
+            bridge_target_distance=BOROXINE_BO_BOND_LENGTH,
             event_realizer="boroxine_trimerization",
             workflow_family="ring_forming",
             topology_assignment_mode="virtual_node_topology",
@@ -470,7 +500,7 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
         ),
         ReactionLinkageProfile(
             template_id="triazine_trimerization",
-            bridge_target_distance=1.35,
+            bridge_target_distance=TRIAZINE_CN_BOND_LENGTH,
             event_realizer="triazine_trimerization",
             workflow_family="ring_forming",
             topology_assignment_mode="virtual_node_topology",

@@ -1,6 +1,6 @@
 import sys
 import unittest
-from math import cos, pi, sin
+from math import cos, pi, radians, sin
 from pathlib import Path
 
 
@@ -20,6 +20,10 @@ from cofkit import (
     ReactiveMotif,
     ReactionEvent,
     ReactionLibrary,
+)
+from cofkit.linkage_geometry import (
+    BORONATE_ESTER_BOND_TARGET_DISTANCE,
+    BORONATE_ESTER_OBO_TARGET_ANGLE_DEG,
 )
 
 
@@ -75,8 +79,14 @@ class ReactionLibraryTests(unittest.TestCase):
         self.assertTrue(lib.supports_binary_bridge_pair_generation("hydrazone_bridge"))
         self.assertAlmostEqual(lib.bridge_target_distance("vinylene_bridge"), 1.34, places=6)
         # Boronate ester targets the boron-to-catechol-oxygen-centroid placement
-        # distance of the five-membered ring, not a B-O bond length.
-        self.assertAlmostEqual(lib.bridge_target_distance("boronate_ester_bridge"), 0.80, places=6)
+        # distance of the five-membered ring, not a B-O bond length: derived as
+        # t * cos(theta / 2) from the singly owned ring priors (0.8017
+        # angstrom, matching the measured baseline 0.80).
+        self.assertAlmostEqual(
+            lib.bridge_target_distance("boronate_ester_bridge"),
+            BORONATE_ESTER_BOND_TARGET_DISTANCE * cos(radians(BORONATE_ESTER_OBO_TARGET_ANGLE_DEG) / 2.0),
+            places=12,
+        )
 
 
 class ProductGraphTests(unittest.TestCase):

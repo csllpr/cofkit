@@ -27,6 +27,7 @@ from .geometry import (
 from .linkage_geometry import (
     BORONATE_ESTER_BOND_TARGET_DISTANCE,
     BORONATE_ESTER_OBO_TARGET_ANGLE_DEG,
+    BORONATE_OBO_EXACT_TOLERANCE_DEG,
     BRIDGE_SPAN_EXACT_TOLERANCE_ANGSTROM,
     required_bridge_span,
 )
@@ -37,6 +38,18 @@ from .reactions import (
     bridge_target_distance,
     linkage_event_realizer,
 )
+from .ring_geometry import BOROXINE_BO_BOND_LENGTH, TRIAZINE_CN_BOND_LENGTH
+
+
+# Solve numerics for the boronate ester ring-closure constructor (owner:
+# this module — realization-time solve). heuristic — pending calibration:
+# each smooth boron-rotation piece is refined in a few uniform brackets
+# because the angle residual is not unimodal over a whole piece (branch
+# switching and symmetry extrema create multiple wells); 60 golden-section
+# iterations per bracket mirror the imine chain solve and shrink a bracket
+# by ~0.618^60 (far below float64 angle noise).
+BORONATE_GOLDEN_SECTION_BRACKETS_PER_PIECE = 4
+BORONATE_GOLDEN_SECTION_ITERATIONS = 60
 
 
 @dataclass(frozen=True)
@@ -1247,6 +1260,7 @@ class ReactionRealizer:
         catechol_normal: Vec3,
         target_bo_distance: float,
         target_obo_angle_deg: float,
+        diagnostics: dict[str, object] | None = None,
     ) -> tuple[Vec3, Vec3, Vec3] | None:
         anchor_centroid_world = scale(add(catechol_anchor_worlds[0], catechol_anchor_worlds[1]), 0.5)
         bridge_axis = sub(boronic_anchor_world, anchor_centroid_world)
@@ -1275,7 +1289,6 @@ class ReactionRealizer:
             return (dot(relative, axis), dot(relative, lateral_axis))
 
         boronic_anchor_2d = to_2d(boronic_anchor_world)
-        boron_current_2d = to_2d(boron_world)
         anchor_pairs_2d = tuple(
             (to_2d(anchor_world), to_2d(oxygen_world))
             for anchor_world, oxygen_world in zip(catechol_anchor_worlds, catechol_oxygen_worlds)
@@ -1291,48 +1304,265 @@ class ReactionRealizer:
             self._signed_value(oxygen_2d[1], default=1.0) for _, oxygen_2d in anchor_pairs_2d
         )
 
-        best: tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]] | None = None
-        for step in range(721):
-            alpha = 2.0 * pi * step / 720.0
-            boron_2d = (
-                boronic_anchor_2d[0] + boron_radius * cos(alpha),
-                boronic_anchor_2d[1] + boron_radius * sin(alpha),
-            )
-            oxygen_candidates: list[tuple[tuple[float, float], ...]] = []
-            for (anchor_2d, _), radius in zip(anchor_pairs_2d, oxygen_radii):
-                intersections = self._circle_intersections_2d(anchor_2d, radius, boron_2d, target_bo_distance)
-                if not intersections:
-                    break
-                oxygen_candidates.append(intersections)
-            if len(oxygen_candidates) != 2:
-                continue
-            for oxygen_2d_1 in oxygen_candidates[0]:
-                if oxygen_sides[0] * oxygen_2d_1[1] <= 1e-6:
-                    continue
-                for oxygen_2d_2 in oxygen_candidates[1]:
-                    if oxygen_sides[1] * oxygen_2d_2[1] <= 1e-6:
-                        continue
-                    objective = 0.5 * self._squared_distance_2d(boron_2d, boron_current_2d)
-                    objective += 0.5 * self._squared_distance_2d(oxygen_2d_1, anchor_pairs_2d[0][1])
-                    objective += 0.5 * self._squared_distance_2d(oxygen_2d_2, anchor_pairs_2d[1][1])
-                    obo_angle_deg = self._obo_angle_deg_2d(boron_2d, oxygen_2d_1, oxygen_2d_2)
-                    if obo_angle_deg is None:
-                        continue
-                    objective += 0.01 * (obo_angle_deg - target_obo_angle_deg) ** 2
-                    if best is None or objective < best[0]:
-                        best = (objective, boron_2d, oxygen_2d_1, oxygen_2d_2)
-
-        if best is None:
-            return None
-
         def to_world(point_2d: tuple[float, float]) -> Vec3:
             return add(
                 anchor_centroid_world,
                 add(scale(axis, point_2d[0]), scale(lateral_axis, point_2d[1])),
             )
 
+        # 1-DOF closure: the boron rotates on its C-B anchor circle (angle
+        # alpha); each catechol oxygen is then determined exactly by the
+        # circle-circle intersection of its C-O anchor sphere with the B-O
+        # target sphere. The sixth constraint closing the system is the O-B-O
+        # angle prior, so the objective is the squared angle residual alone
+        # (all bond lengths are exact by construction).
+        def evaluate(
+            alpha: float,
+        ) -> tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]] | None:
+            boron_2d = (
+                boronic_anchor_2d[0] + boron_radius * cos(alpha),
+                boronic_anchor_2d[1] + boron_radius * sin(alpha),
+            )
+            best_for_alpha: tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]] | None = None
+            oxygen_candidates: list[tuple[tuple[float, float], ...]] = []
+            for (anchor_2d, _), radius in zip(anchor_pairs_2d, oxygen_radii):
+                intersections = self._circle_intersections_2d(anchor_2d, radius, boron_2d, target_bo_distance)
+                if not intersections:
+                    return None
+                oxygen_candidates.append(intersections)
+            for oxygen_2d_1 in oxygen_candidates[0]:
+                if oxygen_sides[0] * oxygen_2d_1[1] <= 1e-6:
+                    continue
+                for oxygen_2d_2 in oxygen_candidates[1]:
+                    if oxygen_sides[1] * oxygen_2d_2[1] <= 1e-6:
+                        continue
+                    obo_angle_deg = self._obo_angle_deg_2d(boron_2d, oxygen_2d_1, oxygen_2d_2)
+                    if obo_angle_deg is None:
+                        continue
+                    objective = (obo_angle_deg - target_obo_angle_deg) ** 2
+                    if best_for_alpha is None or objective < best_for_alpha[0]:
+                        best_for_alpha = (objective, boron_2d, oxygen_2d_1, oxygen_2d_2)
+            return best_for_alpha
+
+        feasible_intervals = self._feasible_boron_rotation_intervals(
+            boronic_anchor_2d,
+            boron_radius,
+            tuple(anchor_2d for anchor_2d, _ in anchor_pairs_2d),
+            oxygen_radii,
+            target_bo_distance,
+        )
+        if not feasible_intervals:
+            return None
+
+        # The min-over-candidates objective is only piecewise smooth in
+        # alpha: it kinks wherever a circle-circle intersection crosses the
+        # bridge axis and the side filter switches branches. Splitting the
+        # feasible intervals at those branch crossings keeps each
+        # golden-section solve on a smooth piece.
+        kinks = self._boron_rotation_branch_kinks(
+            boronic_anchor_2d,
+            boron_radius,
+            tuple(anchor_2d for anchor_2d, _ in anchor_pairs_2d),
+            oxygen_radii,
+            target_bo_distance,
+        )
+        sub_intervals: list[tuple[float, float]] = []
+        for alpha_low, alpha_high in feasible_intervals:
+            cuts = sorted(kink for kink in kinks if alpha_low + 1e-12 < kink < alpha_high - 1e-12)
+            points = (alpha_low, *cuts, alpha_high)
+            for start, stop in zip(points, points[1:]):
+                if stop - start > 1e-9:
+                    sub_intervals.append((start, stop))
+
+        best: tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]] | None = None
+        golden = (5.0 ** 0.5 - 1.0) / 2.0
+
+        def refine(low: float, high: float) -> None:
+            nonlocal best
+            for alpha in (low, high):
+                result = evaluate(alpha)
+                if result is not None and (best is None or result[0] < best[0]):
+                    best = result
+            mid_1 = high - golden * (high - low)
+            mid_2 = low + golden * (high - low)
+            value_1 = evaluate(mid_1)
+            value_2 = evaluate(mid_2)
+            for _ in range(BORONATE_GOLDEN_SECTION_ITERATIONS):
+                if best is None and value_1 is None and value_2 is None:
+                    break
+                score_1 = value_1[0] if value_1 is not None else float("inf")
+                score_2 = value_2[0] if value_2 is not None else float("inf")
+                if score_1 <= score_2:
+                    high = mid_2
+                    mid_2 = mid_1
+                    value_2 = value_1
+                    mid_1 = high - golden * (high - low)
+                    value_1 = evaluate(mid_1)
+                else:
+                    low = mid_1
+                    mid_1 = mid_2
+                    value_1 = value_2
+                    mid_2 = low + golden * (high - low)
+                    value_2 = evaluate(mid_2)
+                for candidate_result in (value_1, value_2):
+                    if candidate_result is not None and (best is None or candidate_result[0] < best[0]):
+                        best = candidate_result
+
+        # The angle residual is not unimodal over a whole smooth piece
+        # (symmetry extrema and branch ties create multiple wells), so each
+        # piece is refined in a few uniform brackets; endpoint evaluations
+        # are part of every bracket.
+        for alpha_low, alpha_high in sub_intervals:
+            bracket_width = (alpha_high - alpha_low) / BORONATE_GOLDEN_SECTION_BRACKETS_PER_PIECE
+            for bracket_index in range(BORONATE_GOLDEN_SECTION_BRACKETS_PER_PIECE):
+                bracket_low = alpha_low + bracket_index * bracket_width
+                refine(bracket_low, bracket_low + bracket_width)
+
+        if best is None:
+            return None
+
         _, boron_2d, oxygen_2d_1, oxygen_2d_2 = best
+        if diagnostics is not None:
+            obo_angle_deg = self._obo_angle_deg_2d(boron_2d, oxygen_2d_1, oxygen_2d_2)
+            if obo_angle_deg is not None:
+                diagnostics["obo_angle_deg"] = obo_angle_deg
+                diagnostics["obo_angle_prior_deg"] = target_obo_angle_deg
+                diagnostics["mode"] = (
+                    "exact"
+                    if abs(obo_angle_deg - target_obo_angle_deg) <= BORONATE_OBO_EXACT_TOLERANCE_DEG
+                    else "best_effort"
+                )
         return (to_world(boron_2d), to_world(oxygen_2d_1), to_world(oxygen_2d_2))
+
+    def _feasible_boron_rotation_intervals(
+        self,
+        boronic_anchor_2d: tuple[float, float],
+        boron_radius: float,
+        catechol_anchor_2ds: tuple[tuple[float, float], ...],
+        oxygen_radii: tuple[float, ...],
+        target_bo_distance: float,
+    ) -> tuple[tuple[float, float], ...]:
+        """Feasible boron-rotation intervals alpha in [0, 2*pi): for each
+        catechol oxygen the circles (anchor, oxygen_radius) and
+        (B(alpha), target_bo_distance) must intersect, i.e.
+        |B(alpha) - anchor| in [|t - r|, t + r] with
+        |B - anchor|^2 = D^2 + R^2 + 2 D R cos(alpha - phi), where D and phi
+        are the length and direction of (boronic_anchor - catechol_anchor).
+        Each oxygen contributes one contiguous arc (two when both distance
+        bounds bind); the returned intervals are the intersection of the two
+        oxygens' arc sets."""
+        per_oxygen_arcs: list[tuple[tuple[float, float], ...]] = []
+        full_circle = ((0.0, 2.0 * pi),)
+        for anchor_2d, radius in zip(catechol_anchor_2ds, oxygen_radii):
+            delta_x = boronic_anchor_2d[0] - anchor_2d[0]
+            delta_y = boronic_anchor_2d[1] - anchor_2d[1]
+            anchor_separation = (delta_x * delta_x + delta_y * delta_y) ** 0.5
+            reach_min = abs(target_bo_distance - radius)
+            reach_max = target_bo_distance + radius
+            if anchor_separation < 1e-12:
+                if reach_min <= boron_radius <= reach_max:
+                    per_oxygen_arcs.append(full_circle)
+                    continue
+                return ()
+            denominator = 2.0 * anchor_separation * boron_radius
+            base = anchor_separation * anchor_separation + boron_radius * boron_radius
+            cos_low = max(-1.0, (reach_min * reach_min - base) / denominator)
+            cos_high = min(1.0, (reach_max * reach_max - base) / denominator)
+            if cos_low > cos_high:
+                return ()
+            phi = atan2(delta_y, delta_x)
+            if cos_low <= -1.0 and cos_high >= 1.0:
+                per_oxygen_arcs.append(full_circle)
+            elif cos_low <= -1.0:
+                half = acos(cos_high)
+                per_oxygen_arcs.append(((phi + half, phi + 2.0 * pi - half),))
+            elif cos_high >= 1.0:
+                half = acos(cos_low)
+                per_oxygen_arcs.append(((phi - half, phi + half),))
+            else:
+                half_low = acos(cos_high)
+                half_high = acos(cos_low)
+                per_oxygen_arcs.append(
+                    (
+                        (phi + half_low, phi + half_high),
+                        (phi - half_high, phi - half_low),
+                    )
+                )
+
+        def wrap_to_circle(arcs: tuple[tuple[float, float], ...]) -> list[tuple[float, float]]:
+            wrapped: list[tuple[float, float]] = []
+            turn = 2.0 * pi
+            for start, end in arcs:
+                if end - start >= turn:
+                    return [(0.0, turn)]
+                start = start % turn
+                stop = start + (end - start) % turn if (end - start) % turn > 0.0 else start + turn
+                if stop <= turn:
+                    wrapped.append((start, stop))
+                else:
+                    wrapped.append((start, turn))
+                    wrapped.append((0.0, stop - turn))
+            return wrapped
+
+        def intersect_arcs(
+            first: list[tuple[float, float]],
+            second: list[tuple[float, float]],
+        ) -> list[tuple[float, float]]:
+            turn = 2.0 * pi
+            intersection: list[tuple[float, float]] = []
+            for low_1, high_1 in first:
+                for low_2, high_2 in second:
+                    for shift in (0.0, turn, -turn):
+                        low = max(low_1, low_2 + shift)
+                        high = min(high_1, high_2 + shift)
+                        if high - low > 1e-12:
+                            intersection.append((low, high))
+            return intersection
+
+        feasible = wrap_to_circle(per_oxygen_arcs[0])
+        for arcs in per_oxygen_arcs[1:]:
+            feasible = intersect_arcs(feasible, wrap_to_circle(arcs))
+            if not feasible:
+                return ()
+        return tuple(feasible)
+
+    def _boron_rotation_branch_kinks(
+        self,
+        boronic_anchor_2d: tuple[float, float],
+        boron_radius: float,
+        catechol_anchor_2ds: tuple[tuple[float, float], ...],
+        oxygen_radii: tuple[float, ...],
+        target_bo_distance: float,
+    ) -> tuple[float, ...]:
+        """Boron-rotation angles alpha in [0, 2*pi) where a circle-circle
+        intersection for some catechol oxygen crosses the bridge axis (the
+        2D x-axis), i.e. where the realization-time side filter can switch
+        intersection branches. The crossing point O = (x, 0) lies on the
+        oxygen's anchor circle, and the boron positions reaching it are the
+        circle-circle intersections of the boron anchor circle with the
+        circle (O, target_bo_distance)."""
+        kinks: list[float] = []
+        turn = 2.0 * pi
+        for anchor_2d, radius in zip(catechol_anchor_2ds, oxygen_radii):
+            height_sq = radius * radius - anchor_2d[1] * anchor_2d[1]
+            if height_sq < 0.0:
+                continue
+            height = max(0.0, height_sq) ** 0.5
+            for crossing_x in (anchor_2d[0] - height, anchor_2d[0] + height):
+                for boron_2d in self._circle_intersections_2d(
+                    boronic_anchor_2d,
+                    boron_radius,
+                    (crossing_x, 0.0),
+                    target_bo_distance,
+                ):
+                    kinks.append(
+                        atan2(
+                            boron_2d[1] - boronic_anchor_2d[1],
+                            boron_2d[0] - boronic_anchor_2d[0],
+                        )
+                        % turn
+                    )
+        return tuple(kinks)
 
     def _obo_angle_deg_2d(
         self,
@@ -2500,6 +2730,7 @@ class ReactionRealizer:
             "anchor_atom_id",
             context=f"{event.id} boronate boronic anchor",
         )
+        fit_diagnostics: dict[str, object] = {}
         closed_positions = self._fit_boronate_ester_bridge_positions(
             boron_world=boron_world,
             boronic_anchor_world=self._world_atom_position(candidate, boronic_ref, boronic_spec, boronic_anchor_atom_id),
@@ -2518,6 +2749,7 @@ class ReactionRealizer:
             ),
             target_bo_distance=BORONATE_ESTER_BOND_TARGET_DISTANCE,
             target_obo_angle_deg=BORONATE_ESTER_OBO_TARGET_ANGLE_DEG,
+            diagnostics=fit_diagnostics,
         )
         if closed_positions is not None:
             boron_world, *catechol_oxygen_worlds = closed_positions
@@ -2549,14 +2781,25 @@ class ReactionRealizer:
             )
             for oxygen_atom_id, oxygen_world in zip(catechol_oxygen_atom_ids, catechol_oxygen_worlds)
         )
-        closure_note = (
-            "The exported product applies a local five-membered ring-closure fit that moves the boron and both "
-            "catechol oxygens around their anchor bonds so both inter-monomer B-O bonds close at the "
-            f"{BORONATE_ESTER_BOND_TARGET_DISTANCE:.2f} angstrom target with an O-B-O angle near "
-            f"{BORONATE_ESTER_OBO_TARGET_ANGLE_DEG:.1f} degrees."
-            if closed_positions is not None
-            else "The exported product realizes the two inter-monomer B-O bonds to the catechol oxygens while keeping monomer-internal coordinates rigid."
-        )
+        if closed_positions is None:
+            closure_note = "The exported product realizes the two inter-monomer B-O bonds to the catechol oxygens while keeping monomer-internal coordinates rigid."
+        elif fit_diagnostics.get("mode") == "exact":
+            closure_note = (
+                "The exported product applies a deterministic five-membered ring closure that moves the boron and "
+                "both catechol oxygens around their anchor bonds so both inter-monomer B-O bonds close exactly at "
+                f"the {BORONATE_ESTER_BOND_TARGET_DISTANCE:.2f} angstrom target with the O-B-O angle at the "
+                f"{BORONATE_ESTER_OBO_TARGET_ANGLE_DEG:.1f} degree prior; all anchor-to-reactive bond lengths are "
+                "held exact."
+            )
+        else:
+            obo_angle = float(fit_diagnostics.get("obo_angle_deg", float("nan")))
+            closure_note = (
+                "The exported product applies a best-effort five-membered ring closure: both inter-monomer B-O "
+                f"bonds close exactly at the {BORONATE_ESTER_BOND_TARGET_DISTANCE:.2f} angstrom target with all "
+                f"anchor-to-reactive bond lengths held exact, but no feasible boron rotation reaches the O-B-O "
+                f"angle prior for this placement, so the exported O-B-O angle lands at {obo_angle:.1f} degrees "
+                f"against the {BORONATE_ESTER_OBO_TARGET_ANGLE_DEG:.1f} degree target."
+            )
         return EventRealization(
             removed_atom_ids={
                 boronic_ref.monomer_instance_id: tuple(sorted((*boronic_oxygen_atom_ids, *boronic_hydrogen_atom_ids))),
@@ -2656,7 +2899,7 @@ class ReactionRealizer:
         monomer_specs: Mapping[str, MonomerSpec],
     ) -> EventRealization:
         refs = self._ordered_ring_participants(event, "boronic_acid", monomer_specs)
-        center, normal, radius = self._ring_geometry(event, candidate, default_radius=1.38)
+        center, normal, radius = self._ring_geometry(event, candidate, default_radius=BOROXINE_BO_BOND_LENGTH)
         boron_worlds: list[Vec3] = []
         boron_atom_ids: list[int] = []
         motifs = []
@@ -2759,7 +3002,7 @@ class ReactionRealizer:
         monomer_specs: Mapping[str, MonomerSpec],
     ) -> EventRealization:
         refs = self._ordered_ring_participants(event, "nitrile", monomer_specs)
-        center, normal, radius = self._ring_geometry(event, candidate, default_radius=1.35)
+        center, normal, radius = self._ring_geometry(event, candidate, default_radius=TRIAZINE_CN_BOND_LENGTH)
         carbon_worlds: list[Vec3] = []
         carbon_atom_ids: list[int] = []
         nitrogen_atom_ids: list[int] = []

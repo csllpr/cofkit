@@ -130,7 +130,7 @@ def derived_origin_retraction_fraction(template_id: str, side_length: float) -> 
     if side_length < 1e-8 or not template_id:
         return 0.0
     priors = bridge_geometry_priors(template_id)
-    if priors is None:
+    if priors is None or priors.carbon_angle_deg is None:
         return 0.0
     target = bridge_target_distance(template_id)
     if template_id == "azine_bridge":
@@ -142,6 +142,8 @@ def derived_origin_retraction_fraction(template_id: str, side_length: float) -> 
         naive = target + side_length
         fraction = (naive - closure) / (2.0 * side_length)
     else:
+        if priors.nitrogen_angle_deg is None:
+            return 0.0
         span = required_bridge_span(
             side_length,
             target,
@@ -167,6 +169,15 @@ BORONATE_ESTER_BOND_TARGET_DISTANCE = 1.44
 # fit pulls the rigid catechol oxygens inward toward this value instead of
 # leaving the ring at the free-catechol opening (~138 degrees).
 BORONATE_ESTER_OBO_TARGET_ANGLE_DEG = 112.4
+
+# Exact-closure tolerance for the realization-time boronate ester angle solve
+# (derived/numerical): the golden-section solve in reaction_realization.py
+# minimizes the squared O-B-O angle residual over the feasible boron-rotation
+# interval and converges the residual to float64 noise (~1e-12 degrees)
+# whenever exact closure at the prior is geometrically feasible. Residuals at
+# or below this threshold are reported as exact closures; the value sits far
+# above numerical noise and far below any chemically meaningful deviation.
+BORONATE_OBO_EXACT_TOLERANCE_DEG = 0.01
 
 
 def effective_motif_origin(

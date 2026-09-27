@@ -829,18 +829,64 @@ class ReactionRealizationTests(unittest.TestCase):
         }
         self.assertAlmostEqual(self._distance(oxygen_positions[0], (-1.0, 0.7, 0.0)), 1.0, places=6)
         self.assertAlmostEqual(self._distance(oxygen_positions[1], (-1.0, -0.7, 0.0)), 1.0, places=6)
-        # The ring contracts toward the measured baseline O-B-O angle instead of
-        # keeping the free-catechol opening (~139 degrees in this fixture, whose
-        # artificial bond lengths make the exact target infeasible).
-        boron_world = boron_atom.local_position
-        vector_1 = tuple(a - b for a, b in zip(oxygen_positions[0], boron_world))
-        vector_2 = tuple(a - b for a, b in zip(oxygen_positions[1], boron_world))
-        norm_1 = self._distance(vector_1, (0.0, 0.0, 0.0))
-        norm_2 = self._distance(vector_2, (0.0, 0.0, 0.0))
-        cosine = sum(a * b for a, b in zip(vector_1, vector_2)) / (norm_1 * norm_2)
-        obo_angle_deg = acos(max(-1.0, min(1.0, cosine))) * 180.0 / pi
-        self.assertLess(obo_angle_deg, 135.0)
-        self.assertGreater(obo_angle_deg, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG - 15.0)
+        # With all five lengths held exact, the sixth constraint closes the
+        # ring: this placement admits an exact closure, so the exported O-B-O
+        # angle sits at the prior instead of the free-catechol opening (~139
+        # degrees). The angle is measured in world coordinates (m2 is
+        # translated by 1.4 along x).
+        obo_angle_deg = self._obo_angle_deg(boron_atom.local_position, oxygen_positions, x_shift=1.4)
+        self.assertAlmostEqual(obo_angle_deg, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG, places=2)
+        notes = result.metadata["notes"]
+        self.assertTrue(any("deterministic five-membered ring closure" in note for note in notes))
+
+    def test_boronate_ester_realization_best_effort_when_exact_closure_infeasible(self):
+        boronic_acid, catechol = _boronate_ester_monomers()
+        candidate = _single_event_candidate(
+            "boronate_ester_bridge",
+            MotifRef(monomer_instance_id="m1", monomer_id="boronic_acid", motif_id="bor1"),
+            MotifRef(monomer_instance_id="m2", monomer_id="catechol", motif_id="cat1"),
+            distance=3.0,
+        )
+
+        result = ReactionRealizer().realize(
+            candidate,
+            {"boronic_acid": boronic_acid, "catechol": catechol},
+            {"m1": "boronic_acid", "m2": "catechol"},
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        # Lengths stay exact even when the angle prior is unreachable.
+        for bond in result.bonds:
+            self.assertAlmostEqual(bond.distance, BORONATE_ESTER_BOND_TARGET_DISTANCE, places=6)
+        boron_atom = next(atom for atom in result.atoms_by_instance["m1"] if atom.atom_id == 1)
+        oxygen_positions = {
+            atom.atom_id: atom.local_position
+            for atom in result.atoms_by_instance["m2"]
+            if atom.atom_id in (0, 1)
+        }
+        # At this over-extended placement no boron rotation reaches the prior;
+        # the best-effort fit lands at the closest feasible angle (well below
+        # it) and reports honestly instead of forcing the target.
+        obo_angle_deg = self._obo_angle_deg(boron_atom.local_position, oxygen_positions, x_shift=3.0)
+        self.assertLess(obo_angle_deg, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG - 15.0)
+        notes = result.metadata["notes"]
+        self.assertTrue(any("best-effort five-membered ring closure" in note for note in notes))
+        self.assertTrue(any(f"{BORONATE_ESTER_OBO_TARGET_ANGLE_DEG:.1f} degree target" in note for note in notes))
+
+    @staticmethod
+    def _obo_angle_deg(
+        boron_local: tuple[float, float, float],
+        oxygen_locals: dict[int, tuple[float, float, float]],
+        *,
+        x_shift: float,
+    ) -> float:
+        boron_world = boron_local
+        oxygen_worlds = tuple((position[0] + x_shift, *position[1:]) for position in oxygen_locals.values())
+        vectors = tuple(tuple(a - b for a, b in zip(oxygen_world, boron_world)) for oxygen_world in oxygen_worlds)
+        norms = tuple(sum(component * component for component in vector) ** 0.5 for vector in vectors)
+        cosine = sum(a * b for a, b in zip(*vectors)) / (norms[0] * norms[1])
+        return acos(max(-1.0, min(1.0, cosine))) * 180.0 / pi
 
     def test_vinylene_realization_removes_aldehyde_oxygen_and_two_activated_hydrogens(self):
         activated_methylene = MonomerSpec(
