@@ -35,7 +35,10 @@ Then go straight to the module that matches the task.
 ## Core chemistry seams
 
 - [src/cofkit/reactions.py](../src/cofkit/reactions.py)
-  - Reaction templates and linkage profiles.
+  - Reaction templates and linkage profiles, including per-template bridge
+    geometry priors (`BridgeGeometryPriors`) that own both the
+    realization-time imine/azine bridge constructor and the embedding-time
+    motif-origin retraction (`linkage_geometry.derived_origin_retraction_fraction`).
   - This is the first file to touch for a new linkage.
 - [src/cofkit/chem/motif_registry.py](../src/cofkit/chem/motif_registry.py)
   - Motif-kind metadata.

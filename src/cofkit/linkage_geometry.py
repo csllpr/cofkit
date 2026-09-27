@@ -1,25 +1,160 @@
 from __future__ import annotations
 
+from math import atan2, cos, radians, sin, sqrt
+
 from .geometry import Vec3, norm, scale, sub
 from .model import MonomerSpec
+from .reactions import bridge_geometry_priors, bridge_target_distance
+
+# Single-owner imine/azine bridge geometry (2026-09-27 rework).
+#
+# Two compensators used to fight imine collinearity independently: a
+# hand-tuned embedding-time motif-origin retraction (0.11 for imine, 0.08
+# for azine) and a realization-time 721-step angular scan whose objective
+# was displacement-dominated (exported angles landed near 131 degrees
+# regardless of the angle target). Both are now derived from the template
+# profile's geometry priors (BridgeGeometryPriors in reactions.py):
+#
+# * required_bridge_span() below solves the anchor-to-anchor distance at
+#   which the bridge chain A-C-N-B closes exactly with both interior
+#   angles at their priors, in the E (zig-zag) configuration with C and N
+#   on opposite sides of the anchor axis.
+# * The realization-time constructor (reaction_realization.py) solves the
+#   same quadrilateral: exactly when the placed anchor distance matches
+#   the required span, best-effort (least-squares on the two angle
+#   residuals, lengths held exact) with an honest diagnostic note
+#   otherwise.
+# * The embedding-time retraction below anticipates that constructor:
+#   under ideal aligned placement (effective origins at
+#   bridge_target_distance separation, anchor->reactive bonds collinear
+#   with the bridge axis) the placed anchor distance is
+#
+#       d(f) = bridge_target + (1 - f) * (l_C + l_N)
+#
+#   for a retraction fraction f applied on both sides. Setting
+#   d(f) = required_bridge_span gives
+#
+#       f = (bridge_target + l_C + l_N - d*) / (l_C + l_N).
+#
+#   Each motif computes f independently with the symmetric-event
+#   approximation l_C = l_N = l_own (its own measured |anchor->reactive|);
+#   for typical aryl side lengths (1.40-1.45 angstrom on both sides) the
+#   resulting total retraction matches the joint optimum to ~1 percent.
+#
+#   Azine is the asymmetric case: its realization fit pins both nitrogens
+#   on the N-N axis, so the constructed endpoint is the triangle
+#   A-C-N with |A-C| = l_C, |C-N| = bridge_target and the third side set
+#   by placement. Consistency means |A-N| equals the triangle-closure
+#   distance r* = sqrt(l_C^2 + l_CN^2 - 2 l_C l_CN cos theta_C); the C-N-N
+#   angle is then a derived consequence, not independently fittable. The
+#   retraction solves the same symmetric-split equation against r*:
+#
+#       f = (bridge_target + l_own - r*) / (2 * l_own).
+#
+# Derived values for representative aryl side lengths, versus the retired
+# hand-tuned constants: imine l=1.45 -> f = 0.164 (was 0.11); azine
+# l=1.45 -> f = 0.127 (was 0.08). The hand-tuned values systematically
+# under-retract: they were tuned against the old displacement-dominated
+# scan, which never actually reached the angle priors, so full prior
+# anticipation was never wanted. The derived values are larger because
+# they place the anchors where the constructor can actually close at the
+# priors.
+
+# Anchor distances within this tolerance of required_bridge_span are
+# closed exactly at the angle priors; larger deviations take the
+# best-effort path with a deviation diagnostic.
+BRIDGE_SPAN_EXACT_TOLERANCE_ANGSTROM = 0.02
 
 
-# Uncalibrated heuristics: these fractions retract the effective motif origin
-# along the anchor->reactive bond at embedding time so the seeded bridge
-# geometry roughly anticipates the imine/azine bend. They compose with the
-# realization-time chain-closure fit in reaction_realization.py, whose angle
-# targets are idealized 120-degree sp2 priors (consistent with the DREIDING
-# equilibrium angle; the prior uncited ~127-degree targets were ~6-7 degrees
-# wider than literature aryl-imine angles), so the pair acts as one de-facto
-# collinearity compensation with two owners. As of 2026-09 the retraction is
-# applied per template/per event (each motif in a mixed-linkage build gets its
-# own template's correction via the per-event template id), which only makes
-# mixed and pure builds consistent with each other; it is NOT a calibration.
-# The planned real fix is a single-owner rework of both compensators, with
-# the retraction derived from the fit's expected displacement rather than
-# hand-set — until then, treat the constants as provisional.
-IMINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.11
-AZINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION = 0.08
+def required_bridge_span(
+    outer_length_a: float,
+    bridge_length: float,
+    outer_length_b: float,
+    angle_a_deg: float,
+    angle_b_deg: float,
+) -> float | None:
+    """Anchor distance that makes the bridge quadrilateral close exactly.
+
+    Chain A-X-Y-B with |A-X| = outer_length_a, |X-Y| = bridge_length,
+    |Y-B| = outer_length_b and interior angles angle_a_deg at X, angle_b_deg
+    at Y, in the E (zig-zag) configuration: A=(0,0), B=(d,0), X above the
+    axis, Y below. Writing the exterior angles tA = 180 - angle_a_deg and
+    tB = 180 - angle_b_deg, the segment directions are a, a - tA and
+    a - tA + tB, and lateral closure is linear in sin a / cos a:
+
+        S sin a - D cos a = 0
+        S = outer_a + bridge cos tA + outer_b cos(tA - tB)
+        D = bridge sin tA + outer_b sin(tA - tB)
+
+    so a = atan2(D, S) and
+    d = outer_a cos a + bridge cos(a - tA) + outer_b cos(a - tA + tB).
+
+    Returns None when no zig-zag solution exists (the solved chain fails
+    to put X and Y on opposite sides of the axis, or d <= 0).
+    """
+    lengths = (outer_length_a, bridge_length, outer_length_b)
+    if any(length < 1e-8 for length in lengths):
+        return None
+    exterior_a = radians(180.0 - angle_a_deg)
+    exterior_b = radians(180.0 - angle_b_deg)
+    sin_a = sin(exterior_a)
+    if sin_a <= 1e-12:
+        return None
+    s_coeff = outer_length_a + bridge_length * cos(exterior_a) + outer_length_b * cos(exterior_a - exterior_b)
+    d_coeff = bridge_length * sin_a + outer_length_b * sin(exterior_a - exterior_b)
+    if d_coeff <= 0.0:
+        return None
+    alpha = atan2(d_coeff, s_coeff)
+    if not (1e-9 < alpha < exterior_a - 1e-9):
+        # X must sit above the axis and the X->Y segment must head downward.
+        return None
+    x_height = outer_length_a * sin(alpha)
+    y_height = x_height + bridge_length * sin(alpha - exterior_a)
+    if y_height >= 0.0:
+        return None
+    span = (
+        outer_length_a * cos(alpha)
+        + bridge_length * cos(alpha - exterior_a)
+        + outer_length_b * cos(alpha - exterior_a + exterior_b)
+    )
+    if span <= 0.0:
+        return None
+    return span
+
+
+def derived_origin_retraction_fraction(template_id: str, side_length: float) -> float:
+    """Embedding-time motif-origin retraction fraction derived from the
+    template profile's geometry priors (see the module docstring for the
+    derivation). Returns 0.0 for templates without priors or when the
+    prior-consistent span needs no retraction."""
+    if side_length < 1e-8 or not template_id:
+        return 0.0
+    priors = bridge_geometry_priors(template_id)
+    if priors is None:
+        return 0.0
+    target = bridge_target_distance(template_id)
+    if template_id == "azine_bridge":
+        # Asymmetric case: the fit pins the nitrogens on the N-N axis, so
+        # consistency is the endpoint-triangle closure at the carbon-angle
+        # prior (module docstring).
+        cosine = max(-1.0, min(1.0, cos(radians(priors.carbon_angle_deg))))
+        closure = sqrt(side_length * side_length + target * target - 2.0 * side_length * target * cosine)
+        naive = target + side_length
+        fraction = (naive - closure) / (2.0 * side_length)
+    else:
+        span = required_bridge_span(
+            side_length,
+            target,
+            side_length,
+            priors.carbon_angle_deg,
+            priors.nitrogen_angle_deg,
+        )
+        if span is None:
+            return 0.0
+        naive = target + 2.0 * side_length
+        fraction = (naive - span) / (2.0 * side_length)
+    return min(max(fraction, 0.0), 0.9)
+
 
 # Realized B-O bond length target for the five-membered boronate ester ring
 # (B-O-C-C-O): 1.44 angstrom matches both the measured CoRE-COF baseline ring
@@ -59,13 +194,10 @@ def effective_motif_origin(
     reactive_position = monomer.atom_positions[reactive_atom_id]
     anchor_position = monomer.atom_positions[anchor_atom_id]
     anchor_to_reactive = sub(reactive_position, anchor_position)
-    if norm(anchor_to_reactive) < 1e-8:
+    side_length = norm(anchor_to_reactive)
+    if side_length < 1e-8:
         return origin
-    retraction_fraction = (
-        IMINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION
-        if template_id == "imine_bridge"
-        else AZINE_EFFECTIVE_ORIGIN_RETRACTION_FRACTION
-    )
+    retraction_fraction = derived_origin_retraction_fraction(template_id, side_length)
     return sub(
         reactive_position,
         scale(anchor_to_reactive, retraction_fraction),

@@ -1748,12 +1748,18 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             min_h_c_n = min(min_h_c_n, self._angle(hydrogen_world, carbon_world, nitrogen_world))
             min_c_n_anchor = min(min_c_n_anchor, self._angle(carbon_world, nitrogen_world, nitrogen_anchor_world))
 
-        self.assertGreater(min_anchor_c_n, 120.0)
-        self.assertLess(min_anchor_c_n, 145.0)
+        # Post-rework the bridge is constructed at the 120-degree template
+        # priors; the dia 3D placement lands ~0.03 angstrom off the
+        # prior-consistent span, so the best-effort closure balances both
+        # angle residuals a few degrees below/above the priors (measured
+        # 117.0-118.5 across the eight events) instead of the old
+        # displacement-dominated fit's ~131 degrees.
+        self.assertGreater(min_anchor_c_n, 112.0)
+        self.assertLess(min_anchor_c_n, 128.0)
         self.assertGreater(min_h_c_n, 108.0)
         self.assertLess(min_h_c_n, 125.0)
-        self.assertGreater(min_c_n_anchor, 120.0)
-        self.assertLess(min_c_n_anchor, 145.0)
+        self.assertGreater(min_c_n_anchor, 112.0)
+        self.assertLess(min_c_n_anchor, 128.0)
 
     def test_reverse_polarity_two_plus_four_pair_returns_explicit_2d_topologies_when_requested(self):
         generator = BatchStructureGenerator(

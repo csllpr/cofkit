@@ -10,7 +10,8 @@ from pathlib import Path
 from cofkit import AssemblyState, Candidate, CIFWriter, Frame, MonomerSpec, Pose, ReactiveMotif, ReactionEvent, MotifRef, build_rdkit_monomer
 from cofkit.bond_types import cif_type_to_bond_order
 from cofkit.decompose import _build_bonded_mol, _eligible_beta_ketoenamine_single_bonds, read_periodic_cif_atoms
-from cofkit.linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG
+from cofkit.linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG, required_bridge_span
+from cofkit import reaction_realization
 from cofkit.reaction_realization import EventRealization, ReactionEventRealizationRegistry, ReactionRealizer
 
 
@@ -1297,6 +1298,307 @@ class KetoEnamineQuinoidRedistributionTests(unittest.TestCase):
         # written C-N single bond with its C=C anchor and ring carbonyl.
         eligible = _eligible_beta_ketoenamine_single_bonds(built.mol)
         self.assertEqual(len(eligible), 1)
+
+
+def _minimal_imine_monomers() -> tuple[MonomerSpec, MonomerSpec]:
+    amine = MonomerSpec(
+        id="amine",
+        name="minimal amine",
+        motifs=(
+            ReactiveMotif(
+                id="ami1",
+                kind="amine",
+                atom_ids=(0, 1, 2, 3),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                allowed_reaction_templates=("imine_bridge",),
+                metadata={"reactive_atom_id": 0, "anchor_atom_id": 1},
+            ),
+        ),
+        atom_symbols=("N", "C", "H", "H"),
+        atom_positions=((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.1, 1.0, 0.0), (0.1, -1.0, 0.0)),
+    )
+    aldehyde = MonomerSpec(
+        id="aldehyde",
+        name="minimal aldehyde",
+        motifs=(
+            ReactiveMotif(
+                id="ald1",
+                kind="aldehyde",
+                atom_ids=(0, 1, 2, 3),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                allowed_reaction_templates=("imine_bridge",),
+                metadata={"reactive_atom_id": 0, "anchor_atom_id": 2},
+            ),
+        ),
+        atom_symbols=("C", "O", "C", "H"),
+        atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+    )
+    return amine, aldehyde
+
+
+class ImineBridgeConstructorTests(unittest.TestCase):
+    """Single-owner closed-form imine bridge construction (audit #15 rework).
+
+    Fixture geometry: amine N at the origin with its anchor at (-1, 0, 0);
+    aldehyde translated by t along +x so its anchor sits at (t + 1.2, 0, 0).
+    The anchor span is therefore d = t + 2.2 with side lengths l_C = 1.2,
+    l_N = 1.0 and the C=N target 1.3.
+    """
+
+    def _candidate(self, translation: float) -> Candidate:
+        return Candidate(
+            id="imine-constructor-demo",
+            score=0.0,
+            state=AssemblyState(
+                cell=((60.0, 0.0, 0.0), (0.0, 60.0, 0.0), (0.0, 0.0, 10.0)),
+                monomer_poses={
+                    "m1": Pose(translation=(0.0, 0.0, 0.0)),
+                    "m2": Pose(translation=(translation, 0.0, 0.0)),
+                },
+                stacking_state="disabled",
+            ),
+            events=(
+                ReactionEvent(
+                    id="rxn1",
+                    template_id="imine_bridge",
+                    participants=(
+                        MotifRef(monomer_instance_id="m1", monomer_id="amine", motif_id="ami1"),
+                        MotifRef(monomer_instance_id="m2", monomer_id="aldehyde", motif_id="ald1"),
+                    ),
+                ),
+            ),
+            metadata={"instance_to_monomer": {"m1": "amine", "m2": "aldehyde"}},
+        )
+
+    def _realized_geometry(self, translation: float):
+        amine, aldehyde = _minimal_imine_monomers()
+        candidate = self._candidate(translation)
+        realizer = ReactionRealizer()
+        result = realizer.realize(candidate, {"amine": amine, "aldehyde": aldehyde}, {"m1": "amine", "m2": "aldehyde"})
+        self.assertIsNotNone(result)
+        assert result is not None
+        realized = {
+            instance_id: {atom.atom_id: atom.local_position for atom in atoms}
+            for instance_id, atoms in result.atoms_by_instance.items()
+        }
+        pose_m2 = candidate.state.monomer_poses["m2"]
+        carbon_world = realizer._world_position(pose_m2, realized["m2"][0])
+        carbon_anchor_world = realizer._world_position(pose_m2, realized["m2"][2])
+        nitrogen_world = realizer._world_position(candidate.state.monomer_poses["m1"], realized["m1"][0])
+        nitrogen_anchor_world = realizer._world_position(candidate.state.monomer_poses["m1"], realized["m1"][1])
+        return realizer, result, carbon_world, carbon_anchor_world, nitrogen_world, nitrogen_anchor_world
+
+    def test_consistent_span_closes_exactly_at_priors(self):
+        span = required_bridge_span(1.2, 1.3, 1.0, 120.0, 120.0)
+        self.assertIsNotNone(span)
+        assert span is not None
+        realizer, result, carbon, anchor_c, nitrogen, anchor_n = self._realized_geometry(span - 2.2)
+
+        carbon_angle = realizer._angle(anchor_c, carbon, nitrogen)
+        nitrogen_angle = realizer._angle(carbon, nitrogen, anchor_n)
+        self.assertAlmostEqual(carbon_angle, 120.0, delta=1e-9)
+        self.assertAlmostEqual(nitrogen_angle, 120.0, delta=1e-9)
+        # All three lengths exact: aryl-C-C, C=N (exported bond), N-aryl-C.
+        self.assertAlmostEqual(realizer._distance(anchor_c, carbon), 1.2, delta=1e-9)
+        self.assertAlmostEqual(result.bonds[0].distance, 1.3, delta=1e-9)
+        self.assertAlmostEqual(realizer._distance(nitrogen, anchor_n), 1.0, delta=1e-9)
+        # E-configuration preserved: the carbon stays on the (removed)
+        # oxygen's side of the anchor axis, the nitrogen on the opposite side.
+        self.assertGreater(carbon[1], 0.0)
+        self.assertLess(nitrogen[1], 0.0)
+        notes = " ".join(result.metadata["notes"])
+        self.assertIn("closed exactly at the template angle priors", notes)
+        self.assertNotIn("best-effort", notes)
+
+    def test_inconsistent_span_is_best_effort_with_honest_diagnostic(self):
+        span = required_bridge_span(1.2, 1.3, 1.0, 120.0, 120.0)
+        assert span is not None
+        realizer, result, carbon, anchor_c, nitrogen, anchor_n = self._realized_geometry(span - 2.2 + 0.1)
+
+        # Lengths stay exact; only the angles absorb the span mismatch, and
+        # they absorb it together (least-squares on both residuals).
+        self.assertAlmostEqual(realizer._distance(anchor_c, carbon), 1.2, delta=1e-9)
+        self.assertAlmostEqual(result.bonds[0].distance, 1.3, delta=1e-9)
+        self.assertAlmostEqual(realizer._distance(nitrogen, anchor_n), 1.0, delta=1e-9)
+        carbon_angle = realizer._angle(anchor_c, carbon, nitrogen)
+        nitrogen_angle = realizer._angle(carbon, nitrogen, anchor_n)
+        # +0.1 angstrom past the consistent span flattens the zig-zag:
+        # independently measured optimum is 127.97 / 126.98 degrees.
+        self.assertGreater(carbon_angle, 124.0)
+        self.assertLess(carbon_angle, 132.0)
+        self.assertGreater(nitrogen_angle, 124.0)
+        self.assertLess(nitrogen_angle, 132.0)
+        notes = " ".join(result.metadata["notes"])
+        self.assertIn("best-effort imine bridge construction", notes)
+        self.assertIn("deviates from its prior-consistent span", notes)
+        self.assertNotIn("closed exactly", notes)
+
+    def test_infeasible_span_falls_back_to_existing_failure_note(self):
+        span = required_bridge_span(1.2, 1.3, 1.0, 120.0, 120.0)
+        assert span is not None
+        realizer, result, carbon, anchor_c, nitrogen, anchor_n = self._realized_geometry(20.0)
+
+        notes = " ".join(result.metadata["notes"])
+        self.assertIn("imine chain-closure fit could not run", notes)
+        self.assertIn("near-collinear", notes)
+        self.assertAlmostEqual(result.bonds[0].distance, 20.0, places=6)
+
+    def test_priors_are_read_from_the_template_profile(self):
+        from cofkit.reactions import BridgeGeometryPriors
+
+        span_125 = required_bridge_span(1.2, 1.3, 1.0, 125.0, 125.0)
+        self.assertIsNotNone(span_125)
+        assert span_125 is not None
+        translation = span_125 - 2.2
+
+        # With the default 120-degree priors the same placement is only
+        # best-effort...
+        _, result_default, _, _, _, _ = self._realized_geometry(translation)
+        self.assertIn("best-effort", " ".join(result_default.metadata["notes"]))
+
+        # ...but with monkeypatched profile priors the identical geometry
+        # closes exactly, proving the constructor reads the profile.
+        original = reaction_realization.bridge_geometry_priors
+        reaction_realization.bridge_geometry_priors = lambda template_id: BridgeGeometryPriors(
+            carbon_angle_deg=125.0,
+            nitrogen_angle_deg=125.0,
+        )
+        try:
+            realizer, result, carbon, anchor_c, nitrogen, anchor_n = self._realized_geometry(translation)
+        finally:
+            reaction_realization.bridge_geometry_priors = original
+        notes = " ".join(result.metadata["notes"])
+        self.assertIn("closed exactly at the template angle priors (125.0/125.0", notes)
+        self.assertAlmostEqual(realizer._angle(anchor_c, carbon, nitrogen), 125.0, delta=1e-9)
+        self.assertAlmostEqual(realizer._angle(carbon, nitrogen, anchor_n), 125.0, delta=1e-9)
+
+
+class AzineBridgeConstructorTests(unittest.TestCase):
+    def _azine_group(self, aldehyde_translation: float):
+        hydrazine = MonomerSpec(
+            id="hydrazine",
+            name="linked hydrazine",
+            motifs=(
+                ReactiveMotif(
+                    id="hyd_left",
+                    kind="hydrazine",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(-0.71735, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={
+                        "reactive_atom_id": 0,
+                        "anchor_atom_id": 1,
+                        "hydrogen_atom_ids": (2, 3),
+                        "internal_nitrogen_atom_id": 1,
+                    },
+                ),
+                ReactiveMotif(
+                    id="hyd_right",
+                    kind="hydrazine",
+                    atom_ids=(0, 1, 4, 5),
+                    frame=Frame(origin=(0.71735, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={
+                        "reactive_atom_id": 1,
+                        "anchor_atom_id": 0,
+                        "hydrogen_atom_ids": (4, 5),
+                        "internal_nitrogen_atom_id": 0,
+                    },
+                ),
+            ),
+            atom_symbols=("N", "N", "H", "H", "H", "H"),
+            atom_positions=(
+                (-0.71735, 0.0, 0.0),
+                (0.71735, 0.0, 0.0),
+                (-0.9, 0.95, 0.0),
+                (-0.9, -0.95, 0.0),
+                (0.9, 0.95, 0.0),
+                (0.9, -0.95, 0.0),
+            ),
+            bonds=((0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0), (1, 4, 1.0), (1, 5, 1.0)),
+        )
+        aldehyde = MonomerSpec(
+            id="aldehyde",
+            name="minimal aldehyde",
+            motifs=(
+                ReactiveMotif(
+                    id="ald1",
+                    kind="aldehyde",
+                    atom_ids=(0, 1, 2, 3),
+                    frame=Frame(origin=(0.0, 0.0, 0.0), primary=(-1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                    allowed_reaction_templates=("azine_bridge",),
+                    metadata={"reactive_atom_id": 0, "anchor_atom_id": 2},
+                ),
+            ),
+            atom_symbols=("C", "O", "C", "H"),
+            atom_positions=((0.0, 0.0, 0.0), (0.0, 1.2, 0.0), (1.2, 0.0, 0.0), (-0.8, 0.0, 0.0)),
+            bonds=((0, 1, 2.0), (0, 2, 1.0), (0, 3, 1.0)),
+        )
+        candidate = Candidate(
+            id="azine-constructor-demo",
+            score=0.0,
+            state=AssemblyState(
+                cell=((60.0, 0.0, 0.0), (0.0, 60.0, 0.0), (0.0, 0.0, 10.0)),
+                monomer_poses={
+                    "m1": Pose(translation=(0.0, 0.0, 0.0)),
+                    "m2": Pose(
+                        translation=(-aldehyde_translation, 0.0, 0.0),
+                        rotation_matrix=((-1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+                    ),
+                    "m3": Pose(translation=(aldehyde_translation, 0.0, 0.0)),
+                },
+                stacking_state="disabled",
+            ),
+            events=(
+                ReactionEvent(
+                    id="rxn1",
+                    template_id="azine_bridge",
+                    participants=(
+                        MotifRef(monomer_instance_id="m1", monomer_id="hydrazine", motif_id="hyd_left"),
+                        MotifRef(monomer_instance_id="m2", monomer_id="aldehyde", motif_id="ald1"),
+                    ),
+                ),
+                ReactionEvent(
+                    id="rxn2",
+                    template_id="azine_bridge",
+                    participants=(
+                        MotifRef(monomer_instance_id="m1", monomer_id="hydrazine", motif_id="hyd_right"),
+                        MotifRef(monomer_instance_id="m3", monomer_id="aldehyde", motif_id="ald1"),
+                    ),
+                ),
+            ),
+            metadata={"instance_to_monomer": {"m1": "hydrazine", "m2": "aldehyde", "m3": "aldehyde"}},
+        )
+        specs = {"hydrazine": hydrazine, "aldehyde": aldehyde}
+        return candidate, specs
+
+    def test_infeasible_endpoint_triangle_is_best_effort_with_diagnostic(self):
+        # Anchor-N distance 3.496 angstrom > l_C + C=N target (2.5): the
+        # endpoint triangle cannot close, so the carbon goes on the
+        # anchor<->N line at l_C and the exported C=N lands at the closest
+        # feasible distance 3.496 - 1.2 = 2.296 with an honest note.
+        candidate, specs = self._azine_group(3.0)
+        realizer = ReactionRealizer()
+        result = realizer.realize(candidate, specs, {"m1": "hydrazine", "m2": "aldehyde", "m3": "aldehyde"})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        notes = " ".join(result.metadata["notes"])
+        self.assertIn("best-effort", notes)
+        self.assertIn("cannot close the endpoint triangle", notes)
+        self.assertIn("2.296", notes)
+        cn_bond_distances = sorted(
+            bond.distance for bond in result.bonds if bond.bond_order == 2.0
+        )
+        self.assertEqual(len(cn_bond_distances), 2)
+        for distance in cn_bond_distances:
+            self.assertAlmostEqual(distance, 2.296, delta=0.01)
+        # The coordinated N-N closure is unaffected by the endpoint fallback.
+        hydrazine_atoms = {atom.atom_id: atom for atom in result.atoms_by_instance["m1"]}
+        pose_m1 = candidate.state.monomer_poses["m1"]
+        left_n = realizer._world_position(pose_m1, hydrazine_atoms[0].local_position)
+        right_n = realizer._world_position(pose_m1, hydrazine_atoms[1].local_position)
+        self.assertAlmostEqual(realizer._distance(left_n, right_n), 1.408, delta=0.01)
 
 
 if __name__ == "__main__":

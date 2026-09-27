@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
-from math import atan2, cos, pi, sin
+from math import acos, atan2, cos, pi, radians, sin
 from typing import Callable, Mapping
 
 import networkx as nx
@@ -24,9 +24,19 @@ from .geometry import (
     sub,
     transpose,
 )
-from .linkage_geometry import BORONATE_ESTER_BOND_TARGET_DISTANCE, BORONATE_ESTER_OBO_TARGET_ANGLE_DEG
+from .linkage_geometry import (
+    BORONATE_ESTER_BOND_TARGET_DISTANCE,
+    BORONATE_ESTER_OBO_TARGET_ANGLE_DEG,
+    BRIDGE_SPAN_EXACT_TOLERANCE_ANGSTROM,
+    required_bridge_span,
+)
 from .model import Candidate, MonomerSpec, MotifRef, Pose, ReactionEvent
-from .reactions import bridge_target_distance, linkage_event_realizer
+from .reactions import (
+    AZINE_NN_TARGET_DISTANCE,
+    bridge_geometry_priors,
+    bridge_target_distance,
+    linkage_event_realizer,
+)
 
 
 @dataclass(frozen=True)
@@ -96,8 +106,10 @@ ReactionEventRealizationHandler = Callable[
 ]
 
 
-# Azine bridges retain an N-N single bond in the exported C=N-N=C segment.
-AZINE_NN_TARGET_DISTANCE = 1.408
+# Azine bridges retain an N-N single bond in the exported C=N-N=C segment;
+# the target distance lives on the azine linkage profile
+# (reactions.AZINE_NN_TARGET_DISTANCE, a carried-over heuristic pending
+# calibration, re-exported here for existing internal consumers).
 
 
 class ReactionEventRealizationRegistry:
@@ -1021,6 +1033,7 @@ class ReactionRealizer:
         aldehyde_anchor_world: Vec3,
         oxygen_world: Vec3,
         target_cn_distance: float,
+        diagnostics: dict[str, object] | None = None,
     ) -> tuple[Vec3, Vec3] | None:
         bridge_axis = sub(amine_anchor_world, aldehyde_anchor_world)
         if norm(bridge_axis) < 1e-8:
@@ -1052,27 +1065,78 @@ class ReactionRealizer:
         if anchor_distance < 1e-8 or carbon_length < 1e-8 or nitrogen_length < 1e-8:
             return None
 
-        current_carbon_2d = (
-            dot(sub(carbon_world, aldehyde_anchor_world), axis),
-            dot(sub(carbon_world, aldehyde_anchor_world), lateral_axis),
+        priors = bridge_geometry_priors("imine_bridge")
+        target_carbon_angle = 120.0 if priors is None else priors.carbon_angle_deg
+        target_nitrogen_angle = 120.0 if priors is None else priors.nitrogen_angle_deg
+        required_span = required_bridge_span(
+            carbon_length,
+            target_cn_distance,
+            nitrogen_length,
+            target_carbon_angle,
+            target_nitrogen_angle,
         )
-        current_nitrogen_2d = (
-            dot(sub(nitrogen_world, aldehyde_anchor_world), axis),
-            dot(sub(nitrogen_world, aldehyde_anchor_world), lateral_axis),
-        )
-        # Idealized sp2 priors for the aryl-C-C=N and C=N-aryl-C angles,
-        # consistent with the DREIDING equilibrium angle; not measured
-        # values. They are soft targets in the weighted objective below
-        # (displacement terms dominate 0.5 vs 0.12), so exported angles
-        # land between the seed geometry and these targets. The prior
-        # uncited 127.2/127.8 targets were ~6-7 degrees wider than
-        # literature aryl-imine angles (~117-123 degrees).
-        target_carbon_angle = 120.0
-        target_nitrogen_angle = 120.0
-        best: tuple[float, tuple[float, float], tuple[float, float]] | None = None
 
-        for step in range(721):
-            alpha = pi * step / 720.0
+        def to_world(point_2d: tuple[float, float]) -> Vec3:
+            return add(
+                aldehyde_anchor_world,
+                add(scale(axis, point_2d[0]), scale(lateral_axis, point_2d[1])),
+            )
+
+        if required_span is not None and abs(anchor_distance - required_span) <= BRIDGE_SPAN_EXACT_TOLERANCE_ANGSTROM:
+            # Exact closure: the quadrilateral A-C-N-B with all three lengths
+            # held exact and both interior angles at the template priors
+            # (zig-zag chain directions from linkage_geometry; see
+            # required_bridge_span for the derivation).
+            exterior_carbon = pi - radians(target_carbon_angle)
+            exterior_nitrogen = pi - radians(target_nitrogen_angle)
+            s_coeff = (
+                carbon_length
+                + target_cn_distance * cos(exterior_carbon)
+                + nitrogen_length * cos(exterior_carbon - exterior_nitrogen)
+            )
+            d_coeff = target_cn_distance * sin(exterior_carbon) + nitrogen_length * sin(
+                exterior_carbon - exterior_nitrogen
+            )
+            alpha = atan2(d_coeff, s_coeff)
+            carbon_2d = (
+                carbon_length * cos(alpha),
+                carbon_side * carbon_length * sin(alpha),
+            )
+            nitrogen_2d = (
+                carbon_2d[0] + target_cn_distance * cos(alpha - exterior_carbon),
+                carbon_2d[1] + carbon_side * target_cn_distance * sin(alpha - exterior_carbon),
+            )
+            # Closure check: the chain must land on the amine anchor within
+            # the span tolerance that admitted the exact branch.
+            closure_residual = self._distance_2d(
+                (
+                    nitrogen_2d[0] + nitrogen_length * cos(alpha - exterior_carbon + exterior_nitrogen),
+                    nitrogen_2d[1] + carbon_side * nitrogen_length * sin(alpha - exterior_carbon + exterior_nitrogen),
+                ),
+                (anchor_distance, 0.0),
+            )
+            if closure_residual <= BRIDGE_SPAN_EXACT_TOLERANCE_ANGSTROM + 1e-6:
+                if diagnostics is not None:
+                    diagnostics["mode"] = "exact"
+                    diagnostics["required_span"] = required_span
+                    diagnostics["anchor_distance"] = anchor_distance
+                return (to_world(carbon_2d), to_world(nitrogen_2d))
+
+        # Best-effort closure: hold all three lengths exact and choose the
+        # chain angle alpha that minimizes the squared deviations of both
+        # interior angles from the template priors (1-D least-squares over
+        # the feasible alpha interval; golden-section refinement).
+        feasible = self._feasible_chain_angle_interval(
+            carbon_length,
+            target_cn_distance,
+            nitrogen_length,
+            anchor_distance,
+        )
+        if feasible is None:
+            return None
+        alpha_low, alpha_high = feasible
+
+        def evaluate(alpha: float) -> tuple[float, tuple[float, float], tuple[float, float]] | None:
             carbon_2d = (
                 carbon_length * cos(alpha),
                 carbon_side * carbon_length * sin(alpha),
@@ -1083,34 +1147,94 @@ class ReactionRealizer:
                 (anchor_distance, 0.0),
                 nitrogen_length,
             )
-            if not intersections:
-                continue
+            best_for_alpha: tuple[float, tuple[float, float], tuple[float, float]] | None = None
             for nitrogen_2d in intersections:
-                if nitrogen_side * nitrogen_2d[1] <= 1e-6:
+                if nitrogen_side * nitrogen_2d[1] <= 1e-9:
                     continue
                 carbon_angle = self._planar_angle_2d((0.0, 0.0), carbon_2d, nitrogen_2d)
                 nitrogen_angle = self._planar_angle_2d(carbon_2d, nitrogen_2d, (anchor_distance, 0.0))
-                objective = 0.12 * (carbon_angle - target_carbon_angle) ** 2
-                objective += 0.12 * (nitrogen_angle - target_nitrogen_angle) ** 2
-                objective += 0.5 * self._squared_distance_2d(carbon_2d, current_carbon_2d)
-                objective += 0.5 * self._squared_distance_2d(nitrogen_2d, current_nitrogen_2d)
-                if best is None or objective < best[0]:
-                    best = (objective, carbon_2d, nitrogen_2d)
+                objective = (carbon_angle - target_carbon_angle) ** 2 + (
+                    nitrogen_angle - target_nitrogen_angle
+                ) ** 2
+                if best_for_alpha is None or objective < best_for_alpha[0]:
+                    best_for_alpha = (objective, carbon_2d, nitrogen_2d)
+            return best_for_alpha
+
+        best: tuple[float, tuple[float, float], tuple[float, float]] | None = None
+        for alpha in (alpha_low, alpha_high):
+            result = evaluate(alpha)
+            if result is not None and (best is None or result[0] < best[0]):
+                best = result
+        golden = (5.0 ** 0.5 - 1.0) / 2.0
+        low, high = alpha_low, alpha_high
+        mid_1 = high - golden * (high - low)
+        mid_2 = low + golden * (high - low)
+        value_1 = evaluate(mid_1)
+        value_2 = evaluate(mid_2)
+        for _ in range(60):
+            if best is None and value_1 is None and value_2 is None:
+                break
+            score_1 = value_1[0] if value_1 is not None else float("inf")
+            score_2 = value_2[0] if value_2 is not None else float("inf")
+            if score_1 <= score_2:
+                high = mid_2
+                mid_2 = mid_1
+                value_2 = value_1
+                mid_1 = high - golden * (high - low)
+                value_1 = evaluate(mid_1)
+            else:
+                low = mid_1
+                mid_1 = mid_2
+                value_1 = value_2
+                mid_2 = low + golden * (high - low)
+                value_2 = evaluate(mid_2)
+            for candidate_result in (value_1, value_2):
+                if candidate_result is not None and (best is None or candidate_result[0] < best[0]):
+                    best = candidate_result
 
         if best is None:
             return None
 
         _, carbon_2d, nitrogen_2d = best
-        return (
-            add(
-                aldehyde_anchor_world,
-                add(scale(axis, carbon_2d[0]), scale(lateral_axis, carbon_2d[1])),
-            ),
-            add(
-                aldehyde_anchor_world,
-                add(scale(axis, nitrogen_2d[0]), scale(lateral_axis, nitrogen_2d[1])),
-            ),
-        )
+        if diagnostics is not None:
+            diagnostics["mode"] = "best_effort"
+            diagnostics["required_span"] = required_span
+            diagnostics["anchor_distance"] = anchor_distance
+            diagnostics["carbon_angle_deg"] = self._planar_angle_2d((0.0, 0.0), carbon_2d, nitrogen_2d)
+            diagnostics["nitrogen_angle_deg"] = self._planar_angle_2d(carbon_2d, nitrogen_2d, (anchor_distance, 0.0))
+            diagnostics["carbon_angle_prior_deg"] = target_carbon_angle
+            diagnostics["nitrogen_angle_prior_deg"] = target_nitrogen_angle
+        return (to_world(carbon_2d), to_world(nitrogen_2d))
+
+    def _feasible_chain_angle_interval(
+        self,
+        carbon_length: float,
+        target_cn_distance: float,
+        nitrogen_length: float,
+        anchor_distance: float,
+    ) -> tuple[float, float] | None:
+        """Feasible interval for the A->C chain angle alpha in (0, pi): the
+        circles (C, target_cn) and (B, nitrogen_length) must intersect, i.e.
+        |C-B| in [|cn - n|, cn + n] with |C-B|^2 = l^2 + d^2 - 2 l d cos a."""
+        span_min = abs(target_cn_distance - nitrogen_length)
+        span_max = target_cn_distance + nitrogen_length
+        denominator = 2.0 * carbon_length * anchor_distance
+        if denominator < 1e-12:
+            return None
+        base = carbon_length * carbon_length + anchor_distance * anchor_distance
+        cos_low = (base - span_max * span_max) / denominator
+        cos_high = (base - span_min * span_min) / denominator
+        cos_low = max(-1.0, cos_low)
+        cos_high = min(1.0, cos_high)
+        if cos_low >= cos_high:
+            return None
+        alpha_low = acos(cos_high)
+        alpha_high = acos(cos_low)
+        alpha_low = max(alpha_low, 1e-9)
+        alpha_high = min(alpha_high, pi - 1e-9)
+        if alpha_low >= alpha_high:
+            return None
+        return (alpha_low, alpha_high)
 
     def _fit_boronate_ester_bridge_positions(
         self,
@@ -1287,9 +1411,12 @@ class ReactionRealizer:
             return ()
 
         target_cn_distance = bridge_target_distance("azine_bridge")
-        target_nn_distance = AZINE_NN_TARGET_DISTANCE
-        target_cnn_angle = 120.0
-        target_anchor_cn_angle = 120.0
+        priors = bridge_geometry_priors("azine_bridge")
+        target_nn_distance = (
+            AZINE_NN_TARGET_DISTANCE if priors is None or priors.nn_target_distance is None else priors.nn_target_distance
+        )
+        target_cnn_angle = 120.0 if priors is None else priors.nitrogen_angle_deg
+        target_anchor_cn_angle = 120.0 if priors is None else priors.carbon_angle_deg
         applied_count = 0
         notes: list[str] = []
 
@@ -1464,6 +1591,7 @@ class ReactionRealizer:
                     and atom_id != int(entry["anchor_atom_id"])
                     and atom_id != int(entry["oxygen_atom_id"])
                 )
+                endpoint_diagnostics: dict[str, object] = {}
                 fitted_world_positions = self._fit_azine_endpoint_carbon_position(
                     anchor_world=entry["anchor_world"],
                     carbon_world=entry["carbon_world"],
@@ -1492,6 +1620,7 @@ class ReactionRealizer:
                     target_cn_distance=target_cn_distance,
                     target_cnn_angle=target_cnn_angle,
                     target_anchor_cn_angle=target_anchor_cn_angle,
+                    diagnostics=endpoint_diagnostics,
                 )
                 if fitted_world_positions is None:
                     notes.append(
@@ -1500,6 +1629,15 @@ class ReactionRealizer:
                     )
                     success = False
                     break
+                if endpoint_diagnostics.get("mode") == "best_effort":
+                    anchor_n_distance = float(endpoint_diagnostics.get("anchor_n_distance", float("nan")))
+                    reachable_cn = float(endpoint_diagnostics.get("reachable_cn_distance", float("nan")))
+                    notes.append(
+                        f"Azine bridge fit is best-effort for event {entry['event'].id} on hydrazine instance "
+                        f"{instance_id}: the placed anchor-N distance {anchor_n_distance:.3f} angstrom cannot "
+                        f"close the endpoint triangle at the {target_cn_distance:.3f} angstrom C=N prior, so "
+                        f"the exported C=N bond lands at {reachable_cn:.3f} angstrom (closest feasible)."
+                    )
                 for atom_id, fitted_world in fitted_world_positions.items():
                     fitted_fragment_positions[(aldehyde_ref.monomer_instance_id, atom_id)] = fitted_world
             if not success:
@@ -1529,7 +1667,10 @@ class ReactionRealizer:
         if applied_count > 0:
             notes.insert(
                 0,
-                "The exported azine product applies a coordinated bridge fit so the retained C=N-N=C segment is shortened and bent toward a ca. 120 degree geometry instead of remaining collinear.",
+                "The exported azine product applies a coordinated bridge fit so the retained C=N-N=C segment is "
+                "shortened and bent toward the 120 degree template angle priors instead of remaining collinear; "
+                "with the nitrogens pinned on the N-N axis, the C-N-N angle is a derived consequence of the "
+                "placed anchor-N distance, not an independently fitted quantity.",
             )
         return tuple(notes)
 
@@ -1551,6 +1692,7 @@ class ReactionRealizer:
         target_cn_distance: float,
         target_cnn_angle: float,
         target_anchor_cn_angle: float,
+        diagnostics: dict[str, object] | None = None,
     ) -> dict[int, Vec3] | None:
         carbon_length = self._distance(anchor_world, carbon_world)
         if carbon_length < 1e-8:
@@ -1589,71 +1731,66 @@ class ReactionRealizer:
         )
 
         if exact_candidates:
-            for candidate_carbon_2d in exact_candidates:
-                fitted_positions = self._rotate_azine_fragment_positions(
-                    anchor_world=anchor_world,
-                    carbon_atom_id=carbon_atom_id,
-                    current_carbon_2d=current_carbon_2d,
-                    candidate_carbon_2d=candidate_carbon_2d,
-                    fragment_coordinates=fragment_coordinates,
-                    axis=axis,
-                    lateral_axis=lateral_axis,
-                    plane_normal=plane_normal,
-                )
-                objective = 0.18 * (
-                    self._planar_angle_2d(candidate_carbon_2d, nitrogen_2d, other_nitrogen_2d) - target_cnn_angle
-                ) ** 2
-                objective += 0.24 * (
-                    self._planar_angle_2d((0.0, 0.0), candidate_carbon_2d, nitrogen_2d) - target_anchor_cn_angle
-                ) ** 2
-                objective += 0.35 * self._squared_distance_2d(candidate_carbon_2d, current_carbon_2d)
-                objective += self._azine_fragment_steric_penalty(
-                    fitted_positions,
-                    moving_atom_symbols,
-                    fixed_atom_world_positions,
-                )
-                if preferred_side * candidate_carbon_2d[1] <= -1e-6:
-                    objective += 0.6
-                if best is None or objective < best[0]:
-                    best = (objective, fitted_positions)
+            candidate_carbon_2ds: list[tuple[float, float]] = list(exact_candidates)
+            mode = "exact"
         else:
-            for step in range(721):
-                theta = 2.0 * pi * step / 720.0
-                candidate_carbon_2d = (
-                    carbon_length * cos(theta),
-                    carbon_length * sin(theta),
+            # Infeasible triangle (the placed anchor-N distance cannot close
+            # with |A-C| and the C=N target): best-effort closed form — the
+            # carbon goes on the anchor<->nitrogen line at |A-C|, which
+            # minimizes the C=N distance error. A diagnostic records the
+            # deviation from the C=N prior instead of claiming an exact fit.
+            anchor_n_distance = self._distance_2d((0.0, 0.0), nitrogen_2d)
+            if anchor_n_distance < 1e-8:
+                return None
+            direction = 1.0 if anchor_n_distance >= carbon_length else -1.0
+            candidate_carbon_2ds = [
+                (
+                    direction * carbon_length * nitrogen_2d[0] / anchor_n_distance,
+                    direction * carbon_length * nitrogen_2d[1] / anchor_n_distance,
                 )
-                fitted_positions = self._rotate_azine_fragment_positions(
-                    anchor_world=anchor_world,
-                    carbon_atom_id=carbon_atom_id,
-                    current_carbon_2d=current_carbon_2d,
-                    candidate_carbon_2d=candidate_carbon_2d,
-                    fragment_coordinates=fragment_coordinates,
-                    axis=axis,
-                    lateral_axis=lateral_axis,
-                    plane_normal=plane_normal,
-                )
-                objective = 120.0 * (self._distance_2d(candidate_carbon_2d, nitrogen_2d) - target_cn_distance) ** 2
-                objective += 0.08 * (
-                    self._planar_angle_2d(candidate_carbon_2d, nitrogen_2d, other_nitrogen_2d) - target_cnn_angle
-                ) ** 2
-                objective += 0.16 * (
-                    self._planar_angle_2d((0.0, 0.0), candidate_carbon_2d, nitrogen_2d) - target_anchor_cn_angle
-                ) ** 2
-                objective += 0.2 * self._squared_distance_2d(candidate_carbon_2d, current_carbon_2d)
-                objective += self._azine_fragment_steric_penalty(
-                    fitted_positions,
-                    moving_atom_symbols,
-                    fixed_atom_world_positions,
-                )
-                if preferred_side * candidate_carbon_2d[1] <= -1e-6:
-                    objective += 0.6
-                if best is None or objective < best[0]:
-                    best = (objective, fitted_positions)
+            ]
+            mode = "best_effort"
+            if diagnostics is not None:
+                diagnostics["mode"] = mode
+                diagnostics["anchor_n_distance"] = anchor_n_distance
+                diagnostics["reachable_cn_distance"] = abs(anchor_n_distance - carbon_length * direction)
+                diagnostics["target_cn_distance"] = target_cn_distance
+
+        for candidate_carbon_2d in candidate_carbon_2ds:
+            fitted_positions = self._rotate_azine_fragment_positions(
+                anchor_world=anchor_world,
+                carbon_atom_id=carbon_atom_id,
+                current_carbon_2d=current_carbon_2d,
+                candidate_carbon_2d=candidate_carbon_2d,
+                fragment_coordinates=fragment_coordinates,
+                axis=axis,
+                lateral_axis=lateral_axis,
+                plane_normal=plane_normal,
+            )
+            objective = 0.18 * (
+                self._planar_angle_2d(candidate_carbon_2d, nitrogen_2d, other_nitrogen_2d) - target_cnn_angle
+            ) ** 2
+            objective += 0.24 * (
+                self._planar_angle_2d((0.0, 0.0), candidate_carbon_2d, nitrogen_2d) - target_anchor_cn_angle
+            ) ** 2
+            objective += 0.35 * self._squared_distance_2d(candidate_carbon_2d, current_carbon_2d)
+            objective += self._azine_fragment_steric_penalty(
+                fitted_positions,
+                moving_atom_symbols,
+                fixed_atom_world_positions,
+            )
+            if mode == "best_effort":
+                objective += 120.0 * (self._distance_2d(candidate_carbon_2d, nitrogen_2d) - target_cn_distance) ** 2
+            if preferred_side * candidate_carbon_2d[1] <= -1e-6:
+                objective += 0.6
+            if best is None or objective < best[0]:
+                best = (objective, fitted_positions)
 
         if best is None:
             return None
 
+        if diagnostics is not None:
+            diagnostics.setdefault("mode", mode)
         return best[1]
 
     def _rotate_azine_fragment_positions(
@@ -1873,6 +2010,7 @@ class ReactionRealizer:
         aldehyde_anchor_world = self._world_atom_position(candidate, aldehyde_ref, aldehyde_spec, aldehyde_anchor_atom_id)
         oxygen_world = self._world_atom_position(candidate, aldehyde_ref, aldehyde_spec, oxygen_atom_id)
         target_cn_distance = bridge_target_distance("imine_bridge")
+        fit_diagnostics: dict[str, object] = {}
         closed_positions = self._fit_imine_bridge_positions(
             candidate=candidate,
             amine_ref=amine_ref,
@@ -1887,6 +2025,7 @@ class ReactionRealizer:
             aldehyde_anchor_world=aldehyde_anchor_world,
             oxygen_world=oxygen_world,
             target_cn_distance=target_cn_distance,
+            diagnostics=fit_diagnostics,
         )
         atom_position_overrides: dict[str, dict[int, Vec3]] = {}
         if closed_positions is not None:
@@ -1908,11 +2047,35 @@ class ReactionRealizer:
                 },
             }
 
-        closure_note = (
-            "The exported product applies a local imine chain-closure fit so the retained aryl-C/C=N/aryl-N segment is bent rather than left collinear."
-            if closed_positions is not None
-            else "The imine chain-closure fit could not run for this event (degenerate bridge geometry); the exported aryl-C/C=N/aryl-N segment retains its unfitted, near-collinear geometry."
-        )
+        if closed_positions is None:
+            closure_note = "The imine chain-closure fit could not run for this event (degenerate bridge geometry); the exported aryl-C/C=N/aryl-N segment retains its unfitted, near-collinear geometry."
+        elif fit_diagnostics.get("mode") == "exact":
+            priors = bridge_geometry_priors("imine_bridge")
+            carbon_prior = 120.0 if priors is None else priors.carbon_angle_deg
+            nitrogen_prior = 120.0 if priors is None else priors.nitrogen_angle_deg
+            closure_note = (
+                "The exported product applies a deterministic imine bridge construction so the retained "
+                f"aryl-C/C=N/aryl-N segment is closed exactly at the template angle priors "
+                f"({carbon_prior:.1f}/{nitrogen_prior:.1f} degrees) with all bond lengths held exact."
+            )
+        else:
+            carbon_angle = float(fit_diagnostics.get("carbon_angle_deg", float("nan")))
+            nitrogen_angle = float(fit_diagnostics.get("nitrogen_angle_deg", float("nan")))
+            carbon_prior = float(fit_diagnostics.get("carbon_angle_prior_deg", float("nan")))
+            nitrogen_prior = float(fit_diagnostics.get("nitrogen_angle_prior_deg", float("nan")))
+            required_span = fit_diagnostics.get("required_span")
+            anchor_distance = float(fit_diagnostics.get("anchor_distance", float("nan")))
+            span_text = (
+                f"its prior-consistent span {float(required_span):.3f} angstrom"
+                if isinstance(required_span, (int, float))
+                else "a prior-consistent span (no exact zig-zag closure exists for these lengths)"
+            )
+            closure_note = (
+                "The exported product applies a best-effort imine bridge construction: the placed anchor span "
+                f"{anchor_distance:.3f} angstrom deviates from {span_text}, so all bond lengths are held exact "
+                f"but the exported aryl-C-C=N/C=N-aryl-C angles land at {carbon_angle:.1f}/{nitrogen_angle:.1f} "
+                f"degrees against the {carbon_prior:.1f}/{nitrogen_prior:.1f} degree template priors."
+            )
         return EventRealization(
             removed_atom_ids={
                 amine_ref.monomer_instance_id: tuple(sorted(hydrogen_atom_ids)),

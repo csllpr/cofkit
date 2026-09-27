@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 from cofkit.geometry import matmul, matmul_vec, normalize, rotation_from_frame_to_axes
-from cofkit.linkage_geometry import effective_motif_origin
+from cofkit.linkage_geometry import derived_origin_retraction_fraction, effective_motif_origin
 from cofkit import (
     AssignmentPlan,
     AssignmentOutcome,
@@ -779,15 +779,22 @@ class EmbeddingTests(unittest.TestCase):
         self.assertEqual(mixed_embedding.metadata["placement_mode"], "single-node-bipartite")
         node_offsets = mixed_embedding.metadata["poses"]["m1"]["radial_offsets"]
         linker_offsets = mixed_embedding.metadata["poses"]["m2"]["radial_offsets"]
-        # Each bridge gets its own template's retraction: 0.11 for the two
-        # imine motifs, 0.08 for the azine motif — before the per-template fix
-        # the mixed build retracted nothing (all offsets stayed at 4.5/2.4).
-        self.assertAlmostEqual(node_offsets[0], 4.5 - 0.11, places=6)
-        self.assertAlmostEqual(node_offsets[1], 4.5 - 0.11, places=6)
-        self.assertAlmostEqual(node_offsets[2], 4.5 - 0.08, places=6)
-        self.assertAlmostEqual(linker_offsets[0], 2.4 - 0.11, places=6)
-        self.assertAlmostEqual(linker_offsets[1], 2.4 - 0.11, places=6)
-        self.assertAlmostEqual(linker_offsets[2], 2.4 - 0.08, places=6)
+        # Each bridge gets its own template's retraction, derived from the
+        # template priors (linkage_geometry.derived_origin_retraction_fraction;
+        # the synthetic motifs have |anchor->reactive| = 1.0) — before the
+        # per-template fix the mixed build retracted nothing (all offsets
+        # stayed at 4.5/2.4), and before the single-owner rework the
+        # fractions were the hand-tuned constants 0.11/0.08.
+        imine_fraction = derived_origin_retraction_fraction("imine_bridge", 1.0)
+        azine_fraction = derived_origin_retraction_fraction("azine_bridge", 1.0)
+        self.assertGreater(imine_fraction, 0.0)
+        self.assertGreater(azine_fraction, 0.0)
+        self.assertAlmostEqual(node_offsets[0], 4.5 - imine_fraction, places=6)
+        self.assertAlmostEqual(node_offsets[1], 4.5 - imine_fraction, places=6)
+        self.assertAlmostEqual(node_offsets[2], 4.5 - azine_fraction, places=6)
+        self.assertAlmostEqual(linker_offsets[0], 2.4 - imine_fraction, places=6)
+        self.assertAlmostEqual(linker_offsets[1], 2.4 - imine_fraction, places=6)
+        self.assertAlmostEqual(linker_offsets[2], 2.4 - azine_fraction, places=6)
 
         # A pure imine build over the same geometry is bit-identical to the
         # shared-template behavior: its offsets equal a direct shared-template

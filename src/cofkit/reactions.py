@@ -19,6 +19,35 @@ class BinaryBridgePairOrder:
     ordered_indices: tuple[int, int]
 
 
+# Carried-over heuristic pending calibration: the azine N-N target distance
+# was introduced uncited in the original coordinated azine fit (formerly
+# AZINE_NN_TARGET_DISTANCE in reaction_realization.py). 1.408 angstrom sits
+# between the hydrazine N-N single bond (~1.45 angstrom) and the contracted
+# N=N...N=N segment of a conjugated azine. The value is kept unchanged; only
+# its ownership moves onto the template profile.
+AZINE_NN_TARGET_DISTANCE = 1.408
+
+
+@dataclass(frozen=True)
+class BridgeGeometryPriors:
+    """Idealized sp2 geometry priors for a binary-bridge linkage.
+
+    The angles are idealized 120-degree sp2 priors (consistent with the
+    DREIDING equilibrium angle), not measured values; they drive both the
+    realization-time bridge constructor and the embedding-time motif-origin
+    retraction, so the two compensators share a single owner.
+    """
+
+    # Interior angle at the aldehyde-derived carbon: aryl-C(anchor)-C=N.
+    carbon_angle_deg: float
+    # Interior angle at the reactive nitrogen: C=N-aryl-C (imine) or
+    # C=N-N (azine, measured against the other azine nitrogen).
+    nitrogen_angle_deg: float
+    # Azine only: the N-N target distance the coordinated fit closes the
+    # shared hydrazine segment to (see AZINE_NN_TARGET_DISTANCE).
+    nn_target_distance: float | None = None
+
+
 @dataclass(frozen=True)
 class ReactionLinkageProfile:
     template_id: str
@@ -33,6 +62,7 @@ class ReactionLinkageProfile:
     ring_participant_motif_kind: str | None = None
     ring_event_coordination: int | None = None
     require_distinct_participant_copies: bool = False
+    bridge_geometry_priors: BridgeGeometryPriors | None = None
 
     @property
     def supports_binary_bridge_pair_generation(self) -> bool:
@@ -167,6 +197,15 @@ def bridge_target_distance(
     if isinstance(template, ReactionTemplate) and template.topology_role == "ring":
         return 1.45
     return default_bridge_distance
+
+
+def bridge_geometry_priors(
+    template: ReactionTemplate | str,
+    *,
+    profiles: dict[str, ReactionLinkageProfile] | None = None,
+) -> BridgeGeometryPriors | None:
+    profile = linkage_profile(template, profiles=profiles)
+    return None if profile is None else profile.bridge_geometry_priors
 
 
 def supports_binary_bridge_pair_generation(
@@ -342,6 +381,10 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
             event_realizer="imine_bridge",
             geometry_profile_id="imine_bridge",
             validation_profile_id="imine_bridge",
+            bridge_geometry_priors=BridgeGeometryPriors(
+                carbon_angle_deg=120.0,
+                nitrogen_angle_deg=120.0,
+            ),
         ),
         ReactionLinkageProfile(
             template_id="hydrazone_bridge",
@@ -364,6 +407,11 @@ def _builtin_linkage_profiles() -> tuple[ReactionLinkageProfile, ...]:
             event_realizer="azine_bridge",
             geometry_profile_id="azine_bridge",
             validation_profile_id="azine_bridge",
+            bridge_geometry_priors=BridgeGeometryPriors(
+                carbon_angle_deg=120.0,
+                nitrogen_angle_deg=120.0,
+                nn_target_distance=AZINE_NN_TARGET_DISTANCE,
+            ),
         ),
         ReactionLinkageProfile(
             template_id="boronate_ester_bridge",

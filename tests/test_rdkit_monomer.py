@@ -673,12 +673,16 @@ class RDKitMonomerTests(unittest.TestCase):
         nitrogen_angle = self._angle(carbon_world, nitrogen_world, nitrogen_anchor_world)
         anchor_distance = realizer._distance(carbon_anchor_world, nitrogen_anchor_world)
 
-        self.assertGreater(anchor_distance, 3.7)
+        # Post-rework the derived retraction places the anchor span at the
+        # prior-consistent required_bridge_span (~3.70 angstrom here) and the
+        # constructor closes at/balanced-around the 120-degree priors,
+        # replacing the old hand-tuned span (>3.7) and ~131-degree exports.
+        self.assertGreater(anchor_distance, 3.5)
         self.assertLess(anchor_distance, 3.9)
-        self.assertGreater(carbon_angle, 120.0)
-        self.assertLess(carbon_angle, 135.0)
-        self.assertGreater(nitrogen_angle, 120.0)
-        self.assertLess(nitrogen_angle, 135.0)
+        self.assertGreater(carbon_angle, 112.0)
+        self.assertLess(carbon_angle, 128.0)
+        self.assertGreater(nitrogen_angle, 112.0)
+        self.assertLess(nitrogen_angle, 128.0)
 
 
 if __name__ == "__main__":

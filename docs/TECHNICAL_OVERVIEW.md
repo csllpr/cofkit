@@ -75,9 +75,10 @@ For the current single-node topology families, `cofkit` expands supported CGD ne
 
 The optimizer is intentionally modest. Bridge-forming candidates use lateral cell scaling, monomer translation updates, and lightweight orientation cleanup. Ring-forming candidates use a separate virtual-node geometry profile and shared-precursor translation refinement, scored and validated against ring radius, 120-degree incidence, and planarity. Stacking scoring remains out of scope; named bilayer registries duplicate the validated layer graph and preserve ring-center offsets during atomistic realization.
 
-For the current imine realization path, two geometry details are now important enough to treat as part of the documented behavior:
+For the current imine realization path, three geometry details are now important enough to treat as part of the documented behavior:
 
-- template-specific imine motif-origin correction is applied in the supported `3D` builder paths as well as the earlier `2D` paths, so high-connectivity `dia`-style builds do not silently bypass the bent-linkage span correction
+- template-specific imine motif-origin correction is applied in the supported `3D` builder paths as well as the earlier `2D` paths, so high-connectivity `dia`-style builds do not silently bypass the bent-linkage span correction; the retraction fraction is derived from the template profile's geometry priors, not a hand-tuned constant
+- the exported aryl-C/C=N/aryl-N segment is built by a deterministic closed-form constructor at the template profile's 120-degree angle priors (exact closure when the placed anchor span matches the prior-consistent span, best-effort with all bond lengths exact and a deviation note otherwise), replacing the former angular scan whose exported angles stayed near 131 degrees regardless of target
 - periodic-image bridge events store realized atom overrides back in the base monomer-local frame before CIF export, which avoids pathological retained-hydrogen directions on image-crossing imine events
 
 The CIF exporter is deliberately honest as well: if a `MonomerSpec` carries atom coordinates, it writes atomistic sites; if not, it falls back to a legal coarse CIF built from monomer centers and motif origins so the current assembly can still be inspected.
