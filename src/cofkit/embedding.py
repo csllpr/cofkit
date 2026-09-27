@@ -25,7 +25,7 @@ from .linkage_geometry import effective_motif_origin
 from .model import AssemblyState, MonomerSpec, Pose, ReactionTemplate
 from .model import ReactionEvent
 from .planner import TopologyHint
-from .reactions import bridge_target_distance
+from .reactions import DEFAULT_BRIDGE_TARGET_DISTANCE, bridge_target_distance
 from .search import AssignmentOutcome
 from .single_node_topologies import resolve_single_node_topology_layout
 from .single_node_topologies_3d import resolve_three_d_single_node_topology_layout
@@ -41,7 +41,7 @@ class EmbeddingResult:
 class EmbeddingConfig:
     default_layer_spacing: float = DEFAULT_MONOLAYER_C_ANGSTROM
     default_lateral_span: float = DEFAULT_LATERAL_SPAN_ANGSTROM
-    bridge_target_distance: float = 1.4
+    bridge_target_distance: float = DEFAULT_BRIDGE_TARGET_DISTANCE
 
 
 def _resolve_supported_single_node_layout(topology_id: str):

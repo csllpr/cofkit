@@ -178,3 +178,20 @@ BDBA×HHTP ring sites, no new clashes or validation regressions, cells
 +0.012%, LAMMPS fixed-cell converges ~89 kcal/mol closer to the minimum.
 W5.1 grep gate extended to the retired scan constants.
 
+**2026-09-28 — Tier 3 owner decisions implemented.** D1 (W3.1/W1.4):
+radii table consolidated to one cited Cordero-2008 table owned by
+`chem/detector.py` (values verified against the paper); tolerance models
+ruled deliberately context-specific (build ×1.3 / fallback 0.7 vs
+decompose +0.30/+0.45, 0.35 floor, B–O 2.05 ceiling, fallback 0.75) —
+now named constants with the rationale recorded. D2 (W3.2/W1.5):
+`reactions.DEFAULT_BRIDGE_TARGET_DISTANCE = 1.5` owns the fallback;
+`EmbeddingConfig.bridge_target_distance` moves 1.4 → 1.5 (real change,
+unprofiled-template path only). D3 (W3.3): Widom temperature default
+300.0 → 298.0 K, unified with the other calculate defaults; wiring test
+re-pinned; no doc references to 300 K found. D4 (W3.4): soft_relax radii
+declared intentionally independent of `vdw.py` (module docstring,
+documentation-only). D6: dead `LinkageGeometryModel` deleted from
+`chem/linkage.py` (live `orient_frames_for_bridge` kept). D5 (W4.4)
+explicitly deferred by the owner — revisit next session. Remaining open:
+W4.1–W4.3 (Tier 4 documentation pass) and D5.
+

@@ -186,18 +186,18 @@ def test_hybrid_mdmc_defaults_match_settings():
     _assert_eqeq_defaults(args)
 
 
-def test_widom_and_adsorption_temperature_defaults_stay_per_command():
-    # The 300 K vs 298 K split is intentional (W3.3): Widom keeps 300 K while
-    # the adsorption workflows keep 298 K; each follows its own settings owner.
+def test_widom_and_adsorption_temperature_defaults_unify_at_298():
+    # Owner decision 2026-09-28 (MAGIC_NUMBER_FIX_PLAN.md W3.3): the former
+    # intentional 300 K Widom / 298 K adsorption split is retired; all
+    # calculate workflows default to 298 K, each via its own settings owner.
     widom_args = _parse("calculate", "graspa-widom", "in.cif")
     isotherm_args = _parse("calculate", "graspa-isotherm", "in.cif", "--component", "CO2_DREIDING")
     mixture_args = _parse("calculate", "graspa-mixture", "in.cif")
     hybrid_args = _parse("calculate", "hybrid-mdmc", "in.cif")
-    assert widom_args.temperature == GraspaWidomSettings().temperature
-    assert isotherm_args.temperature == GraspaIsothermSettings().temperature
-    assert mixture_args.temperature == GraspaMixtureSettings.__dataclass_fields__["temperature"].default
-    assert hybrid_args.temperature == HybridMdMcSettings().temperature
-    assert widom_args.temperature != isotherm_args.temperature
+    assert widom_args.temperature == GraspaWidomSettings().temperature == 298.0
+    assert isotherm_args.temperature == GraspaIsothermSettings().temperature == 298.0
+    assert mixture_args.temperature == GraspaMixtureSettings.__dataclass_fields__["temperature"].default == 298.0
+    assert hybrid_args.temperature == HybridMdMcSettings().temperature == 298.0
 
 
 def test_graspa_settings_classes_reference_shared_constants():

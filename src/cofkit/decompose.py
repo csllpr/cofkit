@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from .bond_types import cif_type_to_bond_order, is_aromatic_bond_order
+from .chem.detector import COVALENT_RADII_SINGLE_BOND_ANGSTROM
 from .chem.rdkit import detect_rdkit_motif_count
 from .cofid import (
     COFidMonomer,
@@ -3484,17 +3485,39 @@ def _norm(vector: Vec3) -> float:
     return sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
 
 
+# Heuristic — pending calibration: decompose-side bond-detection tolerance
+# model. Additive slack on the covalent-radius sum (larger when hydrogen is
+# involved, since X-H bonds sit shorter relative to the radius sum), a hard
+# short-distance floor, and a special case for the long B-O single bond.
+# Deliberately generous: decompose may face unknown input structures, not only
+# COFKit-built files, so missing a real bond is worse than admitting a
+# marginal one. The split from the build side's multiplicative model
+# (chem.detector.BUILD_SIDE_BOND_TOLERANCE_FACTOR) is an explicit owner
+# decision (2026-09-28, MAGIC_NUMBER_FIX_PLAN.md W3.1).
+DECOMPOSE_BOND_MIN_DISTANCE_ANGSTROM = 0.35
+DECOMPOSE_BOND_TOLERANCE_HYDROGEN_ANGSTROM = 0.30
+DECOMPOSE_BOND_TOLERANCE_HEAVY_ANGSTROM = 0.45
+DECOMPOSE_BO_BOND_MAX_DISTANCE_ANGSTROM = 2.05
+
+# Heuristic — pending calibration: decompose-side fallback covalent radius (A)
+# for elements missing from the shared Cordero table. More generous than the
+# build-side fallback (chem.detector.BUILD_SIDE_COVALENT_RADIUS_FALLBACK_ANGSTROM)
+# under the same W3.1 owner decision (2026-09-28): unknown elements in unknown
+# structures get the benefit of the doubt.
+DECOMPOSE_COVALENT_RADIUS_FALLBACK_ANGSTROM = 0.75
+
+
 def _is_plausible_bond_distance(symbol_1: str, symbol_2: str, distance: float) -> bool:
-    if distance < 0.35:
+    if distance < DECOMPOSE_BOND_MIN_DISTANCE_ANGSTROM:
         return False
     z1 = _atomic_number(symbol_1)
     z2 = _atomic_number(symbol_2)
     if z1 == 1 and z2 == 1:
         return False
     if {z1, z2} == {5, 8}:
-        return distance <= 2.05
+        return distance <= DECOMPOSE_BO_BOND_MAX_DISTANCE_ANGSTROM
     radius_sum = _covalent_radius(z1) + _covalent_radius(z2)
-    tolerance = 0.30 if 1 in {z1, z2} else 0.45
+    tolerance = DECOMPOSE_BOND_TOLERANCE_HYDROGEN_ANGSTROM if 1 in {z1, z2} else DECOMPOSE_BOND_TOLERANCE_HEAVY_ANGSTROM
     return distance <= radius_sum + tolerance
 
 
@@ -3510,18 +3533,7 @@ def _covalent_radius(atomic_number: int) -> float:
     radius = float(Chem.GetPeriodicTable().GetRcovalent(atomic_number))
     if radius > 0:
         return radius
-    fallback = {
-        1: 0.31,
-        5: 0.84,
-        6: 0.76,
-        7: 0.71,
-        8: 0.66,
-        9: 0.57,
-        15: 1.07,
-        16: 1.05,
-        17: 1.02,
-    }
-    return fallback.get(atomic_number, 0.75)
+    return COVALENT_RADII_SINGLE_BOND_ANGSTROM.get(atomic_number, DECOMPOSE_COVALENT_RADIUS_FALLBACK_ANGSTROM)
 
 
 def _parse_cif_float(value: object) -> float:

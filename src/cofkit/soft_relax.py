@@ -22,6 +22,14 @@ It is NOT a force field and makes no claim of physical relaxation; the output
 is a clash-relieved seed structure for downstream validation bucketing or a
 real optimization backend.
 
+The repulsion radii are deliberately independent of the clash-assessment radii
+in ``cofkit.vdw`` (Bondi van der Waals radii). This pass mirrors the LAMMPS
+``pair_style soft`` pre-minimization staging it precedes — it is a repair
+descent, not a clash assessment — so it uses the DREIDING-table radii with its
+own floors (``hydrogen_radius`` 1.2 A, ``one_four_clash_floor`` 1.2 A) tuned
+for that staging. Assessment radii remain a separate, intentionally
+independent channel (owner decision 2026-09-28, magic-number plan W3.4).
+
 Limitations of this prototype:
 
 - CIF writing rewrites the ``_atom_site_fract_*`` columns of the atom-site

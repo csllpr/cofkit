@@ -678,7 +678,7 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("Forcefield                    COFKit", simulation_input)
             self.assertIn("Framework 0", simulation_input)
             self.assertIn("UnitCells 1 2 3", simulation_input)
-            self.assertIn("ExternalTemperature 300", simulation_input)
+            self.assertIn("ExternalTemperature 298", simulation_input)
             self.assertIn("MoleculeDefinition        COFKit", simulation_input)
             self.assertNotIn("UseGPUReduction", simulation_input)
             self.assertNotIn("UnitCells 0", simulation_input)

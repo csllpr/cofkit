@@ -1,5 +1,5 @@
 from .detector import MotifDetector
-from .linkage import LinkageGeometryModel, orient_frames_for_bridge
+from .linkage import orient_frames_for_bridge
 from .molecule import Molecule
 from .motif_registry import (
     MotifKindDefinition,
@@ -13,7 +13,6 @@ __all__ = [
     "AromaticityRestoreError",
     "MotifDetector",
     "Molecule",
-    "LinkageGeometryModel",
     "MotifKindDefinition",
     "MotifKindRegistry",
     "RDKitMotifBuilder",

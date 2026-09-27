@@ -30,6 +30,14 @@ class BinaryBridgePairOrder:
 AZINE_NN_TARGET_DISTANCE = 1.408
 
 
+# Heuristic — pending calibration: generic single-bond-like fallback bridge
+# target distance (angstrom) for templates without their own linkage profile.
+# All built-in profiles carry explicit targets, so this only fires for
+# unprofiled templates. Single owner for the default bridge distance
+# (magic-number plan W1.5/W3.2, owner decision 2026-09-28: unify at 1.5).
+DEFAULT_BRIDGE_TARGET_DISTANCE = 1.5
+
+
 @dataclass(frozen=True)
 class BridgeGeometryPriors:
     """Idealized geometry priors for a binary-bridge linkage.
@@ -131,7 +139,7 @@ class ReactionLibrary:
     def linkage_profile(self, template: ReactionTemplate | str) -> ReactionLinkageProfile | None:
         return linkage_profile(template, profiles=self.linkage_profiles)
 
-    def bridge_target_distance(self, template: ReactionTemplate | str, *, default_bridge_distance: float = 1.5) -> float:
+    def bridge_target_distance(self, template: ReactionTemplate | str, *, default_bridge_distance: float = DEFAULT_BRIDGE_TARGET_DISTANCE) -> float:
         return bridge_target_distance(
             template,
             profiles=self.linkage_profiles,
@@ -202,7 +210,7 @@ def bridge_target_distance(
     template: ReactionTemplate | str,
     *,
     profiles: dict[str, ReactionLinkageProfile] | None = None,
-    default_bridge_distance: float = 1.5,
+    default_bridge_distance: float = DEFAULT_BRIDGE_TARGET_DISTANCE,
 ) -> float:
     profile = linkage_profile(template, profiles=profiles)
     if profile is not None:

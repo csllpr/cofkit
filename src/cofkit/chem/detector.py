@@ -12,6 +12,59 @@ from .molecule import Molecule
 MotifDetectionHandler = Callable[[Molecule, str, MotifKindDefinition], MonomerSpec]
 
 
+# Cited: Cordero et al., "Covalent radii revisited", Dalton Trans., 2008,
+# 2832-2838 (DOI 10.1039/B801115J), single-bond covalent radii in angstrom
+# (C is the sp3 value). Single shared owner for both bond-detection call sites
+# (build-side motif detection here, decompose-side in cofkit.decompose) — one
+# table, one value per element (magic-number plan W1.4/W3.1).
+COVALENT_RADII_SINGLE_BOND_ANGSTROM: dict[int, float] = {
+    1: 0.31,  # H
+    5: 0.84,  # B
+    6: 0.76,  # C
+    7: 0.71,  # N
+    8: 0.66,  # O
+    9: 0.57,  # F
+    15: 1.07,  # P
+    16: 1.05,  # S
+    17: 1.02,  # Cl
+}
+
+# Fixed atomic-number facts used to derive the symbol-keyed view of the shared
+# table above; not tunables.
+_SYMBOL_TO_ATOMIC_NUMBER = {
+    "H": 1,
+    "B": 5,
+    "C": 6,
+    "N": 7,
+    "O": 8,
+    "F": 9,
+    "P": 15,
+    "S": 16,
+    "Cl": 17,
+}
+COVALENT_RADII_BY_SYMBOL: dict[str, float] = {
+    symbol: COVALENT_RADII_SINGLE_BOND_ANGSTROM[z]
+    for symbol, z in _SYMBOL_TO_ATOMIC_NUMBER.items()
+}
+
+# Heuristic — pending calibration: build-side fallback covalent radius (A) for
+# elements missing from COVALENT_RADII_SINGLE_BOND_ANGSTROM. Tighter than the
+# decompose-side fallback (cofkit.decompose.DECOMPOSE_COVALENT_RADIUS_FALLBACK_ANGSTROM)
+# because the build side detects motifs on monomers with known chemistry.
+# Per-context fallback values are an explicit owner decision (2026-09-28,
+# MAGIC_NUMBER_FIX_PLAN.md W3.1): decompose may face unknown input structures,
+# not only COFKit-built files, so the two sides intentionally differ.
+BUILD_SIDE_COVALENT_RADIUS_FALLBACK_ANGSTROM = 0.7
+
+# Heuristic — pending calibration: build-side bond-detection tolerance, a
+# multiplicative slack on the covalent-radius sum. Build-side monomers have
+# known chemistry, so one uniform factor suffices. The split from decompose's
+# additive tolerance model is an explicit owner decision (2026-09-28,
+# MAGIC_NUMBER_FIX_PLAN.md W3.1): decompose keeps its own, more generous
+# additive model because it faces unknown input structures.
+BUILD_SIDE_BOND_TOLERANCE_FACTOR = 1.3
+
+
 class MotifDetector:
     """Discovers reactive motifs on a MonomerSpec based on geometry heuristics.
     
@@ -59,22 +112,20 @@ class MotifDetector:
     @staticmethod
     def _find_neighbors(atom_idx: int, molecule: Molecule) -> list[int]:
         # Simple distance-based neighbor detection (very basic)
-        cov_radii = {"H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "B": 0.84}
         neighbors = []
-        
+
         p1 = molecule.positions[atom_idx]
-        r1 = cov_radii.get(molecule.symbols[atom_idx], 0.7)
-        
+        r1 = COVALENT_RADII_BY_SYMBOL.get(molecule.symbols[atom_idx], BUILD_SIDE_COVALENT_RADIUS_FALLBACK_ANGSTROM)
+
         for j, p2 in enumerate(molecule.positions):
             if j == atom_idx:
                 continue
-            r2 = cov_radii.get(molecule.symbols[j], 0.7)
+            r2 = COVALENT_RADII_BY_SYMBOL.get(molecule.symbols[j], BUILD_SIDE_COVALENT_RADIUS_FALLBACK_ANGSTROM)
             dist = math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2 + (p1[2]-p2[2])**2)
-            
-            # Allow 30% tolerance for bonds
-            if dist < (r1 + r2) * 1.3:
+
+            if dist < (r1 + r2) * BUILD_SIDE_BOND_TOLERANCE_FACTOR:
                 neighbors.append(j)
-                
+
         return neighbors
 
 

@@ -229,7 +229,10 @@ class GraspaWidomSettings:
     input_file_type: str = "cif"
     framework_name: str = "framework"
     charge_method: str = "Ewald"
-    temperature: float = 300.0
+    # Owner decision 2026-09-28 (MAGIC_NUMBER_FIX_PLAN.md W3.3): default
+    # temperature unified at 298 K across all calculate workflows; the former
+    # 300 K Widom / 298 K adsorption split is retired.
+    temperature: float = 298.0
     pressure: float = 100_000.0
     overlap_criteria: float = DEFAULT_OVERLAP_CRITERIA
     cutoff_vdw: float = DEFAULT_CUTOFF_ANGSTROM

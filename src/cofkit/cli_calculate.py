@@ -766,7 +766,7 @@ def _add_graspa_widom_parser(subparsers) -> None:
         "--temperature",
         type=float,
         default=GraspaWidomSettings().temperature,
-        help="gRASPA Widom temperature in K. Default: 300.0.",
+        help="gRASPA Widom temperature in K. Default: 298.0.",
     )
     parser.add_argument(
         "--pressure",
