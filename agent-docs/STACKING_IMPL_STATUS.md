@@ -245,6 +245,23 @@ both cell settings (60° in the same batch test, 120° in
 `tests/test_ring_forming.py`'s triazine AB test). No source behavior
 changed, so no CHANGELOG/docs updates were required.
 
+**Fifth post-audit update — 2026-09-28 (unified clearance):** the registry
+clearance defaults 3.4/3.5/3.6 (whose differentiation never had a documented
+rationale — verified against code, git history, and docs) are replaced by
+one unified heuristic constant `stacking.DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
+= 3.5` per owner decision ("if there's a heuristic magic number, don't make
+3 out of them"). This supersedes the plan's W8 idea of differentiating
+clearances (chemistry-aware or vdW-based) until a real reference exists;
+the values remain global and chemistry-unaware, now stated as such. AA
+bilayer c +0.2 Å, slipped −0.2 Å, AB unchanged; formula-bound W7 tests
+(`c == 2*c2c`, contacts ≥ 2.5 Å) pass unchanged, and a fresh TAPB/TFB
+AA/AB/slipped smoke build is clash-free (`out/_unified_clearance_smoke/`,
+gitignored). Side observation: flat-layer stacks (boroxine, span ≈ 0) land
+their interlayer contact exactly on the 3.5 Å vdw search-radius boundary
+and may render an honest `>cutoff` lower bound instead of a measured
+contact — the search radius, not the clearance, is the lever if a measured
+value is wanted (recorded in tests/test_ring_forming.py).
+
 **Second post-audit update — 2026-09-25 (later same day):** audit #13 **landed**
 (owner chose orthogonalize-on-stacking): `_apply_layer_registry` builds the
 stacked c along the layer normal with length `2·c2c`, so the W4.4 warn-only

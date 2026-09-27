@@ -28,7 +28,13 @@ from cofkit.model import (
     candidate_ranking_key,
     order_candidates,
 )
-from cofkit.stacking import LayerRegistry, _apply_layer_registry, enumerate_candidate_stackings
+from cofkit.stacking import (
+    DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM,
+    LayerRegistry,
+    StackingExplorer,
+    _apply_layer_registry,
+    enumerate_candidate_stackings,
+)
 from cofkit.vdw import assess_pair, min_periodic_pair_contact, vdw_radius
 
 _CELL = ((15.0, 0.0, 0.0), (0.0, 15.0, 0.0), (0.0, 0.0, 8.0))
@@ -236,6 +242,23 @@ def test_stacking_self_check_flags_interpenetrated_bilayer():
     assert "stacking clash" in stderr.getvalue()
 
 
+def test_builtin_registries_share_the_unified_default_clearance():
+    """Owner decision 2026-09-28: all built-in registries (AA/AB/slipped, both
+    cell kinds) share the single DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
+    heuristic — the previous undocumented 3.4/3.5/3.6 per-registry split is
+    gone, and the dataclass default is the same constant."""
+    assert LayerRegistry(id="AA").interlayer_distance == DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
+    for explorer in (
+        StackingExplorer(),
+        StackingExplorer(cell_kind="hexagonal", cell_setting="60deg"),
+        StackingExplorer(cell_kind="hexagonal", cell_setting="120deg"),
+    ):
+        registries = explorer.enumerate_registries()
+        assert {registry.id for registry in registries} == {"AA", "AB", "slipped"}
+        for registry in registries:
+            assert registry.interlayer_distance == DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
+
+
 def test_stacking_self_check_clean_bilayer_records_atomistic_contact():
     """A well-separated AA bilayer records the atomistic contact metadata
     without a clash flag (public enumeration path)."""
@@ -246,7 +269,7 @@ def test_stacking_self_check_clean_bilayer_records_atomistic_contact():
 
     meta = stacked.metadata["stacking"]
     assert "stacking_clash" not in stacked.flags
-    assert meta["min_interlayer_contact"] == pytest.approx(3.4)
+    assert meta["min_interlayer_contact"] == pytest.approx(DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM)
     assert meta["min_interlayer_contact_mode"] == "precursor_coordinates"
     assert meta["min_interlayer_contact_involves_hydrogen"] is False
     assert meta["min_interlayer_contact_cutoff"] == pytest.approx(3.5)
@@ -581,11 +604,11 @@ def test_stacked_export_renders_stacking_geometry_comment_from_real_metadata():
     meta = stacked.metadata["stacking"]
     assert "registry=AA" in comment
     assert "shift_frac=0,0" in comment
-    assert "interlayer_clearance=3.4" in comment
+    assert f"interlayer_clearance={DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM:.3g}" in comment
     assert f"layer_z_span={meta['layer_z_span']:.4g}" in comment
     assert f"c2c={meta['center_to_center_distance']:.4g}" in comment
     assert "c=2*c2c" in comment
-    assert "min_interlayer_contact=3.4" in comment
+    assert f"min_interlayer_contact={DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM:.3g}" in comment
     assert "atomistic contact, mode=precursor_coordinates" in comment
     assert "atoms=" in comment
     assert "image=" in comment

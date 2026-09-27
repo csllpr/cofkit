@@ -121,8 +121,9 @@ ReactionEventRealizationHandler = Callable[
 
 # Azine bridges retain an N-N single bond in the exported C=N-N=C segment;
 # the target distance lives on the azine linkage profile
-# (reactions.AZINE_NN_TARGET_DISTANCE, a carried-over heuristic pending
-# calibration, re-exported here for existing internal consumers).
+# (reactions.AZINE_NN_TARGET_DISTANCE, a heuristic with calibration deferred
+# per owner decision 2026-09-28, re-exported here for existing internal
+# consumers).
 
 
 class ReactionEventRealizationRegistry:

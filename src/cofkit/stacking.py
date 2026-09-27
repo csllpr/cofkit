@@ -27,6 +27,17 @@ from .vdw import DEFAULT_NONBONDED_SEARCH_RADIUS, min_periodic_pair_contact
 
 _STACKING_LAYER_SUFFIXES: tuple[str, str] = ("L0", "L1")
 
+# Heuristic — pending calibration: default nuclear-plane *clearance* (the
+# surface-to-surface gap between the extreme nuclear planes of adjacent
+# layers), NOT a mean-plane interlayer spacing; the shipped c axis derives as
+# c2c = clearance + layer_z_span (see the LayerRegistry docstring).
+# π-stacking-like gap, global for all 2D COFs (no chemistry input reaches the
+# stacking stage). Unified 2026-09-28 per owner decision from the undocumented
+# 3.4/3.5/3.6 Å per-registry triple: no rationale ever existed for
+# differentiating by registry, and a single honest number is preferable to
+# three pseudo-precise ones.
+DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM = 3.5
+
 # Base-cell c tilts at or below this angle (degrees) are numerical noise: the
 # stacked cell is still reported as built along the base c direction.
 _C_TILT_PROVENANCE_TOLERANCE_DEG = 1e-4
@@ -57,13 +68,18 @@ class LayerRegistry:
     stacking metadata).  The quantity to compare to experimental interlayer
     spacings is ``c / 2``.
 
-    Default clearances (3.4 / 3.5 / 3.6 Å) are heuristic nuclear-plane
-    clearances, registry-dependent; they are not fitted to specific chemistries.
+    The default clearance is the single heuristic
+    ``DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM`` (3.5 Å), shared by every
+    built-in registry; it is not fitted to specific chemistries.  It was
+    unified 2026-09-28 per owner decision from the previous undocumented
+    3.4 / 3.5 / 3.6 Å per-registry split — no rationale ever existed for
+    differentiating by registry, so one honest number replaces the three
+    pseudo-precise ones.
     """
 
     id: str
     lateral_shift: tuple[float, float] = (0.0, 0.0)
-    interlayer_distance: float = 3.4  # nuclear-plane clearance (see docstring)
+    interlayer_distance: float = DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM  # nuclear-plane clearance (see docstring)
 
 
 class StackingExplorer:
@@ -97,14 +113,14 @@ class StackingExplorer:
                 # 60deg setting (default) or unknown
                 ab_shift = (1.0 / 3.0, 1.0 / 3.0)
             return (
-                LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=3.4),
-                LayerRegistry(id="AB", lateral_shift=ab_shift, interlayer_distance=3.5),
-                LayerRegistry(id="slipped", lateral_shift=(0.5, 0.0), interlayer_distance=3.6),
+                LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM),
+                LayerRegistry(id="AB", lateral_shift=ab_shift, interlayer_distance=DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM),
+                LayerRegistry(id="slipped", lateral_shift=(0.5, 0.0), interlayer_distance=DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM),
             )
         return (
-            LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=3.4),
-            LayerRegistry(id="AB", lateral_shift=(0.5, 0.5), interlayer_distance=3.5),  # hollow-site registry
-            LayerRegistry(id="slipped", lateral_shift=(0.5, 0.0), interlayer_distance=3.6),
+            LayerRegistry(id="AA", lateral_shift=(0.0, 0.0), interlayer_distance=DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM),
+            LayerRegistry(id="AB", lateral_shift=(0.5, 0.5), interlayer_distance=DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM),  # hollow-site registry
+            LayerRegistry(id="slipped", lateral_shift=(0.5, 0.0), interlayer_distance=DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM),
         )
 
     def resolve_registries(self, registry_ids: tuple[str, ...] = ()) -> tuple[LayerRegistry, ...]:
@@ -910,6 +926,7 @@ def _string_mapping(value: object) -> dict[str, str]:
 
 
 __all__ = [
+    "DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM",
     "LayerRegistry",
     "StackingExplorer",
     "enumerate_candidate_stackings",

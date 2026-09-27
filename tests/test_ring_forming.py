@@ -22,6 +22,7 @@ from cofkit.geometry import Frame
 from cofkit.model import MonomerSpec, ReactiveMotif
 from cofkit.reaction_realization import ReactionRealizer
 from cofkit.ring_geometry import validate_ring_geometry
+from cofkit.stacking import DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
 
 
 class RingFormingWorkflowTests(unittest.TestCase):
@@ -235,14 +236,25 @@ class RingFormingWorkflowTests(unittest.TestCase):
         stacking_meta = stacked.metadata["stacking"]
         self.assertIn("registry=AA", comment)
         self.assertIn("shift_frac=0,0", comment)
-        self.assertIn("interlayer_clearance=3.4", comment)
+        self.assertIn(f"interlayer_clearance={DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM:.3g}", comment)
         self.assertIn(f"layer_z_span={stacking_meta['layer_z_span']:.4g}", comment)
         self.assertIn(f"c2c={stacking_meta['center_to_center_distance']:.4g}", comment)
         self.assertIn("c=2*c2c", comment)
-        self.assertIn("min_interlayer_contact=", comment)
+        # The boroxine monolayer is near-flat, so the interlayer contact equals
+        # the clearance (3.5 Å) and sits exactly on the 3.5 Å search-cutoff
+        # boundary; float noise decides whether it renders as the measured
+        # contact or the honest ">cutoff" lower bound. Accept either.
         self.assertIn("atomistic contact, mode=atomistic_product", comment)
-        self.assertIn("atoms=", comment)
-        self.assertIn("involves_hydrogen=", comment)
+        if stacking_meta.get("min_interlayer_contact") is None:
+            self.assertIn(
+                f"min_interlayer_contact>{stacking_meta['min_interlayer_contact_cutoff']:.3g}",
+                comment,
+            )
+            self.assertIn("none below cutoff", comment)
+        else:
+            self.assertIn(f"min_interlayer_contact={stacking_meta['min_interlayer_contact']:.3g}", comment)
+            self.assertIn("atoms=", comment)
+            self.assertIn("involves_hydrogen=", comment)
         self.assertIn("# c-axis-semantics: periodic_bilayer", stacked_export.text)
 
         self.assertNotIn("# stacking-geometry:", monolayer_export.text)

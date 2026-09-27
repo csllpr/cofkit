@@ -21,12 +21,13 @@ class BinaryBridgePairOrder:
     ordered_indices: tuple[int, int]
 
 
-# Carried-over heuristic pending calibration: the azine N-N target distance
-# was introduced uncited in the original coordinated azine fit (formerly
-# AZINE_NN_TARGET_DISTANCE in reaction_realization.py). 1.408 angstrom sits
-# between the hydrazine N-N single bond (~1.45 angstrom) and the contracted
-# N=N...N=N segment of a conjugated azine. The value is kept unchanged; only
-# its ownership moves onto the template profile.
+# Heuristic — calibration deferred (owner decision 2026-09-28): the azine N-N
+# target distance is a textbook N-N single-bond-adjacent distance for azine
+# linkages, within the acceptable range (~1.40-1.45 angstrom) for such bonds —
+# it sits between the hydrazine N-N single bond (~1.45 angstrom) and the
+# contracted N=N...N=N segment of a conjugated azine. Not calibrated against a
+# reference dataset; the value is accepted as a heuristic (formerly labeled
+# "pending calibration"; calibration explicitly deferred by the owner).
 AZINE_NN_TARGET_DISTANCE = 1.408
 
 

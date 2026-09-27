@@ -195,3 +195,19 @@ documentation-only). D6: dead `LinkageGeometryModel` deleted from
 explicitly deferred by the owner — revisit next session. Remaining open:
 W4.1–W4.3 (Tier 4 documentation pass) and D5.
 
+**2026-09-28 — D5 resolved (owner decisions).** Stacking clearances: the
+undocumented 3.4/3.5/3.6 per-registry triple (no rationale ever existed —
+verified against code, git history 4301ed2, and docs) is replaced by one
+unified heuristic constant `stacking.DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
+= 3.5`, referenced by the `LayerRegistry` default and all six registry
+construction sites; owner: "if there's a heuristic magic number, don't
+make 3 out of them." AA bilayer c +0.2 Å, slipped −0.2 Å, AB unchanged;
+TAPB/TFB smoke build clean. Side observation recorded in
+tests/test_ring_forming.py: flat-layer stacks (boroxine, span ≈ 0) land
+their interlayer contact exactly on the 3.5 Å vdw search-radius boundary
+— honest lower-bound rendering, not a defect; the search radius is the
+lever if a measured value is wanted. Azine N–N 1.408: value kept, now
+documented as an accepted heuristic within the textbook ~1.40–1.45 Å
+range, calibration formally deferred. Remaining open: W4.1–W4.3 (Tier 4
+documentation pass).
+
