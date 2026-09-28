@@ -9,6 +9,9 @@ from typing import Mapping, Sequence
 from .guest_bundles import GuestBundle, GuestBundleError, load_guest_bundles
 
 
+# Cited: gas constant R = 8.31446261815324 J/(mol*K) (CODATA 2018, exact via
+# k_B and N_A) expressed in kcal/(mol*K) using the exact 4.184 J/cal
+# thermochemical calorie.
 KCAL_PER_MOL_PER_K = 0.00198720425864083
 
 
@@ -47,6 +50,12 @@ class LammpsGuestTemplate:
     site_labels: tuple[str, ...]
     relative_positions: tuple[tuple[float, float, float], ...]
     bonds: tuple[tuple[int, int], ...]
+    # Heuristic — pending calibration: stiff harmonic springs (kcal/mol/A^2
+    # for bonds, kcal/mol/rad^2 for angles) that hold bundled guest molecules
+    # effectively rigid during LAMMPS restart runs; set well above typical
+    # DREIDING bond (~350) and angle (~50-100) constants. These two field
+    # defaults own the values; bundle-parsing fallbacks reference them via
+    # __dataclass_fields__ instead of retyping the literals.
     bond_force_constant: float = 1000.0
     angle_force_constant: float = 100.0
 
@@ -324,6 +333,12 @@ def write_graspa_restart_file(
             + " ".join(_format_restart_float(value) for value in (alpha, beta, gamma)),
             "",
             "",
+            # MC move sizes and acceptance targets written for gRASPA/RASPA2
+            # (heuristic — pending calibration; values follow the restart
+            # files the RASPA family emits for its example simulations):
+            # maximum volume move 0.625% of the cell volume, Gibbs volume
+            # move 2.5%, box-shape move 0.1 per cell-matrix entry, and a 50%
+            # acceptance target for every move type.
             "Maximum changes for MC-moves:",
             "========================================================================",
             "Maximum-volume-change: 0.006250",
@@ -348,11 +363,16 @@ def write_graspa_restart_file(
             [
                 f"Components {component_index} ({component})",
                 "",
+                # Heuristic — pending calibration: maximum translation move
+                # of one tenth of each cell edge.
                 (
                     f"Maximum-translation-change component {component_index}: "
                     f"{a_len / 10.0:.6f} {b_len / 10.0:.6f} {c_len / 10.0:.6f}"
                 ),
                 f"Maximum-translation-in-plane-change component {component_index}: 0.000000,0.000000,0.000000",
+                # derived: maximum rotation move of 30 degrees in radians
+                # (pi/6 = 0.5236), written with the 6-decimal precision the
+                # RASPA restart format uses.
                 f"Maximum-rotation-change component {component_index}: 0.523583 0.523583 0.523583",
                 "",
             ]
@@ -680,13 +700,17 @@ def _parse_guest_template(
     else:
         positions_tuple = tuple(position for _label, position in positions)
 
+    # Bundles without explicit spring constants fall back to the owning
+    # LammpsGuestTemplate field defaults (single-owner rule; same values, no
+    # retyped literals).
+    template_fields = LammpsGuestTemplate.__dataclass_fields__
     return LammpsGuestTemplate(
         component=component,
         site_labels=site_labels,
         relative_positions=positions_tuple,
         bonds=tuple(bonds),
-        bond_force_constant=float(lammps_settings.get("bond_force_constant", 1000.0)),
-        angle_force_constant=float(lammps_settings.get("angle_force_constant", 100.0)),
+        bond_force_constant=float(lammps_settings.get("bond_force_constant", template_fields["bond_force_constant"].default)),
+        angle_force_constant=float(lammps_settings.get("angle_force_constant", template_fields["angle_force_constant"].default)),
     )
 
 

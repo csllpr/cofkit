@@ -51,6 +51,9 @@ DEFAULT_WIDOM_COMPONENTS = tuple(
     metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA if metadata.default_widom and metadata.name != "H2_DREIDING"
 )
 AVAILABLE_WIDOM_COMPONENTS = tuple(metadata.name for metadata in PACKAGED_GUEST_FORCEFIELD_METADATA)
+# Heuristic — pending calibration: per-component Widom insertion budget, on
+# the order of the 2_000_000-cycle Widom production budget divided across the
+# default component set.
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
 # RASPA-family run-control defaults shared by the Widom/isotherm/mixture
 # settings dataclasses below (heuristic — pending calibration; values follow
@@ -65,6 +68,8 @@ _RASPA2_LOCAL_FORCEFIELD_NAME = "COFKit"
 _RASPA2_LOCAL_MOLECULE_DEFINITION = "COFKit"
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 _FLOAT_TOKEN_PATTERN = r"(?:[-+]?(?:nan|inf)|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
+# derived: Lennard-Jones equilibrium distance r_min = 2^(1/6) * sigma; converts
+# UFF-tabulated r_min values into the sigma RASPA mixing-rule rows expect.
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
 _UFF_FRAMEWORK_TYPE_BY_ELEMENT = {
     "H": "H_",
@@ -151,14 +156,28 @@ class GraspaParseError(GraspaError):
 
 @dataclass(frozen=True)
 class EqeqChargeSettings:
+    # Cited: standard parameter values of the published extended charge
+    # equilibration (EQeq) method and its reference implementation (Wilmer,
+    # Kim & Snurr, J. Phys. Chem. Lett. 2012, 3, 2506-2511): dielectric
+    # screening lambda = 1.2 (corresponds to an effective dielectric constant
+    # of ~1.67) and hydrogen electron affinity -2.0 eV.
     lambda_value: float = 1.2
     hydrogen_electron_affinity: float = -2.0
+    # Heuristic — pending calibration: decimal digits written for point
+    # charges; more than the EQeq reference default for downstream reuse.
     charge_precision: int = 6
+    # Total framework charge the equilibration targets; 0.0 = neutral.
     target_charge: float = 0.0
+    # Heuristic — pending calibration: cofkit-side acceptance tolerance on
+    # the net charge of the EQeq output.
     net_charge_tolerance: float = 1e-3
     method: str = "ewald"
+    # Cited: EQeq reference-implementation CLI defaults — real-space and
+    # reciprocal-space expansion cells for the Ewald summation.
     real_space_cells: int = 2
     reciprocal_space_cells: int = 2
+    # Cited: EQeq reference-implementation CLI default for the atomic
+    # hardness scaling parameter (eta).
     eta: float = 50.0
 
     def to_dict(self) -> dict[str, object]:

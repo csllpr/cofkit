@@ -17,6 +17,10 @@ except ImportError:  # pragma: no cover - handled at call sites
     rdDepictor = None
 
 
+# Heuristic — pending calibration: a molecule at or above this atom count
+# whose conformer needed a fallback (random-coordinate or 2D) embedding skips
+# force-field minimization entirely, bounding the minimization cost for giant
+# precursors on the degraded embedding rungs.
 _FALLBACK_FORCEFIELD_ATOM_LIMIT = 180
 _NONMETAL_ATOMIC_NUMBERS = frozenset(
     {
@@ -382,12 +386,15 @@ def _embed_conformers(
         molecule.RemoveAllConformers()
         params = parameter_factory()
         params.randomSeed = random_seed
+        # Cited: 0.2 A is RDKit's own conventional pruneRmsThresh, used in the
+        # ETKDG documentation and EmbedMultipleConfs examples.
         params.pruneRmsThresh = 0.2
         if method != "etkdg-v2-random":
             params.useSmallRingTorsions = True
         params.useRandomCoords = use_random_coords
         if use_random_coords:
-            # Bound the retry cost for giant precursors. ETKDGv2 is the next
+            # Bound the retry cost for giant precursors (heuristic — pending
+            # calibration: 50 iterations per attempt). ETKDGv2 is the next
             # fallback when v3 exhausts these attempts.
             params.maxIterations = 50
         try:

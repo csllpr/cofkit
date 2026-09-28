@@ -34,7 +34,14 @@ class COFEngineConfig:
     default_layer_spacing: float = DEFAULT_MONOLAYER_C_ANGSTROM
     default_ring_layer_spacing: float = DEFAULT_MONOLAYER_C_ANGSTROM
     default_lateral_span: float = DEFAULT_LATERAL_SPAN_ANGSTROM
+    # Cap on enumerated candidates returned per project run; bounds the
+    # net-plan x assignment enumeration blow-up. Heuristic — pending
+    # calibration.
     max_candidates: int = 16
+    # Seed-assembly polish budget forwarded to OptimizerConfig. Mirrors the
+    # owning OptimizerConfig.max_iterations default (cofkit/optimizer.py) and
+    # is kept as an explicit per-entry-point override; seed assembly is not
+    # physical relaxation.
     optimization_max_iterations: int = 8
     # Filter net-planner topology candidates by the classified node shape of
     # 4-connecting monomers. Explicit target_topologies are planned anyway and

@@ -9,6 +9,15 @@ from .topologies import load_topology
 from .topology_index import TopologyDefinition
 from .topology_symmetry import expand_topology_definition
 
+# Heuristic — pending calibration: tolerances for classifying a 3D indexed
+# cell's metric family from its cell parameters in _metric_family. Angles
+# within this many degrees of 90 count as right angles, and edge lengths
+# agreeing to within this many angstrom count as equal (cubic vs
+# orthorhombic). Topology index cells are given to 3+ decimals, so both sit
+# well above input precision and well below any structural distinction.
+_ORTHO_ANGLE_TOLERANCE_DEG = 1e-2
+_CUBIC_LENGTH_TOLERANCE_ANGSTROM = 1e-3
+
 
 @dataclass(frozen=True)
 class ExpandedIndexedNodeSite:
@@ -183,8 +192,8 @@ def _metric_family(definition: TopologyDefinition) -> str:
         alpha = beta = gamma = 90.0
     else:
         return "unknown"
-    if all(abs(angle - 90.0) < 1e-2 for angle in (alpha, beta, gamma)):
-        if max(a, b, c) - min(a, b, c) < 1e-3:
+    if all(abs(angle - 90.0) < _ORTHO_ANGLE_TOLERANCE_DEG for angle in (alpha, beta, gamma)):
+        if max(a, b, c) - min(a, b, c) < _CUBIC_LENGTH_TOLERANCE_ANGSTROM:
             return "cubic"
         return "orthorhombic"
     return "triclinic"

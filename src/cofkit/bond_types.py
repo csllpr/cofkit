@@ -3,12 +3,19 @@ from __future__ import annotations
 
 AROMATIC_BOND_ORDER = 1.5
 
+# Heuristic — pending calibration: half-width of the snapping window used
+# when normalizing fractional bond orders (from geometry inference) onto
+# the canonical integer orders and the aromatic 1.5. Wide enough to absorb
+# distance-window noise, narrow enough that the 1.5 and 2.0 windows
+# (centered 0.5 apart) never overlap.
+BOND_ORDER_NORMALIZATION_TOLERANCE = 0.15
+
 
 def normalize_bond_order(order: float) -> float:
-    if abs(order - AROMATIC_BOND_ORDER) <= 0.15:
+    if abs(order - AROMATIC_BOND_ORDER) <= BOND_ORDER_NORMALIZATION_TOLERANCE:
         return AROMATIC_BOND_ORDER
     rounded = round(order)
-    if abs(order - rounded) <= 0.15:
+    if abs(order - rounded) <= BOND_ORDER_NORMALIZATION_TOLERANCE:
         return float(rounded)
     return float(order)
 

@@ -30,6 +30,18 @@ from .search import AssignmentOutcome
 from .single_node_topologies import resolve_single_node_topology_layout
 from .single_node_topologies_3d import resolve_three_d_single_node_topology_layout
 
+# Heuristic — pending calibration: sizing of the fallback (topology-less or
+# unrecognized-topology) cell in _build_cell. The span is the larger of a
+# fraction of the default lateral span and a multiple of the bridge target
+# distance, so fallback cells are never degenerate regardless of input scale.
+_FALLBACK_SPAN_FRACTION_OF_DEFAULT = 0.4
+_FALLBACK_SPAN_MIN_TARGET_MULTIPLE = 6
+
+# Heuristic — pending calibration: spacing between fallback monomer centers
+# as a multiple of the bridge target distance, keeping adjacent centers far
+# enough apart that the initial placement does not overlap.
+_FALLBACK_CENTER_SPACING_MULTIPLE = 4.0
+
 
 @dataclass(frozen=True)
 class EmbeddingResult:
@@ -231,7 +243,10 @@ class PeriodicEmbedder:
         target_distance: float,
         n_instances: int,
     ) -> tuple[Vec3, Vec3, Vec3]:
-        span = max(self.config.default_lateral_span * 0.4, target_distance * max(6, n_instances * 2))
+        span = max(
+            self.config.default_lateral_span * _FALLBACK_SPAN_FRACTION_OF_DEFAULT,
+            target_distance * max(_FALLBACK_SPAN_MIN_TARGET_MULTIPLE, n_instances * 2),
+        )
         if topology is not None and topology.id == "hcb":
             return (
                 (span, 0.0, 0.0),
@@ -264,7 +279,10 @@ class PeriodicEmbedder:
                 scale(add(scale(a, 3.0), scale(b, 3.0)), 0.25),
             ]
         else:
-            centers = [self._fallback_center(i, self.config.bridge_target_distance * 4.0) for i in range(n_instances)]
+            centers = [
+                self._fallback_center(i, self.config.bridge_target_distance * _FALLBACK_CENTER_SPACING_MULTIPLE)
+                for i in range(n_instances)
+            ]
         return {f"m{i+1}": center for i, center in enumerate(centers)}
 
     def _refine_poses_from_events(

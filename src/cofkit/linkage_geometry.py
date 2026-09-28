@@ -65,6 +65,12 @@ from .reactions import bridge_geometry_priors, bridge_target_distance
 # best-effort path with a deviation diagnostic.
 BRIDGE_SPAN_EXACT_TOLERANCE_ANGSTROM = 0.02
 
+# Heuristic — pending calibration: ceiling on the derived origin retraction
+# fraction. A fraction approaching 1.0 would retract the motif origin onto
+# (or past) the anchor atom, which is geometrically meaningless, so extreme
+# priors/side-length combinations are clamped here instead.
+MAX_ORIGIN_RETRACTION_FRACTION = 0.9
+
 
 def required_bridge_span(
     outer_length_a: float,
@@ -155,7 +161,7 @@ def derived_origin_retraction_fraction(template_id: str, side_length: float) -> 
             return 0.0
         naive = target + 2.0 * side_length
         fraction = (naive - span) / (2.0 * side_length)
-    return min(max(fraction, 0.0), 0.9)
+    return min(max(fraction, 0.0), MAX_ORIGIN_RETRACTION_FRACTION)
 
 
 # Realized B-O bond length target for the five-membered boronate ester ring

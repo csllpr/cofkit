@@ -42,6 +42,12 @@ DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM = 3.5
 # stacked cell is still reported as built along the base c direction.
 _C_TILT_PROVENANCE_TOLERANCE_DEG = 1e-4
 
+# Heuristic — pending calibration: tolerance (A) for the metadata-vs-measured
+# layer_z_span cross-check in _apply_layer_registry. The two channels can
+# measure different atoms (precursor vs realized product), so only
+# disagreements beyond half an angstrom are worth a warning.
+_METADATA_SPAN_CROSSCHECK_TOLERANCE_ANGSTROM = 0.5
+
 _UNSET = object()
 
 
@@ -232,7 +238,7 @@ def _apply_layer_registry(
         )
 
     if metadata_span is not None and layer_z_span > 0.0:
-        if abs(metadata_span - layer_z_span) > 0.5:
+        if abs(metadata_span - layer_z_span) > _METADATA_SPAN_CROSSCHECK_TOLERANCE_ANGSTROM:
             stacking_warnings.append(
                 f"metadata layer_z_span {metadata_span:.3f} Å differs from measured {layer_z_span:.3f} Å"
             )

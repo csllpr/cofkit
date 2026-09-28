@@ -70,6 +70,8 @@ COFKIT_LMP_ENV_VAR = "COFKIT_LMP_PATH"
 DEFAULT_LAMMPS_BINARY: Path | None = None
 _SUPPORTED_FORCEFIELDS = supported_forcefield_families()
 _SUPPORTED_CHARGE_MODELS = ("none", "eqeq")
+# derived: Lennard-Jones equilibrium distance r_min = 2^(1/6) * sigma; converts
+# the UFF-tabulated r_min values into the sigma LAMMPS pair_coeff rows expect.
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
 _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic", "spin_none"}
 _MIN_MODIFY_NORM_OPTIONS = {"two", "inf", "max"}
@@ -170,27 +172,61 @@ class LammpsOptimizationSettings:
     forcefield: str = "dreiding"
     charge_model: str = "eqeq"
     dreiding_hbond: bool = True
+    # Heuristic — pending calibration: 12 A real-space cutoffs, standard for
+    # DREIDING/UFF organic-framework work (lammps-interface convention).
+    # Intentionally independent of graspa.py DEFAULT_CUTOFF_ANGSTROM (12.8 A);
+    # each workflow owns its cutoff defaults.
     pair_cutoff: float = 12.0
     coulomb_cutoff: float = 12.0
+    # Heuristic — pending calibration: LAMMPS kspace relative accuracy;
+    # tighter than the LAMMPS default (1e-4) for charged frameworks.
     ewald_precision: float = 1.0e-6
+    # Heuristic — pending calibration: harmonic tether (kcal/mol/A^2) holding
+    # atoms near their input positions during stage-1 minimization; light
+    # enough that genuine clashes can still relax away.
     position_restraint_force_constant: float = 0.20
     pre_minimization_mode: str = "md"
+    # Heuristic — pending calibration: length of the NVE/limit + Langevin
+    # pre-relaxation run before minimization (10 ps at the usual 1 fs step).
     pre_minimization_steps: int = 10000
+    # Heuristic — pending calibration: ambient-condition bath temperature (K)
+    # for the pre-relaxation run.
     pre_minimization_temperature: float = 300.0
+    # Heuristic — pending calibration: Langevin damping constant in fs; ~100
+    # timesteps, the usual LAMMPS rule of thumb.
     pre_minimization_damping: float = 100.0
+    # Arbitrary fixed seed for reproducible velocity initialization; any
+    # positive integer samples the same Maxwell-Boltzmann ensemble.
     pre_minimization_seed: int = 246813
+    # Heuristic — pending calibration: per-step displacement cap (angstrom)
+    # for fix nve/limit during pre-relaxation; the value the LAMMPS
+    # documentation uses in its nve/limit examples.
     pre_minimization_displacement_limit: float = 0.10
+    # Heuristic — pending calibration: cutoff (angstrom) of pair_style soft
+    # used in the clash-relaxation ramp below.
     soft_pre_minimization_cutoff: float = 8.0
+    # Heuristic — pending calibration: soft-potential prefactors (kcal/mol)
+    # applied in successive minimizations, ramping repulsion from gentle to
+    # near-full strength so overlapping atoms separate gradually.
     soft_pre_minimization_coefficients: tuple[float, ...] = (1.0, 5.0, 20.0, 50.0)
     soft_pre_minimization_min_style: str = "cg"
+    # Heuristic — pending calibration: iteration/evaluation budgets per
+    # soft-ramp minimization stage.
     soft_pre_minimization_max_iterations: int = 2000
     soft_pre_minimization_max_evaluations: int = 20000
     two_stage_protocol: bool = True
     stage2_position_restraint_force_constant: float | None = None
+    # LAMMPS minimize etol; 0.0 disables the energy stop criterion, leaving
+    # force_tolerance and the iteration budgets to govern termination.
     energy_tolerance: float = 0.0
+    # Heuristic — pending calibration: LAMMPS minimize ftol (kcal/mol/A);
+    # tight target for the final polish stage.
     force_tolerance: float = 1.0e-4
+    # Heuristic — pending calibration: trajectory frame cadence (steps).
     dump_interval: int = 100
     pressure_tolerance: float = 1.0  # atm; numerical acceptance, not model accuracy
+    # Heuristic — pending calibration: minimizer iteration/evaluation budgets
+    # for the main stages.
     max_iterations: int = 200000
     max_evaluations: int = 2000000
     min_style: str = "fire"
@@ -208,11 +244,17 @@ class LammpsOptimizationSettings:
     min_modify_fire_abcfire: bool | None = None
     relax_cell: bool = True
     box_relax_mode: str = "auto"
+    # Relax the cell against zero external pressure (its stress-free state).
     box_relax_target_pressure: float = 0.0
+    # Cited: LAMMPS fix box/relax default — maximum fractional box-dimension
+    # change per minimization iteration.
     box_relax_vmax: float = 0.001
     box_relax_nreset: int | None = None
     box_relax_min_style: str = "cg"
     box_relax_energy_tolerance: float | None = None
+    # Heuristic — pending calibration: looser force tolerance for the
+    # cell-relaxation stage than the 1e-4 final polish; cell degrees of
+    # freedom converge more noisily than positions.
     box_relax_force_tolerance: float | None = 1.0e-3
     box_relax_max_iterations: int | None = None
     box_relax_max_evaluations: int | None = None
@@ -228,20 +270,42 @@ class LammpsMdSettings:
     forcefield: str = "dreiding"
     charge_model: str = "eqeq"
     dreiding_hbond: bool = True
+    # Heuristic — pending calibration: same 12 A real-space convention as
+    # LammpsOptimizationSettings (lammps-interface); intentionally independent
+    # of graspa.py DEFAULT_CUTOFF_ANGSTROM (12.8 A).
     pair_cutoff: float = 12.0
     coulomb_cutoff: float = 12.0
+    # Heuristic — pending calibration: LAMMPS kspace relative accuracy;
+    # tighter than the LAMMPS default (1e-4) for charged frameworks.
     ewald_precision: float = 1.0e-6
+    # Heuristic — pending calibration: ambient-condition MD temperature (K);
+    # intentionally independent of the 298 K adsorption convention in
+    # graspa.py (per-command owner).
     temperature: float = 300.0
+    # Heuristic — pending calibration: integration timestep in fs; standard
+    # for atomistic MD of organic frameworks without constrained X-H bonds.
     timestep: float = 1.0
+    # Heuristic — pending calibration: default run length (1 ps at 1 fs).
     steps: int = 1000
+    # Heuristic — pending calibration: thermostat damping constant in fs;
+    # ~100 timesteps, the usual LAMMPS rule of thumb.
     thermostat_damping: float = 100.0
+    # Arbitrary fixed seed for reproducible velocity initialization; any
+    # positive integer samples the same Maxwell-Boltzmann ensemble.
     velocity_seed: int = 246813
     ensemble: str = "nvt"
+    # Heuristic — pending calibration: trajectory frame cadence (steps).
     dump_interval: int = 100
+    # 0.0 = unrestrained; a positive value tethers atoms to their input
+    # positions with a harmonic spring (kcal/mol/A^2).
     position_restraint_force_constant: float = 0.0
     minimize_before_md: bool = False
+    # Heuristic — pending calibration: tolerances for the optional pre-MD
+    # polish (LAMMPS minimize etol unitless, ftol in kcal/mol/A).
     minimization_energy_tolerance: float = 1.0e-6
     minimization_force_tolerance: float = 1.0e-6
+    # Heuristic — pending calibration: iteration/evaluation budgets for the
+    # optional pre-MD polish.
     minimization_max_iterations: int = 10000
     minimization_max_evaluations: int = 100000
 
@@ -1884,6 +1948,11 @@ def _basis_close(
         _vectors_close(
             left_vector,
             right_vector,
+            # Basis-agreement tolerance: absolute floor of 1.0e-5 A plus a
+            # 5.0e-4 per-angstrom (0.05%) relative term scaled by vector
+            # length. Heuristic — pending calibration; the same formula is
+            # duplicated in _infer_lammps_supercell_unit_cells — keep both
+            # copies in sync.
             abs_tol=max(1.0e-5, 5.0e-4 * max(_norm(left_vector), _norm(right_vector))),
         )
         for left_vector, right_vector in zip(left, right)
@@ -2607,6 +2676,8 @@ def _compute_dreiding_bond_coefficients(
     right_type: str,
     bond_order: float,
 ) -> tuple[float, float]:
+    # Published DREIDING bond equation (Mayo, Olafson & Goddard,
+    # J. Phys. Chem. 1990, 94, 8897-8909).
     left_parameters = _dreiding_parameters_for_type(left_type)
     right_parameters = _dreiding_parameters_for_type(right_type)
     force_constant = bond_order * 700.0 / 2.0
@@ -2619,6 +2690,8 @@ def _compute_dreiding_angle_coefficients(
     angle: _CifAngleRecord,
     atom_type_by_atom_id: dict[int, str],
 ) -> tuple[object, ...]:
+    # Published DREIDING angle equation (Mayo, Olafson & Goddard,
+    # J. Phys. Chem. 1990, 94, 8897-8909).
     center_type = atom_type_by_atom_id[angle.atom_id_2]
     theta0 = _dreiding_parameters_for_type(center_type).theta0
     force_constant = 100.0
@@ -2641,6 +2714,8 @@ def _compute_dreiding_dihedral_coefficients(
     atom_type_by_atom_id: dict[int, str],
     degrees: dict[int, int],
 ) -> tuple[object, ...] | None:
+    # Published DREIDING torsion rules (Mayo, Olafson & Goddard,
+    # J. Phys. Chem. 1990, 94, 8897-8909).
     left_outer_type = atom_type_by_atom_id[dihedral.atom_id_1]
     left_center_type = atom_type_by_atom_id[dihedral.atom_id_2]
     right_center_type = atom_type_by_atom_id[dihedral.atom_id_3]
@@ -2729,6 +2804,8 @@ def _compute_dreiding_improper_coefficients(
     improper: _CifImproperRecord,
     atom_type_by_atom_id: dict[int, str],
 ) -> tuple[object, ...] | None:
+    # Published DREIDING inversion rule (Mayo, Olafson & Goddard,
+    # J. Phys. Chem. 1990, 94, 8897-8909).
     center_type = atom_type_by_atom_id[improper.atom_id_2]
     if center_type in {"N_3", "P_3", "As3", "Sb3"}:
         return None
@@ -2747,6 +2824,8 @@ def _compute_uff_bond_coefficients(
     bond_order: float,
     parameters: dict[str, _UffAtomParameters],
 ) -> tuple[float, float]:
+    # Published UFF bond equation (Rappe et al., J. Am. Chem. Soc. 1992,
+    # 114, 10024-10035).
     left_parameters = _uff_parameters_for_type(left_type, parameters)
     right_parameters = _uff_parameters_for_type(right_type, parameters)
     rbo = -0.1332 * (left_parameters.r1 + right_parameters.r1) * math.log(bond_order)
@@ -2768,6 +2847,8 @@ def _compute_uff_angle_coefficients(
     parameters: dict[str, _UffAtomParameters],
     bond_reference: dict[tuple[int, int], tuple[float, float]],
 ) -> tuple[object, ...]:
+    # Published UFF angle equation (Rappe et al., J. Am. Chem. Soc. 1992,
+    # 114, 10024-10035).
     left_type = atom_type_by_atom_id[angle.atom_id_1]
     center_type = atom_type_by_atom_id[angle.atom_id_2]
     right_type = atom_type_by_atom_id[angle.atom_id_3]
@@ -2815,6 +2896,8 @@ def _compute_uff_dihedral_coefficients(
     atom_type_by_atom_id: dict[int, str],
     parameters: dict[str, _UffAtomParameters],
 ) -> tuple[float, int, int] | None:
+    # Published UFF torsion rules (Rappe et al., J. Am. Chem. Soc. 1992,
+    # 114, 10024-10035).
     left_center_type = atom_type_by_atom_id[dihedral.atom_id_2]
     right_center_type = atom_type_by_atom_id[dihedral.atom_id_3]
     left_center_symbol = parsed.atoms[dihedral.atom_id_2 - 1].symbol
@@ -2901,6 +2984,8 @@ def _compute_uff_improper_coefficients(
     atom_type_by_atom_id: dict[int, str],
     degrees: dict[int, int],
 ) -> tuple[float, float, float, float, int] | None:
+    # Published UFF inversion rules (Rappe et al., J. Am. Chem. Soc. 1992,
+    # 114, 10024-10035).
     center_type = atom_type_by_atom_id[improper.atom_id_2]
     center_atomic_number = ob.GetAtomicNum(parsed.atoms[improper.atom_id_2 - 1].symbol)
     allowed_atomic_numbers = {6, 7, 8, 15, 33, 51, 83}
@@ -3467,6 +3552,9 @@ def _infer_lammps_supercell_unit_cells(
         if unit_cell < 1:
             return None
         scaled_primitive = _scale_vector(primitive_vector, float(unit_cell))
+        # Same basis-agreement tolerance as _basis_close (absolute floor
+        # 1.0e-5 A, 0.05% relative to the supercell vector length).
+        # Heuristic — pending calibration; keep the two copies in sync.
         tolerance = max(1.0e-5, 5.0e-4 * super_length)
         if not _vectors_close(super_vector, scaled_primitive, abs_tol=tolerance):
             return None
@@ -3857,6 +3945,8 @@ def _box_relax_mode_for_structure(
     if settings.box_relax_mode != "auto":
         return settings.box_relax_mode
     alpha, beta, gamma = parsed.cell_parameters[3:]
+    # Heuristic — pending calibration: cell angles within this many degrees
+    # of 90 count as right angles when choosing aniso vs tri box/relax.
     right_angle_tolerance = 1.0e-5
     if (
         abs(alpha - 90.0) <= right_angle_tolerance
@@ -3998,6 +4088,8 @@ def _render_lammps_input_script(
             *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
             *prepared.hbond_pair_coeff_lines,
             "compute cofkit_virial all pressure NULL virial",
+            # LAMMPS default neighbor-list skin (2.0 A in real units), stated
+            # explicitly for script clarity.
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
         ]
@@ -4135,6 +4227,8 @@ def _render_lammps_md_input_script(
             f"read_data {data_file}",
             *(["kspace_style ewald " + f"{settings.ewald_precision:.8g}"] if periodic_electrostatics else []),
             *prepared.hbond_pair_coeff_lines,
+            # LAMMPS default neighbor-list skin (2.0 A in real units), stated
+            # explicitly for script clarity.
             "neighbor 2.0 bin",
             "neigh_modify every 1 delay 0 check yes",
             f"timestep {settings.timestep:.8g}",

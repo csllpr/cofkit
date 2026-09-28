@@ -24,6 +24,10 @@ _RESIDUAL_IMPROVEMENT_EPSILON = 1e-10
 class RingGeometryProfile:
     template_id: str
     ring_atom_bond_length: float
+    # Heuristic — pending calibration: acceptance tolerances for the ring
+    # geometry validation (validate_ring_geometry): max radial deviation of a
+    # participant from the ring radius (A), max out-of-plane deviation (A),
+    # and max deviation from the ideal 120-degree angular gap.
     radial_tolerance: float = 0.18
     planarity_tolerance: float = 0.12
     angular_tolerance_degrees: float = 8.0
@@ -165,6 +169,9 @@ def ring_geometry_report(
 class RingGeometryOptimizer:
     """Refines shared precursor translations against all incident ring constraints."""
 
+    # Heuristic — pending calibration: small greedy budget and per-step
+    # damping for the translation proposals; the loop breaks early on the
+    # first non-improving proposal, so the cap is rarely reached.
     def __init__(self, max_iterations: int = 6, translation_step: float = 0.5):
         self.max_iterations = max_iterations
         self.translation_step = translation_step

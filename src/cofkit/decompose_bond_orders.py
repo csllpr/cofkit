@@ -21,6 +21,16 @@ from rdkit import Chem
 _LENGTH_REFERENCE_MICRO = 1_700_000
 _MAX_LENGTH_SCORE = 700_000
 
+# Cited (typical bond lengths) with heuristic window edges — pending
+# calibration. The decisive length evidence for moving a double bond onto a
+# candidate imine link: the C=N contact must fall inside the typical imine
+# double-bond range (typical C=N ~1.28 A vs C-N single ~1.47 A), and the
+# neighboring N-C(aryl) contact must exceed it by a clear margin so the
+# short/long assignment is unambiguous.
+_IMINE_SHORT_BOND_MIN_ANGSTROM = 1.20
+_IMINE_SHORT_BOND_MAX_ANGSTROM = 1.34
+_IMINE_LONG_SHORT_MIN_SEPARATION_ANGSTROM = 0.06
+
 
 def _length_score(distance: float | None) -> int:
     """Rank contact lengths so that shorter bonds attract the double bonds."""
@@ -134,7 +144,10 @@ def normalize_imine_bond_orders(
         pair = frozenset((carbon_idx, nitrogen_idx))
         short = distances.get(pair, float("nan"))
         long = distances.get(frozenset((nitrogen_idx, anchor.GetIdx())), float("nan"))
-        if 1.20 <= short <= 1.34 and long >= short + 0.06:
+        if (
+            _IMINE_SHORT_BOND_MIN_ANGSTROM <= short <= _IMINE_SHORT_BOND_MAX_ANGSTROM
+            and long >= short + _IMINE_LONG_SHORT_MIN_SEPARATION_ANGSTROM
+        ):
             targets.add(pair)
 
     report: dict[str, object] = {

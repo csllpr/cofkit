@@ -57,10 +57,55 @@ _CANONICAL_FAMILIES = (
     "boroxine",
     "triazine",
 )
+# Heuristic — pending calibration: numeric value of an event's confidence
+# label when summing a hypothesis's base score. A simple 1/2/3 ladder; only
+# the ordering matters, since hypothesis ranking is dominated by the
+# progress increments below.
 _CONFIDENCE_SCORE = {"low": 1.0, "medium": 2.0, "high": 3.0}
+# Heuristic — pending calibration: cap on enumerated event combinations per
+# linkage family, bounding the combinatorial blow-up of hypothesis
+# generation for dense frameworks. 256 is far above the event counts seen
+# in practice while keeping pathological inputs finite.
 _MAX_FAMILY_HYPOTHESES = 256
 _ORIGINAL_ATOM_INDEX_PROP = "cofkit_event_original_atom_idx"
+# Heuristic — pending calibration: minimum fraction of fragments per
+# reaction role that must agree on a single dominant species before the
+# remainder may be classified as structural defects rather than legitimate
+# multivariate chemistry. A three-quarter supermajority.
 _DEFECT_DOMINANT_FRAGMENT_THRESHOLD = 0.75
+
+# Heuristic — pending calibration: additive score increments tracking how
+# far a reconstruction hypothesis progressed through validation, so that
+# among competing hypotheses the most-validated one ranks first:
+#   CUT_RECONSTRUCTION_ATTEMPTED — the event set was cut and fragments
+#       reconstructed without an endpoint-accounting failure.
+#   PRECURSOR_RECOVERY_EVALUATED — recovered precursors were chemically
+#       validated (also granted on the multispecies-composition path).
+#   TOPOLOGY_EVALUATED           — the topology check ran, whether by
+#       explicit selection or auto-detection.
+#   RECONSTRUCTION_COMPLETE      — a full COFid was serialized, parsed, and
+#       round-tripped; dwarfs every partial increment so a complete
+#       hypothesis always outranks any incomplete one.
+#   RECONSTRUCTION_EXCEPTION     — an unexpected exception aborted the
+#       attempt; small credit so the hypothesis still sorts above
+#       never-attempted combinations.
+#   TRIAZINE_MOTIF_PENALTY       — subtracted when an intact triazine ring
+#       is wholly contained in a competitor's complete reconstruction;
+#       large enough to push the motif reading below any real linkage
+#       reading without hiding it from the report.
+_SCORE_CUT_RECONSTRUCTION_ATTEMPTED = 25.0
+_SCORE_PRECURSOR_RECOVERY_EVALUATED = 50.0
+_SCORE_TOPOLOGY_EVALUATED = 75.0
+_SCORE_RECONSTRUCTION_COMPLETE = 1000.0
+_SCORE_RECONSTRUCTION_EXCEPTION = 10.0
+_SCORE_TRIAZINE_MOTIF_PENALTY = 500.0
+
+# Heuristic — pending calibration: upper bound on an aldehyde-derived
+# carbon's heavy-atom bond-order sum when recognizing aldehyde-derived
+# endpoints (imine C and vinylene C share the check). The expected sum is
+# exactly 3 (double bond to the partner plus one single C-C bond, hydrogens
+# excluded); the 0.1 slack absorbs non-integer aromatic contributions.
+_ALDEHYDE_DERIVED_MAX_HEAVY_VALENCE = 3.1
 
 
 @dataclass(frozen=True)
@@ -646,7 +691,7 @@ def _is_aldehyde_derived_cn_carbon(mol, carbon_idx: int, nitrogen_idx: int) -> b
         for candidate in carbon.GetBonds()
         if candidate.GetOtherAtom(carbon).GetAtomicNum() > 1
     )
-    return heavy_valence <= 3.1
+    return heavy_valence <= _ALDEHYDE_DERIVED_MAX_HEAVY_VALENCE
 
 
 def _is_neutral_imine_nitrogen(
@@ -1197,7 +1242,7 @@ def _is_aldehyde_derived_vinylene_endpoint(mol, carbon_idx: int, partner_idx: in
         for candidate in carbon.GetBonds()
         if candidate.GetOtherAtom(carbon).GetAtomicNum() > 1
     )
-    return heavy_valence <= 3.1
+    return heavy_valence <= _ALDEHYDE_DERIVED_MAX_HEAVY_VALENCE
 
 
 def _detect_boronate_ester_events(mol) -> tuple[tuple[LinkageEvent, ...], Mapping[str, object]]:
@@ -1546,7 +1591,7 @@ def _reconstruct_and_validate_hypothesis(
             topology_graph=cut_result.topology_graph,
             metadata=cut_result.metadata,
             fragment_by_atom=cut_result.fragment_by_atom,
-            score=base_score + 25.0,
+            score=base_score + _SCORE_CUT_RECONSTRUCTION_ATTEMPTED,
         )
         if cut_result.status != "ok":
             return replace(
@@ -1586,14 +1631,14 @@ def _reconstruct_and_validate_hypothesis(
                         "requires one unique species per reaction role",
                     ),
                     metadata=hypothesis_metadata,
-                    score=base_score + 50.0,
+                    score=base_score + _SCORE_PRECURSOR_RECOVERY_EVALUATED,
                 )
             return replace(
                 hypothesis,
                 status=EVENT_STATUS_CHEMICAL,
                 validation_errors=(recovery_error,),
                 metadata=hypothesis_metadata,
-                score=base_score + 50.0,
+                score=base_score + _SCORE_PRECURSOR_RECOVERY_EVALUATED,
             )
 
         selected_topology = topology
@@ -1611,7 +1656,7 @@ def _reconstruct_and_validate_hypothesis(
                     status=EVENT_STATUS_TOPOLOGY,
                     validation_errors=(topology_error,),
                     metadata=hypothesis_metadata,
-                    score=base_score + 75.0,
+                    score=base_score + _SCORE_TOPOLOGY_EVALUATED,
                 )
         else:
             details = legacy.LinkageDecompositionDetails(
@@ -1633,7 +1678,7 @@ def _reconstruct_and_validate_hypothesis(
                     status=EVENT_STATUS_TOPOLOGY,
                     validation_errors=(detection.reason or "topology auto-detection failed",),
                     metadata=hypothesis_metadata,
-                    score=base_score + 75.0,
+                    score=base_score + _SCORE_TOPOLOGY_EVALUATED,
                 )
             selected_topology = str(detection.selected_topology)
 
@@ -1657,14 +1702,14 @@ def _reconstruct_and_validate_hypothesis(
             status=EVENT_STATUS_COMPLETE,
             validation_errors=(),
             metadata=hypothesis_metadata,
-            score=base_score + 1000.0,
+            score=base_score + _SCORE_RECONSTRUCTION_COMPLETE,
         )
     except Exception as exc:
         return replace(
             hypothesis,
             status=EVENT_STATUS_CHEMICAL,
             validation_errors=(f"{type(exc).__name__}: {exc}",),
-            score=base_score + 10.0,
+            score=base_score + _SCORE_RECONSTRUCTION_EXCEPTION,
         )
 
 
@@ -2324,7 +2369,7 @@ def _apply_triazine_motif_policy(
                     f"{', '.join(competitor_families)} reconstruction",
                 ),
                 metadata=metadata,
-                score=hypothesis.score - 500.0,
+                score=hypothesis.score - _SCORE_TRIAZINE_MOTIF_PENALTY,
             )
         )
     return tuple(updated)

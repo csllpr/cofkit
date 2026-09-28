@@ -22,6 +22,13 @@ from .model import AssemblyState, MonomerSpec, Pose, ReactionTemplate
 from .scoring import BridgeGeometryReport, CandidateScorer
 from .search import AssignmentOutcome
 
+# Heuristic — pending calibration: weight of the out-of-plane (planarity)
+# term relative to the along-bridge distance term in the translation
+# correction of ContinuousOptimizer._refine_translations. Its value
+# coincides numerically with OptimizerConfig.translation_step's default but
+# is a separate quantity; the two must not be merged.
+_PLANARITY_CORRECTION_WEIGHT = 0.35
+
 
 @dataclass(frozen=True)
 class OptimizerConfig:
@@ -32,9 +39,17 @@ class OptimizerConfig:
     happens downstream — so only the lateral cell axes are meaningful here.
     """
 
+    # Heuristic — pending calibration: small greedy budget; every iteration
+    # re-scores all bridge events, so the cap keeps the pass cheap.
     max_iterations: int = 8
+    # Heuristic — pending calibration: damping fraction of each per-event
+    # error applied per step (sub-unit for stability of the greedy loop).
     translation_step: float = 0.35
+    # Heuristic — pending calibration: damping fraction of the mean
+    # target/actual distance ratio applied per lateral-scaling step.
     cell_scale_step: float = 0.5
+    # Heuristic — pending calibration: per-step clamp bounds on the lateral
+    # scale ratio, keeping a single scaling step within roughly ±25%.
     min_lateral_scale: float = 0.75
     max_lateral_scale: float = 1.25
 
@@ -251,7 +266,7 @@ class ContinuousOptimizer:
 
             correction = add(
                 scale(direction, 0.5 * distance_error * self.config.translation_step),
-                scale(plane_normal, 0.35 * planarity_error * self.config.translation_step),
+                scale(plane_normal, _PLANARITY_CORRECTION_WEIGHT * planarity_error * self.config.translation_step),
             )
             translation_updates[first.monomer_instance_id] = add(
                 translation_updates[first.monomer_instance_id],

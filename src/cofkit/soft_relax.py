@@ -53,11 +53,30 @@ from .cif_checks import cif_value_str
 from .periodic_geometry import images_within, p1_shift
 from .validation import CoarseValidationThresholds
 
+# Heuristic — pending calibration: floor (A) on the gemmi neighbor-search
+# cutoff used to measure minimum heavy-atom distances and count clashes, so
+# the search still finds the true nearest pair when the clash cutoff is
+# tighter than the shortest contact worth reporting.
+_MIN_HEAVY_PAIR_SEARCH_CUTOFF_ANGSTROM = 3.0
+
+# Heuristic — pending calibration: adaptive line-search controls for the
+# staged descent. Accepted steps grow by _STEP_GROWTH_FACTOR up to
+# _STEP_MAX (force-scaling step units; the per-step displacement cap
+# SoftRelaxConfig.max_displacement still applies), rejected steps shrink by
+# _STEP_SHRINK_FACTOR, and a step below _STEP_MIN is treated as stalled.
+_STEP_GROWTH_FACTOR = 1.15
+_STEP_MAX = 0.5
+_STEP_SHRINK_FACTOR = 0.5
+_STEP_MIN = 1e-5
+
 
 @dataclass(frozen=True)
 class SoftRelaxConfig:
     repulsion_scale: float = 0.8
-    """r0_ij = repulsion_scale * (R_i + R_j); R from DREIDING LJ r0 / 2."""
+    """r0_ij = repulsion_scale * (R_i + R_j); R from DREIDING LJ r0 / 2.
+    The 0.8 factor is heuristic — pending calibration: it shrinks the nominal
+    DREIDING contact distance so near-equilibrium contacts are left alone and
+    only genuine overlaps repel."""
     repulsion_coefficients: tuple[float, ...] = (1.0, 5.0, 20.0, 50.0, 100.0)
     """Soft-repulsion ramp, extending the LAMMPS soft pre-minimization staging
     with a final stiffer step for deep interlayer clashes."""
@@ -86,10 +105,19 @@ class SoftRelaxConfig:
     overlaps still resolve indirectly through the heavy-atom pairs."""
     hbond_elements: tuple[str, ...] = ("N", "O", "F")
     hbond_window: tuple[float, float] = (1.4, 2.6)
+    """H...acceptor distance window (A) treated as a plausible hydrogen bond.
+    Heuristic — pending calibration: brackets typical X-H...Y contacts from
+    covalent-bond short to weak-hydrogen-bond long."""
     initial_step: float = 0.05
+    """Starting descent step (force-scaling units) for the adaptive line
+    search. Heuristic — pending calibration: small enough that the first
+    proposal stays inside the pair-list margin on stiff clash forces."""
     max_displacement: float = 0.1
     """Per-step Cartesian displacement cap (A) for the adaptive descent."""
     max_steps_per_stage: int = 400
+    """Iteration budget per repulsion-ramp stage. Heuristic — pending
+    calibration: generous enough for deep-clash stages to settle, bounded so
+    a non-converging stage cannot hang the pass."""
     pair_list_interval: int = 25
     """Rebuild the repulsion pair list this often; atoms can drift across cell
     boundaries into contacts that were not close when the list was built."""
@@ -404,7 +432,7 @@ def _min_heavy_distance_and_clashes(
     system: _System, clash_cutoff: float
 ) -> tuple[float | None, int]:
     """Mirror validation.py's clash check; also count sub-cutoff contacts."""
-    cutoff = max(3.0, clash_cutoff)
+    cutoff = max(_MIN_HEAVY_PAIR_SEARCH_CUTOFF_ANGSTROM, clash_cutoff)
     small = _small_structure(system)
     search = gemmi.NeighborSearch(small, cutoff).populate(include_h=False)
     minimum: float | None = None
@@ -627,10 +655,10 @@ def relax_cif_clashes(
             if new_energy < energy:
                 cart = proposal
                 energy, forces = new_energy, new_forces
-                step = min(step * 1.15, 0.5)
+                step = min(step * _STEP_GROWTH_FACTOR, _STEP_MAX)
             else:
-                step *= 0.5
-                if step < 1e-5:
+                step *= _STEP_SHRINK_FACTOR
+                if step < _STEP_MIN:
                     break
         stage_energies.append(energy)
         converged = converged and stage_converged

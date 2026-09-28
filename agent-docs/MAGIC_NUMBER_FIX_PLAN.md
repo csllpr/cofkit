@@ -211,3 +211,27 @@ documented as an accepted heuristic within the textbook ~1.40–1.45 Å
 range, calibration formally deferred. Remaining open: W4.1–W4.3 (Tier 4
 documentation pass).
 
+**2026-09-28 — Tier 4 landed (W4.1–W4.3), plan complete.** Zero-behavior
+provenance pass over all remaining admitted-heuristic sites (~120
+literals, four parallel workstreams, every literal→constant substitution
+value-identical, suite unchanged at 619 passed / 4 skipped). W4.1:
+`reaction_realization.py` clusters named (azine fit, H-reposition,
+keto-enamine C=O target audit-catch); benzothiazole block labeled
+frozen/uncalibrated internal prototype. W4.2: decompose topology-ranking
+weights, bond-order windows (cited typical bond lengths, heuristic window
+edges), score ladders, `bond_types.BOND_ORDER_NORMALIZATION_TOLERANCE`;
+two audit-missed items caught (parallel-image consistency 1 mÅ,
+iminium-N valence window). W4.3: `CoarseValidationThresholds` and all
+engine config fields documented; EQeq params cited (Wilmer & Snurr 2012 +
+reference-implementation defaults); bex cell cited (canonical RCSR/Systre
+`bex.cgd`); guest_restart fallbacks rewired to owning field defaults (the
+tier's only non-comment change). Follow-up consolidation candidates
+recorded by the workstreams (not done, comment-only constraint):
+`DEFAULT_SP2_ANGLE_PRIOR_DEG` 120.0 ×6 sites and the 0.9
+near-z-parallel seed cutoff ×4 sites in reaction_realization.py,
+`engine.py` `optimization_max_iterations` 8 mirroring
+`OptimizerConfig.max_iterations`, lammps `right_angle_tolerance` and the
+supercell match-tolerance formula ×2 sites (documented with keep-in-sync
+notes). With this entry every workstream in this plan is resolved; the
+document is now a historical ledger.
+

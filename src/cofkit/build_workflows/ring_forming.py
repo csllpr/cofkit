@@ -48,6 +48,24 @@ from ..stacking import enumerate_candidate_stackings
 WORKFLOW_ID = "ring_forming"
 IMPLEMENTATION_STATUS = "available"
 
+# Heuristic — pending calibration: edge-placement acceptance tolerance (A)
+# for the virtual-ring-node assembly: an absolute floor plus a term relative
+# to the target center separation, so the gate tracks cell size without ever
+# dropping to float noise.
+_PLACEMENT_TOLERANCE_FLOOR_ANGSTROM = 2.0e-4
+_PLACEMENT_TOLERANCE_RELATIVE = 2.0e-5
+
+# Heuristic — pending calibration: minimum projected motif offset (A) toward
+# a topology edge in the indexed precursor placement; at or below this the
+# motif does not meaningfully point at the edge and the assignment fails.
+_MOTIF_TOWARD_EDGE_MIN_OFFSET_ANGSTROM = 0.1
+
+# Heuristic — pending calibration: cap on Jacobi rotation sweeps in the 3x3
+# covariance eigensolve (_smallest_covariance_axis). Each sweep annihilates
+# the largest remaining off-diagonal element; 24 sweeps is far more than a
+# 3x3 needs to reach the 1e-12 convergence break below.
+_JACOBI_MAX_SWEEPS = 24
+
 
 @dataclass(frozen=True)
 class RingFormationConfig:
@@ -173,7 +191,10 @@ class RingFormingStructureGenerator:
             for edge in expanded.edge_sites
         }
         cell = self._fit_planar_cell(expanded, target_edge_vectors)
-        placement_tolerance = max(2.0e-4, 2.0e-5 * target_center_separation)
+        placement_tolerance = max(
+            _PLACEMENT_TOLERANCE_FLOOR_ANGSTROM,
+            _PLACEMENT_TOLERANCE_RELATIVE * target_center_separation,
+        )
 
         source_frame = Frame(
             origin=first_motif.frame.origin,
@@ -411,7 +432,7 @@ class RingFormingStructureGenerator:
                 real_node_id = edge.end_node_id
                 endpoint_key = f"{edge.id}:end"
             offset = placements[real_node_id][2][endpoint_key]
-            if offset <= 0.1:
+            if offset <= _MOTIF_TOWARD_EDGE_MIN_OFFSET_ANGSTROM:
                 raise ValueError(
                     f"precursor {monomer.id!r} does not point motif {placements[real_node_id][1][endpoint_key]!r} "
                     f"toward topology edge {edge.id!r}"
@@ -744,7 +765,7 @@ def _smallest_covariance_axis(points: tuple[Vec3, ...]) -> Vec3 | None:
             for column in range(3):
                 covariance[row][column] += offset[row] * offset[column]
     eigenvectors = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
-    for _ in range(24):
+    for _ in range(_JACOBI_MAX_SWEEPS):
         row, column = max(((0, 1), (0, 2), (1, 2)), key=lambda pair: abs(covariance[pair[0]][pair[1]]))
         if abs(covariance[row][column]) < 1e-12:
             break

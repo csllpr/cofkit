@@ -127,12 +127,18 @@ class BatchGenerationConfig:
     stacking_ids: tuple[str, ...] = ()
     rdkit_num_conformers: int = 8
     rdkit_random_seed: int = 0xC0F
+    # Heuristic — pending calibration: how many best-ranked pair summaries
+    # the running top list keeps for the final report.
     retain_top_results: int = 25
     enumerate_all_topologies: bool = True
     post_build_conversions: tuple[str, ...] = ()
     write_cif: bool = True
     max_cif_exports: int | None = None
     max_workers: int = 8
+    # Heuristic — pending calibration: maximum actual bridge distance (A)
+    # tolerated in a candidate; at or beyond this the placement is treated as
+    # broken and the candidate is flagged hard-invalid for CIF export
+    # ("bridge_distance_exceeds_cif_export_limit").
     hard_hard_max_bridge_distance: float = 2.5
     separate_cif_outputs_by_validation: bool = True
     repair_geometry: bool = False
@@ -4949,6 +4955,12 @@ class BatchStructureGenerator:
         return topology_id == "bex" and pair_mode == "node-node" and tuple(sorted(connectivities)) == (4, 4)
 
     def _decorated_bex_topology(self) -> _DecoratedBexTopology:
+        # Cited: canonical edge-transitive unit cell of the bex net from the
+        # RCSR/Systre-derived topology data shipped in
+        # src/cofkit/data/topologies/2d/bex.cgd (CELL line). Only the a/b
+        # shape matters here: the edge directions are normalized from it,
+        # and the actually fitted cell is solved downstream in
+        # _fit_decorated_bex_placement.
         raw_cell_a = (2.18488, 0.0, 0.0)
         raw_cell_b = (0.0, 1.61123, 0.0)
 

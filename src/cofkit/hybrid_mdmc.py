@@ -35,8 +35,12 @@ HybridExchangeMode = Literal["framework", "guest_restart"]
 
 @dataclass(frozen=True)
 class HybridMdMcSettings:
+    # Heuristic — pending calibration: number of alternating LAMMPS-MD /
+    # RASPA-family-GCMC exchange cycles.
     cycles: int = 3
     exchange_mode: HybridExchangeMode = "framework"
+    # derived: 100 kPa = 1 bar in the Pascal units RASPA-family inputs use;
+    # ambient-pressure adsorption conditions.
     pressure: float = 100_000.0
     components: tuple[GraspaMixtureComponentSettings, ...] = (
         GraspaMixtureComponentSettings(component="CO2_DREIDING", mol_fraction=1.0),
@@ -44,12 +48,22 @@ class HybridMdMcSettings:
     guest_bundles: tuple[str, ...] = ()
     raspa_backend: str = DEFAULT_RASPA_BACKEND
     raspa_forcefield: str = "dreiding"
+    # Mirrors the unified 298 K owner decision documented on
+    # GraspaWidomSettings.temperature (graspa.py); per-command owner.
     temperature: float = 298.0
+    # Heuristic — pending calibration: GCMC cycle budgets per exchange cycle,
+    # following the RASPA2/gRASPA example-input convention (same pattern as
+    # the run-control defaults in graspa.py).
     initialization_cycles: int = 50_000
     equilibration_cycles: int = 50_000
     production_cycles: int = 200_000
+    # Heuristic — pending calibration: trial positions/orientations per MC
+    # move; same convention as the graspa.py settings dataclasses.
     number_of_trial_positions: int = 10
     number_of_trial_orientations: int = 10
+    # Deliberately retyped as this dataclass's own defaults (per-command
+    # owner): they intentionally mirror graspa.py DEFAULT_CUTOFF_ANGSTROM /
+    # DEFAULT_EWALD_PRECISION and must be changed in both places together.
     cutoff_vdw: float = 12.8
     cutoff_coulomb: float = 12.8
     ewald_precision: float = 1.0e-6

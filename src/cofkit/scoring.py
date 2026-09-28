@@ -10,6 +10,18 @@ from .model import AssemblyState, MonomerSpec, ReactionTemplate
 from .reactions import bridge_target_distance
 from .search import AssignmentOutcome
 
+# Heuristic — pending calibration: relative weights of the planarity and
+# alignment residual components against the raw distance residual in the
+# per-event total residual.
+_PLANARITY_RESIDUAL_WEIGHT = 0.5
+_ALIGNMENT_RESIDUAL_WEIGHT = 0.5
+
+# Heuristic — pending calibration: torsion-surrogate weight for templates
+# with only a partial planarity/torsion prior (semi-planar planarity or
+# moderate/restricted torsion), intermediate between the full 1.0 weight for
+# planar+restricted/locked templates and 0.0 for free templates.
+_PARTIAL_NORMAL_MISALIGNMENT_WEIGHT = 0.35
+
 
 @dataclass(frozen=True)
 class BridgeEventMetrics:
@@ -139,8 +151,8 @@ class CandidateScorer:
 
                 total_event_residual = (
                     distance_residual
-                    + 0.5 * planarity_residual
-                    + 0.5 * alignment_residual
+                    + _PLANARITY_RESIDUAL_WEIGHT * planarity_residual
+                    + _ALIGNMENT_RESIDUAL_WEIGHT * alignment_residual
                     + normal_misalignment_residual
                 )
                 total_residual += total_event_residual
@@ -200,11 +212,13 @@ class CandidateScorer:
         return (-vector[0], -vector[1], -vector[2])
 
     def _normal_misalignment_residual(self, template: ReactionTemplate, normal_alignment: float) -> float:
+        # The 0.5 is derived, not tunable: it maps the normal-normal dot
+        # product from [-1, 1] onto a [0, 1] misalignment scale.
         return self._normal_misalignment_weight(template) * 0.5 * (1.0 - normal_alignment)
 
     def _normal_misalignment_weight(self, template: ReactionTemplate) -> float:
         if template.planarity_prior == "planar" and template.torsion_prior in {"restricted", "locked"}:
             return 1.0
         if template.planarity_prior in {"planar", "semi-planar"} or template.torsion_prior in {"moderate", "restricted"}:
-            return 0.35
+            return _PARTIAL_NORMAL_MISALIGNMENT_WEIGHT
         return 0.0

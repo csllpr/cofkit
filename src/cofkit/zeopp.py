@@ -657,6 +657,9 @@ def analyze_zeopp_pore_properties(
     output_dir: str | Path | None = None,
     probe_radii: Sequence[float] = (),
     channel_radius: float | None = None,
+    # Heuristic — pending calibration: Monte Carlo sampling densities for the
+    # Zeo++ -sa (per-atom) and -vol (total) runs; accuracy/runtime trade-off
+    # chosen for screening throughput rather than publication-grade surfaces.
     surface_samples_per_atom: int = 250,
     volume_samples_total: int = 5000,
     zeopp_path: str | Path | None = None,
@@ -734,6 +737,10 @@ def analyze_zeopp_basic_pore_properties(
     cif_path: str | Path,
     *,
     output_dir: str | Path | None = None,
+    # Heuristic — pending calibration: N2-sized default probe. 1.86 A is the
+    # nitrogen-adjacent probe radius used in Zeo++ examples and much of the
+    # porous-materials literature; it approximates, but is not exactly, the
+    # N2 kinetic radius (~1.82 A from the 3.64 A kinetic diameter).
     probe_radius: float = 1.86,
     zeopp_path: str | Path | None = None,
     timeout_seconds: float = 300.0,

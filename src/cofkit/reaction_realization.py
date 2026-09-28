@@ -41,15 +41,80 @@ from .reactions import (
 from .ring_geometry import BOROXINE_BO_BOND_LENGTH, TRIAZINE_CN_BOND_LENGTH
 
 
+# Iteration cap for the 1-D golden-section refinement in the imine chain
+# solve (owner: this module — realization-time solve). heuristic — pending
+# calibration: 60 iterations shrink the bracket by ~0.618^60 (far below
+# float64 angle noise); the boronate solve below reuses the same budget.
+IMINE_CHAIN_GOLDEN_SECTION_ITERATIONS = 60
+
 # Solve numerics for the boronate ester ring-closure constructor (owner:
 # this module — realization-time solve). heuristic — pending calibration:
 # each smooth boron-rotation piece is refined in a few uniform brackets
 # because the angle residual is not unimodal over a whole piece (branch
-# switching and symmetry extrema create multiple wells); 60 golden-section
-# iterations per bracket mirror the imine chain solve and shrink a bracket
-# by ~0.618^60 (far below float64 angle noise).
+# switching and symmetry extrema create multiple wells); the golden-section
+# iteration budget is owned by IMINE_CHAIN_GOLDEN_SECTION_ITERATIONS above.
 BORONATE_GOLDEN_SECTION_BRACKETS_PER_PIECE = 4
-BORONATE_GOLDEN_SECTION_ITERATIONS = 60
+BORONATE_GOLDEN_SECTION_ITERATIONS = IMINE_CHAIN_GOLDEN_SECTION_ITERATIONS
+
+# Benzothiazole sulfur-placement distance targets (angstrom). Uncalibrated
+# internal prototype — values hand-tuned, never validated; frozen per owner
+# decision (magic-number plan W4.1). See _benzothiazole_sulfur_world_position
+# for the full cluster documentation.
+_BENZOTHIAZOLE_CS_BOND_TARGET_ANGSTROM = 1.90
+_BENZOTHIAZOLE_NS_TARGET_ANGSTROM = 2.35
+_BENZOTHIAZOLE_S_ANCHOR_TARGET_ANGSTROM = 2.50
+_BENZOTHIAZOLE_CLEARANCE_TARGET_ANGSTROM = 1.08
+
+# Keto-enamine tautomerization: target length for the re-formed C=O bond.
+# heuristic — pending calibration: typical carbonyl double-bond length
+# (~1.23 angstrom in standard bond-length tables); never fit against
+# reference structures.
+_KETO_ENAMINE_CARBONYL_BOND_TARGET_ANGSTROM = 1.24
+
+# Azine endpoint-fit objective weights (owner: this module — realization-
+# time endpoint fit). heuristic — pending calibration: hand-tuned relative
+# weights; never fit against reference data.
+#   angle weights: keep the fitted C-N-N and anchor-C-N angles near the
+#     template priors;
+#   displacement weight: prefer the closure that moves the fragment least;
+#   best-effort C=N distance weight: active only when no exact triangle
+#     closure exists, making the residual C=N error dominate;
+#   wrong-side penalty: flat cost for placing the carbon on the side of the
+#     bridge axis opposite the carbonyl oxygen.
+_AZINE_FIT_CNN_ANGLE_WEIGHT = 0.18
+_AZINE_FIT_ANCHOR_CN_ANGLE_WEIGHT = 0.24
+_AZINE_FIT_DISPLACEMENT_WEIGHT = 0.35
+_AZINE_FIT_BEST_EFFORT_CN_DISTANCE_WEIGHT = 120.0
+_AZINE_FIT_WRONG_SIDE_PENALTY = 0.6
+
+# Steric clash screen for the azine fragment fit: approximate non-bonded
+# contact floors in angstrom (lower when hydrogen is involved).
+# heuristic — pending calibration. The clash weight is large so that any
+# clash dominates every other objective term.
+_AZINE_STERIC_MIN_DISTANCE_WITH_HYDROGEN_ANGSTROM = 1.75
+_AZINE_STERIC_MIN_DISTANCE_HEAVY_PAIR_ANGSTROM = 1.95
+_AZINE_STERIC_CLASH_WEIGHT = 900.0
+
+# Hydrogen-reposition machinery (post-realization H cleanup; owner: this
+# module). heuristic — pending calibration: hand-tuned geometry heuristics,
+# never validated against reference data.
+#   blocker radius: neighborhood cutoff when collecting clash candidates;
+#   clearance target: an unconnected hydrogen already this far from every
+#     blocker is left in place;
+#   repulsion blend weights: steric-repulsion blends tried on top of the
+#     geometrically preferred direction;
+#   repulsion blend min alignment: a blended direction must stay within
+#     ~57 degrees (cos = 0.55) of the preferred direction;
+#   X-H sanity tolerance: an input X-H bond length deviating from the table
+#     default by more than this is replaced by the default.
+_H_REPOSITION_BLOCKER_RADIUS_ANGSTROM = 4.0
+_H_REPOSITION_CLEARANCE_TARGET_ANGSTROM = 1.9
+_H_REPULSION_BLEND_WEIGHTS = (0.35, 0.7, 1.05)
+_H_REPULSION_BLEND_MIN_ALIGNMENT = 0.55
+_XH_BOND_LENGTH_SANITY_TOLERANCE_ANGSTROM = 0.35
+# Torsion sample count for a hydrogen with a single heavy neighbor.
+# derived: 360 / 12 = 30 degree spacing around the bond axis.
+_H_TORSION_SAMPLE_COUNT = 12
 
 
 @dataclass(frozen=True)
@@ -780,6 +845,19 @@ class ReactionRealizer:
                 heavy_atoms.append((instance_id, atom.atom_id, self._world_position(pose, atom.local_position)))
         return tuple(heavy_atoms)
 
+    # Benzothiazole sulfur placement: uncalibrated internal prototype —
+    # values hand-tuned, never validated; frozen per owner decision
+    # (magic-number plan W4.1). Internal-only per AGENTS.md; never exposed
+    # through the public CLI. The module-level _BENZOTHIAZOLE_* distance
+    # targets are: the C-S bond-like target length (applied to both the
+    # imine carbon and the ortho carbon), the N...S / S...anchor non-bonded
+    # spacing targets, and the minimum acceptable blocker clearance. The
+    # remaining literals below are one hand-set fitting schedule, kept
+    # inline deliberately: best-y floors 0.40/0.75 (initial perpendicular-
+    # offset guesses), a three-pass coarse-to-fine grid search given as
+    # (x-span, min-y, y-span, step) per pass, least-squares objective
+    # weights 6.0/6.0/4.0/1.2/2.0/0.04/0.04 around a 100.0-degree angle
+    # target, and clash gates 2.10/12.0, 2.20/6.0, and 10.0.
     def _benzothiazole_sulfur_world_position(
         self,
         *,
@@ -789,11 +867,11 @@ class ReactionRealizer:
         anchor_world: Vec3,
         blockers: tuple[tuple[str, int, Vec3], ...],
     ) -> tuple[Vec3, dict[str, float]]:
-        carbon_s_distance = 1.90
-        ortho_s_distance = 1.90
-        nitrogen_s_distance = 2.35
-        anchor_s_distance = 2.50
-        clearance_target = 1.08
+        carbon_s_distance = _BENZOTHIAZOLE_CS_BOND_TARGET_ANGSTROM
+        ortho_s_distance = _BENZOTHIAZOLE_CS_BOND_TARGET_ANGSTROM
+        nitrogen_s_distance = _BENZOTHIAZOLE_NS_TARGET_ANGSTROM
+        anchor_s_distance = _BENZOTHIAZOLE_S_ANCHOR_TARGET_ANGSTROM
+        clearance_target = _BENZOTHIAZOLE_CLEARANCE_TARGET_ANGSTROM
         baseline = sub(ortho_world, carbon_world)
         baseline_length = norm(baseline)
         if baseline_length < 1e-8:
@@ -1185,7 +1263,7 @@ class ReactionRealizer:
         mid_2 = low + golden * (high - low)
         value_1 = evaluate(mid_1)
         value_2 = evaluate(mid_2)
-        for _ in range(60):
+        for _ in range(IMINE_CHAIN_GOLDEN_SECTION_ITERATIONS):
             if best is None and value_1 is None and value_2 is None:
                 break
             score_1 = value_1[0] if value_1 is not None else float("inf")
@@ -1998,22 +2076,24 @@ class ReactionRealizer:
                 lateral_axis=lateral_axis,
                 plane_normal=plane_normal,
             )
-            objective = 0.18 * (
+            objective = _AZINE_FIT_CNN_ANGLE_WEIGHT * (
                 self._planar_angle_2d(candidate_carbon_2d, nitrogen_2d, other_nitrogen_2d) - target_cnn_angle
             ) ** 2
-            objective += 0.24 * (
+            objective += _AZINE_FIT_ANCHOR_CN_ANGLE_WEIGHT * (
                 self._planar_angle_2d((0.0, 0.0), candidate_carbon_2d, nitrogen_2d) - target_anchor_cn_angle
             ) ** 2
-            objective += 0.35 * self._squared_distance_2d(candidate_carbon_2d, current_carbon_2d)
+            objective += _AZINE_FIT_DISPLACEMENT_WEIGHT * self._squared_distance_2d(candidate_carbon_2d, current_carbon_2d)
             objective += self._azine_fragment_steric_penalty(
                 fitted_positions,
                 moving_atom_symbols,
                 fixed_atom_world_positions,
             )
             if mode == "best_effort":
-                objective += 120.0 * (self._distance_2d(candidate_carbon_2d, nitrogen_2d) - target_cn_distance) ** 2
+                objective += _AZINE_FIT_BEST_EFFORT_CN_DISTANCE_WEIGHT * (
+                    self._distance_2d(candidate_carbon_2d, nitrogen_2d) - target_cn_distance
+                ) ** 2
             if preferred_side * candidate_carbon_2d[1] <= -1e-6:
-                objective += 0.6
+                objective += _AZINE_FIT_WRONG_SIDE_PENALTY
             if best is None or objective < best[0]:
                 best = (objective, fitted_positions)
 
@@ -2068,10 +2148,14 @@ class ReactionRealizer:
         for atom_id, moved_world in fitted_positions.items():
             moved_symbol = moving_atom_symbols.get(atom_id, "C")
             for fixed_symbol, fixed_world in fixed_atom_world_positions:
-                minimum_distance = 1.75 if "H" in {moved_symbol, fixed_symbol} else 1.95
+                minimum_distance = (
+                    _AZINE_STERIC_MIN_DISTANCE_WITH_HYDROGEN_ANGSTROM
+                    if "H" in {moved_symbol, fixed_symbol}
+                    else _AZINE_STERIC_MIN_DISTANCE_HEAVY_PAIR_ANGSTROM
+                )
                 distance = self._distance(moved_world, fixed_world)
                 if distance < minimum_distance:
-                    penalty += 900.0 * (minimum_distance - distance) ** 2
+                    penalty += _AZINE_STERIC_CLASH_WEIGHT * (minimum_distance - distance) ** 2
         return penalty
 
     def _signed_rotation_angle_2d(
@@ -2607,7 +2691,7 @@ class ReactionRealizer:
         carbonyl_oxygen_local_position = self._shorten_bond_local_position(
             keto_aldehyde_spec.atom_positions[carbonyl_anchor_atom_id],
             keto_aldehyde_spec.atom_positions[tautomer_oxygen_atom_id],
-            target_distance=1.24,
+            target_distance=_KETO_ENAMINE_CARBONYL_BOND_TARGET_ANGSTROM,
         )
 
         return EventRealization(
@@ -3869,11 +3953,11 @@ class ReactionRealizer:
             for other_instance_id, other_atom_id, world_position in heavy_atoms
             if (other_instance_id, other_atom_id) != (instance_id, parent_atom_id)
             and (other_instance_id, other_atom_id) not in bonded_atom_keys
-            and self._distance(parent_world, world_position) <= 4.0
+            and self._distance(parent_world, world_position) <= _H_REPOSITION_BLOCKER_RADIUS_ANGSTROM
         )
         current_world = add(parent_world, matmul_vec(pose.rotation_matrix, scale(current_direction, bond_length)))
         current_clearance = self._minimum_distance(current_world, blockers)
-        if not external_connections and (current_clearance is None or current_clearance >= 1.9):
+        if not external_connections and (current_clearance is None or current_clearance >= _H_REPOSITION_CLEARANCE_TARGET_ANGSTROM):
             return None
 
         repulsion_vector = self._repulsion_direction(parent_world, blockers)
@@ -4015,8 +4099,8 @@ class ReactionRealizer:
                 parallel_component = dot(current_direction, axis_unit)
                 radial_component = max(0.0, 1.0 - parallel_component * parallel_component) ** 0.5
                 if radial_component > 1e-6:
-                    for step in range(12):
-                        angle = 2.0 * pi * step / 12.0
+                    for step in range(_H_TORSION_SAMPLE_COUNT):
+                        angle = 2.0 * pi * step / _H_TORSION_SAMPLE_COUNT
                         _add(
                             add(
                                 scale(axis_unit, parallel_component),
@@ -4036,12 +4120,12 @@ class ReactionRealizer:
                 preferred_direction = scale(normalize(composite), -1.0)
                 _add(preferred_direction)
                 if repulsion_local is not None:
-                    for weight in (0.35, 0.7, 1.05):
+                    for weight in _H_REPULSION_BLEND_WEIGHTS:
                         blended = add(preferred_direction, scale(repulsion_local, weight))
                         blended_direction = self._normalize_or_none(blended)
                         if blended_direction is None:
                             continue
-                        if dot(blended_direction, preferred_direction) >= 0.55:
+                        if dot(blended_direction, preferred_direction) >= _H_REPULSION_BLEND_MIN_ALIGNMENT:
                             _add(blended_direction)
             else:
                 axis = heavy_neighbor_directions[0]
@@ -4146,7 +4230,7 @@ class ReactionRealizer:
         default_bond_length = self._default_hydrogen_bond_length(monomer.atom_symbols[parent_atom_id])
         if original_bond_length < 1e-6:
             return default_bond_length
-        if abs(original_bond_length - default_bond_length) > 0.35:
+        if abs(original_bond_length - default_bond_length) > _XH_BOND_LENGTH_SANITY_TOLERANCE_ANGSTROM:
             return default_bond_length
         return original_bond_length
 

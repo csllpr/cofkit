@@ -1323,6 +1323,14 @@ def _validate_supported_cif_periodicity(atoms: PeriodicCifAtoms) -> None:
             )
 
 
+# Heuristic — pending calibration: maximum spread (angstrom) among the
+# distances of parallel periodic-image rows of the same atom pair for those
+# rows to count as mutually consistent length evidence for imine bond-order
+# repair. Rows disagreeing by more than this are treated as disorder and
+# withheld as evidence.
+_PARALLEL_IMAGE_DISTANCE_CONSISTENCY_ANGSTROM = 1.0e-3
+
+
 def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> BondedMolBuildResult:
     labels = tuple(atoms.info.get("_atom_site_label", ()))
     if len(labels) != len(atoms):
@@ -1388,7 +1396,7 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
             pair: pair_candidates[0].distance
             for pair, pair_candidates in candidates_by_pair.items()
             if max(item.distance for item in pair_candidates)
-            - min(item.distance for item in pair_candidates) <= 1.0e-3
+            - min(item.distance for item in pair_candidates) <= _PARALLEL_IMAGE_DISTANCE_CONSISTENCY_ANGSTROM
         }
         imine_normalization = normalize_imine_bond_orders(
             mol, distances,
@@ -1412,6 +1420,14 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
         },
         candidates=tuple(candidates),
     )
+
+
+# Heuristic — pending calibration: minimum score lead the best topology
+# candidate must hold over the runner-up before auto-detection commits.
+# Small enough to separate a genuine match from a supercell-only near-miss
+# (the smallest score step below is 0.10), large enough to keep ties
+# ambiguous.
+_TOPOLOGY_DECISIVE_SCORE_MARGIN = 0.05
 
 
 def detect_cif_topology(
@@ -1529,7 +1545,7 @@ def detect_cif_topology(
     best = candidates[0]
     runner_up = candidates[1] if len(candidates) > 1 else None
     decisive = best.confidence in {"exact", "high"} and (
-        runner_up is None or best.score - runner_up.score >= 0.05
+        runner_up is None or best.score - runner_up.score >= _TOPOLOGY_DECISIVE_SCORE_MARGIN
     )
     if decisive:
         return TopologyDetectionResult(
@@ -1785,6 +1801,40 @@ def _dot_int(first: tuple[int, int, int], second: tuple[int, int, int]) -> int:
     return first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
 
 
+# Heuristic — pending calibration: additive score weights for topology
+# candidate ranking. Each weight rewards one independent piece of evidence
+# that the observed linkage graph realizes a repository topology:
+#   CONNECTIVITY_MATCH    — base credit for surviving the hard gate of equal
+#                           sorted node-connectivity multisets; anchors the
+#                           scale of every later increment.
+#   DIMENSIONALITY_MATCH  — the recovered graph's periodicity hint agrees
+#                           with the topology's declared dimensionality.
+#   PERIODIC_GRAPH_MATCH  — full quotient-graph isomorphism including
+#                           periodic gain (translation) vectors; decisive
+#                           evidence, so the largest weight, and it alone
+#                           yields "exact" confidence.
+#   QUOTIENT_GRAPH_MATCH  — isomorphism ignoring gain vectors; almost as
+#                           strong, yields "high" confidence.
+#   SUPERCELL_NODE/EDGE_MULTIPLE — observed counts are integer multiples of
+#                           the topology definition's counts; weak evidence
+#                           consistent with a supercell realization.
+#   SUPERCELL_DEGREE_HISTOGRAM  — per-node degree pattern matches a
+#                           supercell expansion; stronger supercell evidence.
+# The HIGH/MEDIUM thresholds then map a numeric score with no graph-level
+# proof onto confidence labels; HIGH sits just below the smallest
+# graph-match total (0.35 + 0.55 = 0.90) so only near-complete evidence
+# ladders reach it.
+_TOPOLOGY_SCORE_CONNECTIVITY_MATCH = 0.35
+_TOPOLOGY_SCORE_DIMENSIONALITY_MATCH = 0.10
+_TOPOLOGY_SCORE_PERIODIC_GRAPH_MATCH = 0.55
+_TOPOLOGY_SCORE_QUOTIENT_GRAPH_MATCH = 0.45
+_TOPOLOGY_SCORE_SUPERCELL_NODE_MULTIPLE = 0.10
+_TOPOLOGY_SCORE_SUPERCELL_EDGE_MULTIPLE = 0.10
+_TOPOLOGY_SCORE_SUPERCELL_DEGREE_HISTOGRAM = 0.20
+_TOPOLOGY_CONFIDENCE_HIGH_THRESHOLD = 0.85
+_TOPOLOGY_CONFIDENCE_MEDIUM_THRESHOLD = 0.65
+
+
 def _rank_topology_candidates(
     graph: LinkageTopologyGraph,
     *,
@@ -1804,7 +1854,7 @@ def _rank_topology_candidates(
         entry_connectivities = tuple(sorted(set(int(value) for value in entry.node_connectivities)))
         if entry_connectivities != observed_connectivities:
             continue
-        score = 0.35
+        score = _TOPOLOGY_SCORE_CONNECTIVITY_MATCH
         reasons = ["node connectivities match"]
         metadata: dict[str, object] = {
             "node_connectivities": list(entry.node_connectivities),
@@ -1817,7 +1867,7 @@ def _rank_topology_candidates(
                 "contracted_graph": ranking_graph.to_metadata(),
             }
         if ranking_graph.dimensionality_hint == entry.dimensionality:
-            score += 0.10
+            score += _TOPOLOGY_SCORE_DIMENSIONALITY_MATCH
             reasons.append("dimensionality hint matches")
         try:
             topology_graph = _topology_definition_graph(repository.load(entry.id))
@@ -1833,11 +1883,11 @@ def _rank_topology_candidates(
                 and ranking_graph.edge_count == topology_graph.edge_count
             ):
                 if _periodic_graphs_match(ranking_graph, topology_graph, compare_gains=True):
-                    score += 0.55
+                    score += _TOPOLOGY_SCORE_PERIODIC_GRAPH_MATCH
                     confidence = "exact"
                     reasons.append("periodic quotient graph matches")
                 elif _periodic_graphs_match(ranking_graph, topology_graph, compare_gains=False):
-                    score += 0.45
+                    score += _TOPOLOGY_SCORE_QUOTIENT_GRAPH_MATCH
                     confidence = "high"
                     reasons.append("quotient graph matches without periodic-gain comparison")
             else:
@@ -1845,22 +1895,22 @@ def _rank_topology_candidates(
                     topology_graph.node_count > 0
                     and ranking_graph.node_count % topology_graph.node_count == 0
                 ):
-                    score += 0.10
+                    score += _TOPOLOGY_SCORE_SUPERCELL_NODE_MULTIPLE
                     reasons.append("observed node count is a topology supercell multiple")
                 if (
                     topology_graph.edge_count > 0
                     and ranking_graph.edge_count % topology_graph.edge_count == 0
                 ):
-                    score += 0.10
+                    score += _TOPOLOGY_SCORE_SUPERCELL_EDGE_MULTIPLE
                     reasons.append("observed edge count is a topology supercell multiple")
                 if _degree_histogram_matches_supercell(ranking_graph, topology_graph):
-                    score += 0.20
+                    score += _TOPOLOGY_SCORE_SUPERCELL_DEGREE_HISTOGRAM
                     reasons.append("degree histogram is consistent with a topology supercell")
         if confidence == "low":
             rounded_score = round(score, 6)
-            if rounded_score >= 0.85:
+            if rounded_score >= _TOPOLOGY_CONFIDENCE_HIGH_THRESHOLD:
                 confidence = "high"
-            elif rounded_score >= 0.65:
+            elif rounded_score >= _TOPOLOGY_CONFIDENCE_MEDIUM_THRESHOLD:
                 confidence = "medium"
         ranked.append(
             TopologyDetectionCandidate(
@@ -1964,6 +2014,14 @@ def _topology_definition_graph(definition) -> LinkageTopologyGraph:
     )
 
 
+# Heuristic — pending calibration: node-count cap for the exhaustive
+# backtracking quotient-graph isomorphism below. The search is factorial in
+# the node count in the worst case; 10 nodes keeps it trivially fast while
+# covering every topology in the shipped repository. Larger graphs decline
+# the isomorphism proof and fall back to score-based confidence.
+_PERIODIC_GRAPH_ISOMORPHISM_NODE_CAP = 10
+
+
 def _periodic_graphs_match(
     observed: LinkageTopologyGraph,
     expected: LinkageTopologyGraph,
@@ -1974,7 +2032,7 @@ def _periodic_graphs_match(
         return False
     if sorted(observed.node_connectivities) != sorted(expected.node_connectivities):
         return False
-    if observed.node_count > 10:
+    if observed.node_count > _PERIODIC_GRAPH_ISOMORPHISM_NODE_CAP:
         return False
 
     expected_pair_counts = _pair_edge_counter(expected.gain_edges)
@@ -2079,6 +2137,15 @@ def _transform_periodic_edges(
     )
 
 
+# Heuristic — pending calibration: cap on independent gain-vector bases
+# enumerated per graph when constructing candidate unimodular gain
+# transforms. The enumeration is combinatorial in the invariant-vector
+# count; 32 bases per side bounds the transform candidates to manageable
+# numbers while comfortably covering the small gain sets of shipped
+# topologies.
+_GAIN_BASIS_ENUMERATION_LIMIT = 32
+
+
 def _candidate_unimodular_gain_transforms(
     observed_edges: tuple[tuple[int, int, tuple[int, int, int]], ...],
     expected_edges: tuple[tuple[int, int, tuple[int, int, int]], ...],
@@ -2091,8 +2158,8 @@ def _candidate_unimodular_gain_transforms(
         return ()
 
     rank = observed_rank
-    observed_bases = _independent_gain_bases(observed_vectors, rank, limit=32)
-    expected_bases = _independent_gain_bases(expected_vectors, rank, limit=32)
+    observed_bases = _independent_gain_bases(observed_vectors, rank, limit=_GAIN_BASIS_ENUMERATION_LIMIT)
+    expected_bases = _independent_gain_bases(expected_vectors, rank, limit=_GAIN_BASIS_ENUMERATION_LIMIT)
     transforms: set[tuple[tuple[int, int, int], ...]] = set()
     for observed_basis in observed_bases:
         for expected_basis in expected_bases:
@@ -2634,6 +2701,14 @@ def _prune_distance_inferred_bond_candidates(
     return tuple(candidate for candidate_index, candidate in enumerate(candidates) if candidate_index in active)
 
 
+# Heuristic — pending calibration: maximum degree assumed during
+# distance-based bond pruning for elements outside the explicit
+# organic-subset table in the function below. 6 accommodates
+# hypervalent/heavier atoms (e.g. sulfur, metals) rather than rejecting
+# their bonds.
+_MAX_DISTANCE_INFERRED_DEGREE_FALLBACK = 6
+
+
 def _max_distance_inferred_degree(symbol: str) -> int:
     atomic_number = _atomic_number(symbol)
     return {
@@ -2648,7 +2723,7 @@ def _max_distance_inferred_degree(symbol: str) -> int:
         17: 1,
         35: 1,
         53: 1,
-    }.get(atomic_number, 6)
+    }.get(atomic_number, _MAX_DISTANCE_INFERRED_DEGREE_FALLBACK)
 
 
 def _distance_prune_priority(
@@ -2675,6 +2750,30 @@ def _ring_bond_keys(mol) -> set[frozenset[int]]:
     return ring_bonds
 
 
+# Cited (typical bond lengths) with heuristic window edges — pending
+# calibration. Each threshold is an upper distance bound (angstrom) for
+# assigning a higher bond order to a distance-inferred bond, seated between
+# the tabulated typical lengths of the two bond orders it discriminates
+# (e.g. C~N: single 1.47 / double 1.28 / triple 1.16; C~C: 1.54 / 1.34 /
+# 1.20; C~O: 1.43 / 1.23). The KNOWN_CROSS_INSTANCE variants apply to
+# linkage bonds positively known to connect different precursor instances;
+# their windows reach nearly to the single-bond length because assembled
+# linkage geometry is the least relaxed. The UNKNOWN_INSTANCE variant
+# covers bonds whose instance provenance is missing or inconclusive.
+_BOND_ORDER_CN_TRIPLE_MAX_ANGSTROM = 1.22
+_BOND_ORDER_CN_DOUBLE_MAX_ANGSTROM = 1.28
+_BOND_ORDER_CN_DOUBLE_UNKNOWN_INSTANCE_MAX_ANGSTROM = 1.34
+_BOND_ORDER_CN_DOUBLE_KNOWN_CROSS_INSTANCE_MAX_ANGSTROM = 1.48
+_BOND_ORDER_CO_DOUBLE_MAX_ANGSTROM = 1.30
+_BOND_ORDER_CC_TRIPLE_MAX_ANGSTROM = 1.24
+_BOND_ORDER_CC_DOUBLE_MAX_ANGSTROM = 1.37
+_BOND_ORDER_CC_DOUBLE_KNOWN_CROSS_INSTANCE_MAX_ANGSTROM = 1.46
+# Aromatic (order 1.5) ring bonds span the whole single..double length
+# range, so the window is deliberately wide on both ends.
+_BOND_ORDER_AROMATIC_RING_MIN_ANGSTROM = 1.20
+_BOND_ORDER_AROMATIC_RING_MAX_ANGSTROM = 1.50
+
+
 def _infer_bond_order(mol, candidate: BondCandidate, ring_bonds: set[frozenset[int]]) -> float:
     atom_1 = mol.GetAtomWithIdx(candidate.atom_idx_1)
     atom_2 = mol.GetAtomWithIdx(candidate.atom_idx_2)
@@ -2689,14 +2788,14 @@ def _infer_bond_order(mol, candidate: BondCandidate, ring_bonds: set[frozenset[i
     same_instance = bool(instance_1 and instance_2 and instance_1 == instance_2)
     known_different_instance = bool(instance_1 and instance_2 and instance_1 != instance_2)
     if pair == frozenset((6, 7)):
-        if distance <= 1.22:
+        if distance <= _BOND_ORDER_CN_TRIPLE_MAX_ANGSTROM:
             return 3.0
-        if known_different_instance and distance <= 1.48:
+        if known_different_instance and distance <= _BOND_ORDER_CN_DOUBLE_KNOWN_CROSS_INSTANCE_MAX_ANGSTROM:
             return 2.0
-        if not same_instance and distance <= 1.34:
+        if not same_instance and distance <= _BOND_ORDER_CN_DOUBLE_UNKNOWN_INSTANCE_MAX_ANGSTROM:
             return 2.0
     if ring_key in ring_bonds and pair in {frozenset((6, 6)), frozenset((6, 7)), frozenset((6, 16))}:
-        if 1.20 <= distance <= 1.50:
+        if _BOND_ORDER_AROMATIC_RING_MIN_ANGSTROM <= distance <= _BOND_ORDER_AROMATIC_RING_MAX_ANGSTROM:
             return 1.5
 
     if 1 in pair:
@@ -2704,15 +2803,15 @@ def _infer_bond_order(mol, candidate: BondCandidate, ring_bonds: set[frozenset[i
     if 5 in pair:
         return 1.0
     if pair == frozenset((6, 8)):
-        return 2.0 if distance <= 1.30 else 1.0
+        return 2.0 if distance <= _BOND_ORDER_CO_DOUBLE_MAX_ANGSTROM else 1.0
     if pair == frozenset((6, 7)):
-        return 2.0 if distance <= 1.28 else 1.0
+        return 2.0 if distance <= _BOND_ORDER_CN_DOUBLE_MAX_ANGSTROM else 1.0
     if pair == frozenset((6, 6)):
-        if distance <= 1.24:
+        if distance <= _BOND_ORDER_CC_TRIPLE_MAX_ANGSTROM:
             return 3.0
-        if known_different_instance and distance <= 1.46:
+        if known_different_instance and distance <= _BOND_ORDER_CC_DOUBLE_KNOWN_CROSS_INSTANCE_MAX_ANGSTROM:
             return 2.0
-        return 2.0 if distance <= 1.37 else 1.0
+        return 2.0 if distance <= _BOND_ORDER_CC_DOUBLE_MAX_ANGSTROM else 1.0
     return 1.0
 
 
@@ -3308,6 +3407,13 @@ def _restore_double_oxygens(fragment, role: str):
     return editable.GetMol()
 
 
+# Heuristic — pending calibration: tolerance around integer valence 4 when
+# recognizing a conventional tetravalent iminium/pyridinium nitrogen from
+# its summed bond orders. Non-integer contributions (aromatic orders of
+# 1.5) keep the sum off exact integers, so the window absorbs that jitter.
+_TETRAVALENT_NITROGEN_VALENCE_TOLERANCE = 0.1
+
+
 def _finalize_repaired_fragment(
     fragment,
     reactive_group: str,
@@ -3360,7 +3466,9 @@ def _finalize_repaired_fragment(
         if (
             atom.GetAtomicNum() == 7
             and atom.GetFormalCharge() == 0
-            and 3.9 <= explicit_valence <= 4.1
+            and 4.0 - _TETRAVALENT_NITROGEN_VALENCE_TOLERANCE
+            <= explicit_valence
+            <= 4.0 + _TETRAVALENT_NITROGEN_VALENCE_TOLERANCE
         ):
             atom.SetFormalCharge(1)
     Chem.SanitizeMol(mol)

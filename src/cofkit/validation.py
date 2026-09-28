@@ -30,18 +30,36 @@ from .vdw import (
 
 @dataclass(frozen=True)
 class CoarseValidationThresholds:
+    # Bridge-event residuals are |actual - target| linkage distances in
+    # angstrom; ratios are actual / target (dimensionless).  All threshold
+    # values in this block are heuristic — pending calibration.
+    # Warning tier: worst single bridge residual before a warning is raised.
     warning_max_bridge_distance_residual: float = 0.75
+    # Warning tier: mean bridge residual across all events.
     warning_mean_bridge_distance_residual: float = 0.35
+    # Per-event residual above which a bridge counts as "bad" for the
+    # bad-fraction metric gated by warning_max_bad_bridge_fraction.
     warning_bad_bridge_distance_residual: float = 0.50
+    # Warning tier: fraction of bad bridge events before a warning is raised.
     warning_max_bad_bridge_fraction: float = 0.25
+    # Hard-hard tier (blocks CIF export): largest actual bridge distance in
+    # angstrom; far above genuine linkage bond lengths (~1.3-1.6 A for the
+    # supported templates), so only disconnected or mis-assembled pairs trip it.
     hard_hard_max_bridge_distance: float = 2.5
+    # Hard tier: worst single bridge residual.
     hard_max_bridge_distance_residual: float = 1.00
+    # Hard tier: mean bridge residual across all events.
     hard_mean_bridge_distance_residual: float = 0.60
+    # Hard tier: actual/target ratio below which a bridge is too short.
     hard_min_bridge_distance_ratio: float = 0.70
+    # Hard tier: actual/target ratio above which a bridge is too long.
     hard_max_bridge_distance_ratio: float = 1.60
     # Coarse plain-distance backstop: hard clash floor for non-excluded
     # heavy-heavy pairs, and the severe-overlap floor for graph-excluded 1-3
     # pairs (a heavy 1-3 contact below bond-length scale means a broken graph).
+    # Heuristic — pending calibration: 1.05 A sits just below the shortest
+    # genuine heavy-heavy bond lengths (~1.16 A for C#N), so only fused or
+    # collapsed geometry can trip the floor.
     min_nonbonded_heavy_distance: float = 1.05
     # W4.1: primary clash criterion; flag a non-excluded pair when
     # d / (r_vdw_i + r_vdw_j) < this value (Bondi radii from cofkit.vdw).
@@ -59,6 +77,10 @@ class CoarseValidationThresholds:
     # "bond" is fused nuclei, i.e. a broken structure.  Stays below genuine
     # heavy-atom bonds (~1.16 A for C#N) and X-H bonds (~1.0 A).
     severe_overlap_bonded_distance: float = DEFAULT_SEVERE_OVERLAP_BONDED_DISTANCE
+    # Degenerate-cell floors (heuristic — pending calibration): a 2D cell
+    # under 10 A^2 or a 3D cell under 20 A^3 cannot contain even one monomer;
+    # real candidate cells are orders of magnitude larger (the placeholder
+    # lateral span alone is 30 A, i.e. 900 A^2).
     min_2d_cell_area: float = 10.0
     min_3d_cell_volume: float = 20.0
     # Per-template acceptable distance windows for the realized inter-monomer
