@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import atan2, isfinite
+from math import atan2, inf, isfinite
 from typing import Callable, Mapping
 
-from ..geometry import Frame, centroid, cross, dot, normalize, sub
+from ..geometry import Frame, centroid, cross, dot, normalize, planar_arrangement_mismatch, sub
 from ..model import MonomerSpec, ReactiveMotif
 from .motif_registry import MotifKindDefinition, MotifKindRegistry, default_motif_kind_registry
 
@@ -50,6 +50,46 @@ _NONMETAL_ATOMIC_NUMBERS = frozenset(
 )
 
 
+# Heuristic — pending calibration: weights combining the components of
+# geometry.planar_arrangement_mismatch into a single conformer shape score for
+# shape-aware conformer selection. The components mix units (radians,
+# dimensionless relative spread, angstrom RMS); equal weights intentionally
+# let any large defect dominate, since the ring-forming node placement cannot
+# repair any of them by rigid motion.
+_SHAPE_SCORE_ANGULAR_WEIGHT = 1.0
+_SHAPE_SCORE_RADIAL_WEIGHT = 1.0
+_SHAPE_SCORE_PLANARITY_WEIGHT = 1.0
+
+# Shape-aware conformer selection applies only to precursors placed as rigid
+# multi-motif nodes (ring-forming node placement); ditopic precursors are
+# edge-fitted, where any conformer span works. Single owner for the builder's
+# internal gate and the ring-forming CLI pre-flight check.
+SHAPE_SELECTION_MIN_MOTIFS = 3
+
+# Heuristic — pending calibration: upper motif-count bound for shape-aware
+# conformer selection in binary-bridge (node-linker) builds. A/B evidence on
+# the default monomer library (2026-09-29, out/_ab_shape_selection): trigonal
+# (3-motif) nodes are always planar targets and flexible tritopic monomers
+# improve (clash-free hcb builds vs hydrogen-clash warnings with energy-only
+# selection), while tetrahedral 4-connected monomers on dia get mildly worse
+# because no planar conformer exists and the regular-polygon target is wrong
+# for them. Planar 4-connected nets (sql/kgm) had no library example to
+# validate, so they stay on energy selection until evidence exists.
+# Ring-forming builds are exempt: they only support 2D topologies, where the
+# planar regular target is always correct, and gate on
+# SHAPE_SELECTION_MIN_MOTIFS alone.
+SHAPE_SELECTION_VALIDATED_MAX_MOTIFS = 3
+
+# Heuristic — pending calibration: conformer-ensemble floor for shape-aware
+# conformer selection. The default 4-8-conformer ensembles frequently contain
+# no topology-compatible (regular-planar) conformer for flexible multi-arm
+# precursors; 16 gave a near-regular conformer for every triazine/boroxine
+# precursor and default-library tritopic monomer tried. Owned here because
+# the conformer builder is what consumes the ensemble size; callers
+# (ring-forming CLI, batch builds) reference this constant, never retype it.
+SHAPE_SELECTION_MIN_CONFORMERS = 16
+
+
 class AromaticityRestoreError(RuntimeError):
     """RDKit MMFF property generation cleared a molecule's aromaticity.
 
@@ -90,6 +130,10 @@ class _ConformerSelectionResult:
     forcefield: str
     optimization_status: str
     diagnostics: tuple[str, ...] = ()
+    # Energies of every evaluated conformer (kcal/mol) from the force field
+    # that produced this selection; used as the tie-breaker for shape-aware
+    # conformer selection. Empty when minimization was skipped.
+    conformer_energies: Mapping[int, float] = field(default_factory=dict)
 
 
 RDKitMatchHandler = Callable[[object, object, tuple[int, ...], MotifKindDefinition], _DetectedMotif | None]
@@ -128,6 +172,7 @@ class RDKitMotifBuilder:
         random_seed: int = 0xC0F,
         optimization_max_iterations: int = 500,
         optimization_attempts: int = 1,
+        select_conformer_by_motif_shape: bool = False,
     ) -> MonomerSpec:
         if Chem is None or AllChem is None:
             raise RuntimeError("RDKit is required for build_rdkit_monomer()")
@@ -168,11 +213,29 @@ class RDKitMotifBuilder:
             )
         except AromaticityRestoreError as exc:
             raise AromaticityRestoreError(f"monomer {monomer_id!r}: {exc}") from exc
-        conformer = molecule.GetConformer(selection.conformer_id)
+        conformer_id = selection.conformer_id
+        conformer = molecule.GetConformer(conformer_id)
 
         detected = self._detect_motifs(molecule, conformer, definition)
         if not detected:
             raise ValueError(f"no {motif_kind!r} motifs detected in {monomer_id!r}")
+
+        conformer_selection = "energy"
+        shape_score: float | None = None
+        if select_conformer_by_motif_shape and len(detected) >= SHAPE_SELECTION_MIN_MOTIFS:
+            shape_choice = self._select_conformer_by_motif_shape(
+                molecule,
+                embedding.conformer_ids,
+                definition,
+                reference_motif_count=len(detected),
+                energies=selection.conformer_energies,
+            )
+            if shape_choice is not None:
+                conformer_id, shape_score = shape_choice
+                if conformer_id != selection.conformer_id:
+                    conformer = molecule.GetConformer(conformer_id)
+                    detected = self._detect_motifs(molecule, conformer, definition)
+                conformer_selection = "motif_shape"
 
         atom_positions, motifs, plane_normal = _build_geometry(detected, molecule, conformer, definition)
         atom_symbols = tuple(atom.GetSymbol() for atom in molecule.GetAtoms())
@@ -188,7 +251,7 @@ class RDKitMotifBuilder:
             id=monomer_id,
             name=name,
             motifs=motifs,
-            conformer_ids=(f"rdkit-conf-{selection.conformer_id}",),
+            conformer_ids=(f"rdkit-conf-{conformer_id}",),
             atom_symbols=atom_symbols,
             atom_positions=atom_positions,
             bonds=bonds,
@@ -208,14 +271,58 @@ class RDKitMotifBuilder:
                 "n_atoms": molecule.GetNumAtoms(),
                 "n_heavy_atoms": base.GetNumAtoms(),
                 "n_conformers": len(embedding.conformer_ids),
-                "selected_conformer_id": selection.conformer_id,
+                "selected_conformer_id": conformer_id,
+                "conformer_selection": conformer_selection,
+                **(
+                    {"selected_conformer_shape_score": shape_score}
+                    if shape_score is not None
+                    else {}
+                ),
                 "forcefield": selection.forcefield,
                 "forcefield_optimization_status": selection.optimization_status,
                 "forcefield_diagnostics": selection.diagnostics,
-                "selected_conformer_energy": selection.energy,
+                "selected_conformer_energy": selection.conformer_energies.get(conformer_id, selection.energy),
                 "plane_normal": plane_normal,
             },
         )
+
+    def _select_conformer_by_motif_shape(
+        self,
+        molecule,
+        conformer_ids: tuple[int, ...],
+        definition: MotifKindDefinition,
+        *,
+        reference_motif_count: int,
+        energies: Mapping[int, float],
+    ) -> tuple[int, float] | None:
+        """Pick the embedded conformer whose motif origins best form a regular
+        planar polygon — the shape the ring-forming node placement assumes.
+
+        Returns ``(conformer_id, shape_score)`` minimizing
+        ``(shape_score, energy, conformer_id)``, or ``None`` when no conformer
+        yields a measurable arrangement (motif count drift or degenerate
+        geometry); callers then keep the energy-selected conformer.
+        """
+        best: tuple[tuple[float, float, int], int, float] | None = None
+        for conf_id in conformer_ids:
+            conformer = molecule.GetConformer(conf_id)
+            detected = self._detect_motifs(molecule, conformer, definition)
+            if len(detected) != reference_motif_count:
+                continue
+            mismatch = planar_arrangement_mismatch(tuple(motif.origin for motif in detected))
+            if mismatch is None:
+                continue
+            score = (
+                _SHAPE_SCORE_ANGULAR_WEIGHT * mismatch.angular_max_radians
+                + _SHAPE_SCORE_RADIAL_WEIGHT * mismatch.radial_spread
+                + _SHAPE_SCORE_PLANARITY_WEIGHT * mismatch.planarity_rms
+            )
+            key = (score, energies.get(conf_id, inf), conf_id)
+            if best is None or key < best[0]:
+                best = (key, conf_id, score)
+        if best is None:
+            return None
+        return best[1], best[2]
 
     def _detect_motifs(self, molecule, conformer, definition: MotifKindDefinition) -> tuple[_DetectedMotif, ...]:
         assert definition.rdkit_smarts is not None
@@ -283,6 +390,7 @@ def build_rdkit_monomer(
     random_seed: int = 0xC0F,
     optimization_max_iterations: int = 500,
     optimization_attempts: int = 1,
+    select_conformer_by_motif_shape: bool = False,
     motif_registry: MotifKindRegistry | None = None,
     builder: RDKitMotifBuilder | None = None,
 ) -> MonomerSpec:
@@ -296,6 +404,7 @@ def build_rdkit_monomer(
         random_seed=random_seed,
         optimization_max_iterations=optimization_max_iterations,
         optimization_attempts=optimization_attempts,
+        select_conformer_by_motif_shape=select_conformer_by_motif_shape,
     )
 
 
@@ -607,6 +716,7 @@ def _optimize_conformers(
             )
             props = None
         best = None
+        mmff_energies: dict[int, float] = {}
         if props is not None:
             for conf_id in conformer_ids:
                 try:
@@ -620,6 +730,8 @@ def _optimize_conformers(
                         f"MMFF conformer {conf_id} failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
                     )
                     continue
+                if isfinite(energy):
+                    mmff_energies[conf_id] = energy
                 if status != 0:
                     diagnostics.append(f"Conformer {conf_id} did not converge (status {status})")
                     if isfinite(energy) and (best_unconverged is None or energy < best_unconverged[1]):
@@ -636,9 +748,11 @@ def _optimize_conformers(
                 "MMFF",
                 "optimized",
                 tuple(diagnostics),
+                conformer_energies=mmff_energies,
             )
 
     best = None
+    uff_energies: dict[int, float] = {}
     for conf_id in conformer_ids:
         try:
             field = AllChem.UFFGetMoleculeForceField(molecule, confId=conf_id)
@@ -651,6 +765,8 @@ def _optimize_conformers(
                 f"UFF conformer {conf_id} failed: {type(exc).__name__}: {str(exc).splitlines()[0]}"
             )
             continue
+        if isfinite(energy):
+            uff_energies[conf_id] = energy
         if status != 0:
             diagnostics.append(f"Conformer {conf_id} did not converge (status {status})")
             if isfinite(energy) and (best_unconverged is None or energy < best_unconverged[1]):
@@ -664,6 +780,7 @@ def _optimize_conformers(
             "UFF",
             "optimized",
             tuple(diagnostics),
+            conformer_energies=uff_energies,
         )
     if best_unconverged is not None:
         diagnostics.append(
@@ -676,6 +793,7 @@ def _optimize_conformers(
             best_unconverged[2],
             "unconverged",
             tuple(diagnostics),
+            conformer_energies=mmff_energies if best_unconverged[2] == "MMFF" else uff_energies,
         )
     diagnostics.append(
         "no supported force field produced a finite minimized conformer; "

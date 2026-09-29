@@ -1,3 +1,4 @@
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -683,6 +684,70 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertLess(carbon_angle, 128.0)
         self.assertGreater(nitrogen_angle, 112.0)
         self.assertLess(nitrogen_angle, 128.0)
+
+
+@unittest.skipIf(Chem is None, "RDKit is not available")
+class ShapeAwareConformerSelectionTests(unittest.TestCase):
+    """Regression tests for the twisted-triazine-ring bug: the ring-forming
+    node placement assumes a regular planar motif arrangement, but the
+    lowest-energy conformer of a flexible multi-arm precursor generally does
+    not have one (gaps 108/130/122 degrees for the monomer below)."""
+
+    TRIS_NITRILE_SMILES = (
+        "N#Cc1ccc(NC(=O)c2cc(C(=O)Nc3ccc(C#N)cc3)cc(C(=O)Nc3ccc(C#N)cc3)c2)cc1"
+    )
+
+    def _motif_angle_gaps(self, monomer) -> list[float]:
+        center_x = sum(motif.frame.origin[0] for motif in monomer.motifs) / len(monomer.motifs)
+        center_y = sum(motif.frame.origin[1] for motif in monomer.motifs) / len(monomer.motifs)
+        angles = sorted(
+            math.atan2(motif.frame.origin[1] - center_y, motif.frame.origin[0] - center_x)
+            for motif in monomer.motifs
+        )
+        return [
+            math.degrees((angles[(index + 1) % 3] - angles[index]) % (2.0 * math.pi))
+            for index in range(3)
+        ]
+
+    def test_shape_selection_finds_regular_tritopic_conformer(self):
+        monomer = build_rdkit_monomer(
+            "tris_nitrile",
+            "tris_nitrile",
+            self.TRIS_NITRILE_SMILES,
+            "nitrile",
+            num_conformers=16,
+            select_conformer_by_motif_shape=True,
+        )
+
+        self.assertEqual(monomer.metadata["conformer_selection"], "motif_shape")
+        self.assertIn("selected_conformer_shape_score", monomer.metadata)
+        for gap in self._motif_angle_gaps(monomer):
+            self.assertAlmostEqual(gap, 120.0, delta=5.0)
+
+    def test_shape_selection_is_noop_for_ditopic_precursor(self):
+        monomer = build_rdkit_monomer(
+            "terephthalonitrile",
+            "terephthalonitrile",
+            "N#Cc1ccc(C#N)cc1",
+            "nitrile",
+            num_conformers=2,
+            select_conformer_by_motif_shape=True,
+        )
+
+        self.assertEqual(monomer.metadata["conformer_selection"], "energy")
+        self.assertNotIn("selected_conformer_shape_score", monomer.metadata)
+
+    def test_energy_selection_is_default(self):
+        monomer = build_rdkit_monomer(
+            "tris_nitrile",
+            "tris_nitrile",
+            self.TRIS_NITRILE_SMILES,
+            "nitrile",
+            num_conformers=4,
+        )
+
+        self.assertEqual(monomer.metadata["conformer_selection"], "energy")
+        self.assertNotIn("selected_conformer_shape_score", monomer.metadata)
 
 
 if __name__ == "__main__":

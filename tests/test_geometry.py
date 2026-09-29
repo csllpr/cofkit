@@ -18,8 +18,10 @@ from cofkit.geometry import (
     measure_layer_z_span,
     norm,
     orthogonal_component,
+    planar_arrangement_mismatch,
     rotation_from_frame_to_axes,
     safe_normalize,
+    smallest_covariance_axis,
     sub,
 )
 
@@ -230,6 +232,50 @@ class SharedPrimitiveTests(unittest.TestCase):
         self.assertIsNone(
             angle_degrees((0.0, 0.0), (0.0, 0.0), (1.0, 0.0), on_degenerate=None)
         )
+
+
+class PlanarArrangementMismatchTests(unittest.TestCase):
+    def test_regular_planar_polygon_has_zero_mismatch(self):
+        points = tuple(
+            (math.cos(2.0 * math.pi * index / 3), math.sin(2.0 * math.pi * index / 3), 0.0)
+            for index in range(3)
+        )
+        mismatch = planar_arrangement_mismatch(points)
+        self.assertIsNotNone(mismatch)
+        self.assertLess(mismatch.angular_max_radians, 1e-6)
+        self.assertLess(mismatch.radial_spread, 1e-6)
+        self.assertLess(mismatch.planarity_rms, 1e-9)
+
+    def test_skewed_arrangement_reports_angular_and_radial_terms(self):
+        # One arm rotated off 120 degrees and shortened: the bug-report
+        # monomer's lowest-energy conformer had exactly this failure mode.
+        points = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (-0.45, -0.45, 0.0))
+        mismatch = planar_arrangement_mismatch(points)
+        self.assertIsNotNone(mismatch)
+        self.assertGreater(mismatch.angular_max_radians, 0.05)
+        self.assertGreater(mismatch.radial_spread, 0.05)
+        self.assertLess(mismatch.planarity_rms, 1e-9)
+
+    def test_out_of_plane_arrangement_reports_planarity_term(self):
+        # Four points: three in-plane plus one lifted out of plane (any three
+        # points are exactly coplanar, so planarity needs n >= 4).
+        points = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.5), (-1.0, 0.0, 0.0), (0.0, -1.0, 0.5))
+        mismatch = planar_arrangement_mismatch(points)
+        self.assertIsNotNone(mismatch)
+        self.assertGreater(mismatch.planarity_rms, 0.1)
+
+    def test_degenerate_inputs_return_none(self):
+        self.assertIsNone(planar_arrangement_mismatch(((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))))
+        self.assertIsNone(planar_arrangement_mismatch(((1.0, 0.0, 0.0),) * 3))
+
+    def test_smallest_covariance_axis_finds_plane_normal(self):
+        points = tuple(
+            (math.cos(angle), math.sin(angle), 0.01 * index)
+            for index, angle in enumerate((0.0, 2.1, 4.2))
+        )
+        axis = smallest_covariance_axis(points)
+        self.assertIsNotNone(axis)
+        self.assertAlmostEqual(abs(axis[2]), 1.0, places=3)
 
 
 if __name__ == "__main__":

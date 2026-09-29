@@ -45,6 +45,14 @@ Then go straight to the module that matches the task.
   - Add new motif kinds here first.
 - [src/cofkit/chem/rdkit.py](../src/cofkit/chem/rdkit.py)
   - Practical SMILES-to-`MonomerSpec` path.
+  - Conformer selection seam: energy-only by default at the library level;
+    `select_conformer_by_motif_shape=True` picks the conformer whose motif
+    origins best form a regular planar polygon. Owners of the gates:
+    `SHAPE_SELECTION_MIN_MOTIFS` / `SHAPE_SELECTION_VALIDATED_MAX_MOTIFS`
+    (binary-bridge builds apply it to 3-connecting monomers only — A/B
+    evidence: trigonal improves, tetrahedral worsens; ring-forming applies it
+    to all 3+-motif precursors) and `SHAPE_SELECTION_MIN_CONFORMERS`
+    (ensemble floor 16).
   - New motif kinds normally need a match handler here.
 - [src/cofkit/chem/detector.py](../src/cofkit/chem/detector.py)
   - Lightweight non-RDKit fallback detector.
@@ -85,7 +93,7 @@ Then go straight to the module that matches the task.
 ## Geometry / scoring / validation
 
 - [src/cofkit/geometry.py](../src/cofkit/geometry.py)
-  - Shared vector/frame primitives plus the canonical stacking helpers: `measure_layer_z_span` (layer z-span along an explicit axis — prefer `layer_normal_axis`, the `a × b` normal, which is invariant under in-plane periodic images in tilted cells; `LayerSpanReport` carries honest mode/axis provenance), `classify_2d_cell` / `classify_2d_cell_parameters` (the single 2D cell classifiers for built vectors and RCSR parameter cells), `safe_normalize` (explicit per-call-site fallback direction, optional stderr warning), `orthogonal_component`, and `angle_degrees` (caller-chosen degenerate policy). All builder modules delegate here; do not add local copies. Degenerate-vector policy per seam: `stacking.py` warns and falls back, while the thin `_safe_normalize` wrappers in `optimizer.py` / `embedding.py` / `batch.py` raise a descriptive `ValueError` (probe-verified unreachable on live paths; batch loops absorb it per record).
+  - Shared vector/frame primitives plus the canonical stacking helpers: `measure_layer_z_span` (layer z-span along an explicit axis — prefer `layer_normal_axis`, the `a × b` normal, which is invariant under in-plane periodic images in tilted cells; `LayerSpanReport` carries honest mode/axis provenance), `classify_2d_cell` / `classify_2d_cell_parameters` (the single 2D cell classifiers for built vectors and RCSR parameter cells), `safe_normalize` (explicit per-call-site fallback direction, optional stderr warning), `orthogonal_component`, and `angle_degrees` (caller-chosen degenerate policy). Also owns `smallest_covariance_axis` (Jacobi 3x3 eigensolver for least-variance axes) and `planar_arrangement_mismatch` (regular-polygon deviation of a point set — the conformer shape metric used by shape-aware monomer selection). All builder modules delegate here; do not add local copies. Degenerate-vector policy per seam: `stacking.py` warns and falls back, while the thin `_safe_normalize` wrappers in `optimizer.py` / `embedding.py` / `batch.py` raise a descriptive `ValueError` (probe-verified unreachable on live paths; batch loops absorb it per record).
 - [src/cofkit/embedding.py](../src/cofkit/embedding.py)
   - Initial periodic placement. `cell_kind` metadata classifies the built cell vectors through `classify_2d_cell`, never the topology id.
 - [src/cofkit/optimizer.py](../src/cofkit/optimizer.py)

@@ -14,6 +14,7 @@ import gemmi
 
 from cofkit import COFEngine, COFProject, CoarseStructureValidator
 from cofkit.build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
+from cofkit.chem.rdkit import SHAPE_SELECTION_MIN_CONFORMERS
 from cofkit.chem.rdkit import build_rdkit_monomer
 from cofkit.cif import CIFWriter
 from cofkit.cli import main as cli_main
@@ -452,6 +453,34 @@ class RingFormingWorkflowTests(unittest.TestCase):
         for event in result.outcome.events:
             physical_copies = {(ref.monomer_instance_id, ref.periodic_image) for ref in event.participants}
             self.assertEqual(len(physical_copies), 3)
+
+    def test_tritopic_triazine_build_with_shape_selected_conformer_is_accepted(self):
+        # Regression for the twisted-triazine-ring bug report: this precursor's
+        # lowest-energy conformer has nitrile arms at 108/130/122-degree gaps,
+        # which the rigid node placement cannot repair, so the exported ring
+        # was an irregular hexagon (bonds 0.94-1.67 A). Shape-aware conformer
+        # selection picks a topology-compatible conformer instead.
+        precursor = build_rdkit_monomer(
+            "tris_nitrile",
+            "tris_nitrile",
+            "N#Cc1ccc(NC(=O)c2cc(C(=O)Nc3ccc(C#N)cc3)cc(C(=O)Nc3ccc(C#N)cc3)c2)cc1",
+            "nitrile",
+            num_conformers=SHAPE_SELECTION_MIN_CONFORMERS,
+            select_conformer_by_motif_shape=True,
+        )
+        self.assertEqual(precursor.metadata["conformer_selection"], "motif_shape")
+
+        result = RingFormingStructureGenerator().build(precursor, "triazine_trimerization")
+
+        self.assertEqual(result.candidate.metadata["ring_validation"]["classification"], "accepted")
+        self.assertNotIn("ring_geometry_rejected", result.candidate.flags)
+        validation = validate_ring_geometry(
+            result.outcome.events,
+            result.candidate.state,
+            {precursor.id: precursor},
+        )
+        self.assertEqual(validation.classification, "accepted")
+        self.assertEqual(validation.reasons, ())
 
     def test_ring_forming_cli_writes_summary_and_cif(self):
         with tempfile.TemporaryDirectory() as temporary_dir:

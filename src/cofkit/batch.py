@@ -12,7 +12,13 @@ from threading import Lock
 from typing import Iterable, Mapping
 
 from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
-from .chem.rdkit import build_rdkit_monomer, monomer_geometry_degradation_warnings
+from .chem.rdkit import (
+    SHAPE_SELECTION_MIN_CONFORMERS,
+    SHAPE_SELECTION_MIN_MOTIFS,
+    SHAPE_SELECTION_VALIDATED_MAX_MOTIFS,
+    build_rdkit_monomer,
+    monomer_geometry_degradation_warnings,
+)
 from .cofid import try_generate_cofid
 from .cif import CIFWriter
 from .embedding import EmbeddingConfig, EmbeddingResult, PeriodicEmbedder
@@ -126,6 +132,14 @@ class BatchGenerationConfig:
     shape_filter_explicit_topologies: bool = False
     stacking_ids: tuple[str, ...] = ()
     rdkit_num_conformers: int = 8
+    # Select the monomer conformer whose motif arrangement best matches a
+    # regular planar node instead of the lowest-energy one. Gated to motif
+    # counts [SHAPE_SELECTION_MIN_MOTIFS, SHAPE_SELECTION_VALIDATED_MAX_MOTIFS]
+    # (chem.rdkit): trigonal nodes benefit (A/B evidence on the default
+    # monomer library), tetrahedral 4-connected monomers are excluded because
+    # the planar target is wrong for them. Only applies to the default RDKit
+    # monomer builder; custom smiles_monomer_builder callables are untouched.
+    shape_aware_conformer: bool = True
     rdkit_random_seed: int = 0xC0F
     # Heuristic — pending calibration: how many best-ranked pair summaries
     # the running top list keeps for the final report.
@@ -463,8 +477,14 @@ class BatchStructureGenerator:
         return self._library_loader.library_prefix_for_motif_kind(motif_kind)
 
     def build_monomer(self, record: BatchMonomerRecord) -> BuiltBatchMonomer:
+        shape_selection = self._shape_aware_conformer_selection(record.expected_connectivity)
+        num_conformers = (
+            max(self.config.rdkit_num_conformers, SHAPE_SELECTION_MIN_CONFORMERS)
+            if shape_selection
+            else self.config.rdkit_num_conformers
+        )
         cache_key = (record.id, record.name, record.smiles, record.motif_kind,
-                     record.expected_connectivity, self.config.rdkit_num_conformers,
+                     record.expected_connectivity, num_conformers, shape_selection,
                      self.config.rdkit_random_seed, id(self.smiles_monomer_builder))
         with self._monomer_cache_lock:
             cached = self._monomer_cache.get(cache_key)
@@ -472,13 +492,19 @@ class BatchStructureGenerator:
             return replace(cached, record=record)
 
         try:
+            extra_kwargs = (
+                {"select_conformer_by_motif_shape": shape_selection}
+                if self.smiles_monomer_builder is build_rdkit_monomer
+                else {}
+            )
             monomer = self.smiles_monomer_builder(
                 record.id,
                 record.name,
                 record.smiles,
                 record.motif_kind,
-                num_conformers=self.config.rdkit_num_conformers,
+                num_conformers=num_conformers,
                 random_seed=self.config.rdkit_random_seed,
+                **extra_kwargs,
             )
             actual_connectivity = len(monomer.motifs)
             if actual_connectivity != record.expected_connectivity:
@@ -498,6 +524,12 @@ class BatchStructureGenerator:
                 return replace(existing, record=record)
             self._monomer_cache[cache_key] = result
         return result
+
+    def _shape_aware_conformer_selection(self, expected_connectivity: int) -> bool:
+        return (
+            self.config.shape_aware_conformer
+            and SHAPE_SELECTION_MIN_MOTIFS <= expected_connectivity <= SHAPE_SELECTION_VALIDATED_MAX_MOTIFS
+        )
 
     def _autodetect_num_conformers(self) -> int:
         return max(1, min(2, self.config.rdkit_num_conformers))

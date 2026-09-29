@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from math import acos, cos, degrees, radians, sin, sqrt
+from math import atan2, acos, cos, degrees, pi, radians, sin, sqrt
 from typing import Iterable, Mapping, Sequence
 
 Vec3 = tuple[float, float, float]
@@ -114,6 +114,118 @@ def orthogonal_component(vector: Vec3, axis: Vec3, *, axis_is_unit: bool = False
             return vector
         axis = scale(axis, 1.0 / length)
     return sub(vector, scale(axis, dot(vector, axis)))
+
+
+# Heuristic — pending calibration: cap on Jacobi rotation sweeps in the 3x3
+# covariance eigensolve (smallest_covariance_axis). Each sweep annihilates the
+# largest remaining off-diagonal element; 24 sweeps is far more than a 3x3
+# needs to reach the 1e-12 convergence break below.
+_JACOBI_MAX_SWEEPS = 24
+
+
+def smallest_covariance_axis(points: tuple[Vec3, ...]) -> Vec3 | None:
+    """Return the least-variance axis of a small point cloud via Jacobi rotations."""
+    if len(points) < 3:
+        return None
+    center = centroid(points)
+    covariance = [[0.0, 0.0, 0.0] for _ in range(3)]
+    for point in points:
+        offset = sub(point, center)
+        for row in range(3):
+            for column in range(3):
+                covariance[row][column] += offset[row] * offset[column]
+    eigenvectors = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
+    for _ in range(_JACOBI_MAX_SWEEPS):
+        row, column = max(((0, 1), (0, 2), (1, 2)), key=lambda pair: abs(covariance[pair[0]][pair[1]]))
+        if abs(covariance[row][column]) < 1e-12:
+            break
+        angle = 0.5 * atan2(
+            2.0 * covariance[row][column],
+            covariance[column][column] - covariance[row][row],
+        )
+        cosine = cos(angle)
+        sine = sin(angle)
+        rotation = [[1.0 if i == j else 0.0 for j in range(3)] for i in range(3)]
+        rotation[row][row] = cosine
+        rotation[column][column] = cosine
+        rotation[row][column] = sine
+        rotation[column][row] = -sine
+        covariance = _matrix_multiply(_matrix_transpose(rotation), _matrix_multiply(covariance, rotation))
+        eigenvectors = _matrix_multiply(eigenvectors, rotation)
+    axis_index = min(range(3), key=lambda index: covariance[index][index])
+    axis = tuple(eigenvectors[row][axis_index] for row in range(3))
+    if norm(axis) < 1e-8:
+        return None
+    normalized = scale(axis, 1.0 / norm(axis))
+    return scale(normalized, -1.0) if normalized[2] < 0.0 else normalized
+
+
+def _matrix_multiply(left, right):
+    return [
+        [sum(left[row][inner] * right[inner][column] for inner in range(3)) for column in range(3)]
+        for row in range(3)
+    ]
+
+
+def _matrix_transpose(matrix):
+    return [[matrix[column][row] for column in range(3)] for row in range(3)]
+
+
+@dataclass(frozen=True)
+class PlanarArrangementMismatch:
+    """How far a set of points deviates from a regular planar polygon.
+
+    All components are non-negative and zero for an ideal regular n-gon lying
+    exactly in a plane: ``angular_max_radians`` is the largest deviation of a
+    sorted in-plane angular gap from 2π/n, ``radial_spread`` is the relative
+    (max − min)/mean spread of the projected radii, and ``planarity_rms`` is
+    the RMS distance to the best-fit plane.
+    """
+
+    angular_max_radians: float
+    radial_spread: float
+    planarity_rms: float
+
+
+def planar_arrangement_mismatch(points: Iterable[Vec3]) -> PlanarArrangementMismatch | None:
+    """Measure the deviation of *points* from a regular planar polygon.
+
+    Returns ``None`` for degenerate inputs: fewer than 3 points, no
+    identifiable least-variance axis, or a mean projected radius below
+    ``_REGULAR_POLYGON_MIN_MEAN_RADIUS_ANGSTROM`` (the arrangement center is
+    then undefined within numerical noise).
+    """
+    pts = tuple(points)
+    if len(pts) < 3:
+        return None
+    center = centroid(pts)
+    normal = smallest_covariance_axis(pts)
+    if normal is None:
+        return None
+    offsets = tuple(sub(point, center) for point in pts)
+    projected = tuple(sub(offset, scale(normal, dot(offset, normal))) for offset in offsets)
+    radii = tuple(norm(vector) for vector in projected)
+    mean_radius = sum(radii) / len(radii)
+    if mean_radius < _REGULAR_POLYGON_MIN_MEAN_RADIUS_ANGSTROM:
+        return None
+    basis_seed = next((vector for vector in projected if norm(vector) > 1e-12), None)
+    if basis_seed is None:
+        return None
+    basis_x = scale(basis_seed, 1.0 / norm(basis_seed))
+    basis_y = normalize(cross(normal, basis_x))
+    angles = sorted(atan2(dot(vector, basis_y), dot(vector, basis_x)) for vector in projected)
+    ideal_gap = 2.0 * pi / len(pts)
+    gaps = tuple((angles[(index + 1) % len(angles)] - angles[index]) % (2.0 * pi) for index in range(len(angles)))
+    angular_max = max(abs(gap - ideal_gap) for gap in gaps)
+    radial_spread = (max(radii) - min(radii)) / mean_radius
+    planarity_rms = sqrt(sum(dot(offset, normal) ** 2 for offset in offsets) / len(offsets))
+    return PlanarArrangementMismatch(angular_max, radial_spread, planarity_rms)
+
+
+# Numerical guard: below this mean projected radius (angstrom) a point set has
+# no meaningful arrangement center, so planar_arrangement_mismatch returns
+# None rather than dividing by noise.
+_REGULAR_POLYGON_MIN_MEAN_RADIUS_ANGSTROM = 1e-6
 
 
 def angle_degrees(

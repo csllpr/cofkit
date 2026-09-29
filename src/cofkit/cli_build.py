@@ -11,7 +11,15 @@ from typing import Iterable, Mapping
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
-from .chem.rdkit import AromaticityRestoreError, build_rdkit_monomer, monomer_geometry_degradation_warnings
+from .chem.rdkit import (
+    SHAPE_SELECTION_MIN_CONFORMERS,
+    SHAPE_SELECTION_MIN_MOTIFS,
+    SHAPE_SELECTION_VALIDATED_MAX_MOTIFS,
+    AromaticityRestoreError,
+    build_rdkit_monomer,
+    detect_rdkit_motif_count,
+    monomer_geometry_degradation_warnings,
+)
 from .cif import CIFWriter
 from .cofid import cofid_to_build_request, try_generate_cofid
 from .constants import DEFAULT_MONOLAYER_C_ANGSTROM
@@ -57,6 +65,21 @@ def _set_help_default(parser: argparse.ArgumentParser) -> None:
         parser.print_help()
 
     parser.set_defaults(func=_show_help)
+
+
+def _add_shape_aware_conformer_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--shape-aware-conformer",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "For 3-connecting monomers, select the conformer whose motif "
+            "arrangement best matches the trigonal planar node (ensemble floor: "
+            "cofkit.chem.rdkit.SHAPE_SELECTION_MIN_CONFORMERS) instead of the "
+            "lowest-energy conformer. Enabled by default; other connectivities "
+            "keep energy selection."
+        ),
+    )
 
 
 def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> None:
@@ -105,6 +128,7 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
             "as a warning instead."
         ),
     )
+    _add_shape_aware_conformer_argument(parser)
     parser.add_argument(
         "--topology",
         action="append",
@@ -199,6 +223,7 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
             target_dimensionality=args.target_dimensionality,
             topology_ids=tuple(args.topology),
             shape_aware_topology_filter=getattr(args, "shape_aware_topology_filter", True),
+            shape_aware_conformer=getattr(args, "shape_aware_conformer", True),
             use_indexed_topology_defaults=args.use_indexed_topology_defaults,
             stacking_ids=tuple(args.stacking),
             rdkit_num_conformers=args.num_conformers,
@@ -278,6 +303,7 @@ def _add_single_pair_parser(subparsers) -> None:
             "as a warning instead."
         ),
     )
+    _add_shape_aware_conformer_argument(parser)
     parser.add_argument(
         "--topology",
         action="append",
@@ -320,6 +346,49 @@ def _add_single_pair_parser(subparsers) -> None:
     )
     _add_geometry_repair_arguments(parser)
     parser.set_defaults(func=_run_single_pair)
+
+
+def _motif_count_for_shape_gate(smiles: str, motif_kind: str) -> int | None:
+    """Cheap pre-build motif count for the shape-aware conformer gate.
+
+    Returns ``None`` (with a stderr warning) when the count fails; a failed
+    pre-count must not block the build since build_rdkit_monomer re-validates.
+    """
+    try:
+        return detect_rdkit_motif_count(smiles, motif_kind)
+    except (RuntimeError, ValueError) as exc:
+        print(
+            f"warning: motif pre-count failed ({type(exc).__name__}: {exc}); "
+            "disabling shape-aware conformer selection",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _build_single_pair_monomer(
+    args: argparse.Namespace,
+    monomer_id: str,
+    monomer_name: str | None,
+    smiles: str,
+    motif_kind: str,
+):
+    shape_aware = False
+    if getattr(args, "shape_aware_conformer", True):
+        motif_count = _motif_count_for_shape_gate(smiles, motif_kind)
+        shape_aware = (
+            motif_count is not None
+            and SHAPE_SELECTION_MIN_MOTIFS <= motif_count <= SHAPE_SELECTION_VALIDATED_MAX_MOTIFS
+        )
+    return build_rdkit_monomer(
+        monomer_id,
+        monomer_name or monomer_id,
+        smiles,
+        motif_kind,
+        num_conformers=(
+            max(args.num_conformers, SHAPE_SELECTION_MIN_CONFORMERS) if shape_aware else args.num_conformers
+        ),
+        select_conformer_by_motif_shape=shape_aware,
+    )
 
 
 def _run_single_pair(args: argparse.Namespace) -> None:
@@ -391,20 +460,8 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         print(f"warning: {warning}", file=sys.stderr)
 
     try:
-        first = build_rdkit_monomer(
-            args.first_id,
-            args.first_name or args.first_id,
-            args.first_smiles,
-            first_kind,
-            num_conformers=args.num_conformers,
-        )
-        second = build_rdkit_monomer(
-            args.second_id,
-            args.second_name or args.second_id,
-            args.second_smiles,
-            second_kind,
-            num_conformers=args.num_conformers,
-        )
+        first = _build_single_pair_monomer(args, args.first_id, args.first_name, args.first_smiles, first_kind)
+        second = _build_single_pair_monomer(args, args.second_id, args.second_name, args.second_smiles, second_kind)
     except AromaticityRestoreError as exc:
         raise SystemExit(f"error: {exc}") from exc
     _warn_monomer_geometry_degradation(first)
@@ -505,6 +562,17 @@ def _add_ring_forming_parser(subparsers) -> None:
     parser.add_argument("--topology", default="hcb", help="Three-connected product topology. Default: hcb.")
     parser.add_argument("--num-conformers", type=int, default=4)
     parser.add_argument(
+        "--shape-aware-conformer",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "For precursors with 3+ motifs, select the conformer whose motif "
+            "arrangement best matches the regular topology node (ensemble floor: "
+            "cofkit.chem.rdkit.SHAPE_SELECTION_MIN_CONFORMERS) "
+            "instead of the lowest-energy conformer. Enabled by default."
+        ),
+    )
+    parser.add_argument(
         "--layer-spacing",
         type=float,
         default=DEFAULT_MONOLAYER_C_ANGSTROM,
@@ -571,13 +639,21 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         raise SystemExit(
             f"template {args.template_id!r} requires motif kind {profile.ring_participant_motif_kind!r}"
         )
+    shape_aware = False
+    if args.shape_aware_conformer:
+        motif_count = _motif_count_for_shape_gate(args.smiles, motif_kind)
+        # Ring-forming only supports 2D topologies, where the planar regular
+        # target is always correct, so the gate has no upper motif-count bound
+        # (unlike the binary-bridge paths).
+        shape_aware = motif_count is not None and motif_count >= SHAPE_SELECTION_MIN_MOTIFS
     try:
         monomer = build_rdkit_monomer(
             args.monomer_id,
             args.monomer_name or args.monomer_id,
             args.smiles,
             motif_kind,
-            num_conformers=args.num_conformers,
+            num_conformers=max(args.num_conformers, SHAPE_SELECTION_MIN_CONFORMERS) if shape_aware else args.num_conformers,
+            select_conformer_by_motif_shape=shape_aware,
         )
     except AromaticityRestoreError as exc:
         raise SystemExit(f"error: {exc}") from exc
@@ -674,6 +750,14 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
             row["ring_validation"]["classification"],
             row["cif_path"] or "-",
         )
+        if row["ring_validation"]["classification"] != "accepted":
+            reasons = row["ring_validation"].get("reasons") or ()
+            detail = "; ".join(str(reason) for reason in reasons) or "no reasons recorded"
+            print(
+                f"warning: candidate {row['candidate_id']!r} failed ring geometry validation "
+                f"({detail}); the CIF was still written",
+                file=sys.stderr,
+            )
     print("summary:", summary_path)
 
 
@@ -720,6 +804,8 @@ def _monomer_geometry_summary(monomer) -> dict[str, object]:
         "forcefield": metadata.get("forcefield"),
         "forcefield_optimization_status": metadata.get("forcefield_optimization_status"),
         "forcefield_diagnostics": list(metadata.get("forcefield_diagnostics", ())),
+        "conformer_selection": metadata.get("conformer_selection"),
+        "selected_conformer_shape_score": metadata.get("selected_conformer_shape_score"),
     }
 
 

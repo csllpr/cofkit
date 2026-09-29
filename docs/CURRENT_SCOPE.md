@@ -12,7 +12,7 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 - topology repository/index support for RCSR CGD-style bundles, with bundled topology data preferred by default and builtin fallback hints
 - a discrete assignment layer for motif-to-reaction event matching
 - registry-backed motif metadata plus lightweight geometric motif detection for the currently supported fallback kinds
-- RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazine, hydrazide, boronic acid, nitrile, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention in the standard install
+- RDKit/SMARTS-backed monomer construction for amine, aldehyde, hydrazine, hydrazide, boronic acid, nitrile, catechol, keto aldehyde, and activated-methylene motifs, including conformer generation and bond retention in the standard install; conformer selection is energy-based by default, with shape-aware selection (regular-planar motif arrangement) applied automatically to 3-connecting monomers in the binary-bridge CLI/batch paths and to 3+-motif ring-forming precursors (`--no-shape-aware-conformer` opts out)
 - initial linkage geometry helpers for bridge-forming reactions
 - initial periodic embedding for monomer instances from topology hints and motif/reaction heuristics, including oblique `hcb` cells for asymmetric `3+3` and `3+2` cases when a symmetric hexagonal metric is too restrictive
 - a dependency-free continuous optimization pass for seed cell/pose refinement after embedding (lateral cell and poses; orientation moves rotate about the bridge attachment point they align and blend all of a monomer's incident events; the c axis is intentionally untouched because the pass runs pre-stacking)

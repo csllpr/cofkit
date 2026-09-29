@@ -2534,5 +2534,51 @@ class DegenerateVectorPolicyTests(unittest.TestCase):
         self.assertIn("degenerate", str(ctx.exception))
 
 
+@unittest.skipIf(Chem is None, "RDKit is not available")
+class ShapeAwareConformerGateTests(unittest.TestCase):
+    """Universal activation of shape-aware conformer selection, gated to
+    trigonal (3-connecting) monomers by A/B evidence on the default monomer
+    library (2026-09-29): flexible tritopic monomers build clash-free hcb
+    structures where energy-only selection produced hydrogen-clash warnings,
+    while tetrahedral 4-connecting monomers (dia) got mildly worse because no
+    planar conformer exists for a tetrahedral node."""
+
+    TAM = "Nc1ccc(C(c2ccc(N)cc2)(c2ccc(N)cc2)c2ccc(N)cc2)cc1"
+
+    def _build(self, smiles, kind, connectivity, **config_kwargs):
+        generator = BatchStructureGenerator(BatchGenerationConfig(write_cif=False, **config_kwargs))
+        record = BatchMonomerRecord(
+            id="probe",
+            name="probe",
+            smiles=smiles,
+            motif_kind=kind,
+            expected_connectivity=connectivity,
+        )
+        built = generator.build_monomer(record)
+        self.assertTrue(built.ok, getattr(built, "error", None))
+        return built.monomer
+
+    def test_tritopic_monomer_gets_shape_selected_conformer(self):
+        monomer = self._build("Nc1cc(N)cc(N)c1", "amine", 3)
+        self.assertEqual(monomer.metadata["conformer_selection"], "motif_shape")
+        self.assertIn("selected_conformer_shape_score", monomer.metadata)
+
+    def test_tetratopic_monomer_keeps_energy_selection(self):
+        # Tetrahedral TAM: the planar regular-polygon target is wrong for a
+        # tetrahedral node, so 4-connecting monomers stay on energy selection.
+        monomer = self._build(self.TAM, "amine", 4)
+        self.assertEqual(monomer.metadata["conformer_selection"], "energy")
+        self.assertNotIn("selected_conformer_shape_score", monomer.metadata)
+
+    def test_ditopic_monomer_keeps_energy_selection(self):
+        monomer = self._build("Nc1ccc(N)cc1", "amine", 2)
+        self.assertEqual(monomer.metadata["conformer_selection"], "energy")
+
+    def test_opt_out_keeps_energy_selection_for_tritopic(self):
+        monomer = self._build("Nc1cc(N)cc(N)c1", "amine", 3, shape_aware_conformer=False)
+        self.assertEqual(monomer.metadata["conformer_selection"], "energy")
+        self.assertNotIn("selected_conformer_shape_score", monomer.metadata)
+
+
 if __name__ == "__main__":
     unittest.main()

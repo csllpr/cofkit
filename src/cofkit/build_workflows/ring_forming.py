@@ -19,9 +19,11 @@ from ..geometry import (
     norm,
     rotation_from_frame_to_axes,
     scale,
+    smallest_covariance_axis,
     sub,
 )
 from ..indexed_topology_layouts import expand_indexed_topology
+from ..chem.rdkit import SHAPE_SELECTION_MIN_CONFORMERS
 from ..model import (
     AssemblyState,
     Candidate,
@@ -60,11 +62,9 @@ _PLACEMENT_TOLERANCE_RELATIVE = 2.0e-5
 # motif does not meaningfully point at the edge and the assignment fails.
 _MOTIF_TOWARD_EDGE_MIN_OFFSET_ANGSTROM = 0.1
 
-# Heuristic — pending calibration: cap on Jacobi rotation sweeps in the 3x3
-# covariance eigensolve (_smallest_covariance_axis). Each sweep annihilates
-# the largest remaining off-diagonal element; 24 sweeps is far more than a
-# 3x3 needs to reach the 1e-12 convergence break below.
-_JACOBI_MAX_SWEEPS = 24
+# SHAPE_SELECTION_MIN_CONFORMERS (the ensemble floor for shape-aware conformer
+# selection) is owned by cofkit.chem.rdkit and re-exported here for the
+# ring-forming consumers that historically imported it from this module.
 
 
 @dataclass(frozen=True)
@@ -739,7 +739,7 @@ def _monomer_normal(monomer: MonomerSpec) -> Vec3:
         for symbol, position in zip(monomer.atom_symbols, monomer.atom_positions)
         if symbol != "H"
     )
-    fitted_normal = _smallest_covariance_axis(heavy_atom_positions)
+    fitted_normal = smallest_covariance_axis(heavy_atom_positions)
     if fitted_normal is not None:
         return fitted_normal
     normals = tuple(motif.frame.normal for motif in monomer.motifs if norm(motif.frame.normal) > 1e-8)
@@ -753,58 +753,11 @@ def _monomer_normal(monomer: MonomerSpec) -> Vec3:
     return summed if norm(summed) > 1e-8 else normals[0]
 
 
-def _smallest_covariance_axis(points: tuple[Vec3, ...]) -> Vec3 | None:
-    """Returns the least-variance axis of a small point cloud via Jacobi rotations."""
-    if len(points) < 3:
-        return None
-    center = centroid(points)
-    covariance = [[0.0, 0.0, 0.0] for _ in range(3)]
-    for point in points:
-        offset = sub(point, center)
-        for row in range(3):
-            for column in range(3):
-                covariance[row][column] += offset[row] * offset[column]
-    eigenvectors = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
-    for _ in range(_JACOBI_MAX_SWEEPS):
-        row, column = max(((0, 1), (0, 2), (1, 2)), key=lambda pair: abs(covariance[pair[0]][pair[1]]))
-        if abs(covariance[row][column]) < 1e-12:
-            break
-        angle = 0.5 * atan2(
-            2.0 * covariance[row][column],
-            covariance[column][column] - covariance[row][row],
-        )
-        cosine = cos(angle)
-        sine = sin(angle)
-        rotation = [[1.0 if i == j else 0.0 for j in range(3)] for i in range(3)]
-        rotation[row][row] = cosine
-        rotation[column][column] = cosine
-        rotation[row][column] = sine
-        rotation[column][row] = -sine
-        covariance = _matrix_multiply(_matrix_transpose(rotation), _matrix_multiply(covariance, rotation))
-        eigenvectors = _matrix_multiply(eigenvectors, rotation)
-    axis_index = min(range(3), key=lambda index: covariance[index][index])
-    axis = tuple(eigenvectors[row][axis_index] for row in range(3))
-    if norm(axis) < 1e-8:
-        return None
-    normalized = scale(axis, 1.0 / norm(axis))
-    return scale(normalized, -1.0) if normalized[2] < 0.0 else normalized
-
-
-def _matrix_multiply(left, right):
-    return [
-        [sum(left[row][inner] * right[inner][column] for inner in range(3)) for column in range(3)]
-        for row in range(3)
-    ]
-
-
-def _matrix_transpose(matrix):
-    return [[matrix[column][row] for column in range(3)] for row in range(3)]
-
-
 __all__ = [
     "IMPLEMENTATION_STATUS",
     "RingBuildResult",
     "RingFormationConfig",
     "RingFormingStructureGenerator",
+    "SHAPE_SELECTION_MIN_CONFORMERS",
     "WORKFLOW_ID",
 ]
