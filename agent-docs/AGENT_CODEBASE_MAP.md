@@ -31,6 +31,14 @@ Then go straight to the module that matches the task.
   - Direct project-style API via `COFEngine`.
 - [src/cofkit/batch.py](../src/cofkit/batch.py)
   - Practical execution layer for topology-guided single-pair and batch generation.
+  - Failure-isolation seams: per-candidate realization/CIF-export boundary
+    `_export_candidate_cif_guarded` (status `export-failed`, staged artifacts
+    removed), last-resort per-pair boundary `_run_batch_pair_task` /
+    `_failed_pair_task_result` (status `pair-task-failed`, also applied to
+    worker task exceptions in `_collect_parallel_pair_results` — pool-level
+    failures keep the discard-and-rerun-in-threads fallback), and the
+    run-level `_require_writable_output_root` probe that aborts on an
+    unwritable output root before any record is attempted.
 
 ## Core chemistry seams
 
@@ -79,7 +87,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/batch_models.py](../src/cofkit/batch_models.py)
   - Neutral batch-facing data classes.
   - Use these instead of adding new ad hoc summary dictionaries.
-  - `BatchPairSummary` carries typed validation accessors (`validation_classification`, `validation_coverage`, `unmeasured_required_checks`) over the serialized `metadata["validation"]` record; `BatchRunSummary.validation_counts` counts validation classifications per run.
+  - `BatchPairSummary` carries typed validation accessors (`validation_classification`, `validation_coverage`, `unmeasured_required_checks`) over the serialized `metadata["validation"]` record; `BatchRunSummary.validation_counts` counts validation classifications per run, and `BatchRunSummary.record_failures` aggregates every non-`ok` manifest record as structure id → `TypeName: message` (surfaced in `summary.md` and the console/JSON summaries).
 
 ## Topology seams
 

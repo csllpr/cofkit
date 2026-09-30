@@ -2890,5 +2890,277 @@ class ShapeAwareConformerGateTests(unittest.TestCase):
         self.assertNotIn("selected_conformer_shape_score", monomer.metadata)
 
 
+@unittest.skipIf(Chem is None, "RDKit is not available")
+class BatchFailureIsolationTests(unittest.TestCase):
+    """A09 / T2-1: realization/export failures are isolated per record.
+
+    A failure in the first candidate/pair must be recorded against that
+    record (``TypeName: message``), its partial staging output removed, and
+    later pairs must still export. An unwritable output root is a run-level
+    unrecoverable failure raised before any record is attempted.
+    """
+
+    def _write_tiny_library(self, root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "amines_count_3.txt").write_text(f"smiles\n{TAPB}\n{TAPB}\n", encoding="utf-8")
+        (root / "aldehydes_count_3.txt").write_text(f"smiles\n{TFB}\n{TFB}\n", encoding="utf-8")
+
+    def _make_generator(self, **overrides) -> BatchStructureGenerator:
+        config = BatchGenerationConfig(
+            **{
+                "rdkit_num_conformers": 1,
+                "max_workers": 1,
+                "single_node_topology_ids": ("hcb",),
+                **overrides,
+            }
+        )
+        return BatchStructureGenerator(config)
+
+    @staticmethod
+    def _manifest_rows(output_dir: Path) -> list[dict]:
+        manifest_path = output_dir / "manifest.jsonl"
+        return [
+            json.loads(line)
+            for line in manifest_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    @staticmethod
+    def _cif_tree_files(output_dir: Path) -> list[Path]:
+        cifs_dir = output_dir / "cifs"
+        if not cifs_dir.is_dir():
+            return []
+        return [path for path in cifs_dir.rglob("*") if path.is_file()]
+
+    def _assert_single_failure_reconciled(self, summary, output_dir: Path, error_text: str, status: str):
+        rows = self._manifest_rows(output_dir)
+        self.assertEqual(len(rows), 4)
+        failed_rows = [row for row in rows if row["status"] == status]
+        self.assertEqual(len(failed_rows), 1)
+        self.assertEqual(failed_rows[0]["metadata"]["error"], error_text)
+        ok_rows = [row for row in rows if row["status"] == "ok"]
+        self.assertEqual(len(ok_rows), 3)
+        # Summary totals reconcile with the manifest: every attempted pair is
+        # recorded exactly once and only the failed record is unexported.
+        self.assertEqual(summary.attempted_pairs, 4)
+        self.assertEqual(summary.successful_pairs, 3)
+        self.assertEqual(summary.successful_structures, 3)
+        self.assertEqual(summary.cifs_written, 3)
+        failed_id = failed_rows[0]["structure_id"]
+        self.assertEqual(summary.record_failures.get(failed_id), error_text)
+        # No partial staging output may survive as an apparent export.
+        self.assertFalse((output_dir / "cifs" / ".staging").exists())
+        self.assertEqual(
+            [path for path in self._cif_tree_files(output_dir) if failed_id in path.name],
+            [],
+        )
+        self.assertEqual(len(list(output_dir.glob("cifs/*/*.cif"))), 3)
+        summary_text = (output_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertIn("## Record failures", summary_text)
+        self.assertIn(error_text, summary_text)
+
+    def test_serial_realization_failure_leaves_later_pairs_exported(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator()
+
+            original_write = generator.cif_writer.write_candidate
+            calls = {"count": 0}
+
+            def flaky_write(path, *args, **kwargs):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise RuntimeError("injected realization failure")
+                return original_write(path, *args, **kwargs)
+
+            with patch.object(generator.cif_writer, "write_candidate", flaky_write):
+                summary = generator.run_binary_bridge_batch(root / "input", root / "output")
+
+            self._assert_single_failure_reconciled(
+                summary,
+                root / "output",
+                "RuntimeError: injected realization failure",
+                "export-failed",
+            )
+
+    def test_serial_validation_failure_cleans_partial_staging(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator()
+
+            original_validate = generator.structure_validator.validate_manifest_record
+            calls = {"count": 0}
+
+            def flaky_validate(record):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise ValueError("injected validation failure")
+                return original_validate(record)
+
+            with patch.object(generator.structure_validator, "validate_manifest_record", flaky_validate):
+                summary = generator.run_binary_bridge_batch(root / "input", root / "output")
+
+            self._assert_single_failure_reconciled(
+                summary,
+                root / "output",
+                "ValueError: injected validation failure",
+                "export-failed",
+            )
+
+    def test_single_candidate_path_export_failure_is_recorded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator(enumerate_all_topologies=False)
+
+            original_write = generator.cif_writer.write_candidate
+            calls = {"count": 0}
+
+            def flaky_write(path, *args, **kwargs):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise RuntimeError("injected realization failure")
+                return original_write(path, *args, **kwargs)
+
+            with patch.object(generator.cif_writer, "write_candidate", flaky_write):
+                summary = generator.run_binary_bridge_batch(root / "input", root / "output")
+
+            self._assert_single_failure_reconciled(
+                summary,
+                root / "output",
+                "RuntimeError: injected realization failure",
+                "export-failed",
+            )
+
+    def test_pair_task_backstop_records_failure_and_removes_orphans(self):
+        # An exception that escapes the per-candidate export boundary (here
+        # simulated after a partial staging write) is caught per pair, the
+        # orphan CIF is removed, and the run continues.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator()
+
+            original = BatchStructureGenerator.generate_pair_candidates
+            exploded = {"done": False}
+
+            def exploding(self, first_record, second_record, *, out_dir=None, write_cif=None, cif_export_start_index=0):
+                if not exploded["done"]:
+                    exploded["done"] = True
+                    assert out_dir is not None
+                    staging = Path(out_dir) / ".staging"
+                    staging.mkdir(parents=True, exist_ok=True)
+                    orphan = staging / f"{first_record.id}__{second_record.id}__hcb.cif"
+                    orphan.write_text("partial cif\n", encoding="utf-8")
+                    raise RuntimeError("injected pair task failure")
+                return original(
+                    self,
+                    first_record,
+                    second_record,
+                    out_dir=out_dir,
+                    write_cif=write_cif,
+                    cif_export_start_index=cif_export_start_index,
+                )
+
+            with patch.object(BatchStructureGenerator, "generate_pair_candidates", exploding):
+                summary = generator.run_binary_bridge_batch(root / "input", root / "output")
+
+            self._assert_single_failure_reconciled(
+                summary,
+                root / "output",
+                "RuntimeError: injected pair task failure",
+                "pair-task-failed",
+            )
+
+    def test_worker_task_exception_survives_to_parent_and_is_recorded(self):
+        # Process-pool path: a worker task exception reaches the parent with
+        # its type name and message, is recorded against that pair, and the
+        # remaining pair results are still collected.
+        import cofkit.batch as batch_module
+
+        class _TaskFailingMapIterator:
+            def __init__(self, fn, tasks):
+                self._fn = fn
+                self._tasks = tuple(tasks)
+                self._index = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self._index >= len(self._tasks):
+                    raise StopIteration
+                index = self._index
+                self._index += 1
+                if index == 0:
+                    raise RuntimeError("simulated worker task exception")
+                return self._fn(self._tasks[index])
+
+        class _TaskFailingExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def map(self, fn, tasks):
+                return _TaskFailingMapIterator(fn, tasks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator(max_workers=2, write_cif=False)
+
+            batch_module._init_batch_process_worker(generator.config, generator.reaction_library)
+            try:
+                with patch("cofkit.batch.ProcessPoolExecutor", _TaskFailingExecutor):
+                    summary = generator.run_binary_bridge_batch(
+                        root / "input",
+                        root / "output",
+                        write_cif=False,
+                    )
+            finally:
+                batch_module._PROCESS_BATCH_GENERATOR = None
+
+            rows = self._manifest_rows(root / "output")
+            self.assertEqual(len(rows), 4)
+            failed_rows = [row for row in rows if row["status"] == "pair-task-failed"]
+            self.assertEqual(len(failed_rows), 1)
+            self.assertEqual(
+                failed_rows[0]["metadata"]["error"],
+                "RuntimeError: simulated worker task exception",
+            )
+            self.assertEqual(summary.attempted_pairs, 4)
+            self.assertEqual(summary.successful_pairs, 3)
+            self.assertEqual(summary.successful_structures, 3)
+            failed_id = failed_rows[0]["structure_id"]
+            self.assertEqual(
+                summary.record_failures.get(failed_id),
+                "RuntimeError: simulated worker task exception",
+            )
+
+    def test_unwritable_output_root_fails_before_any_record(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            output_dir = root / "output"
+            output_dir.mkdir()
+            # A directory where the write probe must land makes the probe fail
+            # regardless of the effective uid (chmod is bypassed by root).
+            (output_dir / ".cofkit-write-probe").mkdir()
+            generator = self._make_generator()
+
+            with self.assertRaises(OSError) as ctx:
+                generator.run_binary_bridge_batch(root / "input", output_dir)
+
+            self.assertIn("not writable", str(ctx.exception))
+            self.assertFalse((output_dir / "manifest.jsonl").exists())
+            self.assertEqual(self._cif_tree_files(output_dir), [])
+
 if __name__ == "__main__":
     unittest.main()

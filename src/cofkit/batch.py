@@ -625,25 +625,19 @@ class BatchStructureGenerator:
             effective_write_cif = self.config.write_cif if write_cif is None else write_cif
             cif_path = None
             validation_metadata = None
+            export_error = None
             export_blocked = bool(summary.metadata.get("hard_hard_invalid_reasons"))
             if effective_write_cif and out_dir is not None and not export_blocked:
                 amine = self.build_monomer(amine_record)
                 aldehyde = self.build_monomer(aldehyde_record)
                 assert amine.monomer is not None
                 assert aldehyde.monomer is not None
-                cif_path, validation_metadata = self._write_classified_candidate_cif(
+                cif_path, validation_metadata, export_error = self._export_candidate_cif_guarded(
                     out_dir=out_dir,
                     structure_id=summary.structure_id,
                     candidate=best_candidate,
                     monomer_specs=(amine.monomer, aldehyde.monomer),
                     provisional_summary=summary,
-                )
-                validation_metadata = self._maybe_repair_geometry_metadata(
-                    cif_path=cif_path,
-                    validation_metadata=validation_metadata,
-                    summary=summary,
-                    structure_id=summary.structure_id,
-                    out_dir=out_dir,
                 )
             elif export_blocked:
                 hard_hard_metrics = summary.metadata.get("hard_hard_invalid_metrics", {})
@@ -651,7 +645,13 @@ class BatchStructureGenerator:
                     reasons=tuple(summary.metadata.get("hard_hard_invalid_reasons", ())),
                     metrics=hard_hard_metrics if isinstance(hard_hard_metrics, Mapping) else {},
                 )
-            if cif_path is not None:
+            if export_error is not None:
+                summary = replace(
+                    summary,
+                    status="export-failed",
+                    metadata={**dict(summary.metadata), "error": export_error},
+                )
+            elif cif_path is not None:
                 summary = replace(
                     summary,
                     cif_path=cif_path,
@@ -754,21 +754,15 @@ class BatchStructureGenerator:
             effective_write_cif = self.config.write_cif if write_cif is None else write_cif
             cif_path = None
             validation_metadata = None
+            export_error = None
             export_blocked = bool(summary.metadata.get("hard_hard_invalid_reasons"))
             if effective_write_cif and out_dir is not None and not export_blocked:
-                cif_path, validation_metadata = self._write_classified_candidate_cif(
+                cif_path, validation_metadata, export_error = self._export_candidate_cif_guarded(
                     out_dir=out_dir,
                     structure_id=summary.structure_id,
                     candidate=best_candidate,
                     monomer_specs=(first, second),
                     provisional_summary=summary,
-                )
-                validation_metadata = self._maybe_repair_geometry_metadata(
-                    cif_path=cif_path,
-                    validation_metadata=validation_metadata,
-                    summary=summary,
-                    structure_id=summary.structure_id,
-                    out_dir=out_dir,
                 )
             elif export_blocked:
                 hard_hard_metrics = summary.metadata.get("hard_hard_invalid_metrics", {})
@@ -776,7 +770,13 @@ class BatchStructureGenerator:
                     reasons=tuple(summary.metadata.get("hard_hard_invalid_reasons", ())),
                     metrics=hard_hard_metrics if isinstance(hard_hard_metrics, Mapping) else {},
                 )
-            if cif_path is not None:
+            if export_error is not None:
+                summary = replace(
+                    summary,
+                    status="export-failed",
+                    metadata={**dict(summary.metadata), "error": export_error},
+                )
+            elif cif_path is not None:
                 summary = replace(
                     summary,
                     cif_path=cif_path,
@@ -841,7 +841,11 @@ class BatchStructureGenerator:
                 auto_detect=auto_detect_libraries,
             )
         output_root = Path(output_dir)
-        output_root.mkdir(parents=True, exist_ok=True)
+        effective_write_cif = self.config.write_cif if write_cif is None else write_cif
+        # An unwritable output root is an unrecoverable run failure, not a
+        # per-record error: fail promptly here instead of recording the same
+        # OSError against every record.
+        self._require_writable_output_root(output_root, write_cif=effective_write_cif)
         manifest_path = output_root / "manifest.jsonl"
 
         all_records = tuple(record for records in libraries.values() for record in records)
@@ -883,7 +887,7 @@ class BatchStructureGenerator:
         geometry_repair_counts: dict[str, int] = {}
         geometry_repair_revalidation_counts: dict[str, int] = {}
         top_results: list[BatchPairSummary] = []
-        effective_write_cif = self.config.write_cif if write_cif is None else write_cif
+        record_failures: dict[str, str] = {}
         parallelize_pairs = (
             self.config.max_workers > 1
             and len(pair_tasks) > 1
@@ -905,6 +909,7 @@ class BatchStructureGenerator:
                         geometry_repair_counts=geometry_repair_counts,
                         geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
                         geometry_repair_failures=repair_failures,
+                        record_failures=record_failures,
                     )
                     attempted_structures += pair_attempted_structures
                     successful_structures += sum(1 for summary in summaries if summary.status == "ok")
@@ -925,6 +930,7 @@ class BatchStructureGenerator:
                         geometry_repair_counts=geometry_repair_counts,
                         geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
                         geometry_repair_failures=repair_failures,
+                        record_failures=record_failures,
                     )
                     attempted_structures += pair_attempted_structures
                     successful_structures += sum(1 for summary in summaries if summary.status == "ok")
@@ -941,6 +947,7 @@ class BatchStructureGenerator:
             built_monomers=sum(1 for result in built.values() if result.ok),
             failed_monomers=len(build_failures),
             build_failures={key: value for key, value in build_failures.items() if value is not None},
+            record_failures=record_failures,
             mode_counts=mode_counts,
             topology_counts=topology_counts,
             validation_counts=validation_counts,
@@ -968,6 +975,29 @@ class BatchStructureGenerator:
     def _supports_process_pair_pool(self) -> bool:
         return self.smiles_monomer_builder is build_rdkit_monomer
 
+    @staticmethod
+    def _require_writable_output_root(output_root: Path, *, write_cif: bool) -> None:
+        """Run-level precondition checked before any record is attempted.
+
+        An unwritable output root (or CIF directory when exports are enabled)
+        is an unrecoverable run failure: raise immediately rather than letting
+        every record fail individually with the same OSError.
+        """
+        directories = [output_root]
+        if write_cif:
+            directories.append(output_root / "cifs")
+        for directory in directories:
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                probe = directory / ".cofkit-write-probe"
+                probe.write_text("", encoding="utf-8")
+                probe.unlink()
+            except OSError as exc:
+                raise OSError(
+                    f"batch output directory {directory} is not writable ({exc}); "
+                    "aborting the run before attempting any records"
+                ) from exc
+
     def _collect_parallel_pair_results(
         self,
         pair_tasks: tuple[_BatchPairTask, ...],
@@ -987,7 +1017,22 @@ class BatchStructureGenerator:
                     initializer=_init_batch_process_worker,
                     initargs=(self.config, self.reaction_library),
                 ) as executor:
-                    return tuple(executor.map(_run_batch_pair_task_in_process, pair_tasks))
+                    mapped = executor.map(_run_batch_pair_task_in_process, pair_tasks)
+                    results: list[tuple[tuple[BatchPairSummary, ...], int]] = []
+                    while True:
+                        try:
+                            results.append(next(mapped))
+                        except StopIteration:
+                            break
+                        except (OSError, BrokenProcessPool):
+                            # Pool-level failure: discard the partial results
+                            # and re-execute every task in the thread pool.
+                            raise
+                        except Exception as exc:
+                            # One pair task raised in the worker: record the
+                            # failure against that pair and keep collecting.
+                            results.append(self._failed_pair_task_result(pair_tasks[len(results)], exc))
+                    return tuple(results)
             except (NotImplementedError, PermissionError, OSError, BrokenProcessPool):
                 pass
         with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
@@ -1013,25 +1058,107 @@ class BatchStructureGenerator:
         *,
         cif_export_start_index: int = 0,
     ) -> tuple[tuple[BatchPairSummary, ...], int]:
-        if self.config.enumerate_all_topologies:
-            summaries, _candidates, pair_attempted_structures = self.generate_pair_candidates(
+        # Last-resort per-pair isolation boundary (finer per-candidate export
+        # failures are caught in `_export_candidate_cif_guarded`): no exception
+        # from one pair may abort the serial loop or escape a pool worker.
+        try:
+            if self.config.enumerate_all_topologies:
+                summaries, _candidates, pair_attempted_structures = self.generate_pair_candidates(
+                    task.first_record,
+                    task.second_record,
+                    out_dir=task.out_dir,
+                    write_cif=task.write_cif,
+                    cif_export_start_index=cif_export_start_index,
+                )
+                return summaries, pair_attempted_structures
+
+            summary, _candidate = self.generate_pair_candidate(
                 task.first_record,
                 task.second_record,
                 out_dir=task.out_dir,
                 write_cif=task.write_cif,
-                cif_export_start_index=cif_export_start_index,
+                cif_export_index=cif_export_start_index + 1,
             )
-            return summaries, pair_attempted_structures
+            pair_attempted_structures = 1 if summary.status == "ok" else 0
+            return (summary,), pair_attempted_structures
+        except Exception as exc:
+            return self._failed_pair_task_result(task, exc)
 
-        summary, _candidate = self.generate_pair_candidate(
-            task.first_record,
-            task.second_record,
-            out_dir=task.out_dir,
-            write_cif=task.write_cif,
-            cif_export_index=cif_export_start_index + 1,
+    def _failed_pair_task_result(
+        self,
+        task: _BatchPairTask,
+        exc: Exception,
+    ) -> tuple[tuple[BatchPairSummary, ...], int]:
+        """Convert an escaped pair-task exception into a recorded failure.
+
+        The exception is recorded against the pair as ``TypeName: message``
+        and any partially written CIF artifacts for the pair are removed so
+        they cannot masquerade as successful exports.
+        """
+        error_text = f"{type(exc).__name__}: {exc}"
+        pair_id = f"{task.first_record.id}__{task.second_record.id}"
+        print(
+            f"warning: batch pair {pair_id} failed ({error_text}); "
+            "continuing with the remaining pairs.",
+            file=sys.stderr,
         )
-        pair_attempted_structures = 1 if summary.status == "ok" else 0
-        return (summary,), pair_attempted_structures
+        if task.out_dir is not None:
+            self._discard_failed_pair_artifacts(
+                Path(task.out_dir),
+                task.first_record.id,
+                task.second_record.id,
+            )
+        summary = BatchPairSummary(
+            structure_id=pair_id,
+            pair_id=pair_id,
+            pair_mode="unresolved",
+            status="pair-task-failed",
+            reactant_a_record_id=task.first_record.id,
+            reactant_b_record_id=task.second_record.id,
+            reactant_a_connectivity=task.first_record.expected_connectivity,
+            reactant_b_connectivity=task.second_record.expected_connectivity,
+            metadata={"error": error_text},
+        )
+        return (summary,), 0
+
+    def _discard_failed_export_artifacts(self, out_dir: Path, structure_id: str) -> None:
+        """Remove partially staged CIF output for one failed export."""
+        for path in (
+            out_dir / ".staging" / f"{structure_id}.cif",
+            out_dir / ".staging" / f"{structure_id}.softrelax-tmp.cif",
+            out_dir / f"{structure_id}.cif",
+            out_dir / f"{structure_id}.softrelax-tmp.cif",
+        ):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _discard_failed_pair_artifacts(self, out_dir: Path, first_id: str, second_id: str) -> None:
+        """Best-effort removal of CIF artifacts left by a failed pair task.
+
+        The exact structure ids are unknown when the task escaped its export
+        boundary, so every file carrying both record ids is removed: such a
+        file was never recorded in the manifest (results of a failed task are
+        discarded) and must not be mistaken for a successful export.
+        """
+        directories = [out_dir / ".staging", out_dir]
+        if self.config.separate_cif_outputs_by_validation:
+            directories.extend(
+                out_dir / bucket
+                for bucket in ("valid", "warning", "needs_optimization", "invalid", "unvalidated")
+            )
+        for directory in directories:
+            try:
+                entries = list(directory.iterdir())
+            except OSError:
+                continue
+            for path in entries:
+                if path.is_file() and first_id in path.name and second_id in path.name:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
 
     def _record_batch_pair_results(
         self,
@@ -1045,6 +1172,7 @@ class BatchStructureGenerator:
         geometry_repair_counts: dict[str, int],
         geometry_repair_revalidation_counts: dict[str, int],
         geometry_repair_failures,
+        record_failures: dict[str, str],
     ) -> int:
         pair_had_success = False
         for summary in summaries:
@@ -1067,8 +1195,26 @@ class BatchStructureGenerator:
                     revalidation_counts=geometry_repair_revalidation_counts,
                     failures=geometry_repair_failures,
                 )
+            else:
+                failure_text = self._record_failure_error(summary)
+                if failure_text is not None:
+                    record_failures[summary.structure_id] = failure_text
             manifest.write(json.dumps(self._json_safe(self._summary_to_dict(summary)), sort_keys=True) + "\n")
         return 1 if pair_had_success else 0
+
+    @staticmethod
+    def _record_failure_error(summary: BatchPairSummary) -> str | None:
+        error = summary.metadata.get("error")
+        if isinstance(error, str) and error:
+            return error
+        parts = [
+            str(summary.metadata.get(key))
+            for key in ("first_error", "second_error")
+            if summary.metadata.get(key)
+        ]
+        if parts:
+            return "; ".join(parts)
+        return None
 
     @staticmethod
     def _summary_sort_key(summary: BatchPairSummary) -> tuple[float, int, str]:
@@ -4512,6 +4658,51 @@ class BatchStructureGenerator:
             bucket = "unvalidated"
         return output_root / bucket / f"{structure_id}.cif"
 
+    def _export_candidate_cif_guarded(
+        self,
+        *,
+        out_dir: str | Path,
+        structure_id: str,
+        candidate: Candidate,
+        monomer_specs: Mapping[str, MonomerSpec] | Iterable[MonomerSpec],
+        provisional_summary: BatchPairSummary,
+    ) -> tuple[str | None, dict[str, object] | None, str | None]:
+        """Export and validate one candidate, isolating per-record failures.
+
+        Returns ``(cif_path, validation_metadata, error)``. A realization or
+        CIF-writing/validation failure is caught at this per-candidate
+        boundary, reported as a stderr warning, returned as
+        ``TypeName: message`` for the owning summary, and any partially staged
+        output for the structure is removed — one bad candidate must not abort
+        the pair or the batch run.
+        """
+        try:
+            cif_path, validation_metadata = self._write_classified_candidate_cif(
+                out_dir=out_dir,
+                structure_id=structure_id,
+                candidate=candidate,
+                monomer_specs=monomer_specs,
+                provisional_summary=provisional_summary,
+            )
+            if cif_path is not None:
+                validation_metadata = self._maybe_repair_geometry_metadata(
+                    cif_path=cif_path,
+                    validation_metadata=validation_metadata,
+                    summary=provisional_summary,
+                    structure_id=structure_id,
+                    out_dir=out_dir,
+                )
+            return cif_path, validation_metadata, None
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
+            print(
+                f"warning: CIF export failed for structure {structure_id} "
+                f"({error_text}); continuing with the remaining records.",
+                file=sys.stderr,
+            )
+            self._discard_failed_export_artifacts(Path(out_dir), structure_id)
+            return None, None, error_text
+
     def _write_classified_candidate_cif(
         self,
         *,
@@ -4861,6 +5052,7 @@ class BatchStructureGenerator:
             )
             cif_path = None
             validation_metadata = None
+            export_error = None
             if (
                 effective_write_cif
                 and out_dir is not None
@@ -4875,7 +5067,7 @@ class BatchStructureGenerator:
                         "cif_export_index": export_index,
                     },
                 )
-                cif_path, validation_metadata = self._write_classified_candidate_cif(
+                cif_path, validation_metadata, export_error = self._export_candidate_cif_guarded(
                     out_dir=out_dir,
                     structure_id=structure_id,
                     candidate=candidate,
@@ -4884,13 +5076,6 @@ class BatchStructureGenerator:
                 )
                 if cif_path is not None:
                     local_cifs_written += 1
-                    validation_metadata = self._maybe_repair_geometry_metadata(
-                        cif_path=cif_path,
-                        validation_metadata=validation_metadata,
-                        summary=provisional_summary,
-                        structure_id=structure_id,
-                        out_dir=out_dir,
-                    )
             elif hard_hard_invalid_reasons:
                 validation_metadata = self._hard_hard_validation_metadata(
                     reasons=hard_hard_invalid_reasons,
@@ -4898,7 +5083,19 @@ class BatchStructureGenerator:
                 )
 
             summary = provisional_summary
-            if cif_path is not None:
+            if export_error is not None:
+                # No CIF was exported: reset the assigned export index so it
+                # cannot be mistaken for a written file.
+                summary = replace(
+                    summary,
+                    status="export-failed",
+                    metadata={
+                        **dict(summary.metadata),
+                        "cif_export_index": 0,
+                        "error": export_error,
+                    },
+                )
+            elif cif_path is not None:
                 summary = replace(
                     summary,
                     cif_path=cif_path,
@@ -5036,6 +5233,19 @@ class BatchStructureGenerator:
                 "unmeasured_required_checks": list(REQUIRED_COVERAGE_CHECKS),
                 "coverage": {check: CHECK_MISSING_DATA for check in REQUIRED_COVERAGE_CHECKS},
                 "error": str(exc),
+            }
+        except Exception as exc:
+            # Post-repair revalidation is per-record metadata: a validator
+            # failure must not escape the export boundary and kill the record
+            # (the repaired CIF itself was already produced successfully).
+            return {
+                "classification": "unvalidated",
+                "is_valid": None,
+                "became_valid": None,
+                "scope": "optimized_cif_final_geometry_checks",
+                "unmeasured_required_checks": list(REQUIRED_COVERAGE_CHECKS),
+                "coverage": {check: CHECK_MISSING_DATA for check in REQUIRED_COVERAGE_CHECKS},
+                "error": f"{type(exc).__name__}: {exc}",
             }
         validation = self._validation_metadata(report, cif_path=str(optimized_cif))
         validation["became_valid"] = report.is_valid
@@ -5655,6 +5865,7 @@ class BatchStructureGenerator:
             f"- Manifest: `{summary.manifest_path}`",
             f"- Built monomers: {summary.built_monomers}",
             f"- Failed monomer builds: {summary.failed_monomers}",
+            f"- Failed records: {len(summary.record_failures)}",
             f"- Attempted pairs: {summary.attempted_pairs}",
             f"- Successful pairs: {summary.successful_pairs}",
             f"- Attempted structures: {summary.attempted_structures}",
@@ -5707,6 +5918,23 @@ class BatchStructureGenerator:
             )
             for record_id, error in sorted(summary.build_failures.items())[:20]:
                 lines.append(f"- `{record_id}`: {error}")
+        if summary.record_failures:
+            lines.extend(
+                [
+                    "",
+                    "## Record failures",
+                    "",
+                ]
+            )
+            if len(summary.record_failures) > 20:
+                # Display cap only: the manifest rows carry every failure.
+                lines.append(
+                    f"Showing the first 20 of {len(summary.record_failures)} failed records; "
+                    "the complete set is in the manifest rows."
+                )
+                lines.append("")
+            for structure_id, error in sorted(summary.record_failures.items())[:20]:
+                lines.append(f"- `{structure_id}`: {error}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _json_safe(self, value):

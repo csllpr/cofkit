@@ -921,6 +921,13 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     print("successful_structures:", summary.successful_structures)
     print("built_monomers:", summary.built_monomers)
     print("failed_monomers:", summary.failed_monomers)
+    print("failed_records:", len(summary.record_failures))
+    if summary.record_failures:
+        print(
+            "WARNING:",
+            f"{len(summary.record_failures)} record(s) failed; per-record errors are in the manifest:",
+            summary.manifest_path,
+        )
     print("mode_counts:", dict(summary.mode_counts))
     print("topology_counts:", dict(summary.topology_counts))
     print("geometry_repair_counts:", dict(summary.geometry_repair_counts))
@@ -982,15 +989,19 @@ def _run_batch_binary_bridge(args: argparse.Namespace) -> None:
         auto_detect=args.auto_detect_libraries,
     )
     _print_library_overlap_warnings(libraries)
-    summary = generator.run_binary_bridge_batch(
-        args.input_dir,
-        args.output_dir,
-        template_id=args.template_id,
-        max_pairs=args.max_pairs,
-        write_cif=args.write_cif,
-        auto_detect_libraries=args.auto_detect_libraries,
-        libraries=libraries,
-    )
+    try:
+        summary = generator.run_binary_bridge_batch(
+            args.input_dir,
+            args.output_dir,
+            template_id=args.template_id,
+            max_pairs=args.max_pairs,
+            write_cif=args.write_cif,
+            auto_detect_libraries=args.auto_detect_libraries,
+            libraries=libraries,
+        )
+    except OSError as exc:
+        # Run-level unrecoverable failure (e.g. unwritable output root).
+        raise SystemExit(f"error: {exc}") from exc
     _print_batch_summary(summary, template_id=args.template_id)
 
 
@@ -1098,15 +1109,19 @@ def _run_template_batch(
     libraries: Mapping[str, tuple] | None = None,
 ):
     generator = _configure_generator(args, template_id=template_id)
-    summary = generator.run_binary_bridge_batch(
-        input_dir,
-        output_dir / template_id,
-        template_id=template_id,
-        max_pairs=args.max_pairs,
-        write_cif=args.write_cif,
-        auto_detect_libraries=args.auto_detect_libraries,
-        libraries=libraries,
-    )
+    try:
+        summary = generator.run_binary_bridge_batch(
+            input_dir,
+            output_dir / template_id,
+            template_id=template_id,
+            max_pairs=args.max_pairs,
+            write_cif=args.write_cif,
+            auto_detect_libraries=args.auto_detect_libraries,
+            libraries=libraries,
+        )
+    except OSError as exc:
+        # Run-level unrecoverable failure (e.g. unwritable output root).
+        raise SystemExit(f"error: {exc}") from exc
     return template_id, summary
 
 
@@ -1122,6 +1137,7 @@ def _summary_to_json(summary) -> dict[str, object]:
         "built_monomers": summary.built_monomers,
         "failed_monomers": summary.failed_monomers,
         "build_failures": dict(summary.build_failures),
+        "record_failures": dict(summary.record_failures),
         "mode_counts": dict(summary.mode_counts),
         "topology_counts": dict(summary.topology_counts),
         "geometry_repair_counts": dict(summary.geometry_repair_counts),

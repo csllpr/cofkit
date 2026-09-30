@@ -154,6 +154,11 @@ class BatchRunSummary:
     built_monomers: int
     failed_monomers: int
     build_failures: Mapping[str, str] = field(default_factory=dict)
+    # Every non-"ok" manifest record, structure_id -> "TypeName: message".
+    # Covers pair/structure-level failures (unsupported connectivity,
+    # generation, realization/CIF export, pair-task failures); monomer build
+    # failures are additionally keyed by monomer record in build_failures.
+    record_failures: Mapping[str, str] = field(default_factory=dict)
     mode_counts: Mapping[str, int] = field(default_factory=dict)
     topology_counts: Mapping[str, int] = field(default_factory=dict)
     # Per-classification counts of validation outcomes for structures with a

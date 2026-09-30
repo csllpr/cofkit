@@ -97,7 +97,8 @@
 7. run pair generation through a process pool by default in the practical batch CLIs (`8` workers unless overridden)
 8. export one CIF per successful topology-specific structure by default, routing it into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`
 9. block CIF export for `hard_hard_invalid` structures while still recording them in manifests
-10. optionally reclassify a finished output tree into `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`, and `unvalidated`
+10. isolate per-record failures: realization/CIF-export/validation exceptions are caught per candidate (`export-failed`), any other pair-task exception is caught per pair (`pair-task-failed`, serial loop and pool workers alike), each recorded as `TypeName: message` in the manifest, `record_failures`, and `summary.md`, with partial staging output removed; an unwritable output root is a run-level failure probed up front (`error: ...` on the CLI) rather than a per-record error
+11. optionally reclassify a finished output tree into `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`, and `unvalidated`
 
 ## CLI flow
 
