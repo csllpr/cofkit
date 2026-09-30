@@ -45,6 +45,15 @@ Then go straight to the module that matches the task.
   - Add new motif kinds here first.
 - [src/cofkit/chem/rdkit.py](../src/cofkit/chem/rdkit.py)
   - Practical SMILES-to-`MonomerSpec` path.
+  - Plane-prior seam (A06): `_plane_normal` / `_fit_molecular_plane` derive the
+    monomer plane from molecular geometry — the motif-anchor connection plane
+    for 3+-motif monomers, a heavy-atom covariance best-fit plane otherwise.
+    Non-planar / collinear / degenerate conformers claim no plane
+    (`plane_status` metadata, `plane_normal=None`, zero motif frame normals);
+    scoring/optimizer consumers must skip plane-dependent terms on zero
+    normals and never fabricate a fallback plane. Owners of the fit
+    tolerances: `_MONOMER_PLANARITY_RMS_TOLERANCE_ANGSTROM` and
+    `_MONOMER_PLANE_COLLINEAR_RATIO`.
   - Conformer selection seam: energy-only by default at the library level;
     `select_conformer_by_motif_shape=True` picks the conformer whose motif
     origins best form a regular planar polygon. Owners of the gates:
@@ -94,7 +103,7 @@ Then go straight to the module that matches the task.
 ## Geometry / scoring / validation
 
 - [src/cofkit/geometry.py](../src/cofkit/geometry.py)
-  - Shared vector/frame primitives plus the canonical stacking helpers: `measure_layer_z_span` (layer z-span along an explicit axis — prefer `layer_normal_axis`, the `a × b` normal, which is invariant under in-plane periodic images in tilted cells; `LayerSpanReport` carries honest mode/axis provenance), `classify_2d_cell` / `classify_2d_cell_parameters` (the single 2D cell classifiers for built vectors and RCSR parameter cells), `safe_normalize` (explicit per-call-site fallback direction, optional stderr warning), `orthogonal_component`, and `angle_degrees` (caller-chosen degenerate policy). Also owns `smallest_covariance_axis` (Jacobi 3x3 eigensolver for least-variance axes) and `planar_arrangement_mismatch` (regular-polygon deviation of a point set — the conformer shape metric used by shape-aware monomer selection). All builder modules delegate here; do not add local copies. Degenerate-vector policy per seam: `stacking.py` warns and falls back, while the thin `_safe_normalize` wrappers in `optimizer.py` / `embedding.py` / `batch.py` raise a descriptive `ValueError` (probe-verified unreachable on live paths; batch loops absorb it per record).
+  - Shared vector/frame primitives plus the canonical stacking helpers: `measure_layer_z_span` (layer z-span along an explicit axis — prefer `layer_normal_axis`, the `a × b` normal, which is invariant under in-plane periodic images in tilted cells; `LayerSpanReport` carries honest mode/axis provenance), `classify_2d_cell` / `classify_2d_cell_parameters` (the single 2D cell classifiers for built vectors and RCSR parameter cells), `safe_normalize` (explicit per-call-site fallback direction, optional stderr warning), `orthogonal_component`, and `angle_degrees` (caller-chosen degenerate policy). Also owns `covariance_eigenpairs` (Jacobi 3x3 eigensolver returning mean-covariance eigenvalues + eigenvectors, the basis of the `chem/rdkit.py` molecular plane fit), `smallest_covariance_axis` (least-variance-axis convenience wrapper over it), and `planar_arrangement_mismatch` (regular-polygon deviation of a point set — the conformer shape metric used by shape-aware monomer selection). All builder modules delegate here; do not add local copies. Degenerate-vector policy per seam: `stacking.py` warns and falls back, while the thin `_safe_normalize` wrappers in `optimizer.py` / `embedding.py` / `batch.py` raise a descriptive `ValueError` (probe-verified unreachable on live paths; batch loops absorb it per record).
 - [src/cofkit/embedding.py](../src/cofkit/embedding.py)
   - Initial periodic placement. `cell_kind` metadata classifies the built cell vectors through `classify_2d_cell`, never the topology id.
 - [src/cofkit/optimizer.py](../src/cofkit/optimizer.py)
@@ -102,7 +111,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/soft_relax.py](../src/cofkit/soft_relax.py)
   - Experimental in-process clash-repair / strain-relief pass (bond springs + Urey-Bradley 1-3 restraints + ramped soft repulsion) applied to the staged CIF before validation bucketing when `BatchGenerationConfig.soft_relax` / `--soft-relax` is on; not a physical relaxation.
 - [src/cofkit/scoring.py](../src/cofkit/scoring.py)
-  - Bridge-geometry residual metrics (`bridge_geometry_report`) and the `scoring_metadata` packaging consumed by the optimizer, validator, and candidate ranking. The legacy event-count heuristic score was removed.
+  - Bridge-geometry residual metrics (`bridge_geometry_report`) and the `scoring_metadata` packaging consumed by the optimizer, validator, and candidate ranking. The legacy event-count heuristic score was removed. Plane-dependent terms (planarity residual, normal-misalignment surrogate) are evaluated only for motifs whose monomer carries a plane prior (nonzero frame normal); per-event `plane_prior_coverage` (`both` / `first` / `second` / `none`) records the coverage and `normal_alignment` is null when unevaluated.
 - [src/cofkit/vdw.py](../src/cofkit/vdw.py)
   - Shared vdW contact capability: the Bondi radii table (`BONDI_VDW_RADII`, explicit supported-element set; unsupported elements warn on stderr once and use `FALLBACK_VDW_RADIUS` — deliberately not the DREIDING force-field radii), the shared clash criterion (`assess_pair`: `d / (r_i + r_j) < 0.75` or, heavy-heavy only, `d < 2.2 Å`), and `min_periodic_pair_contact` (minimum cross-set contact over every lattice image within the cutoff, including both `(0,0,±1)` c galleries). Consumed by `validation.py` (coarse clash scan) and `stacking.py` (interlayer contact self-check); extend here when a new element needs an exact radius.
 - [src/cofkit/validation.py](../src/cofkit/validation.py)

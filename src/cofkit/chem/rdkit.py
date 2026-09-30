@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from math import atan2, inf, isfinite
 from typing import Callable, Mapping
 
-from ..geometry import Frame, centroid, cross, dot, normalize, planar_arrangement_mismatch, sub
+from ..geometry import Frame, centroid, covariance_eigenpairs, cross, dot, norm, normalize, planar_arrangement_mismatch, scale, sub
 from ..model import MonomerSpec, ReactiveMotif
 from .motif_registry import MotifKindDefinition, MotifKindRegistry, default_motif_kind_registry
 
@@ -89,6 +89,23 @@ SHAPE_SELECTION_VALIDATED_MAX_MOTIFS = 3
 # (ring-forming CLI, batch builds) reference this constant, never retype it.
 SHAPE_SELECTION_MIN_CONFORMERS = 16
 
+# Heuristic — pending calibration: upper bound on the heavy-atom RMS distance
+# to the best-fit molecular plane for a ditopic/monotopic conformer to carry a
+# molecular-plane prior. Calibration evidence (2026-09-29, MMFF/UFF-minimized
+# ETKDG conformers): planar aromatic ditopic linkers sit at <= 0.05 angstrom
+# RMS (p-phenylenediamine 0.04, terephthalaldehyde ~0.00, 1,4-phenylene
+# diboronic acid 0.003), while genuinely nonplanar or twisted conformers sit
+# at >= 0.18 angstrom (gauche ethylenediamine 0.18, chair
+# trans-1,4-diaminocyclohexane 0.57, twisted biphenyl/stilbene linkers >= 0.4).
+_MONOMER_PLANARITY_RMS_TOLERANCE_ANGSTROM = 0.1
+
+# Heuristic — pending calibration: a heavy-atom point set is treated as
+# collinear (no unique best-fit plane) when the ratio of the second to the
+# first principal RMS width falls below this value. A truly linear molecule
+# (dicyanoacetylene) measures ~0.0; the narrowest planar linkers measured
+# (phenyl-diacetylene diamine) stay above 0.16.
+_MONOMER_PLANE_COLLINEAR_RATIO = 0.1
+
 
 class AromaticityRestoreError(RuntimeError):
     """RDKit MMFF property generation cleared a molecule's aromaticity.
@@ -100,6 +117,35 @@ class AromaticityRestoreError(RuntimeError):
     not be built from a molecule with silently altered aromaticity. Present in
     every RDKit release checked, so it cannot be avoided by upgrading.
     """
+
+
+@dataclass(frozen=True)
+class _MonomerPlaneFit:
+    """Molecular-plane assessment for the monomer canonical frame.
+
+    ``status`` is one of:
+
+    - ``"anchor-plane"`` — three or more motif anchors define the connection
+      plane directly (the historical multi-motif path);
+    - ``"planar"`` — the heavy atoms fit a plane within
+      ``_MONOMER_PLANARITY_RMS_TOLERANCE_ANGSTROM``;
+    - ``"nonplanar"`` — a least-variance axis exists but the conformer is
+      genuinely non-planar, so no plane prior is claimed;
+    - ``"collinear"`` — the heavy atoms are essentially one-dimensional, so
+      no unique plane exists;
+    - ``"degenerate"`` — fewer than two distinct heavy-atom positions.
+
+    ``normal`` is the chemically meaningful plane normal (world frame) and is
+    only set for ``anchor-plane``/``planar``. ``canonical_axis`` /
+    ``principal_axis`` are covariance axes used purely to canonicalize local
+    coordinates when no plane exists; they carry no plane claim.
+    """
+
+    status: str
+    normal: tuple[float, float, float] | None
+    canonical_axis: tuple[float, float, float] | None
+    principal_axis: tuple[float, float, float] | None
+    rms_deviation: float | None
 
 
 @dataclass(frozen=True)
@@ -237,7 +283,7 @@ class RDKitMotifBuilder:
                     detected = self._detect_motifs(molecule, conformer, definition)
                 conformer_selection = "motif_shape"
 
-        atom_positions, motifs, plane_normal = _build_geometry(detected, molecule, conformer, definition)
+        atom_positions, motifs, plane_fit = _build_geometry(detected, molecule, conformer, definition)
         atom_symbols = tuple(atom.GetSymbol() for atom in molecule.GetAtoms())
         bonds = tuple(
             (
@@ -282,7 +328,16 @@ class RDKitMotifBuilder:
                 "forcefield_optimization_status": selection.optimization_status,
                 "forcefield_diagnostics": selection.diagnostics,
                 "selected_conformer_energy": selection.conformer_energies.get(conformer_id, selection.energy),
-                "plane_normal": plane_normal,
+                "plane_normal": plane_fit.normal,
+                # Plane-prior provenance: "anchor-plane" (>=3 motif anchors
+                # define the connection plane), "planar" (heavy-atom best-fit
+                # plane within tolerance), or the uncertain statuses
+                # "nonplanar" / "collinear" / "degenerate", for which
+                # plane_normal is None and motif frame normals are zero —
+                # consumers must skip plane-dependent terms rather than fall
+                # back to a fabricated plane (impact-review claim T1-8).
+                "plane_status": plane_fit.status,
+                "plane_rms_deviation": plane_fit.rms_deviation,
             },
         )
 
@@ -813,22 +868,28 @@ def _build_geometry(
     molecule,
     conformer,
     definition: MotifKindDefinition,
-) -> tuple[tuple[tuple[float, float, float], ...], tuple[ReactiveMotif, ...], tuple[float, float, float]]:
+) -> tuple[tuple[tuple[float, float, float], ...], tuple[ReactiveMotif, ...], _MonomerPlaneFit]:
     points = tuple(_conformer_point(conformer, atom.GetIdx()) for atom in molecule.GetAtoms())
     center = centroid(points)
-    plane_normal = _plane_normal(detected)
-    provisional_primary = _project_onto_plane(sub(detected[0].origin, detected[0].anchor), plane_normal)
+    plane_fit = _plane_normal(detected, molecule, conformer)
+    # The z axis of the canonical local frame is the molecular plane normal
+    # when one exists; otherwise the covariance least-variance axis keeps the
+    # coordinates deterministic and molecule-derived without claiming a plane.
+    # Only a truly degenerate point set falls back to a world axis.
+    z_axis = plane_fit.canonical_axis if plane_fit.canonical_axis is not None else (0.0, 0.0, 1.0)
+    motif_normal = (0.0, 0.0, 1.0) if plane_fit.normal is not None else (0.0, 0.0, 0.0)
+    provisional_primary = _project_onto_plane(sub(detected[0].origin, detected[0].anchor), z_axis)
     if _is_near_zero(provisional_primary):
-        provisional_primary = (1.0, 0.0, 0.0)
+        provisional_primary = plane_fit.principal_axis if plane_fit.principal_axis is not None else (1.0, 0.0, 0.0)
     x_axis = normalize(provisional_primary)
-    y_axis = normalize(cross(plane_normal, x_axis))
+    y_axis = normalize(cross(z_axis, x_axis))
 
     def transform(point: tuple[float, float, float]) -> tuple[float, float, float]:
         shifted = sub(point, center)
         return (
             dot(shifted, x_axis),
             dot(shifted, y_axis),
-            dot(shifted, plane_normal),
+            dot(shifted, z_axis),
         )
 
     atom_positions = tuple(transform(point) for point in points)
@@ -839,7 +900,7 @@ def _build_geometry(
         primary = _project_onto_plane(sub(origin, anchor), (0.0, 0.0, 1.0))
         if _is_near_zero(primary):
             primary = (1.0, 0.0, 0.0)
-        frame = Frame(origin=origin, primary=normalize(primary), normal=(0.0, 0.0, 1.0))
+        frame = Frame(origin=origin, primary=normalize(primary), normal=motif_normal)
         angle = atan2(origin[1], origin[0])
         motif_rows.append(
             (
@@ -873,7 +934,7 @@ def _build_geometry(
         )
         for index, (_, motif) in enumerate(sorted(motif_rows, key=lambda item: item[0]), start=1)
     )
-    return atom_positions, motifs, plane_normal
+    return atom_positions, motifs, plane_fit
 
 
 def _interpret_primary_amine_match(molecule, conformer, match: tuple[int, ...], definition: MotifKindDefinition) -> _DetectedMotif:
@@ -1235,7 +1296,21 @@ def _interpret_activated_methylene_match(molecule, conformer, match: tuple[int, 
     )
 
 
-def _plane_normal(detected: tuple[_DetectedMotif, ...]) -> tuple[float, float, float]:
+def _plane_normal(
+    detected: tuple[_DetectedMotif, ...],
+    molecule,
+    conformer,
+) -> _MonomerPlaneFit:
+    """Assess the monomer's plane prior from its own geometry.
+
+    With three or more motif anchors the connection points define the plane
+    directly (the ring-forming node path). With fewer than three anchors two
+    connection points only define a line, so the plane is fitted from the
+    conformer's heavy atoms instead — and genuinely non-planar, collinear, or
+    degenerate conformers report ``normal=None`` (uncertain) rather than
+    borrowing the arbitrary world z axis of the embedding (impact-review
+    claim T1-8).
+    """
     anchor_points = [item.anchor for item in detected]
     if len(anchor_points) >= 3:
         first, second, third = anchor_points[:3]
@@ -1243,9 +1318,92 @@ def _plane_normal(detected: tuple[_DetectedMotif, ...]) -> tuple[float, float, f
         if not _is_near_zero(normal):
             normalized = normalize(normal)
             if normalized[2] < 0.0:
-                return (-normalized[0], -normalized[1], -normalized[2])
-            return normalized
-    return (0.0, 0.0, 1.0)
+                normalized = (-normalized[0], -normalized[1], -normalized[2])
+            return _MonomerPlaneFit(
+                status="anchor-plane",
+                normal=normalized,
+                canonical_axis=normalized,
+                principal_axis=None,
+                rms_deviation=None,
+            )
+        # Collinear anchors define no plane; fall through to the molecular fit.
+    heavy_points = tuple(
+        _conformer_point(conformer, atom.GetIdx())
+        for atom in molecule.GetAtoms()
+        if atom.GetAtomicNum() > 1
+    )
+    return _fit_molecular_plane(heavy_points)
+
+
+def _fit_molecular_plane(points: tuple[tuple[float, float, float], ...]) -> _MonomerPlaneFit:
+    """Best-fit plane through a heavy-atom point set, with degeneracy handling.
+
+    The normal's sign is canonicalized against the cross product of two
+    geometry-derived in-plane reference displacements, so a rigid rotation of
+    the input coordinates rotates the reported normal covariantly instead of
+    flipping it through a world-axis convention.
+    """
+    pairs = covariance_eigenpairs(points)
+    if pairs is None or pairs.eigenvalues[2] <= 1e-16:
+        return _MonomerPlaneFit(
+            status="degenerate",
+            normal=None,
+            canonical_axis=None,
+            principal_axis=None,
+            rms_deviation=None,
+        )
+    least_axis, _, principal_axis = pairs.eigenvectors
+    rms = max(pairs.eigenvalues[0], 0.0) ** 0.5
+    if max(pairs.eigenvalues[1], 0.0) ** 0.5 < _MONOMER_PLANE_COLLINEAR_RATIO * pairs.eigenvalues[2] ** 0.5:
+        # One-dimensional point set: any plane containing the line fits
+        # equally well, so no normal is claimed. The least-variance axis is
+        # still returned for deterministic coordinate canonicalization.
+        return _MonomerPlaneFit(
+            status="collinear",
+            normal=None,
+            canonical_axis=least_axis,
+            principal_axis=principal_axis,
+            rms_deviation=rms,
+        )
+    normal = _covariant_axis_sign(points, pairs.center, least_axis)
+    principal_axis = _covariant_axis_sign(points, pairs.center, principal_axis)
+    if rms > _MONOMER_PLANARITY_RMS_TOLERANCE_ANGSTROM:
+        return _MonomerPlaneFit(
+            status="nonplanar",
+            normal=None,
+            canonical_axis=normal,
+            principal_axis=principal_axis,
+            rms_deviation=rms,
+        )
+    return _MonomerPlaneFit(
+        status="planar",
+        normal=normal,
+        canonical_axis=normal,
+        principal_axis=principal_axis,
+        rms_deviation=rms,
+    )
+
+
+def _covariant_axis_sign(
+    points: tuple[tuple[float, float, float], ...],
+    center: tuple[float, float, float],
+    axis: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Choose the sign of *axis* from the point set itself.
+
+    The reference is the cross product of the farthest displacement from the
+    centroid and the displacement most orthogonal to it — both transform
+    covariantly under rigid motions, so the chosen sign does not depend on
+    world axes. For (near-)collinear sets no such reference exists and the
+    eigensolver's deterministic sign is kept.
+    """
+    offsets = tuple(sub(point, center) for point in points)
+    farthest = max(offsets, key=norm)
+    most_orthogonal = max(offsets, key=lambda offset: norm(cross(farthest, offset)))
+    reference = cross(farthest, most_orthogonal)
+    if norm(reference) < 1e-12:
+        return axis
+    return axis if dot(axis, reference) >= 0.0 else scale(axis, -1.0)
 
 
 def _project_onto_plane(

@@ -9,6 +9,7 @@ from .geometry import (
     add,
     cross,
     dot,
+    frame_axes,
     matmul_vec,
     norm,
     normalize,
@@ -253,20 +254,35 @@ class ContinuousOptimizer:
             target = self.scorer._target_distance(template)
             distance_error = norm(delta) - target
 
-            normal1 = self._safe_normalize(matmul_vec(pose1.rotation_matrix, motif1.frame.normal))
-            normal2 = self._safe_normalize(matmul_vec(pose2.rotation_matrix, motif2.frame.normal))
-            normal_sum = add(normal1, normal2)
-            if norm(normal_sum) < 1e-8:
-                # Antiparallel motif normals (a flat bridge) carry no plane
-                # direction; steer the planarity correction along normal1.
-                plane_normal = normal1
-            else:
-                plane_normal = self._safe_normalize(normal_sum)
-            planarity_error = dot(delta, plane_normal)
+            normal1 = matmul_vec(pose1.rotation_matrix, motif1.frame.normal)
+            normal2 = matmul_vec(pose2.rotation_matrix, motif2.frame.normal)
+            # Zero frame normals are the honest "no plane prior" marker
+            # (non-planar/collinear/degenerate monomer conformer): steer the
+            # planarity correction along whichever plane priors exist, and
+            # skip it entirely when neither motif carries one rather than
+            # fabricating a plane (impact-review claim T1-8).
+            available_normals = tuple(normal for normal in (normal1, normal2) if norm(normal) >= 1e-8)
+            planarity_correction = (0.0, 0.0, 0.0)
+            if available_normals:
+                unit_normals = tuple(normalize(normal) for normal in available_normals)
+                normal_sum = unit_normals[0]
+                for extra in unit_normals[1:]:
+                    normal_sum = add(normal_sum, extra)
+                if norm(normal_sum) < 1e-8:
+                    # Antiparallel motif normals (a flat bridge) carry no plane
+                    # direction; steer the planarity correction along normal1.
+                    plane_normal = unit_normals[0]
+                else:
+                    plane_normal = self._safe_normalize(normal_sum)
+                planarity_error = dot(delta, plane_normal)
+                planarity_correction = scale(
+                    plane_normal,
+                    _PLANARITY_CORRECTION_WEIGHT * planarity_error * self.config.translation_step,
+                )
 
             correction = add(
                 scale(direction, 0.5 * distance_error * self.config.translation_step),
-                scale(plane_normal, _PLANARITY_CORRECTION_WEIGHT * planarity_error * self.config.translation_step),
+                planarity_correction,
             )
             translation_updates[first.monomer_instance_id] = add(
                 translation_updates[first.monomer_instance_id],
@@ -344,13 +360,23 @@ class ContinuousOptimizer:
                 )
                 target_primary = self._safe_normalize(sub(other_origin, origin))
 
-                other_normal = self._safe_normalize(matmul_vec(other_pose.rotation_matrix, other_motif.frame.normal))
-                target_normal = self._orthogonal_component(other_normal, target_primary)
-                if norm(target_normal) < 1e-8:
+                other_normal = matmul_vec(other_pose.rotation_matrix, other_motif.frame.normal)
+                target_normal = (0.0, 0.0, 0.0)
+                if norm(other_normal) >= 1e-8:
+                    target_normal = self._orthogonal_component(self._safe_normalize(other_normal), target_primary)
+                if norm(target_normal) < 1e-8 and norm(motif.frame.normal) >= 1e-8:
                     current_normal = matmul_vec(pose.rotation_matrix, motif.frame.normal)
                     target_normal = self._orthogonal_component(current_normal, target_primary)
                 if norm(target_normal) < 1e-8:
-                    target_normal = (0.0, 0.0, 1.0)
+                    # Neither motif carries a plane prior (zero frame normal):
+                    # align the primary axis and keep the current roll about
+                    # the bridge axis instead of steering toward a fabricated
+                    # plane (impact-review claim T1-8). frame_axes supplies a
+                    # purely numerical perpendicular for plane-less motifs.
+                    current_roll_axis = matmul_vec(pose.rotation_matrix, frame_axes(motif.frame)[2])
+                    target_normal = self._orthogonal_component(current_roll_axis, target_primary)
+                if norm(target_normal) < 1e-8:
+                    target_normal = (0.0, 0.0, 1.0) if abs(target_primary[2]) < 0.9 else (1.0, 0.0, 0.0)
 
                 rotation = rotation_from_frame_to_axes(
                     motif.frame,

@@ -33,8 +33,14 @@ class BridgeEventMetrics:
     planarity_residual: float
     alignment_residual: float
     normal_misalignment_residual: float
-    normal_alignment: float
+    normal_alignment: float | None
     total_residual: float
+    # Which motif plane priors contributed to the planarity/normal terms:
+    # "both", "first", "second", or "none". Motifs whose monomer conformer is
+    # non-planar, collinear, or degenerate carry a zero frame normal (no
+    # plane prior), and their plane-dependent terms are skipped rather than
+    # evaluated against a fabricated plane (impact-review claim T1-8).
+    plane_prior_coverage: str = "both"
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,7 @@ class CandidateScorer:
                     "alignment_residual": metrics.alignment_residual,
                     "normal_misalignment_residual": metrics.normal_misalignment_residual,
                     "normal_alignment": metrics.normal_alignment,
+                    "plane_prior_coverage": metrics.plane_prior_coverage,
                     "total_residual": metrics.total_residual,
                 }
                 for metrics in bridge_report.event_metrics
@@ -133,7 +140,24 @@ class CandidateScorer:
 
                 normal1 = matmul_vec(pose1.rotation_matrix, motif1.frame.normal)
                 normal2 = matmul_vec(pose2.rotation_matrix, motif2.frame.normal)
-                normal_alignment = max(-1.0, min(1.0, dot(normalize(normal1), normalize(normal2))))
+                # A zero frame normal is the honest "no plane prior" marker
+                # (non-planar/collinear/degenerate monomer conformer); the
+                # plane-dependent terms are skipped for that motif instead of
+                # being measured against a fabricated plane.
+                has_plane1 = norm(normal1) >= 1e-8
+                has_plane2 = norm(normal2) >= 1e-8
+                if has_plane1 and has_plane2:
+                    normal_alignment: float | None = max(-1.0, min(1.0, dot(normalize(normal1), normalize(normal2))))
+                    plane_prior_coverage = "both"
+                elif has_plane1:
+                    normal_alignment = None
+                    plane_prior_coverage = "first"
+                elif has_plane2:
+                    normal_alignment = None
+                    plane_prior_coverage = "second"
+                else:
+                    normal_alignment = None
+                    plane_prior_coverage = "none"
 
                 bridge_vector = sub(origin2, origin1)
                 unit_vector = self._safe_normalize(bridge_vector)
@@ -142,12 +166,20 @@ class CandidateScorer:
                 alignment_residual = max(0.0, 1.0 - dot(self._safe_normalize(primary1), unit_vector))
                 alignment_residual += max(0.0, 1.0 - dot(self._safe_normalize(primary2), self._invert(unit_vector)))
 
-                planarity_residual = fabs(dot(unit_vector, self._safe_normalize(normal1)))
-                planarity_residual += fabs(dot(unit_vector, self._safe_normalize(normal2)))
+                planarity_residual = 0.0
+                if has_plane1:
+                    planarity_residual += fabs(dot(unit_vector, normalize(normal1)))
+                if has_plane2:
+                    planarity_residual += fabs(dot(unit_vector, normalize(normal2)))
                 # This is only a torsion-style surrogate from motif-frame normals. It rewards
                 # consistent local bridge planes for planar/restricted templates without claiming
-                # any atomistic dihedral relaxation or force-field meaning.
-                normal_misalignment_residual = self._normal_misalignment_residual(template, normal_alignment)
+                # any atomistic dihedral relaxation or force-field meaning. It is evaluated only
+                # when both motifs carry a plane prior.
+                normal_misalignment_residual = (
+                    self._normal_misalignment_residual(template, normal_alignment)
+                    if normal_alignment is not None
+                    else 0.0
+                )
 
                 total_event_residual = (
                     distance_residual
@@ -168,6 +200,7 @@ class CandidateScorer:
                         normal_misalignment_residual=normal_misalignment_residual,
                         normal_alignment=normal_alignment,
                         total_residual=total_event_residual,
+                        plane_prior_coverage=plane_prior_coverage,
                     )
                 )
         return BridgeGeometryReport(

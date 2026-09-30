@@ -123,9 +123,29 @@ def orthogonal_component(vector: Vec3, axis: Vec3, *, axis_is_unit: bool = False
 _JACOBI_MAX_SWEEPS = 24
 
 
-def smallest_covariance_axis(points: tuple[Vec3, ...]) -> Vec3 | None:
-    """Return the least-variance axis of a small point cloud via Jacobi rotations."""
-    if len(points) < 3:
+@dataclass(frozen=True)
+class CovarianceEigenpairs:
+    """Mean-covariance eigensystem of a small point cloud.
+
+    ``eigenvalues`` are the per-point mean squared displacements along each
+    principal axis in ascending order (so ``sqrt(eigenvalues[2])`` is the RMS
+    distance to the best-fit plane); ``eigenvectors[i]`` is the unit
+    eigenvector for ``eigenvalues[i]``. Eigenvector signs are whatever the
+    Jacobi sweeps produce — callers needing a reproducible orientation must
+    apply their own geometry-derived sign convention.
+    """
+
+    eigenvalues: tuple[float, float, float]
+    eigenvectors: tuple[Vec3, Vec3, Vec3]
+    center: Vec3
+
+
+def covariance_eigenpairs(points: tuple[Vec3, ...]) -> CovarianceEigenpairs | None:
+    """Eigendecompose the mean covariance of *points* via Jacobi rotations.
+
+    Returns ``None`` for fewer than two points, where no covariance exists.
+    """
+    if len(points) < 2:
         return None
     center = centroid(points)
     covariance = [[0.0, 0.0, 0.0] for _ in range(3)]
@@ -152,12 +172,28 @@ def smallest_covariance_axis(points: tuple[Vec3, ...]) -> Vec3 | None:
         rotation[column][row] = -sine
         covariance = _matrix_multiply(_matrix_transpose(rotation), _matrix_multiply(covariance, rotation))
         eigenvectors = _matrix_multiply(eigenvectors, rotation)
-    axis_index = min(range(3), key=lambda index: covariance[index][index])
-    axis = tuple(eigenvectors[row][axis_index] for row in range(3))
-    if norm(axis) < 1e-8:
+    order = sorted(range(3), key=lambda index: covariance[index][index])
+    eigenvalues = tuple(covariance[index][index] / len(points) for index in order)
+    axes = tuple(
+        normalize(tuple(eigenvectors[row][index] for row in range(3)))
+        for index in order
+    )
+    return CovarianceEigenpairs(
+        eigenvalues=(eigenvalues[0], eigenvalues[1], eigenvalues[2]),
+        eigenvectors=(axes[0], axes[1], axes[2]),
+        center=center,
+    )
+
+
+def smallest_covariance_axis(points: tuple[Vec3, ...]) -> Vec3 | None:
+    """Return the least-variance axis of a small point cloud via Jacobi rotations."""
+    if len(points) < 3:
         return None
-    normalized = scale(axis, 1.0 / norm(axis))
-    return scale(normalized, -1.0) if normalized[2] < 0.0 else normalized
+    pairs = covariance_eigenpairs(points)
+    if pairs is None:
+        return None
+    axis = pairs.eigenvectors[0]
+    return scale(axis, -1.0) if axis[2] < 0.0 else axis
 
 
 def _matrix_multiply(left, right):
