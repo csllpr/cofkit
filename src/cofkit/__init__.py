@@ -241,6 +241,9 @@ from .zeopp import (
     analyze_zeopp_basic_pore_properties,
     analyze_zeopp_pore_properties,
     resolve_zeopp_binary,
+    ZEOPP_BUILTIN_RADII_SOURCE,
+    ZEOPP_CUSTOM_RADII_SOURCE,
+    ZeoppRadiiProvenance,
 )
 
 __all__ = [
@@ -403,7 +406,10 @@ __all__ = [
     "ZeoppChannelEntry",
     "ZeoppChannelSummary",
     "ZeoppConfigurationError",
+    "ZEOPP_BUILTIN_RADII_SOURCE",
+    "ZEOPP_CUSTOM_RADII_SOURCE",
     "ZeoppError",
+    "ZeoppRadiiProvenance",
     "ZeoppExecutionError",
     "ZeoppParseError",
     "ZeoppProbeScanResult",

@@ -270,6 +270,123 @@ class ZeoppTests(unittest.TestCase):
         self.assertIn("does not override the radius passed to -chan", output)
         self.assertIn("must be at least every", output)
 
+    def test_radii_provenance_records_builtin_uff_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_zeopp_binary(temp_path / "network")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_ZEOPP_ENV_VAR: str(fake_binary)}):
+                result = analyze_zeopp_pore_properties(
+                    cif_path,
+                    output_dir=temp_path / "zeopp_out",
+                    probe_radii=(1.2,),
+                )
+
+            provenance = result.radii_provenance
+            self.assertIsNotNone(provenance)
+            self.assertEqual(provenance.atomic_radii_source, "zeopp_builtin_uff")
+            self.assertIsNone(provenance.radii_file)
+            self.assertEqual(provenance.baseline_probe_radius_angstrom, 0.0)
+            self.assertEqual(provenance.probe_scan_radii_angstrom, (1.2,))
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(report["radii_provenance"]["atomic_radii_source"], "zeopp_builtin_uff")
+            self.assertEqual(report["radii_provenance"]["probe_scan_radii_angstrom"], [1.2])
+            self.assertIn("UFF", report["radii_provenance"]["note"])
+
+    def test_custom_radii_file_is_passed_to_zeopp_and_recorded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_zeopp_binary(temp_path / "network")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+            radii_file = temp_path / "custom_radii.txt"
+            radii_file.write_text("C 1.70\nH 1.10\n", encoding="utf-8")
+            output_dir = temp_path / "zeopp_out"
+
+            with patch.dict(os.environ, {COFKIT_ZEOPP_ENV_VAR: str(fake_binary)}):
+                result = analyze_zeopp_pore_properties(
+                    cif_path,
+                    output_dir=output_dir,
+                    probe_radii=(1.2,),
+                    radii_file=radii_file,
+                )
+
+            provenance = result.radii_provenance
+            self.assertEqual(provenance.atomic_radii_source, "custom_radii_file")
+            self.assertEqual(provenance.radii_file, str(radii_file.resolve()))
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(report["radii_provenance"]["atomic_radii_source"], "custom_radii_file")
+            self.assertEqual(report["radii_provenance"]["radii_file"], str(radii_file.resolve()))
+            for log_name in ("res", "chan", "sa", "vol"):
+                log_text = (output_dir / "baseline" / f"zeopp_{log_name}.stdout.log").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn(f"-r {radii_file.resolve()}", log_text)
+            scan_log = (
+                output_dir
+                / "probe_scans"
+                / "probe_scan_01__chan_1p200__probe_1p200"
+                / "zeopp_chan.stdout.log"
+            ).read_text(encoding="utf-8")
+            self.assertIn(f"-r {radii_file.resolve()}", scan_log)
+
+    def test_radii_file_must_exist(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(FileNotFoundError, "atomic radii file does not exist"):
+                analyze_zeopp_pore_properties(
+                    cif_path,
+                    radii_file=temp_path / "missing_radii.txt",
+                )
+
+    def test_analyze_zeopp_cli_radii_file_flag_records_provenance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_zeopp_binary(temp_path / "network")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+            radii_file = temp_path / "custom_radii.txt"
+            radii_file.write_text("C 1.70\n", encoding="utf-8")
+            buffer = io.StringIO()
+
+            with patch.dict(os.environ, {COFKIT_ZEOPP_ENV_VAR: str(fake_binary)}):
+                with contextlib.redirect_stdout(buffer):
+                    cli_main(
+                        [
+                            "analyze",
+                            "zeopp",
+                            str(cif_path),
+                            "--output-dir",
+                            str(temp_path / "cli_zeopp"),
+                            "--zeopp-radii-file",
+                            str(radii_file),
+                            "--json",
+                        ]
+                    )
+
+            report = json.loads(buffer.getvalue())
+            self.assertEqual(report["radii_provenance"]["atomic_radii_source"], "custom_radii_file")
+            self.assertEqual(report["radii_provenance"]["radii_file"], str(radii_file.resolve()))
+
+    def test_analyze_zeopp_cli_summary_prints_atomic_radii_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_zeopp_binary(temp_path / "network")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text("data_example\n", encoding="utf-8")
+            buffer = io.StringIO()
+
+            with patch.dict(os.environ, {COFKIT_ZEOPP_ENV_VAR: str(fake_binary)}):
+                with contextlib.redirect_stdout(buffer):
+                    cli_main(["analyze", "zeopp", str(cif_path)])
+
+            self.assertIn("atomic_radii_source: zeopp_builtin_uff", buffer.getvalue())
+
     def test_windows_static_binary_teardown_status_accepts_completed_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -336,6 +453,7 @@ class ZeoppTests(unittest.TestCase):
             "import sys\n"
             "from pathlib import Path\n"
             "\n"
+            "print('argv:', ' '.join(sys.argv[1:]))\n"
             "assert sys.argv[1] == '-ha'\n"
             "args = sys.argv[2:]\n"
             "if not args:\n"
@@ -346,6 +464,13 @@ class ZeoppTests(unittest.TestCase):
             "index = 0\n"
             "while index < len(args):\n"
             "    value = args[index]\n"
+            "    if value == '-r':\n"
+            "        radii_path = Path(args[index + 1])\n"
+            "        if not radii_path.is_file():\n"
+            "            sys.stderr.write('missing radii file\\n')\n"
+            "            sys.exit(5)\n"
+            "        index += 2\n"
+            "        continue\n"
             "    if value.startswith('-') and command is None:\n"
             "        command = value\n"
             "        if value in {'-res', '-resex'}:\n"

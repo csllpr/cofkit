@@ -12,7 +12,7 @@ import subprocess
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from ._dreiding_reference import (
     DREIDING_FRAMEWORK_TYPE_BY_ELEMENT,
@@ -132,6 +132,46 @@ _RASPA2_ENTHALPY_KJMOL_RE = re.compile(
     rf"\n\s*({_FLOAT_TOKEN_PATTERN})\s*\+/-\s*({_FLOAT_TOKEN_PATTERN})\s*\[KJ/MOL\]",
     re.DOTALL | re.IGNORECASE,
 )
+# Content markers identifying which backend output schema a *.data file uses.
+# Detection is deliberately content-based (never filename-based): gRASPA writes
+# "Rosenbluth Summary For Component" Widom blocks and "BLOCK AVERAGES (...)"
+# sections, while RASPA2 writes "[name] Average ..." rows and
+# "Number of molecules:" sections. A file containing markers from both backends
+# is a mixed-schema artifact (e.g. concatenated outputs) and must be parsed
+# completely or diagnosed explicitly, never silently truncated.
+_GRASPA_SCHEMA_MARKERS = (
+    "rosenbluth summary for component",
+    "block averages (",
+)
+_RASPA2_SCHEMA_MARKERS = (
+    "average widom excess chemical potential:",
+    "average henry coefficient:",
+    "average loading absolute [mol/kg framework]",
+)
+
+
+def _detect_output_backend_schemas(content: str) -> tuple[str, ...]:
+    """Return the backend output schemas whose markers appear in content."""
+    lowered = content.lower()
+    schemas: list[str] = []
+    if any(marker in lowered for marker in _GRASPA_SCHEMA_MARKERS):
+        schemas.append("graspa")
+    if any(marker in lowered for marker in _RASPA2_SCHEMA_MARKERS):
+        schemas.append("raspa2")
+    return tuple(schemas)
+
+
+def _value_tuples_conflict(
+    first: tuple[float, float],
+    second: tuple[float, float],
+) -> bool:
+    """True when two (value, errorbar) pairs carry different information."""
+    for first_value, second_value in zip(first, second, strict=True):
+        if math.isnan(first_value) and math.isnan(second_value):
+            continue
+        if not math.isclose(first_value, second_value, rel_tol=1e-9, abs_tol=1e-12):
+            return True
+    return False
 
 
 class GraspaError(RuntimeError):
@@ -307,6 +347,9 @@ class GraspaWidomComponentResult:
     henry: float
     henry_errorbar: float
     source_data_file: str
+    # Output schema ("graspa" or "raspa2") the component summary was parsed
+    # from; recorded so mixed-schema inputs keep per-component provenance.
+    source_schema: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -316,6 +359,7 @@ class GraspaWidomComponentResult:
             "henry": _json_safe_float(self.henry),
             "henry_errorbar": _json_safe_float(self.henry_errorbar),
             "source_data_file": self.source_data_file,
+            "source_schema": self.source_schema,
         }
 
 
@@ -496,6 +540,9 @@ class GraspaIsothermPointResult:
     heat_of_adsorption_kj_per_mol: float
     heat_of_adsorption_kj_per_mol_errorbar: float
     initial_restart_file_path: str | None = None
+    # Output schema ("graspa" or "raspa2") the summary was parsed from.
+    source_schema: str | None = None
+    warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -507,6 +554,7 @@ class GraspaIsothermPointResult:
             "graspa_stderr_log_path": self.graspa_stderr_log_path,
             "data_file_paths": list(self.data_file_paths),
             "source_data_file": self.source_data_file,
+            "source_schema": self.source_schema,
             "initial_restart_file_path": self.initial_restart_file_path,
             "loading_mol_per_kg": _json_safe_float(self.loading_mol_per_kg),
             "loading_mol_per_kg_errorbar": _json_safe_float(self.loading_mol_per_kg_errorbar),
@@ -516,6 +564,7 @@ class GraspaIsothermPointResult:
             "loading_g_per_l_errorbar": _json_safe_float(self.loading_g_per_l_errorbar),
             "heat_of_adsorption_kj_per_mol": _json_safe_float(self.heat_of_adsorption_kj_per_mol),
             "heat_of_adsorption_kj_per_mol_errorbar": _json_safe_float(self.heat_of_adsorption_kj_per_mol_errorbar),
+            "warnings": list(self.warnings),
         }
 
 
@@ -748,6 +797,9 @@ class GraspaMixturePointResult:
     selectivity_results: tuple[GraspaMixtureSelectivityResult, ...]
     initial_restart_file_path: str | None = None
     warnings: tuple[str, ...] = ()
+    # Per-component output schema ("graspa" or "raspa2") provenance; a mixed
+    # value set means the source file combined both backend layouts.
+    component_source_schemas: Mapping[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -762,6 +814,7 @@ class GraspaMixturePointResult:
             "component_results": [component.to_dict() for component in self.component_results],
             "selectivity_results": [result.to_dict() for result in self.selectivity_results],
             "warnings": list(self.warnings),
+            "component_source_schemas": dict(self.component_source_schemas),
         }
 
 
@@ -1068,18 +1121,34 @@ def run_graspa_widom_workflow(
             f"{raspa_display_name} completed without producing any Output/**/*.data files under {widom_output_dir}"
         )
 
-    component_results = _parse_widom_result_files(tuple(Path(path) for path in data_file_paths))
+    parse_diagnostics: list[str] = []
+    component_results = _parse_widom_result_files(
+        tuple(Path(path) for path in data_file_paths),
+        diagnostics=parse_diagnostics,
+    )
     if not component_results:
         raise GraspaParseError(
             f"No Widom component summaries could be parsed from {len(data_file_paths)} data file(s)."
         )
 
-    if {r.component for r in component_results} != set(widom_settings.components) or len(component_results) != len(widom_settings.components):
-        raise GraspaParseError("Widom summaries do not match the requested components exactly.")
+    requested_components = tuple(widom_settings.components)
+    parsed_components = tuple(result.component for result in component_results)
+    if set(parsed_components) != set(requested_components) or len(parsed_components) != len(requested_components):
+        missing_components = sorted(set(requested_components) - set(parsed_components))
+        unexpected_components = sorted(set(parsed_components) - set(requested_components))
+        duplicate_components = sorted(
+            {component for component in parsed_components if parsed_components.count(component) > 1}
+        )
+        raise GraspaParseError(
+            "Widom summaries do not match the requested components exactly: "
+            f"requested {list(requested_components)!r}; missing {missing_components!r}; "
+            f"unexpected {unexpected_components!r}; duplicated {duplicate_components!r}."
+        )
     results_csv_path = widom_output_dir / "results.csv"
     _write_results_csv(component_results, results_csv_path)
 
     warnings: list[str] = []
+    warnings.extend(parse_diagnostics)
     if widom_settings.components == DEFAULT_WIDOM_COMPONENTS:
         warnings.append("The default probe set excludes H2_DREIDING: its Feynman-Hibbs potential is unsupported by upstream gRASPA.")
     if eqeq_result.eqeq_json_output_path is None:
@@ -1275,6 +1344,7 @@ def run_graspa_isotherm_workflow(
                 initial_restart_file_path=str(staged_initial_restart_file),
             )
         point_results.append(point_result)
+        warnings.extend(point_result.warnings)
 
         if len(data_file_paths) > 1:
             warnings.append(
@@ -2958,13 +3028,18 @@ def _json_safe_float(value: float) -> float | None:
     return None
 
 
-def _parse_widom_result_files(data_paths: Sequence[Path]) -> tuple[GraspaWidomComponentResult, ...]:
+def _parse_widom_result_files(
+    data_paths: Sequence[Path],
+    *,
+    diagnostics: list[str] | None = None,
+) -> tuple[GraspaWidomComponentResult, ...]:
     results: list[GraspaWidomComponentResult] = []
     for path in data_paths:
         content = path.read_text(encoding="utf-8", errors="replace")
-        path_results: list[GraspaWidomComponentResult] = []
+        schemas = _detect_output_backend_schemas(content)
+        graspa_results: list[GraspaWidomComponentResult] = []
         for match in _WIDOM_RESULT_RE.finditer(content):
-            path_results.append(
+            graspa_results.append(
                 GraspaWidomComponentResult(
                     component=match.group(1),
                     widom_energy=float(match.group(2)),
@@ -2972,12 +3047,96 @@ def _parse_widom_result_files(data_paths: Sequence[Path]) -> tuple[GraspaWidomCo
                     henry=float(match.group(4)),
                     henry_errorbar=float(match.group(5)),
                     source_data_file=str(path),
+                    source_schema="graspa",
                 )
             )
-        if not path_results:
-            path_results.extend(_parse_raspa2_widom_result_file(path, content))
-        results.extend(path_results)
+        raspa2_results = _parse_raspa2_widom_result_file(path, content)
+        results.extend(
+            _merge_component_results_across_schemas(
+                path,
+                schemas=schemas,
+                graspa_results=graspa_results,
+                raspa2_results=raspa2_results,
+                diagnostics=diagnostics,
+            )
+        )
     return tuple(results)
+
+
+def _merge_component_results_across_schemas(
+    path: Path,
+    *,
+    schemas: Sequence[str],
+    graspa_results: Sequence[GraspaWidomComponentResult],
+    raspa2_results: Sequence[GraspaWidomComponentResult],
+    diagnostics: list[str] | None,
+) -> list[GraspaWidomComponentResult]:
+    """Merge per-schema Widom parses of one file without losing components.
+
+    A file with markers from both backend layouts is parsed under both
+    schemas: disjoint component coverage merges completely (with a recorded
+    diagnostic), identical duplicate blocks are deduplicated, and conflicting
+    duplicate blocks are an explicit ambiguity error rather than a silent
+    choice.
+    """
+    if not graspa_results:
+        if raspa2_results:
+            return list(raspa2_results)
+        return []
+    if not raspa2_results:
+        if "raspa2" in schemas and diagnostics is not None:
+            diagnostics.append(
+                f"Mixed-schema markers in {path}: RASPA2-style markers are present alongside "
+                f"{len(graspa_results)} parsed gRASPA component block(s), but no RASPA2 component "
+                "summaries were parseable; if the file combines backends, some RASPA2 components "
+                "may be unrecoverable."
+            )
+        return list(graspa_results)
+
+    graspa_components = [result.component for result in graspa_results]
+    raspa2_components = [result.component for result in raspa2_results]
+    if len(graspa_components) != len(set(graspa_components)) or len(raspa2_components) != len(
+        set(raspa2_components)
+    ):
+        # Within-schema duplicate component blocks: keep every row verbatim so
+        # the workflow's strict exact-component check sees the duplication
+        # instead of the merge hiding it.
+        return [*graspa_results, *raspa2_results]
+
+    merged: dict[str, GraspaWidomComponentResult] = {}
+    for result in (*graspa_results, *raspa2_results):
+        existing = merged.get(result.component)
+        if existing is None:
+            merged[result.component] = result
+            continue
+        conflicting = _value_tuples_conflict(
+            (existing.widom_energy, existing.widom_energy_errorbar),
+            (result.widom_energy, result.widom_energy_errorbar),
+        ) or _value_tuples_conflict(
+            (existing.henry, existing.henry_errorbar),
+            (result.henry, result.henry_errorbar),
+        )
+        if conflicting:
+            raise GraspaParseError(
+                f"Ambiguous mixed-schema output file {path}: component {result.component!r} appears in "
+                "both gRASPA and RASPA2 summary blocks with conflicting values; the authoritative "
+                "backend schema cannot be determined from content, so no component is dropped or "
+                "picked silently. Provide single-backend output per file."
+            )
+        if diagnostics is not None:
+            diagnostics.append(
+                f"Mixed-schema file {path}: component {result.component!r} appears in both gRASPA "
+                "and RASPA2 summary blocks with identical values; keeping one copy."
+            )
+    if set(graspa_result.component for graspa_result in graspa_results).isdisjoint(
+        raspa2_result.component for raspa2_result in raspa2_results
+    ) and diagnostics is not None:
+        diagnostics.append(
+            f"Mixed-schema file {path}: parsed {len(graspa_results)} component(s) from gRASPA "
+            f"blocks and {len(raspa2_results)} component(s) from RASPA2 blocks; all blocks were "
+            "recovered and merged."
+        )
+    return list(merged.values())
 
 
 def _parse_raspa2_widom_result_file(path: Path, content: str) -> list[GraspaWidomComponentResult]:
@@ -3000,6 +3159,7 @@ def _parse_raspa2_widom_result_file(path: Path, content: str) -> list[GraspaWido
                 henry=_parse_float_token(match.group("value")),
                 henry_errorbar=_parse_float_token(match.group("error")),
                 source_data_file=str(path),
+                source_schema="raspa2",
             )
         )
     return results
@@ -3016,9 +3176,10 @@ def _parse_isotherm_result_files(
     graspa_stderr_log_path: Path,
 ) -> GraspaIsothermPointResult:
     for path in data_paths:
-        parsed_values = _parse_isotherm_result_file(path, component=component)
-        if parsed_values is None:
+        parsed = _parse_isotherm_result_file(path, component=component)
+        if parsed is None:
             continue
+        parsed_values, source_schema, point_warnings = parsed
         return GraspaIsothermPointResult(
             component=component,
             pressure=pressure,
@@ -3028,6 +3189,8 @@ def _parse_isotherm_result_files(
             graspa_stderr_log_path=str(graspa_stderr_log_path),
             data_file_paths=tuple(str(item) for item in data_paths),
             source_data_file=str(path),
+            source_schema=source_schema,
+            warnings=tuple(point_warnings),
             loading_mol_per_kg=parsed_values["loading_mol_per_kg"][0],
             loading_mol_per_kg_errorbar=parsed_values["loading_mol_per_kg"][1],
             loading_g_per_l=parsed_values["loading_g_per_l"][0],
@@ -3059,25 +3222,82 @@ def _parse_mixture_result_files(
         "heat_of_adsorption_kj_per_mol": "BLOCK AVERAGES (HEAT OF ADSORPTION: kJ/mol)",
     }
 
+    unresolved_file_details: list[str] = []
     for path in data_paths:
-        parsed_sections = _parse_component_average_sections(path, section_titles=section_titles)
+        content = path.read_text(encoding="utf-8", errors="replace")
+        schemas = _detect_output_backend_schemas(content)
+        parsed_sections = _parse_component_average_sections(content, section_titles=section_titles)
+        graspa_values_by_component = {
+            component_name: values
+            for component_name in expected_components
+            if (
+                values := _resolve_component_summary_values(parsed_sections, component=component_name)
+            )
+            is not None
+        }
+        raspa2_loading_by_component = _parse_raspa2_component_loading_summaries(content)
+        raspa2_values_by_component = {
+            component_name: _raspa2_mixture_component_values_from_loading(
+                raspa2_loading_by_component[component_name]
+            )
+            for component_name in expected_components
+            if component_name in raspa2_loading_by_component
+        }
+
+        conflicting_components = sorted(
+            component_name
+            for component_name in set(graspa_values_by_component) & set(raspa2_values_by_component)
+            if _value_tuples_conflict(
+                graspa_values_by_component[component_name]["loading_mol_per_kg"],
+                raspa2_values_by_component[component_name]["loading_mol_per_kg"],
+            )
+        )
+        if conflicting_components:
+            raise GraspaParseError(
+                f"Ambiguous mixed-schema output file {path}: component(s) {conflicting_components!r} "
+                "have conflicting gRASPA and RASPA2 loading summaries; the authoritative backend "
+                "schema cannot be determined from content, so no component is dropped or picked "
+                "silently. Provide single-backend output per file."
+            )
+
+        component_source_schemas: dict[str, str] = {}
         resolved_components: list[tuple[str, dict[str, tuple[float, float]]]] = []
         for component_name in expected_components:
-            parsed_values = _resolve_component_summary_values(parsed_sections, component=component_name)
-            if parsed_values is None:
-                resolved_components = []
-                break
-            resolved_components.append((component_name, parsed_values))
-        if not resolved_components:
-            resolved_components = _parse_raspa2_mixture_component_values(path, expected_components=expected_components)
-            if not resolved_components:
-                continue
+            if component_name in graspa_values_by_component:
+                resolved_components.append((component_name, graspa_values_by_component[component_name]))
+                component_source_schemas[component_name] = "graspa"
+            elif component_name in raspa2_values_by_component:
+                resolved_components.append((component_name, raspa2_values_by_component[component_name]))
+                component_source_schemas[component_name] = "raspa2"
+        missing_components = sorted(set(expected_components) - set(component_source_schemas))
+        if missing_components:
+            unresolved_file_details.append(
+                f"{path}: gRASPA block sections provide {sorted(graspa_values_by_component)!r}, "
+                f"RASPA2 loading rows provide {sorted(raspa2_values_by_component)!r}; "
+                f"missing {missing_components!r}."
+            )
+            continue
+
+        point_warnings: list[str] = []
+        if len(set(component_source_schemas.values())) > 1:
+            point_warnings.append(
+                f"Mixed-schema file {path}: component coverage spans both backend layouts "
+                f"({dict(sorted(component_source_schemas.items()))}); every requested component "
+                "was recovered, but g/L and heat-of-adsorption values are unavailable for the "
+                "RASPA2-layout components. This usually means concatenated or renamed backend "
+                "output; verify the run provenance."
+            )
+        elif raspa2_values_by_component and "graspa" in schemas:
+            point_warnings.append(
+                f"Mixed-schema markers in {path}: components were parsed from the RASPA2 layout, "
+                "but gRASPA block-average markers are also present without complete parseable "
+                "sections; if the file combines backends, some gRASPA data may be unrecoverable."
+            )
 
         loading_by_component = {
             component_name: values["loading_mol_per_kg"][0]
             for component_name, values in resolved_components
         }
-        point_warnings: list[str] = []
         nonfinite_loading_components = tuple(
             component_name
             for component_name, loading in loading_by_component.items()
@@ -3158,33 +3378,90 @@ def _parse_mixture_result_files(
             component_results=component_results,
             selectivity_results=selectivity_results,
             warnings=tuple(point_warnings),
+            component_source_schemas=component_source_schemas,
         )
 
+    detail_suffix = ""
+    if unresolved_file_details:
+        detail_suffix = " Per-file parse coverage: " + " ".join(unresolved_file_details)
     raise GraspaParseError(
         f"No mixture adsorption summaries for components {list(expected_components)!r} could be parsed from "
-        f"{len(data_paths)} data file(s) at pressure {pressure:g} Pa."
+        f"{len(data_paths)} data file(s) at pressure {pressure:g} Pa.{detail_suffix}"
     )
 
 
-def _parse_isotherm_result_file(path: Path, *, component: str) -> dict[str, tuple[float, float]] | None:
+def _parse_isotherm_result_file(
+    path: Path,
+    *,
+    component: str,
+) -> tuple[dict[str, tuple[float, float]], str, list[str]] | None:
+    """Parse one isotherm data file under both backend output schemas.
+
+    Returns (values, source_schema, diagnostics) or None when neither schema
+    yields the requested component. Mixed-schema files are resolved
+    explicitly: agreeing blocks merge with a diagnostic, conflicting blocks
+    raise instead of silently picking one backend.
+    """
+    content = path.read_text(encoding="utf-8", errors="replace")
     section_titles = {
         "loading_mol_per_kg": "BLOCK AVERAGES (LOADING: mol/kg)",
         "loading_g_per_l": "BLOCK AVERAGES (LOADING: g/L)",
         "heat_of_adsorption_kj_per_mol": "BLOCK AVERAGES (HEAT OF ADSORPTION: kJ/mol)",
     }
-    parsed_sections = _parse_component_average_sections(path, section_titles=section_titles)
-    resolved = _resolve_component_summary_values(parsed_sections, component=component)
-    if resolved is not None:
-        return resolved
-    return _parse_raspa2_single_component_adsorption_result(path, component=component)
+    schemas = _detect_output_backend_schemas(content)
+    parsed_sections = _parse_component_average_sections(content, section_titles=section_titles)
+    graspa_values = _resolve_component_summary_values(parsed_sections, component=component)
+    raspa2_values = _parse_raspa2_single_component_adsorption_result(content, component=component)
+
+    if graspa_values is None:
+        if raspa2_values is None:
+            return None
+        warnings = _unparsed_schema_marker_warnings(path, schemas=schemas, parsed_schema="raspa2")
+        return raspa2_values, "raspa2", warnings
+    if raspa2_values is None:
+        warnings = _unparsed_schema_marker_warnings(path, schemas=schemas, parsed_schema="graspa")
+        return graspa_values, "graspa", warnings
+
+    if _value_tuples_conflict(
+        graspa_values["loading_mol_per_kg"],
+        raspa2_values["loading_mol_per_kg"],
+    ):
+        raise GraspaParseError(
+            f"Ambiguous mixed-schema output file {path}: component {component!r} has conflicting "
+            "gRASPA and RASPA2 loading summaries; the authoritative backend schema cannot be "
+            "determined from content, so no value is picked silently. Provide single-backend "
+            "output per file."
+        )
+    warnings = [
+        f"Mixed-schema file {path}: component {component!r} appears in both gRASPA and RASPA2 "
+        "summary blocks with the same loading; using the gRASPA block-average sections, which "
+        "also carry g/L and heat-of-adsorption values."
+    ]
+    return graspa_values, "graspa", warnings
+
+
+def _unparsed_schema_marker_warnings(
+    path: Path,
+    *,
+    schemas: Sequence[str],
+    parsed_schema: str,
+) -> list[str]:
+    """Warn when a file carries markers of a schema that produced no parse."""
+    other_schemas = [schema for schema in schemas if schema != parsed_schema]
+    if not other_schemas:
+        return []
+    return [
+        f"Mixed-schema markers in {path}: parsed component summaries from the {parsed_schema} "
+        f"layout, but {', '.join(other_schemas)} markers are also present without parseable "
+        "component summaries; if the file combines backends, some components may be unrecoverable."
+    ]
 
 
 def _parse_raspa2_single_component_adsorption_result(
-    path: Path,
+    content: str,
     *,
     component: str,
 ) -> dict[str, tuple[float, float]] | None:
-    content = path.read_text(encoding="utf-8", errors="replace")
     loading_by_component = _parse_raspa2_component_loading_summaries(content, default_component=component)
     loading = loading_by_component.get(component)
     if loading is None:
@@ -3204,29 +3481,14 @@ def _parse_raspa2_single_component_adsorption_result(
     }
 
 
-def _parse_raspa2_mixture_component_values(
-    path: Path,
-    *,
-    expected_components: Sequence[str],
-) -> list[tuple[str, dict[str, tuple[float, float]]]]:
-    content = path.read_text(encoding="utf-8", errors="replace")
-    loading_by_component = _parse_raspa2_component_loading_summaries(content)
-    resolved_components: list[tuple[str, dict[str, tuple[float, float]]]] = []
-    for component_name in expected_components:
-        loading = loading_by_component.get(component_name)
-        if loading is None:
-            return []
-        resolved_components.append(
-            (
-                component_name,
-                {
-                    "loading_mol_per_kg": loading,
-                    "loading_g_per_l": (math.nan, math.nan),
-                    "heat_of_adsorption_kj_per_mol": (math.nan, math.nan),
-                },
-            )
-        )
-    return resolved_components
+def _raspa2_mixture_component_values_from_loading(
+    loading: tuple[float, float],
+) -> dict[str, tuple[float, float]]:
+    return {
+        "loading_mol_per_kg": loading,
+        "loading_g_per_l": (math.nan, math.nan),
+        "heat_of_adsorption_kj_per_mol": (math.nan, math.nan),
+    }
 
 
 def _parse_raspa2_component_loading_summaries(
@@ -3262,7 +3524,7 @@ def _parse_raspa2_component_loading_summaries(
 
 
 def _parse_component_average_sections(
-    path: Path,
+    content: str,
     *,
     section_titles: dict[str, str],
 ) -> dict[str, dict[str, tuple[float, float]]]:
@@ -3272,45 +3534,44 @@ def _parse_component_average_sections(
 
     active_section: str | None = None
     active_component: str | None = None
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        matched_section = None
+        for section_key, title_fragment in section_titles.items():
+            if title_fragment in line:
+                matched_section = section_key
+                break
+        if matched_section is not None:
+            active_section = matched_section
+            active_component = None
+            continue
+        if "BLOCK AVERAGES (" in line and matched_section is None:
+            active_section = None
+            active_component = None
+            continue
+        if active_section is None:
+            continue
+        if line.startswith("COMPONENT ["):
+            match = re.match(r"COMPONENT \[\d+\] \((.+)\)", line)
+            active_component = match.group(1) if match is not None else None
+            continue
+        if active_component is None:
+            continue
+        if line.startswith("Overall: Average:"):
+            match = re.match(
+                rf"Overall: Average:\s*({_FLOAT_TOKEN_PATTERN}),\s*ErrorBar:\s*({_FLOAT_TOKEN_PATTERN})",
+                line,
+                re.IGNORECASE,
+            )
+            if match is None:
                 continue
-            matched_section = None
-            for section_key, title_fragment in section_titles.items():
-                if title_fragment in line:
-                    matched_section = section_key
-                    break
-            if matched_section is not None:
-                active_section = matched_section
-                active_component = None
-                continue
-            if "BLOCK AVERAGES (" in line and matched_section is None:
-                active_section = None
-                active_component = None
-                continue
-            if active_section is None:
-                continue
-            if line.startswith("COMPONENT ["):
-                match = re.match(r"COMPONENT \[\d+\] \((.+)\)", line)
-                active_component = match.group(1) if match is not None else None
-                continue
-            if active_component is None:
-                continue
-            if line.startswith("Overall: Average:"):
-                match = re.match(
-                    rf"Overall: Average:\s*({_FLOAT_TOKEN_PATTERN}),\s*ErrorBar:\s*({_FLOAT_TOKEN_PATTERN})",
-                    line,
-                    re.IGNORECASE,
-                )
-                if match is None:
-                    continue
-                component_values[active_section][active_component] = (
-                    _parse_float_token(match.group(1)),
-                    _parse_float_token(match.group(2)),
-                )
-                active_component = None
+            component_values[active_section][active_component] = (
+                _parse_float_token(match.group(1)),
+                _parse_float_token(match.group(2)),
+            )
+            active_component = None
     return component_values
 
 

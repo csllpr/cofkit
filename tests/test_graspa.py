@@ -24,9 +24,13 @@ from cofkit.graspa import (
     GraspaMixtureComponentSettings,
     GraspaMixtureSettings,
     GraspaIsothermSettings,
+    GraspaParseError,
     GraspaWidomSettings,
     PACKAGED_GUEST_FORCEFIELD_METADATA,
     _copy_widom_template_assets,
+    _parse_isotherm_result_file,
+    _parse_mixture_result_files,
+    _parse_widom_result_files,
     _render_isotherm_simulation_input,
     _validate_eos_component,
     resolve_eqeq_binary,
@@ -1582,6 +1586,349 @@ class GraspaWidomTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
         return path
 
+    def test_parse_widom_result_files_mixed_schema_merges_disjoint_components(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "mixed.data"
+            data_path.write_text(
+                "================Rosenbluth Summary For Component [0] (CO2_DREIDING)================\n"
+                "Averaged Excess Chemical Potential: -11.00 +/- 0.11\n"
+                "Averaged Henry Coefficient [mol/kg/Pa]: 2.00000000e-05 +/- 2.00000000e-06\n"
+                "\n"
+                "Average Widom excess contribution:\n"
+                "==================================\n"
+                "[N2_DREIDING] Average Widom excess chemical potential:   -12.00 +/- 0.120000 [-]\n"
+                "\n"
+                "Average Henry coefficient:\n"
+                "==========================\n"
+                "[N2_DREIDING] Average Henry coefficient:  3.00000000e-05 +/- 3.00000000e-06 [mol/kg/Pa]\n",
+                encoding="utf-8",
+            )
+
+            diagnostics: list[str] = []
+            results = _parse_widom_result_files((data_path,), diagnostics=diagnostics)
+
+            self.assertEqual([result.component for result in results], ["CO2_DREIDING", "N2_DREIDING"])
+            self.assertEqual(
+                [result.source_schema for result in results],
+                ["graspa", "raspa2"],
+            )
+            self.assertEqual(results[1].henry, 3.0e-05)
+            self.assertTrue(any("Mixed-schema" in diagnostic for diagnostic in diagnostics))
+
+    def test_parse_widom_result_files_detection_is_content_based(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # A RASPA2-layout file with a gRASPA-looking name must still parse
+            # under the RASPA2 schema: detection follows content, not names.
+            data_path = Path(temp_dir) / "graspa_output_rosenbluth.data"
+            data_path.write_text(
+                "Average Widom excess contribution:\n"
+                "==================================\n"
+                "[Xe_GENERICMOFS] Average Widom excess chemical potential:   -9.00 +/- 0.090000 [-]\n"
+                "\n"
+                "Average Henry coefficient:\n"
+                "==========================\n"
+                "[Xe_GENERICMOFS] Average Henry coefficient:  4.00000000e-05 +/- 4.00000000e-06 [mol/kg/Pa]\n",
+                encoding="utf-8",
+            )
+
+            results = _parse_widom_result_files((data_path,))
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].component, "Xe_GENERICMOFS")
+            self.assertEqual(results[0].source_schema, "raspa2")
+            self.assertEqual(results[0].henry, 4.0e-05)
+
+    def test_parse_widom_result_files_mixed_schema_conflicting_duplicate_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "conflicting.data"
+            data_path.write_text(
+                "================Rosenbluth Summary For Component [0] (CO2_DREIDING)================\n"
+                "Averaged Excess Chemical Potential: -11.00 +/- 0.11\n"
+                "Averaged Henry Coefficient [mol/kg/Pa]: 2.00000000e-05 +/- 2.00000000e-06\n"
+                "\n"
+                "Average Henry coefficient:\n"
+                "==========================\n"
+                "[CO2_DREIDING] Average Henry coefficient:  9.00000000e-05 +/- 9.00000000e-06 [mol/kg/Pa]\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(GraspaParseError, "Ambiguous mixed-schema"):
+                _parse_widom_result_files((data_path,), diagnostics=[])
+
+    def test_parse_widom_result_files_mixed_schema_identical_duplicate_dedupes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "duplicated.data"
+            data_path.write_text(
+                "================Rosenbluth Summary For Component [0] (CO2_DREIDING)================\n"
+                "Averaged Excess Chemical Potential: -11.00 +/- 0.11\n"
+                "Averaged Henry Coefficient [mol/kg/Pa]: 2.00000000e-05 +/- 2.00000000e-06\n"
+                "\n"
+                "Average Widom excess contribution:\n"
+                "==================================\n"
+                "[CO2_DREIDING] Average Widom excess chemical potential:   -11.00 +/- 0.110000 [-]\n"
+                "\n"
+                "Average Henry coefficient:\n"
+                "==========================\n"
+                "[CO2_DREIDING] Average Henry coefficient:  2.00000000e-05 +/- 2.00000000e-06 [mol/kg/Pa]\n",
+                encoding="utf-8",
+            )
+
+            diagnostics: list[str] = []
+            results = _parse_widom_result_files((data_path,), diagnostics=diagnostics)
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].component, "CO2_DREIDING")
+            self.assertTrue(any("identical values" in diagnostic for diagnostic in diagnostics))
+
+    def test_parse_mixture_result_files_mixed_schema_recovers_all_components(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "mixed_mixture.data"
+            data_path.write_text(
+                "=====================BLOCK AVERAGES (LOADING: mol/kg)=============\n"
+                "COMPONENT [1] (CH4_DREIDING)\n"
+                "Overall: Average: 0.50000, ErrorBar: 0.05000\n"
+                "----------------------------------------------------------\n"
+                "==============================================================\n"
+                "Number of molecules:\n"
+                "====================\n"
+                "\n"
+                "Component 1 [N2_DREIDING]\n"
+                "-------------------------------------------------------------\n"
+                "Average loading absolute [mol/kg framework]       0.2500000000 +/-       0.0250000000 [-]\n"
+                "\n"
+                "Average Widom Rosenbluth factor:\n",
+                encoding="utf-8",
+            )
+            settings = GraspaMixtureSettings(
+                components=(
+                    GraspaMixtureComponentSettings(component="CH4_DREIDING", mol_fraction=0.5),
+                    GraspaMixtureComponentSettings(component="N2_DREIDING", mol_fraction=0.5),
+                )
+            )
+
+            result = _parse_mixture_result_files(
+                (data_path,),
+                mixture_settings=settings,
+                pressure=100000.0,
+                pressure_run_dir=Path(temp_dir),
+                simulation_input_path=Path(temp_dir) / "simulation.input",
+                graspa_stdout_log_path=Path(temp_dir) / "stdout.log",
+                graspa_stderr_log_path=Path(temp_dir) / "stderr.log",
+            )
+
+            self.assertEqual(
+                {component.component for component in result.component_results},
+                {"CH4_DREIDING", "N2_DREIDING"},
+            )
+            self.assertEqual(
+                dict(result.component_source_schemas),
+                {"CH4_DREIDING": "graspa", "N2_DREIDING": "raspa2"},
+            )
+            loadings = {
+                component.component: component.loading_mol_per_kg
+                for component in result.component_results
+            }
+            self.assertAlmostEqual(loadings["CH4_DREIDING"], 0.5)
+            self.assertAlmostEqual(loadings["N2_DREIDING"], 0.25)
+            self.assertTrue(any("Mixed-schema" in warning for warning in result.warnings))
+
+    def test_parse_mixture_result_files_conflicting_schemas_raise(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "conflicting_mixture.data"
+            data_path.write_text(
+                "=====================BLOCK AVERAGES (LOADING: mol/kg)=============\n"
+                "COMPONENT [1] (CH4_DREIDING)\n"
+                "Overall: Average: 0.50000, ErrorBar: 0.05000\n"
+                "----------------------------------------------------------\n"
+                "==============================================================\n"
+                "Number of molecules:\n"
+                "====================\n"
+                "\n"
+                "Component 0 [CH4_DREIDING]\n"
+                "-------------------------------------------------------------\n"
+                "Average loading absolute [mol/kg framework]       0.9000000000 +/-       0.0900000000 [-]\n"
+                "\n"
+                "Average Widom Rosenbluth factor:\n",
+                encoding="utf-8",
+            )
+            settings = GraspaMixtureSettings(
+                components=(GraspaMixtureComponentSettings(component="CH4_DREIDING", mol_fraction=1.0),)
+            )
+
+            with self.assertRaisesRegex(GraspaParseError, "Ambiguous mixed-schema"):
+                _parse_mixture_result_files(
+                    (data_path,),
+                    mixture_settings=settings,
+                    pressure=100000.0,
+                    pressure_run_dir=Path(temp_dir),
+                    simulation_input_path=Path(temp_dir) / "simulation.input",
+                    graspa_stdout_log_path=Path(temp_dir) / "stdout.log",
+                    graspa_stderr_log_path=Path(temp_dir) / "stderr.log",
+                )
+
+    def test_parse_mixture_result_files_missing_component_reports_per_schema_coverage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "incomplete_mixture.data"
+            data_path.write_text(
+                "=====================BLOCK AVERAGES (LOADING: mol/kg)=============\n"
+                "COMPONENT [1] (CH4_DREIDING)\n"
+                "Overall: Average: 0.50000, ErrorBar: 0.05000\n"
+                "----------------------------------------------------------\n",
+                encoding="utf-8",
+            )
+            settings = GraspaMixtureSettings(
+                components=(
+                    GraspaMixtureComponentSettings(component="CH4_DREIDING", mol_fraction=0.5),
+                    GraspaMixtureComponentSettings(component="N2_DREIDING", mol_fraction=0.5),
+                )
+            )
+
+            with self.assertRaises(GraspaParseError) as raised:
+                _parse_mixture_result_files(
+                    (data_path,),
+                    mixture_settings=settings,
+                    pressure=100000.0,
+                    pressure_run_dir=Path(temp_dir),
+                    simulation_input_path=Path(temp_dir) / "simulation.input",
+                    graspa_stdout_log_path=Path(temp_dir) / "stdout.log",
+                    graspa_stderr_log_path=Path(temp_dir) / "stderr.log",
+                )
+
+            message = str(raised.exception)
+            self.assertIn("missing ['N2_DREIDING']", message)
+            self.assertIn("gRASPA block sections provide ['CH4_DREIDING']", message)
+
+    def test_parse_isotherm_result_file_mixed_schema_agreement_warns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "mixed_isotherm.data"
+            data_path.write_text(
+                "=====================BLOCK AVERAGES (LOADING: mol/kg)=============\n"
+                "COMPONENT [1] (CO2_DREIDING)\n"
+                "Overall: Average: 0.25000, ErrorBar: 0.02500\n"
+                "----------------------------------------------------------\n"
+                "Number of molecules:\n"
+                "====================\n"
+                "\n"
+                "Average loading absolute [mol/kg framework]       0.2500000000 +/-       0.0250000000 [-]\n"
+                "\n"
+                "Enthalpy of adsorption:\n",
+                encoding="utf-8",
+            )
+
+            parsed = _parse_isotherm_result_file(data_path, component="CO2_DREIDING")
+
+            self.assertIsNotNone(parsed)
+            values, schema, warnings = parsed
+            self.assertEqual(schema, "graspa")
+            self.assertAlmostEqual(values["loading_mol_per_kg"][0], 0.25)
+            self.assertTrue(any("Mixed-schema" in warning for warning in warnings))
+
+    def test_parse_isotherm_result_file_mixed_schema_conflict_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "conflicting_isotherm.data"
+            data_path.write_text(
+                "=====================BLOCK AVERAGES (LOADING: mol/kg)=============\n"
+                "COMPONENT [1] (CO2_DREIDING)\n"
+                "Overall: Average: 0.25000, ErrorBar: 0.02500\n"
+                "----------------------------------------------------------\n"
+                "Number of molecules:\n"
+                "====================\n"
+                "\n"
+                "Average loading absolute [mol/kg framework]       0.7500000000 +/-       0.0750000000 [-]\n"
+                "\n"
+                "Enthalpy of adsorption:\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(GraspaParseError, "Ambiguous mixed-schema"):
+                _parse_isotherm_result_file(data_path, component="CO2_DREIDING")
+
+    def test_run_graspa_widom_workflow_mixed_schema_output_parses_with_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_mixed_schema_widom_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "example_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_widom_workflow(
+                    cif_path,
+                    output_dir=temp_path / "widom_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    widom_settings=GraspaWidomSettings(components=("CO2_DREIDING", "N2_DREIDING")),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(
+                [component.component for component in result.component_results],
+                ["CO2_DREIDING", "N2_DREIDING"],
+            )
+            self.assertEqual(
+                [component.source_schema for component in result.component_results],
+                ["graspa", "raspa2"],
+            )
+            self.assertTrue(any("Mixed-schema" in warning for warning in result.warnings))
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(report["component_results"][0]["source_schema"], "graspa")
+            self.assertEqual(report["component_results"][1]["source_schema"], "raspa2")
+
+    def test_run_graspa_widom_workflow_strict_component_check_names_missing_components(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_mixed_schema_widom_binary(
+                temp_path / "graspa_fake", drop_last_component=True
+            )
+            cif_path = temp_path / "example_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                with self.assertRaises(GraspaParseError) as raised:
+                    run_graspa_widom_workflow(
+                        cif_path,
+                        output_dir=temp_path / "widom_out",
+                        eqeq_settings=EqeqChargeSettings(),
+                        widom_settings=GraspaWidomSettings(components=("CO2_DREIDING", "N2_DREIDING")),
+                        graspa_timeout_seconds=30.0,
+                    )
+
+            message = str(raised.exception)
+            self.assertIn("do not match the requested components exactly", message)
+            self.assertIn("missing ['N2_DREIDING']", message)
+
     def _write_fake_raspa2_binary(self, path: Path) -> Path:
         path.write_text(
             f"#!{sys.executable}\n"
@@ -1834,6 +2181,56 @@ class GraspaWidomTests(unittest.TestCase):
             "        encoding='utf-8',\n"
             "    )\n"
             "sys.stdout.write('fake graspa stdout\\n')\n",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        return path
+
+    def _write_fake_mixed_schema_widom_binary(self, path: Path, *, drop_last_component: bool = False) -> Path:
+        drop_clause = "components = components[:-1]\n" if drop_last_component else ""
+        path.write_text(
+            f"#!{sys.executable}\n"
+            "from __future__ import annotations\n"
+            "import re\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "\n"
+            "simulation_input = Path('simulation.input')\n"
+            "if not simulation_input.is_file():\n"
+            "    sys.stderr.write('missing simulation.input\\n')\n"
+            "    sys.exit(2)\n"
+            "text = simulation_input.read_text(encoding='utf-8')\n"
+            "components = re.findall(r'^Component\\s+\\d+\\s+MoleculeName\\s+(\\S+)', text, re.MULTILINE)\n"
+            "if not components:\n"
+            "    sys.stderr.write('missing components\\n')\n"
+            "    sys.exit(3)\n"
+            f"{drop_clause}"
+            "output_dir = Path('Output')\n"
+            "output_dir.mkdir(exist_ok=True)\n"
+            "data_path = output_dir / 'System_0_fake.data'\n"
+            "sections = []\n"
+            "graspa_components = components[:1]\n"
+            "raspa2_components = components[1:]\n"
+            "for index, component in enumerate(graspa_components):\n"
+            "    sections.append(\n"
+            "        '================Rosenbluth Summary For Component '\n"
+            "        f'[{index}] ({component})================\\n'\n"
+            "        f'Averaged Excess Chemical Potential: {-10.0 - index:.2f} +/- {0.1 + index * 0.01:.2f}\\n'\n"
+            "        f'Averaged Henry Coefficient [mol/kg/Pa]: {(index + 1) * 1.0e-5:.8e} +/- {(index + 1) * 1.0e-6:.8e}\\n'\n"
+            "    )\n"
+            "if raspa2_components:\n"
+            "    sections.append('Average Widom excess contribution:\\n==================================')\n"
+            "    for offset, component in enumerate(raspa2_components, start=1):\n"
+            "        sections.append(\n"
+            "            f'[{component}] Average Widom excess chemical potential:   {-10.0 - offset:.2f} +/- {0.1 + offset * 0.01:.6f} [-]'\n"
+            "        )\n"
+            "    sections.append('\\nAverage Henry coefficient:\\n==========================')\n"
+            "    for offset, component in enumerate(raspa2_components, start=1):\n"
+            "        sections.append(\n"
+            "            f'[{component}] Average Henry coefficient:  {(offset + 1) * 1.0e-5:.8e} +/- {(offset + 1) * 1.0e-6:.8e} [mol/kg/Pa]'\n"
+            "        )\n"
+            "data_path.write_text('\\n'.join(sections) + '\\n', encoding='utf-8')\n"
+            "sys.stdout.write('fake mixed-schema graspa stdout\\n')\n",
             encoding="utf-8",
         )
         path.chmod(path.stat().st_mode | stat.S_IEXEC)

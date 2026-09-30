@@ -61,8 +61,8 @@ The normal `CifDecompositionResult` shape is preserved. Event-specific informati
 - `successful_alternatives`: every distinct complete decomposition (family, topology, COFid, score, hypothesis id) — a one-entry list on success, the full ambiguity set on `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`;
 - `supporting_hypothesis_count`: on success, how many complete hypotheses converged on the selected COFid before deduplication;
 - `precursor_identity`: the identity basis of the recovered precursors — `exact` when every recovered fragment of a reaction role had one identical canonical SMILES, or `element_graph_ambiguous` when chemically distinct bond-order/tautomer forms shared one molecular formula and element graph and were collapsed onto a deterministic buildable representative. The ambiguous case preserves every input form with its fragment count under `alternatives`; the selected form is a canonicalization, not an exact chemical identity;
-- `atom_ledger`: the full atom accounting of the selected (or best failed) reconstruction — see the next section;
 - `event_detection`: accepted and locally suppressed events;
+- `atom_ledger`: the full atom accounting of the selected (or best failed) reconstruction — see the next section;
 - `hypothesis_generation`: site counts, bounded-enumeration diagnostics, and potential non-overlapping family combinations;
 - `hypotheses`: every evaluated hypothesis, its events, repaired roles, validation status, and failure reasons;
 - `bond_graph_fallback`: when attempted, the explicit-graph and distance-graph outcomes and whether the fully validated fallback was selected;

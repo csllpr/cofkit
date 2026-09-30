@@ -11,6 +11,16 @@ from typing import Mapping, Sequence
 
 COFKIT_ZEOPP_ENV_VAR = "COFKIT_ZEOPP_PATH"
 _WINDOWS_STACK_BUFFER_OVERRUN_STATUS = 0xC0000409
+# cited: Zeo++ (Willems et al., Microporous Mesoporous Mater. 149, 134-141,
+# 2012) ships a built-in UFF atomic radii table (Rappe et al. 1992) hard-coded
+# in its source; the `-r <file>` flag substitutes a custom radii file.
+ZEOPP_BUILTIN_RADII_SOURCE = "zeopp_builtin_uff"
+ZEOPP_CUSTOM_RADII_SOURCE = "custom_radii_file"
+# Heuristic — pending calibration: Monte Carlo sampling densities for the
+# Zeo++ -sa (per-atom) and -vol (total) runs; accuracy/runtime trade-off
+# chosen for screening throughput rather than publication-grade surfaces.
+DEFAULT_SURFACE_SAMPLES_PER_ATOM = 250
+DEFAULT_VOLUME_SAMPLES_TOTAL = 5000
 
 
 def _pore_diameter_semantics() -> dict[str, object]:
@@ -600,6 +610,37 @@ class ZeoppBaselineResult:
 
 
 @dataclass(frozen=True)
+class ZeoppRadiiProvenance:
+    """Which atomic radii and probe radii actually produced a report.
+
+    Zeo++ pore geometry depends on two distinct radius conventions: the
+    atomic radii table used to exclude the framework interior (built-in UFF
+    unless a custom radii file is supplied with ``-r``), and the probe/channel
+    radii passed to ``-chan`` / ``-sa`` / ``-vol`` / ``-axs``.
+    """
+
+    atomic_radii_source: str
+    radii_file: str | None
+    baseline_probe_radius_angstrom: float
+    baseline_channel_radius_angstrom: float
+    probe_scan_radii_angstrom: tuple[float, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "atomic_radii_source": self.atomic_radii_source,
+            "radii_file": self.radii_file,
+            "baseline_probe_radius_angstrom": self.baseline_probe_radius_angstrom,
+            "baseline_channel_radius_angstrom": self.baseline_channel_radius_angstrom,
+            "probe_scan_radii_angstrom": list(self.probe_scan_radii_angstrom),
+            "note": (
+                "Zeo++ applies its built-in UFF atomic radii table unless a custom radii file is "
+                "supplied with -r. The baseline uses a zero-radius point probe; accessibility-aware "
+                "scans use the listed probe radii."
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class ZeoppAnalysisResult:
     input_cif: str
     zeopp_binary: str
@@ -607,6 +648,7 @@ class ZeoppAnalysisResult:
     report_path: str
     baseline: ZeoppBaselineResult
     probe_scans: tuple[ZeoppProbeScanResult, ...] = ()
+    radii_provenance: ZeoppRadiiProvenance | None = None
 
     @property
     def properties(self) -> ZeoppBasicPoreProperties:
@@ -631,6 +673,7 @@ class ZeoppAnalysisResult:
             "report_path": self.report_path,
             "pore_diameter_semantics": dict(self.pore_diameter_semantics),
             "measurement_semantics": dict(self.measurement_semantics),
+            "radii_provenance": None if self.radii_provenance is None else self.radii_provenance.to_dict(),
             "baseline": self.baseline.to_dict(),
             "probe_scans": [scan.to_dict() for scan in self.probe_scans],
         }
@@ -657,11 +700,9 @@ def analyze_zeopp_pore_properties(
     output_dir: str | Path | None = None,
     probe_radii: Sequence[float] = (),
     channel_radius: float | None = None,
-    # Heuristic — pending calibration: Monte Carlo sampling densities for the
-    # Zeo++ -sa (per-atom) and -vol (total) runs; accuracy/runtime trade-off
-    # chosen for screening throughput rather than publication-grade surfaces.
-    surface_samples_per_atom: int = 250,
-    volume_samples_total: int = 5000,
+    surface_samples_per_atom: int = DEFAULT_SURFACE_SAMPLES_PER_ATOM,
+    volume_samples_total: int = DEFAULT_VOLUME_SAMPLES_TOTAL,
+    radii_file: str | Path | None = None,
     zeopp_path: str | Path | None = None,
     timeout_seconds: float = 300.0,
     continue_on_probe_error: bool = True,
@@ -690,6 +731,24 @@ def analyze_zeopp_pore_properties(
                 "uses it to classify accessibility for -sa and -vol."
             )
 
+    resolved_radii_file: Path | None = None
+    if radii_file is not None:
+        resolved_radii_file = Path(radii_file).expanduser().resolve()
+        if not resolved_radii_file.is_file():
+            raise FileNotFoundError(f"Zeo++ atomic radii file does not exist: {resolved_radii_file}")
+    radii_args: tuple[str, ...] = (
+        () if resolved_radii_file is None else ("-r", str(resolved_radii_file))
+    )
+    radii_provenance = ZeoppRadiiProvenance(
+        atomic_radii_source=(
+            ZEOPP_BUILTIN_RADII_SOURCE if resolved_radii_file is None else ZEOPP_CUSTOM_RADII_SOURCE
+        ),
+        radii_file=None if resolved_radii_file is None else str(resolved_radii_file),
+        baseline_probe_radius_angstrom=0.0,
+        baseline_channel_radius_angstrom=0.0,
+        probe_scan_radii_angstrom=normalized_probe_radii,
+    )
+
     binary = resolve_zeopp_binary(zeopp_path)
     run_dir = _resolve_output_dir(input_path, output_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -701,6 +760,7 @@ def analyze_zeopp_pore_properties(
         surface_samples_per_atom=surface_samples_per_atom,
         volume_samples_total=volume_samples_total,
         timeout_seconds=timeout_seconds,
+        radii_args=radii_args,
     )
 
     probe_scans = tuple(
@@ -717,6 +777,7 @@ def analyze_zeopp_pore_properties(
             ),
             timeout_seconds=timeout_seconds,
             continue_on_error=continue_on_probe_error,
+            radii_args=radii_args,
         )
         for index, value in enumerate(normalized_probe_radii, start=1)
     )
@@ -728,6 +789,7 @@ def analyze_zeopp_pore_properties(
         report_path=str(run_dir / "zeopp_report.json"),
         baseline=baseline,
         probe_scans=probe_scans,
+        radii_provenance=radii_provenance,
     )
     Path(result.report_path).write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return result
@@ -742,6 +804,7 @@ def analyze_zeopp_basic_pore_properties(
     # porous-materials literature; it approximates, but is not exactly, the
     # N2 kinetic radius (~1.82 A from the 3.64 A kinetic diameter).
     probe_radius: float = 1.86,
+    radii_file: str | Path | None = None,
     zeopp_path: str | Path | None = None,
     timeout_seconds: float = 300.0,
 ) -> ZeoppAnalysisResult:
@@ -749,6 +812,7 @@ def analyze_zeopp_basic_pore_properties(
         cif_path,
         output_dir=output_dir,
         probe_radii=(probe_radius,),
+        radii_file=radii_file,
         zeopp_path=zeopp_path,
         timeout_seconds=timeout_seconds,
     )
@@ -762,6 +826,7 @@ def _run_baseline_analysis(
     surface_samples_per_atom: int,
     volume_samples_total: int,
     timeout_seconds: float,
+    radii_args: tuple[str, ...] = (),
 ) -> ZeoppBaselineResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = input_path.stem
@@ -778,7 +843,7 @@ def _run_baseline_analysis(
 
     _run_zeopp_command(
         binary,
-        ("-res", output_paths["res"], str(input_path)),
+        (*radii_args, "-res", output_paths["res"], str(input_path)),
         expected_output_path=Path(output_paths["res"]),
         stdout_log_path=Path(output_paths["res_stdout_log"]),
         stderr_log_path=Path(output_paths["res_stderr_log"]),
@@ -786,7 +851,7 @@ def _run_baseline_analysis(
     )
     _run_zeopp_command(
         binary,
-        ("-resex", output_paths["resex"], str(input_path)),
+        (*radii_args, "-resex", output_paths["resex"], str(input_path)),
         expected_output_path=Path(output_paths["resex"]),
         stdout_log_path=Path(output_paths["resex_stdout_log"]),
         stderr_log_path=Path(output_paths["resex_stderr_log"]),
@@ -794,7 +859,7 @@ def _run_baseline_analysis(
     )
     chan_stdout = _run_zeopp_command(
         binary,
-        ("-chan", "0", output_paths["chan"], str(input_path)),
+        (*radii_args, "-chan", "0", output_paths["chan"], str(input_path)),
         expected_output_path=Path(output_paths["chan"]),
         stdout_log_path=Path(output_paths["chan_stdout_log"]),
         stderr_log_path=Path(output_paths["chan_stderr_log"]),
@@ -802,7 +867,7 @@ def _run_baseline_analysis(
     )
     _run_zeopp_command(
         binary,
-        ("-sa", "0", "0", str(surface_samples_per_atom), output_paths["sa"], str(input_path)),
+        (*radii_args, "-sa", "0", "0", str(surface_samples_per_atom), output_paths["sa"], str(input_path)),
         expected_output_path=Path(output_paths["sa"]),
         stdout_log_path=Path(output_paths["sa_stdout_log"]),
         stderr_log_path=Path(output_paths["sa_stderr_log"]),
@@ -810,7 +875,7 @@ def _run_baseline_analysis(
     )
     _run_zeopp_command(
         binary,
-        ("-vol", "0", "0", str(volume_samples_total), output_paths["vol"], str(input_path)),
+        (*radii_args, "-vol", "0", "0", str(volume_samples_total), output_paths["vol"], str(input_path)),
         expected_output_path=Path(output_paths["vol"]),
         stdout_log_path=Path(output_paths["vol_stdout_log"]),
         stderr_log_path=Path(output_paths["vol_stderr_log"]),
@@ -835,6 +900,7 @@ def _run_probe_scan(
     settings: ZeoppProbeScanSettings,
     timeout_seconds: float,
     continue_on_error: bool,
+    radii_args: tuple[str, ...] = (),
 ) -> ZeoppProbeScanResult:
     label = (
         f"probe_scan_{scan_index:02d}"
@@ -863,7 +929,7 @@ def _run_probe_scan(
     try:
         chan_stdout = _run_zeopp_command(
             binary,
-            ("-chan", f"{settings.probe_radius_angstrom:g}", output_paths["chan"], str(input_path)),
+            (*radii_args, "-chan", f"{settings.probe_radius_angstrom:g}", output_paths["chan"], str(input_path)),
             expected_output_path=Path(output_paths["chan"]),
             stdout_log_path=Path(output_paths["chan_stdout_log"]),
             stderr_log_path=Path(output_paths["chan_stderr_log"]),
@@ -879,6 +945,7 @@ def _run_probe_scan(
         _run_zeopp_command(
             binary,
             (
+                *radii_args,
                 "-sa",
                 f"{settings.channel_radius_angstrom:g}",
                 f"{settings.probe_radius_angstrom:g}",
@@ -901,6 +968,7 @@ def _run_probe_scan(
         _run_zeopp_command(
             binary,
             (
+                *radii_args,
                 "-vol",
                 f"{settings.channel_radius_angstrom:g}",
                 f"{settings.probe_radius_angstrom:g}",
@@ -922,7 +990,7 @@ def _run_probe_scan(
     try:
         _run_zeopp_command(
             binary,
-            ("-axs", f"{settings.probe_radius_angstrom:g}", output_paths["axs"], str(input_path)),
+            (*radii_args, "-axs", f"{settings.probe_radius_angstrom:g}", output_paths["axs"], str(input_path)),
             expected_output_path=Path(output_paths["axs"]),
             stdout_log_path=Path(output_paths["axs_stdout_log"]),
             stderr_log_path=Path(output_paths["axs_stderr_log"]),
@@ -1273,6 +1341,10 @@ def _format_radius_label(value: float) -> str:
 
 __all__ = [
     "COFKIT_ZEOPP_ENV_VAR",
+    "DEFAULT_SURFACE_SAMPLES_PER_ATOM",
+    "DEFAULT_VOLUME_SAMPLES_TOTAL",
+    "ZEOPP_BUILTIN_RADII_SOURCE",
+    "ZEOPP_CUSTOM_RADII_SOURCE",
     "ZeoppAccessibilitySummary",
     "ZeoppAnalysisResult",
     "ZeoppBaselineResult",
@@ -1285,6 +1357,7 @@ __all__ = [
     "ZeoppParseError",
     "ZeoppProbeScanResult",
     "ZeoppProbeScanSettings",
+    "ZeoppRadiiProvenance",
     "ZeoppSurfaceAreaProperties",
     "ZeoppVolumeProperties",
     "analyze_zeopp_basic_pore_properties",

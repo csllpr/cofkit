@@ -6,7 +6,12 @@ from pathlib import Path
 
 from .decompose import decompose_cif_to_cofid
 from .validation import CoarseValidationThresholds, classify_batch_output
-from .zeopp import ZeoppError, analyze_zeopp_pore_properties
+from .zeopp import (
+    DEFAULT_SURFACE_SAMPLES_PER_ATOM,
+    DEFAULT_VOLUME_SAMPLES_TOTAL,
+    ZeoppError,
+    analyze_zeopp_pore_properties,
+)
 
 
 def add_analyze_group(subparsers) -> None:
@@ -244,14 +249,22 @@ def _add_zeopp_parser(subparsers) -> None:
     parser.add_argument(
         "--surface-samples-per-atom",
         type=int,
-        default=250,
-        help="Monte Carlo samples per atom for Zeo++ surface-area runs. Default: 250.",
+        default=DEFAULT_SURFACE_SAMPLES_PER_ATOM,
+        help=f"Monte Carlo samples per atom for Zeo++ surface-area runs. Default: {DEFAULT_SURFACE_SAMPLES_PER_ATOM}.",
     )
     parser.add_argument(
         "--volume-samples-total",
         type=int,
-        default=5000,
-        help="Monte Carlo total sample count for Zeo++ volume runs. Default: 5000.",
+        default=DEFAULT_VOLUME_SAMPLES_TOTAL,
+        help=f"Monte Carlo total sample count for Zeo++ volume runs. Default: {DEFAULT_VOLUME_SAMPLES_TOTAL}.",
+    )
+    parser.add_argument(
+        "--zeopp-radii-file",
+        default=None,
+        help=(
+            "Optional Zeo++ atomic radii file (passed to Zeo++ as -r). When omitted, Zeo++ uses "
+            "its built-in UFF radii table; either way the report records the effective radii source."
+        ),
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -281,6 +294,7 @@ def _run_zeopp(args: argparse.Namespace) -> None:
             channel_radius=args.channel_radius,
             surface_samples_per_atom=args.surface_samples_per_atom,
             volume_samples_total=args.volume_samples_total,
+            radii_file=args.zeopp_radii_file,
             zeopp_path=args.zeopp_path,
             timeout_seconds=args.timeout_seconds,
         )
@@ -299,6 +313,10 @@ def _run_zeopp(args: argparse.Namespace) -> None:
     print("input_cif:", result.input_cif)
     print("zeopp_binary:", result.zeopp_binary)
     print("output_dir:", result.output_dir)
+    if result.radii_provenance is not None:
+        print("atomic_radii_source:", result.radii_provenance.atomic_radii_source)
+        if result.radii_provenance.radii_file is not None:
+            print("radii_file:", result.radii_provenance.radii_file)
     print("largest_cavity_diameter (LCD; Zeo++ Di; angstrom):", properties.largest_cavity_diameter)
     print("pore_limiting_diameter (PLD; Zeo++ Df; angstrom):", properties.pore_limiting_diameter)
     print(
