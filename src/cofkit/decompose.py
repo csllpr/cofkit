@@ -141,6 +141,34 @@ class BondedMolBuildResult:
     candidates: tuple[BondCandidate, ...] = ()
 
 
+# Topology-identification confidence labels. ``exact`` is reserved for a
+# verified periodic quotient-graph isomorphism including gain vectors; it is
+# never granted to an embedded annotation on rank/connectivity evidence alone.
+# ``compatible`` marks an embedded COFid comment that survived the
+# rank/connectivity compatibility checks but could not be independently
+# verified by net matching — an unverified annotation, not an identification.
+TOPOLOGY_CONFIDENCE_EXACT = "exact"
+TOPOLOGY_CONFIDENCE_HIGH = "high"
+TOPOLOGY_CONFIDENCE_MEDIUM = "medium"
+TOPOLOGY_CONFIDENCE_LOW = "low"
+TOPOLOGY_CONFIDENCE_COMPATIBLE = "compatible"
+TOPOLOGY_CONFIDENCE_FAILED = "failed"
+
+# Provenance of a selected topology, recorded under
+# ``metadata["topology_identification"]``:
+#   VERIFIED_PERIODIC_GRAPH     — full quotient-graph isomorphism including
+#                                 periodic gain vectors (justifies "exact").
+#   VERIFIED_QUOTIENT_GRAPH     — quotient-graph match without full gain
+#                                 comparison, or consistent supercell evidence.
+#   COMPATIBLE_ANNOTATION       — embedded comment used as an unverified hint.
+#   GRAPH_RANKING               — selected by repository graph ranking with no
+#                                 embedded comment involved.
+TOPOLOGY_IDENTIFICATION_VERIFIED_PERIODIC_GRAPH = "verified_periodic_graph"
+TOPOLOGY_IDENTIFICATION_VERIFIED_QUOTIENT_GRAPH = "verified_quotient_graph"
+TOPOLOGY_IDENTIFICATION_COMPATIBLE_ANNOTATION = "compatible_annotation_unverified"
+TOPOLOGY_IDENTIFICATION_GRAPH_RANKING = "periodic_graph_ranking"
+
+
 @dataclass(frozen=True)
 class TopologyDetectionCandidate:
     topology: str
@@ -161,9 +189,17 @@ class TopologyDetectionCandidate:
 
 @dataclass(frozen=True)
 class TopologyDetectionResult:
+    """Topology auto-detection outcome.
+
+    ``confidence`` takes one of the ``TOPOLOGY_CONFIDENCE_*`` values above.
+    ``metadata["topology_identification"]`` records how the selection was
+    established (one of the ``TOPOLOGY_IDENTIFICATION_*`` values) whenever a
+    topology was selected.
+    """
+
     status: str
     selected_topology: str | None = None
-    confidence: str = "failed"
+    confidence: str = TOPOLOGY_CONFIDENCE_FAILED
     reason: str | None = None
     candidates: tuple[TopologyDetectionCandidate, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
@@ -670,7 +706,10 @@ def _validate_selected_topology(
         )
         if ranked_candidate is not None:
             metadata["graph_candidate"] = ranked_candidate.to_dict()
-        compatible = ranked_candidate is not None and ranked_candidate.confidence in {"exact", "high"}
+        compatible = ranked_candidate is not None and ranked_candidate.confidence in {
+            TOPOLOGY_CONFIDENCE_EXACT,
+            TOPOLOGY_CONFIDENCE_HIGH,
+        }
         compatibility_source = "periodic_graph"
     elif len(connectivities) == 2:
         high, low = connectivities
@@ -1496,6 +1535,7 @@ def detect_cif_topology(
         )
 
     comment_diagnostic: dict[str, object] | None = None
+    comment_hint: str | None = None
     if parsed_comment is not None:
         comment_spec = _resolve_linkage_spec(parsed_comment.linkage)
         if comment_spec is not None and comment_spec.linkage_code == spec.linkage_code:
@@ -1506,23 +1546,68 @@ def detect_cif_topology(
                 spec,
             )
             if topology_error is None:
-                return TopologyDetectionResult(
-                    status="success",
-                    selected_topology=parsed_comment.topology,
-                    confidence="exact",
-                    reason="topology recovered from a graph-compatible embedded COFid comment",
-                    metadata={
-                        "source": "cofid_comment",
-                        "cofid": comment_cofid,
-                        "topology_validation": topology_validation,
-                    },
+                # Rank/connectivity compatibility is not net identification.
+                # Promote the comment only when the recovered graph
+                # independently matches the annotated net; otherwise keep it
+                # as an unverified hint for the graph-ranking tie-break below.
+                verification_confidence, verification_record = (
+                    _embedded_comment_graph_verification(
+                        graph,
+                        parsed_comment.topology,
+                        spec,
+                        topology_validation,
+                    )
                 )
-            comment_diagnostic = {
-                "status": "rejected",
-                "cofid": comment_cofid,
-                "reason": topology_error,
-                "topology_validation": topology_validation,
-            }
+                if verification_confidence in {
+                    TOPOLOGY_CONFIDENCE_EXACT,
+                    TOPOLOGY_CONFIDENCE_HIGH,
+                }:
+                    verified_exact = verification_confidence == TOPOLOGY_CONFIDENCE_EXACT
+                    return TopologyDetectionResult(
+                        status="success",
+                        selected_topology=parsed_comment.topology,
+                        confidence=verification_confidence,
+                        reason=(
+                            "embedded COFid comment topology independently verified against "
+                            "the recovered periodic linkage graph by quotient-graph "
+                            "isomorphism including periodic gain vectors"
+                            if verified_exact
+                            else "embedded COFid comment topology is consistent with the "
+                            "recovered periodic linkage graph (quotient-graph match without "
+                            "full periodic-gain comparison)"
+                        ),
+                        metadata={
+                            "source": "cofid_comment",
+                            "cofid": comment_cofid,
+                            "topology_identification": (
+                                TOPOLOGY_IDENTIFICATION_VERIFIED_PERIODIC_GRAPH
+                                if verified_exact
+                                else TOPOLOGY_IDENTIFICATION_VERIFIED_QUOTIENT_GRAPH
+                            ),
+                            "topology_validation": topology_validation,
+                            "graph_verification": verification_record,
+                        },
+                    )
+                comment_hint = parsed_comment.topology
+                comment_diagnostic = {
+                    "status": "compatible_unverified",
+                    "cofid": comment_cofid,
+                    "reason": (
+                        "embedded COFid topology is rank/connectivity-compatible with the "
+                        "recovered linkage graph but is not independently verified by net "
+                        "matching; it is treated as an unverified annotation hint, not an "
+                        "exact topology identification"
+                    ),
+                    "topology_validation": topology_validation,
+                    "graph_verification": verification_record,
+                }
+            else:
+                comment_diagnostic = {
+                    "status": "rejected",
+                    "cofid": comment_cofid,
+                    "reason": topology_error,
+                    "topology_validation": topology_validation,
+                }
         else:
             comment_diagnostic = {
                 "status": "ignored",
@@ -1544,7 +1629,7 @@ def detect_cif_topology(
 
     best = candidates[0]
     runner_up = candidates[1] if len(candidates) > 1 else None
-    decisive = best.confidence in {"exact", "high"} and (
+    decisive = best.confidence in {TOPOLOGY_CONFIDENCE_EXACT, TOPOLOGY_CONFIDENCE_HIGH} and (
         runner_up is None or best.score - runner_up.score >= _TOPOLOGY_DECISIVE_SCORE_MARGIN
     )
     if decisive:
@@ -1556,12 +1641,33 @@ def detect_cif_topology(
             candidates=candidates[:10],
             metadata={
                 "source": "periodic_linkage_graph",
+                "topology_identification": TOPOLOGY_IDENTIFICATION_GRAPH_RANKING,
                 "topology_graph": graph.to_metadata(),
                 **({"embedded_cofid_comment": comment_diagnostic} if comment_diagnostic else {}),
             },
         )
 
     ambiguous = ", ".join(candidate.topology for candidate in candidates[:5])
+    if comment_hint is not None and any(
+        candidate.topology == comment_hint for candidate in candidates
+    ):
+        return TopologyDetectionResult(
+            status="success",
+            selected_topology=comment_hint,
+            confidence=TOPOLOGY_CONFIDENCE_COMPATIBLE,
+            reason=(
+                f"topology auto-detection is ambiguous among: {ambiguous}; selected the "
+                "rank/connectivity-compatible embedded COFid comment as an unverified "
+                "annotation hint (no periodic quotient-graph isomorphism was established)"
+            ),
+            candidates=candidates[:10],
+            metadata={
+                "source": "cofid_comment_hint",
+                "topology_identification": TOPOLOGY_IDENTIFICATION_COMPATIBLE_ANNOTATION,
+                "topology_graph": graph.to_metadata(),
+                "embedded_cofid_comment": comment_diagnostic,
+            },
+        )
     return TopologyDetectionResult(
         status="ambiguous",
         confidence=best.confidence,
@@ -1573,6 +1679,36 @@ def detect_cif_topology(
             **({"embedded_cofid_comment": comment_diagnostic} if comment_diagnostic else {}),
         },
     )
+
+
+def _embedded_comment_graph_verification(
+    graph: LinkageTopologyGraph,
+    topology: str,
+    spec: DecompositionSpec,
+    topology_validation: Mapping[str, object],
+) -> tuple[str, dict[str, object] | None]:
+    """Independently verify an embedded topology comment against the graph.
+
+    Ring decomposition already ran the restricted graph ranking inside
+    :func:`_validate_selected_topology`; reuse that record.  Binary-linkage
+    validation only checked periodic rank and connectivity modes, so run the
+    quotient-graph matcher for the annotated net here.  Returns the matcher's
+    confidence label and a serializable record; ``("none", None)`` means the
+    annotated topology produced no rankable candidate at all.
+    """
+
+    if isinstance(spec, RingDecompositionSpec):
+        candidate = topology_validation.get("graph_candidate")
+        if isinstance(candidate, Mapping):
+            return str(candidate.get("confidence", TOPOLOGY_CONFIDENCE_LOW)), dict(candidate)
+        return "none", None
+    ranked = next(
+        iter(_rank_topology_candidates(graph, topology_ids=frozenset((topology,)))),
+        None,
+    )
+    if ranked is None:
+        return "none", None
+    return ranked.confidence, ranked.to_dict()
 
 
 def _linkage_topology_graph(
@@ -1875,7 +2011,7 @@ def _rank_topology_candidates(
             metadata["topology_load_error"] = f"{type(exc).__name__}: {exc}"
             topology_graph = None
 
-        confidence = "low"
+        confidence = TOPOLOGY_CONFIDENCE_LOW
         if topology_graph is not None:
             metadata["definition_graph"] = topology_graph.to_metadata()
             if (
@@ -1884,11 +2020,11 @@ def _rank_topology_candidates(
             ):
                 if _periodic_graphs_match(ranking_graph, topology_graph, compare_gains=True):
                     score += _TOPOLOGY_SCORE_PERIODIC_GRAPH_MATCH
-                    confidence = "exact"
+                    confidence = TOPOLOGY_CONFIDENCE_EXACT
                     reasons.append("periodic quotient graph matches")
                 elif _periodic_graphs_match(ranking_graph, topology_graph, compare_gains=False):
                     score += _TOPOLOGY_SCORE_QUOTIENT_GRAPH_MATCH
-                    confidence = "high"
+                    confidence = TOPOLOGY_CONFIDENCE_HIGH
                     reasons.append("quotient graph matches without periodic-gain comparison")
             else:
                 if (
@@ -1906,12 +2042,12 @@ def _rank_topology_candidates(
                 if _degree_histogram_matches_supercell(ranking_graph, topology_graph):
                     score += _TOPOLOGY_SCORE_SUPERCELL_DEGREE_HISTOGRAM
                     reasons.append("degree histogram is consistent with a topology supercell")
-        if confidence == "low":
+        if confidence == TOPOLOGY_CONFIDENCE_LOW:
             rounded_score = round(score, 6)
             if rounded_score >= _TOPOLOGY_CONFIDENCE_HIGH_THRESHOLD:
-                confidence = "high"
+                confidence = TOPOLOGY_CONFIDENCE_HIGH
             elif rounded_score >= _TOPOLOGY_CONFIDENCE_MEDIUM_THRESHOLD:
-                confidence = "medium"
+                confidence = TOPOLOGY_CONFIDENCE_MEDIUM
         ranked.append(
             TopologyDetectionCandidate(
                 topology=entry.id,
@@ -3788,6 +3924,16 @@ _DECOMPOSITION_LINKAGE_ALIASES: Mapping[str, DecompositionSpec] = {
 __all__ = [
     "CifDecompositionResult",
     "DecomposedMonomer",
+    "TOPOLOGY_CONFIDENCE_COMPATIBLE",
+    "TOPOLOGY_CONFIDENCE_EXACT",
+    "TOPOLOGY_CONFIDENCE_FAILED",
+    "TOPOLOGY_CONFIDENCE_HIGH",
+    "TOPOLOGY_CONFIDENCE_LOW",
+    "TOPOLOGY_CONFIDENCE_MEDIUM",
+    "TOPOLOGY_IDENTIFICATION_COMPATIBLE_ANNOTATION",
+    "TOPOLOGY_IDENTIFICATION_GRAPH_RANKING",
+    "TOPOLOGY_IDENTIFICATION_VERIFIED_PERIODIC_GRAPH",
+    "TOPOLOGY_IDENTIFICATION_VERIFIED_QUOTIENT_GRAPH",
     "TopologyDetectionCandidate",
     "TopologyDetectionResult",
     "detect_cif_topology",

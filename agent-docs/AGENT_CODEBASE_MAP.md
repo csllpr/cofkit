@@ -131,7 +131,10 @@ Then go straight to the module that matches the task.
   - CIF atom-site and explicit-bond extraction for decomposition without adding ASE.
 - [src/cofkit/decompose.py](../src/cofkit/decompose.py)
   - Explicit-bond binary-bridge decomposition into recovered monomers and COFid serialization.
+  - Topology auto-detection (`detect_cif_topology`) owns the typed confidence/provenance vocabulary (`TOPOLOGY_CONFIDENCE_*`, `TOPOLOGY_IDENTIFICATION_*`): an embedded COFid comment is promoted to `exact` only when the quotient-graph matcher independently verifies the annotated net (`verified_periodic_graph`); a merely rank/connectivity-compatible comment is an unverified hint (`compatible_unverified`, tie-break confidence `compatible` / `compatible_annotation_unverified`).
   - This logic was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
+- [src/cofkit/decompose_events.py](../src/cofkit/decompose_events.py)
+  - Default event/hypothesis decomposition engine: local event detection, bounded per-family hypothesis enumeration (`_MAX_FAMILY_HYPOTHESES`), global validation, and selection. Owns the typed verdict vocabulary (`EVENT_STATUS_*`, including `FAILED_INTERNAL_ERROR` for internal failures — never a chemistry verdict — and `UNSUPPORTED_MIXED_LINKAGE_FAMILY` for multi-family frameworks the one-family COFid contract cannot serialize) and the search-coverage status (`SEARCH_STATUS_*` with explored/theoretical counts; a truncated failed search must not read as exhaustive).
 - [src/cofkit/decompose_bond_orders.py](../src/cofkit/decompose_bond_orders.py)
   - Shared graph normalization before event/legacy detection: geometry-constrained, valence-preserving repair of quinoid imine assignments; no new bonds or periodic edge removal. Receives periodic edge multiplicities, checks periodic valences, and retries failing components with parallel-image orders fixed before leaving them unresolved. ReDD-COFFEE regressions and independent CHK boundary labels live in `tests/test_decompose_bond_orders.py` and `tests/fixtures/redd_coffee/`.
 

@@ -56,6 +56,7 @@ The normal `CifDecompositionResult` shape is preserved. Event-specific informati
 
 - `decomposition_mode`: always `event`;
 - `event_status`: detailed final classification;
+- `search_status` / `search_coverage`: whether the bounded hypothesis search was `complete` or `truncated` at the per-family cap, with explored-versus-theoretical hypothesis counts and the truncated families; when a failed search was truncated, the result reason states explicitly that absence of a valid decomposition is not established;
 - `event_detection`: accepted and locally suppressed events;
 - `hypothesis_generation`: site counts, bounded-enumeration diagnostics, and potential non-overlapping family combinations;
 - `hypotheses`: every evaluated hypothesis, its events, repaired roles, validation status, and failure reasons;
@@ -66,7 +67,7 @@ The normal `CifDecompositionResult` shape is preserved. Event-specific informati
 - `defect_detection`: when present, the dominant precursor combination, fragment-agreement fraction, minority fragments, and structural-glitch evidence for a probable defective input;
 - `benchmark_contract`: compatibility metadata recording the default mode, legacy availability, and selection unit; it does not certify predictive accuracy.
 
-Detailed event statuses include `SUCCESS_COMPLETE`, `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`, `DETECTED_PROBABLE_STRUCTURAL_DEFECT`, `UNSUPPORTED_MULTISPECIES_PRECURSORS`, `FAILED_CHEMICAL_VALIDATION`, `FAILED_ENDPOINT_ACCOUNTING`, `FAILED_TOPOLOGY_VALIDATION`, `FAILED_UNEXPLAINED_FRAMEWORK`, `UNSUPPORTED_LINKAGE`, and `SUPPRESSED_TRIAZINE_MOTIF`.
+Detailed event statuses include `SUCCESS_COMPLETE`, `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`, `DETECTED_PROBABLE_STRUCTURAL_DEFECT`, `UNSUPPORTED_MULTISPECIES_PRECURSORS`, `UNSUPPORTED_MIXED_LINKAGE_FAMILY`, `FAILED_CHEMICAL_VALIDATION`, `FAILED_ENDPOINT_ACCOUNTING`, `FAILED_TOPOLOGY_VALIDATION`, `FAILED_UNEXPLAINED_FRAMEWORK`, `FAILED_INTERNAL_ERROR`, `UNSUPPORTED_LINKAGE`, and `SUPPRESSED_TRIAZINE_MOTIF`. `FAILED_INTERNAL_ERROR` marks an unexpected internal failure (the original `TypeName: message` cause is preserved in `validation_errors` and an `internal_error` metadata block) and surfaces as result `status="error"`; it is never a chemical verdict. `UNSUPPORTED_MIXED_LINKAGE_FAMILY` marks a framework whose non-overlapping linkage families each reconstruct part of the structure but cannot be serialized under the one-family COFid contract — an explicit unsupported-representation verdict, not a chemical incompatibility verdict.
 
 ## Probable structural defects
 
@@ -76,8 +77,8 @@ A probable defect remains a `skipped` decomposition and never produces a guessed
 
 ## Current limitations
 
-- COFid currently serializes one linkage family. Event mode reports non-overlapping family combinations, but it does not serialize a mixed-linkage COFid.
+- COFid currently serializes one linkage family. When detected non-overlapping families each genuinely reconstruct part of the framework, event mode aborts with the explicit `UNSUPPORTED_MIXED_LINKAGE_FAMILY` verdict; it does not serialize a mixed-linkage COFid.
 - Multivariate COFs with several chemically distinct precursors in the same reaction role are not yet supported as complete decompositions. Such reconstructions abstain with `UNSUPPORTED_MULTISPECIES_PRECURSORS`; external provenance is still required before calling a particular CIF intentionally multivariate. Distinct precursor identities are retained; they are not collapsed into a binary COFid or classified as defects solely because multiple species are present.
-- Hypothesis enumeration chooses one interpretation per detected site and is capped at 256 combinations per family. It does not yet search arbitrary subsets of high-confidence sites.
+- Hypothesis enumeration chooses one interpretation per detected site and is capped at 256 combinations per family. It does not yet search arbitrary subsets of high-confidence sites. When the cap cuts off combinations, the result carries `search_status: "truncated"` with explored/theoretical coverage counts instead of presenting the search as exhaustive.
 - Guest handling is conservative: disconnected components with no event atoms are ignored, while unexplained fragments from the event-bearing framework component invalidate a hypothesis.
 - The same `P1`, bond-source, topology-repository, and supported-linkage restrictions as legacy mode still apply.

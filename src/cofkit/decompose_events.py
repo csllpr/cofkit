@@ -46,6 +46,37 @@ EVENT_STATUS_SUPPRESSED = "SUPPRESSED_LOCAL_OVERLAP"
 EVENT_STATUS_TRIAZINE_MOTIF = "SUPPRESSED_TRIAZINE_MOTIF"
 EVENT_STATUS_PROBABLE_DEFECT = "DETECTED_PROBABLE_STRUCTURAL_DEFECT"
 EVENT_STATUS_MULTISPECIES = "UNSUPPORTED_MULTISPECIES_PRECURSORS"
+# An unexpected exception aborted hypothesis evaluation. This is a tool
+# failure with the original cause preserved, never a chemical verdict.
+EVENT_STATUS_INTERNAL_ERROR = "FAILED_INTERNAL_ERROR"
+# Two or more non-overlapping linkage families each reconstruct part of the
+# framework; the one-family COFid contract cannot serialize the structure.
+# This is an explicit unsupported-representation verdict, not a chemical
+# incompatibility verdict.
+EVENT_STATUS_MIXED_FAMILY = "UNSUPPORTED_MIXED_LINKAGE_FAMILY"
+
+# Coverage status of the bounded hypothesis search, recorded on the result as
+# metadata["search_status"] and under metadata["search_coverage"]:
+#   COMPLETE  — every theoretical event combination was enumerated, so an
+#               unsuccessful search is exhaustive;
+#   TRUNCATED — the per-family cap cut off combinations, so an unsuccessful
+#               search does not establish that no valid decomposition exists.
+SEARCH_STATUS_COMPLETE = "complete"
+SEARCH_STATUS_TRUNCATED = "truncated"
+
+# Verdict-level precursor identity basis, recorded on successful results as
+# metadata["precursor_identity"]["status"]:
+#   EXACT — every recovered fragment of a reaction role had an identical
+#           canonical SMILES, so the reported precursor is an exact chemical
+#           identity;
+#   ELEMENT_GRAPH_AMBIGUOUS — chemically distinct forms (bond-order or
+#           tautomer variants) shared one molecular formula and element
+#           graph and were collapsed onto a deterministic buildable
+#           representative. The alternatives and their counts are preserved
+#           under metadata["precursor_identity"]["alternatives"]; the
+#           selected form is a canonicalization, not an exact identity.
+IDENTITY_STATUS_EXACT = "exact"
+IDENTITY_STATUS_ELEMENT_GRAPH_AMBIGUOUS = "element_graph_ambiguous"
 
 _CANONICAL_FAMILIES = (
     "azine",
@@ -375,7 +406,7 @@ def decompose_cif_to_cofid_event(
                                 source_framework_periodicity
                             ),
                             "fallback_status": "error",
-                            "fallback_event_status": EVENT_STATUS_CHEMICAL,
+                            "fallback_event_status": EVENT_STATUS_INTERNAL_ERROR,
                             "fallback_reason": f"{type(exc).__name__}: {exc}",
                         },
                     },
@@ -420,7 +451,7 @@ def decompose_cif_to_cofid_event(
             reason=f"{type(exc).__name__}: {exc}",
             metadata={
                 "decomposition_mode": "event",
-                "event_status": EVENT_STATUS_CHEMICAL,
+                "event_status": EVENT_STATUS_INTERNAL_ERROR,
                 "pipeline_stage": "graph_normalization_or_event_detection",
             },
         )
@@ -1523,12 +1554,32 @@ def _generate_and_validate_hypotheses(
         for second in sorted(family_atom_sets)[first_index + 1 :]
         if family_atom_sets[first].isdisjoint(family_atom_sets[second])
     ]
+    explored_count = sum(
+        int(record["hypothesis_count"]) for record in family_metadata.values()
+    )
+    theoretical_total = sum(
+        int(record.get("theoretical_hypothesis_count", record["hypothesis_count"]))
+        for record in family_metadata.values()
+    )
+    truncated_families = sorted(
+        family for family, record in family_metadata.items() if record["truncated"]
+    )
     return tuple(hypotheses), {
         "families": family_metadata,
         "maximum_hypotheses_per_family": _MAX_FAMILY_HYPOTHESES,
+        "search": {
+            "status": (
+                SEARCH_STATUS_TRUNCATED if truncated_families else SEARCH_STATUS_COMPLETE
+            ),
+            "explored_hypothesis_count": explored_count,
+            "theoretical_hypothesis_count": theoretical_total,
+            "maximum_hypotheses_per_family": _MAX_FAMILY_HYPOTHESES,
+            "truncated_families": truncated_families,
+        },
         "mixed_family_policy": (
-            "non-overlapping family combinations are reported for future mixed-linkage "
-            "serialization; current COFid output requires one linkage family"
+            "non-overlapping family combinations abort selection with an explicit "
+            "UNSUPPORTED_MIXED_LINKAGE_FAMILY verdict; the current COFid output "
+            "requires one linkage family"
         ),
         "nonoverlapping_family_pairs": nonoverlapping_family_pairs,
     }
@@ -1707,8 +1758,16 @@ def _reconstruct_and_validate_hypothesis(
     except Exception as exc:
         return replace(
             hypothesis,
-            status=EVENT_STATUS_CHEMICAL,
+            status=EVENT_STATUS_INTERNAL_ERROR,
             validation_errors=(f"{type(exc).__name__}: {exc}",),
+            metadata={
+                **dict(hypothesis.metadata),
+                "internal_error": {
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                    "pipeline_stage": "hypothesis_reconstruction",
+                },
+            },
             score=base_score + _SCORE_RECONSTRUCTION_EXCEPTION,
         )
 
@@ -2652,12 +2711,15 @@ def _select_event_result(
         )
     )
 
+    search_coverage = _search_coverage(generation_metadata, hypotheses)
     metadata: dict[str, object] = {
         "decomposition_mode": "event",
         "event_pipeline_version": 2,
         "event_detection": detection.to_dict(),
         "hypothesis_generation": dict(generation_metadata),
         "hypotheses": [hypothesis.to_dict() for hypothesis in hypotheses],
+        "search_status": search_coverage["status"],
+        "search_coverage": search_coverage,
         "benchmark_contract": {
             "default_mode": "event",
             "legacy_mode_available": True,
@@ -2677,6 +2739,12 @@ def _select_event_result(
             "selected_hypothesis_id": selected.hypothesis_id,
             "successful_hypothesis_count": 1,
         })
+        if search_coverage["status"] == SEARCH_STATUS_TRUNCATED:
+            metadata["search_note"] = (
+                "the hypothesis search was truncated at the per-family cap; "
+                "additional complete decompositions beyond the explored subset "
+                "were not ruled out"
+            )
         return legacy.CifDecompositionResult(
             status="success",
             input_cif=str(input_path),
@@ -2725,6 +2793,74 @@ def _select_event_result(
             metadata=metadata,
         )
 
+    internal_errors = tuple(
+        hypothesis
+        for hypothesis in considered
+        if hypothesis.status == EVENT_STATUS_INTERNAL_ERROR
+    )
+    if internal_errors:
+        best_internal = max(
+            internal_errors,
+            key=lambda hypothesis: hypothesis.score,
+        )
+        reason = (
+            best_internal.validation_errors[0]
+            if best_internal.validation_errors
+            else "an internal error aborted hypothesis reconstruction"
+        )
+        metadata.update({
+            **dict(best_internal.metadata),
+            "event_status": EVENT_STATUS_INTERNAL_ERROR,
+            "best_failed_hypothesis_id": best_internal.hypothesis_id,
+            "internal_error_hypothesis_count": len(internal_errors),
+            "successful_hypothesis_count": 0,
+        })
+        return legacy.CifDecompositionResult(
+            status="error",
+            input_cif=str(input_path),
+            topology=best_internal.topology or topology,
+            linkage=requested_linkage,
+            monomers=best_internal.monomers,
+            reason=reason,
+            metadata=metadata,
+        )
+
+    mixed_family_pairs = _actionable_mixed_family_pairs(considered, generation_metadata)
+    if mixed_family_pairs:
+        mixed_families = sorted({family for pair in mixed_family_pairs for family in pair})
+        per_family_status: dict[str, object] = {}
+        for family in mixed_families:
+            family_hypotheses = tuple(
+                hypothesis for hypothesis in considered if hypothesis.family == family
+            )
+            best_family_failure = _best_failed_hypothesis(family_hypotheses)
+            if best_family_failure is not None:
+                per_family_status[family] = {
+                    "best_hypothesis_id": best_family_failure.hypothesis_id,
+                    "status": best_family_failure.status,
+                    "validation_errors": list(best_family_failure.validation_errors),
+                }
+        metadata.update({
+            "event_status": EVENT_STATUS_MIXED_FAMILY,
+            "mixed_family_pairs": [list(pair) for pair in mixed_family_pairs],
+            "mixed_family_hypothesis_status": per_family_status,
+            "successful_hypothesis_count": 0,
+        })
+        return legacy.CifDecompositionResult(
+            status="skipped",
+            input_cif=str(input_path),
+            topology=topology,
+            linkage=requested_linkage,
+            reason=(
+                "the framework contains non-overlapping linkage families "
+                f"({', '.join(mixed_families)}) that each reconstruct part of the "
+                "structure; the current COFid contract serializes exactly one linkage "
+                "family, so this is an unsupported mixed-linkage representation, not "
+                "a chemical incompatibility verdict"
+            ),
+            metadata=metadata,
+        )
+
     best_failure = _best_failed_hypothesis(considered)
     if best_failure is None:
         family_message = requested_family or "supported linkage"
@@ -2747,6 +2883,13 @@ def _select_event_result(
         if best_failure.validation_errors
         else "no event reconstruction passed global validation"
     )
+    if search_coverage["status"] == SEARCH_STATUS_TRUNCATED:
+        reason = (
+            f"{reason} [hypothesis search incomplete: explored "
+            f"{search_coverage['explored_hypothesis_count']} of "
+            f"{search_coverage['theoretical_hypothesis_count']} theoretical event "
+            "combinations; absence of a valid decomposition is not established]"
+        )
     metadata.update({
         **dict(best_failure.metadata),
         "event_status": best_failure.status,
@@ -2764,12 +2907,75 @@ def _select_event_result(
     )
 
 
+def _search_coverage(
+    generation_metadata: Mapping[str, object],
+    hypotheses: tuple[ReconstructionHypothesis, ...],
+) -> dict[str, object]:
+    """Aggregate explored-vs-theoretical hypothesis coverage.
+
+    ``_generate_and_validate_hypotheses`` always records the ``search`` block;
+    the fallback keeps directly constructed selection inputs interpretable by
+    treating an unrecorded search as complete over the supplied hypotheses.
+    """
+
+    search = generation_metadata.get("search")
+    if isinstance(search, Mapping):
+        return dict(search)
+    return {
+        "status": SEARCH_STATUS_COMPLETE,
+        "explored_hypothesis_count": len(hypotheses),
+        "theoretical_hypothesis_count": len(hypotheses),
+        "maximum_hypotheses_per_family": _MAX_FAMILY_HYPOTHESES,
+        "truncated_families": [],
+    }
+
+
+# Hypothesis statuses that do not demonstrate a genuinely reconstructable
+# second linkage family: early accounting failures, unsupported families, and
+# locally suppressed motif readings.
+_NON_FAMILY_EVIDENCE_STATUSES = frozenset({
+    EVENT_STATUS_ENDPOINT,
+    EVENT_STATUS_UNSUPPORTED,
+    EVENT_STATUS_SUPPRESSED,
+    EVENT_STATUS_TRIAZINE_MOTIF,
+})
+
+
+def _actionable_mixed_family_pairs(
+    considered: tuple[ReconstructionHypothesis, ...],
+    generation_metadata: Mapping[str, object],
+) -> tuple[tuple[str, str], ...]:
+    """Non-overlapping family pairs that genuinely reconstruct framework.
+
+    A pair only qualifies when each side produced at least one hypothesis that
+    progressed past endpoint accounting and is not a suppressed motif reading;
+    this keeps spurious or motif-shadowed events (for example triazine rings
+    inside another family's recovered monomer) from masquerading as a mixed
+    linkage framework.
+    """
+
+    raw_pairs = generation_metadata.get("nonoverlapping_family_pairs", ())
+    statuses_by_family: defaultdict[str, set[str]] = defaultdict(set)
+    for hypothesis in considered:
+        statuses_by_family[hypothesis.family].add(hypothesis.status)
+    pairs = []
+    for pair in raw_pairs:
+        first, second = (str(family) for family in pair)
+        if all(
+            statuses_by_family.get(family, set()) - _NON_FAMILY_EVIDENCE_STATUSES
+            for family in (first, second)
+        ):
+            pairs.append((first, second))
+    return tuple(pairs)
+
+
 def _best_failed_hypothesis(
     hypotheses: tuple[ReconstructionHypothesis, ...],
 ) -> ReconstructionHypothesis | None:
     if not hypotheses:
         return None
     status_progress = {
+        EVENT_STATUS_INTERNAL_ERROR: 8,
         EVENT_STATUS_TRIAZINE_MOTIF: 7,
         EVENT_STATUS_MULTISPECIES: 6,
         EVENT_STATUS_TOPOLOGY: 5,
@@ -2789,8 +2995,12 @@ def _best_failed_hypothesis(
 
 
 __all__ = [
+    "EVENT_STATUS_INTERNAL_ERROR",
+    "EVENT_STATUS_MIXED_FAMILY",
     "EVENT_STATUS_MULTISPECIES",
     "EVENT_STATUS_PROBABLE_DEFECT",
+    "SEARCH_STATUS_COMPLETE",
+    "SEARCH_STATUS_TRUNCATED",
     "EventDetectionResult",
     "LinkageEvent",
     "ReconstructedRole",

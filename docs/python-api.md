@@ -186,7 +186,7 @@ legacy_result = decompose_cif_to_cofid(
 print(result.metadata["event_status"])
 ```
 
-`status="skipped"` denotes unsupported, incomplete, chemically inconsistent, or nonperiodic recovery; `status="ambiguous"` means automatic linkage detection found more than one valid family. `status="error"` denotes malformed CIF, periodicity, bond, or topology input. A successful result has the complete linkage-specific precursor role set, exact motif-derived connectivity, a periodic rank compatible with its topology, and has passed the forward build-input validator.
+`status="skipped"` denotes unsupported, incomplete, chemically inconsistent, or nonperiodic recovery; `status="ambiguous"` means automatic linkage detection found more than one valid family. `status="error"` denotes malformed CIF, periodicity, bond, or topology input, or an internal failure (event status `FAILED_INTERNAL_ERROR` with the original cause preserved) — never a chemical incompatibility verdict. A successful result has the complete linkage-specific precursor role set, exact motif-derived connectivity, a periodic rank compatible with its topology, and has passed the forward build-input validator. `metadata["search_status"]` reports whether the bounded hypothesis search was `complete` or `truncated` (explored/theoretical counts under `metadata["search_coverage"]`); a truncated failed search does not establish that no valid decomposition exists.
 
 For ring-forming structures, decomposition recognizes complete B3O3 or C3N3 product rings, restores the precursor reactive groups, and rebuilds the periodic net through virtual three-connected ring nodes. Equivalent components in named stacked bilayers are reduced to one layer graph before topology ranking.
 

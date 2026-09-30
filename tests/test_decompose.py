@@ -6,12 +6,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from rdkit import Chem
 from rdkit.Chem import rdDepictor
 
 
 from cofkit import BatchGenerationConfig, BatchMonomerRecord, BatchStructureGenerator, CoarseValidationThresholds
+from cofkit import decompose as decompose_module
+from cofkit import decompose_events as decompose_events_module
 from cofkit.build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
 from cofkit.bond_types import bond_order_to_cif_type
 from cofkit.chem.rdkit import build_rdkit_monomer
@@ -24,6 +27,7 @@ from cofkit.decompose import (
     CifDecompositionResult,
     DecomposedMonomer,
     LinkageTopologyGraph,
+    TopologyDetectionCandidate,
     _IMINE_SPEC,
     _classify_nitrogen_linkage_bonds,
     _classify_vinylene_linkage_bonds,
@@ -39,13 +43,19 @@ from cofkit.decompose import (
     _validate_selected_topology,
     _validate_supported_cif_periodicity,
     decompose_cif_to_cofid,
+    detect_cif_topology,
 )
 from cofkit.decompose_events import (
     EVENT_STATUS_CHEMICAL,
+    EVENT_STATUS_COMPLETE,
+    EVENT_STATUS_INTERNAL_ERROR,
+    EVENT_STATUS_MIXED_FAMILY,
     EVENT_STATUS_MULTISPECIES,
     EVENT_STATUS_PROBABLE_DEFECT,
     EVENT_STATUS_TOPOLOGY,
     EVENT_STATUS_TRIAZINE_MOTIF,
+    EVENT_STATUS_UNEXPLAINED,
+    SEARCH_STATUS_TRUNCATED,
     EventDetectionResult,
     LinkageEvent,
     ReconstructedRole,
@@ -1119,6 +1129,10 @@ class DecomposeRoundTripTests(unittest.TestCase):
         detection = result.metadata["topology_detection"]
         self.assertEqual(detection["confidence"], "exact")
         self.assertEqual(detection["metadata"]["source"], "cofid_comment")
+        self.assertEqual(
+            detection["metadata"]["topology_identification"],
+            "verified_periodic_graph",
+        )
 
     def test_decompose_generated_hcb_three_two_imine_returns_original_inputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1847,6 +1861,275 @@ class DecomposeRoundTripTests(unittest.TestCase):
             observed_connectivity_pairs,
             {(3, 3), (3, 2), (4, 2), (4, 4), (6, 2)},
         )
+
+
+def _site_variant_events(
+    family: str,
+    site_count: int,
+    variants_per_site: int,
+) -> tuple[LinkageEvent, ...]:
+    events = []
+    for site in range(site_count):
+        for variant in range(variants_per_site):
+            events.append(
+                LinkageEvent(
+                    event_id=f"{family}:site{site}:v{variant}",
+                    family=family,
+                    atoms=(site,),
+                    bonds=(),
+                    cut_bonds=(),
+                    instance_ids=(None,),
+                    confidence="high",
+                    endpoint_roles=(),
+                    site_id=f"{family}:site{site}",
+                )
+            )
+    return tuple(events)
+
+
+class DecomposeConfidenceHonestyTests(unittest.TestCase):
+    """Decomposition results must not overclaim scientific confidence."""
+
+    def _hcb_imine_cif(self, temp_path: Path) -> Path:
+        summary, _candidate = _generator().generate_pair_candidate(
+            _record("tapb", TAPB, "amine", 3),
+            _record("tfb", TFB, "aldehyde", 3),
+            out_dir=temp_path,
+            write_cif=True,
+        )
+        return Path(summary.cif_path)
+
+    def test_compatible_but_different_embedded_comment_cannot_claim_exact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cif_path = self._hcb_imine_cif(temp_path)
+            lines = cif_path.read_text(encoding="utf-8").splitlines()
+            self.assertTrue(lines[0].startswith("# COFid: "))
+            # fes is a different 2D net with the same 3+3 node-node
+            # connectivity mode, so it survives rank/connectivity validation
+            # without being the recovered net.
+            lines[0] = lines[0].replace("&&hcb&&", "&&fes&&")
+            swapped = _write_cif_lines(lines, temp_path / "fes_comment.cif")
+
+            detection = detect_cif_topology(swapped, linkage="imine")
+            result = decompose_cif_to_cofid(
+                swapped,
+                linkage="imine",
+                decomposition_mode="legacy",
+            )
+
+        self.assertTrue(detection.ok, detection.reason)
+        self.assertEqual(detection.selected_topology, "hcb")
+        self.assertEqual(detection.metadata["source"], "periodic_linkage_graph")
+        self.assertEqual(
+            detection.metadata["topology_identification"],
+            "periodic_graph_ranking",
+        )
+        comment = detection.metadata["embedded_cofid_comment"]
+        self.assertEqual(comment["status"], "compatible_unverified")
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.topology, "hcb")
+
+    def test_unverified_comment_hint_is_labeled_compatible_under_ambiguity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cif_path = self._hcb_imine_cif(temp_path)
+            lines = cif_path.read_text(encoding="utf-8").splitlines()
+            lines[0] = lines[0].replace("&&hcb&&", "&&fes&&")
+            swapped = _write_cif_lines(lines, temp_path / "fes_comment.cif")
+
+            ambiguous_candidates = (
+                TopologyDetectionCandidate(
+                    topology="fes",
+                    score=0.45,
+                    confidence="medium",
+                    reason="node connectivities match",
+                ),
+                TopologyDetectionCandidate(
+                    topology="hcb",
+                    score=0.45,
+                    confidence="medium",
+                    reason="node connectivities match",
+                ),
+            )
+            with mock.patch.object(
+                decompose_module,
+                "_rank_topology_candidates",
+                return_value=ambiguous_candidates,
+            ):
+                detection = detect_cif_topology(swapped, linkage="imine")
+
+        self.assertEqual(detection.status, "success")
+        self.assertEqual(detection.selected_topology, "fes")
+        self.assertEqual(detection.confidence, "compatible")
+        self.assertEqual(
+            detection.metadata["topology_identification"],
+            "compatible_annotation_unverified",
+        )
+        self.assertIn("unverified", detection.reason)
+
+    def test_truncated_hypothesis_search_reports_incomplete_coverage(self):
+        events = _site_variant_events("imine", site_count=9, variants_per_site=2)
+
+        event_sets, truncated, theoretical_count = (
+            decompose_events_module._family_event_sets(events)
+        )
+
+        self.assertTrue(truncated)
+        self.assertEqual(theoretical_count, 512)
+        self.assertEqual(len(event_sets), 256)
+
+        failed = ReconstructionHypothesis(
+            hypothesis_id="imine:failed",
+            events=events[:1],
+            status=EVENT_STATUS_CHEMICAL,
+            validation_errors=("synthetic chemical failure",),
+        )
+        with mock.patch.object(
+            decompose_events_module,
+            "_reconstruct_and_validate_hypothesis",
+            return_value=failed,
+        ):
+            hypotheses, generation_metadata = (
+                decompose_events_module._generate_and_validate_hypotheses(
+                    Path("dense.cif"),
+                    None,
+                    None,
+                    events,
+                    topology=None,
+                    bond_mode="auto",
+                )
+            )
+        result = _select_event_result(
+            Path("dense.cif"),
+            requested_family=None,
+            topology=None,
+            detection=EventDetectionResult(events=events),
+            hypotheses=hypotheses,
+            generation_metadata=generation_metadata,
+        )
+
+        search = generation_metadata["search"]
+        self.assertEqual(search["status"], SEARCH_STATUS_TRUNCATED)
+        self.assertEqual(search["explored_hypothesis_count"], 256)
+        self.assertEqual(search["theoretical_hypothesis_count"], 512)
+        self.assertEqual(search["truncated_families"], ["imine"])
+        self.assertFalse(result.ok)
+        self.assertEqual(result.metadata["search_status"], SEARCH_STATUS_TRUNCATED)
+        self.assertEqual(
+            result.metadata["search_coverage"]["explored_hypothesis_count"],
+            256,
+        )
+        self.assertEqual(result.metadata["event_status"], EVENT_STATUS_CHEMICAL)
+        self.assertIn("hypothesis search incomplete", result.reason)
+        self.assertIn("256 of 512", result.reason)
+
+    def test_internal_error_is_reported_as_error_not_chemistry_verdict(self):
+        event = _site_variant_events("imine", site_count=1, variants_per_site=1)[0]
+        with mock.patch.object(
+            decompose_events_module,
+            "_cut_and_reconstruct",
+            side_effect=RuntimeError("injected parser failure"),
+        ):
+            hypothesis = decompose_events_module._reconstruct_and_validate_hypothesis(
+                Path("broken.cif"),
+                None,
+                None,
+                (event,),
+                topology=None,
+                bond_mode="auto",
+            )
+
+        self.assertEqual(hypothesis.status, EVENT_STATUS_INTERNAL_ERROR)
+        self.assertNotEqual(hypothesis.status, EVENT_STATUS_CHEMICAL)
+        self.assertIn("RuntimeError: injected parser failure", hypothesis.validation_errors)
+        self.assertEqual(
+            hypothesis.metadata["internal_error"]["exception_type"],
+            "RuntimeError",
+        )
+
+        result = _select_event_result(
+            Path("broken.cif"),
+            requested_family=None,
+            topology=None,
+            detection=EventDetectionResult(events=(event,)),
+            hypotheses=(hypothesis,),
+            generation_metadata={},
+        )
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.metadata["event_status"], EVENT_STATUS_INTERNAL_ERROR)
+        self.assertIn("RuntimeError: injected parser failure", result.reason)
+        self.assertFalse(_should_attempt_distance_fallback(result))
+
+    def test_mixed_family_framework_reports_explicit_unsupported_verdict(self):
+        imine_event = _site_variant_events("imine", 1, 1)[0]
+        boroxine_event = _site_variant_events("boroxine", 1, 1)[0]
+        hypotheses = (
+            ReconstructionHypothesis(
+                hypothesis_id="imine:partial",
+                events=(imine_event,),
+                status=EVENT_STATUS_UNEXPLAINED,
+                validation_errors=("unexplained boroxine framework fragments remain",),
+            ),
+            ReconstructionHypothesis(
+                hypothesis_id="boroxine:partial",
+                events=(boroxine_event,),
+                status=EVENT_STATUS_UNEXPLAINED,
+                validation_errors=("unexplained imine framework fragments remain",),
+            ),
+        )
+        generation_metadata = {
+            "nonoverlapping_family_pairs": [["boroxine", "imine"]],
+        }
+
+        result = _select_event_result(
+            Path("mixed.cif"),
+            requested_family=None,
+            topology=None,
+            detection=EventDetectionResult(events=(imine_event, boroxine_event)),
+            hypotheses=hypotheses,
+            generation_metadata=generation_metadata,
+        )
+
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.metadata["event_status"], EVENT_STATUS_MIXED_FAMILY)
+        self.assertEqual(result.metadata["mixed_family_pairs"], [["boroxine", "imine"]])
+        self.assertIn("unsupported mixed-linkage representation", result.reason)
+        self.assertIn("boroxine", result.metadata["mixed_family_hypothesis_status"])
+
+    def test_suppressed_motif_reading_does_not_trigger_mixed_family_verdict(self):
+        imine_event = _site_variant_events("imine", 1, 1)[0]
+        triazine_event = _site_variant_events("triazine", 1, 1)[0]
+        hypotheses = (
+            ReconstructionHypothesis(
+                hypothesis_id="imine:partial",
+                events=(imine_event,),
+                status=EVENT_STATUS_UNEXPLAINED,
+                validation_errors=("unexplained framework fragments remain",),
+            ),
+            ReconstructionHypothesis(
+                hypothesis_id="triazine:motif",
+                events=(triazine_event,),
+                status=EVENT_STATUS_TRIAZINE_MOTIF,
+                validation_errors=("triazine ring intact in a competing monomer",),
+            ),
+        )
+        generation_metadata = {
+            "nonoverlapping_family_pairs": [["imine", "triazine"]],
+        }
+
+        result = _select_event_result(
+            Path("motif.cif"),
+            requested_family=None,
+            topology=None,
+            detection=EventDetectionResult(events=(imine_event, triazine_event)),
+            hypotheses=hypotheses,
+            generation_metadata=generation_metadata,
+        )
+
+        self.assertNotEqual(result.metadata["event_status"], EVENT_STATUS_MIXED_FAMILY)
+        self.assertEqual(result.metadata["event_status"], EVENT_STATUS_TRIAZINE_MOTIF)
 
 
 class RingDecomposeRoundTripTests(unittest.TestCase):
