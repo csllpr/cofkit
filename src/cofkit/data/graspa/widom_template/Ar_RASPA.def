@@ -1,7 +1,7 @@
-# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]; derived from RASPA2 molecules/ExampleDefinitions/argon.def at commit 6498ab1eec9c8e0f063dcd0d71dd7add372c529b (MIT); the site label is namespaced for cofkit, an explicit origin was added, and the one-site group was normalized from flexible to rigid for backend interoperability
-154.58
-5043000.0
-0.0
+# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]; molecule definition derived from RASPA2 molecules/ExampleDefinitions/argon.def at commit 6498ab1eec9c8e0f063dcd0d71dd7add372c529b (MIT); the site label is namespaced for cofkit, an explicit origin was added, and the one-site group was normalized from flexible to rigid for backend interoperability; the critical constants below are NOT the upstream RASPA2 values (which repeat O2's 154.58 K / 5043000 Pa) but the argon reference-EOS set: Tc = 150.687 K, Pc = 4.863 MPa, omega = -0.00219 from Tegeler, Span, and Wagner, J. Phys. Chem. Ref. Data 28, 779-850 (1999), doi:10.1063/1.556037, the values used by NIST REFPROP
+150.687
+4863000.0
+-0.00219
 # Number Of Atoms
 1
 # Number of groups

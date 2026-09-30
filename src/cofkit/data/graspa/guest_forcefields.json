@@ -139,7 +139,7 @@
         "Ar_raspa lennard-jones 124.070 3.38 // RASPA2 ExampleMoleculeForceField; Martin-Calvo et al. (2011)."
       ],
       "compatibility_note": "The framework force field is selected independently; validation of the chosen guest/framework combination remains the user's responsibility.",
-      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. The site label was namespaced, an explicit origin was added, and the source's one-site flexible group was normalized to rigid; numerical parameters are unchanged. RASPA2's argon critical temperature and pressure closely repeat its O2 values, so independently validate them before requesting PR-EOS fugacity handling.",
+      "provenance_note": "Imported from the RASPA2 example molecule and force-field files. The site label was namespaced, an explicit origin was added, and the source's one-site flexible group was normalized to rigid; the Lennard-Jones parameters are unchanged. The critical constants in Ar_RASPA.def depart from upstream: RASPA2's argon.def repeats its O2 critical temperature and pressure (154.58 K, 5.043 MPa), so cofkit substitutes the argon reference-EOS set (Tc = 150.687 K, Pc = 4.863 MPa, acentric factor -0.00219; Tegeler, Span, and Wagner, J. Phys. Chem. Ref. Data 28, 779-850 (1999), doi:10.1063/1.556037, as used by NIST REFPROP) for PR-EOS fugacity handling.",
       "source_url": "https://github.com/iRASPA/RASPA2/tree/master/molecules/ExampleDefinitions",
       "source_commit": "6498ab1eec9c8e0f063dcd0d71dd7add372c529b",
       "license": "MIT"

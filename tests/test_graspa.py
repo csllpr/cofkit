@@ -9,6 +9,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +27,8 @@ from cofkit.graspa import (
     GraspaWidomSettings,
     PACKAGED_GUEST_FORCEFIELD_METADATA,
     _copy_widom_template_assets,
+    _render_isotherm_simulation_input,
+    _validate_eos_component,
     resolve_eqeq_binary,
     resolve_graspa_binary,
     resolve_raspa2_binary,
@@ -34,6 +37,82 @@ from cofkit.graspa import (
     run_graspa_widom_workflow,
 )
 from cofkit.guest_bundles import GuestBundleError, load_guest_bundle
+
+
+# cited: argon reference EOS of Tegeler, Span, and Wagner, J. Phys. Chem. Ref.
+# Data 28, 779-850 (1999), doi:10.1063/1.556037 — the values used by NIST
+# REFPROP; RASPA2 molecule definitions carry Tc in kelvin and Pc in pascal.
+_ARGON_REFERENCE_TC_KELVIN = 150.687
+_ARGON_REFERENCE_PC_PA = 4_863_000.0
+_ARGON_REFERENCE_ACENTRIC_FACTOR = -0.00219
+# Pre-fix regression values (impact-review claim T1-17): upstream RASPA2's
+# argon.def repeats its O2 critical constants, and cofkit had imported them.
+_ARGON_LEGACY_OXYGEN_TC_KELVIN = 154.58
+_ARGON_LEGACY_OXYGEN_PC_PA = 5_043_000.0
+_ARGON_LEGACY_OXYGEN_ACENTRIC_FACTOR = 0.0
+_PR_GAS_CONSTANT = 8.31446261815324  # J/(mol K), CODATA 2018
+
+
+def _critical_constants_from_definition(definition_text: str) -> tuple[float, float, float]:
+    rows = [
+        line.strip()
+        for line in definition_text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    return tuple(float(row) for row in rows[:3])
+
+
+def _peng_robinson_fugacity_coefficient(
+    temperature: float,
+    pressure: float,
+    tc: float,
+    pc: float,
+    omega: float,
+) -> float:
+    # Independent pure-component Peng-Robinson evaluation used to check staged
+    # critical constants against reference behavior; the MC backend computes
+    # phi internally from the staged .def constants, cofkit never does.
+    a = 0.45724 * _PR_GAS_CONSTANT**2 * tc**2 / pc
+    b = 0.07780 * _PR_GAS_CONSTANT * tc / pc
+    kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega**2
+    alpha = (1.0 + kappa * (1.0 - math.sqrt(temperature / tc))) ** 2
+    big_a = a * alpha * pressure / (_PR_GAS_CONSTANT**2 * temperature**2)
+    big_b = b * pressure / (_PR_GAS_CONSTANT * temperature)
+
+    def cubic(z: float) -> float:
+        return (
+            z**3
+            - (1.0 - big_b) * z**2
+            + (big_a - 3.0 * big_b**2 - 2.0 * big_b) * z
+            - (big_a * big_b - big_b**2 - big_b**3)
+        )
+
+    grid = [big_b + (10.0 - big_b) * i / 2000 for i in range(1, 2001)]
+    root = None
+    previous_z, previous_value = grid[0], cubic(grid[0])
+    for z in grid[1:]:
+        value = cubic(z)
+        if (value > 0.0) != (previous_value > 0.0):
+            low, high = previous_z, z
+            low_sign = cubic(low) > 0.0
+            for _ in range(200):
+                mid = 0.5 * (low + high)
+                if (cubic(mid) > 0.0) == low_sign:
+                    low = mid
+                else:
+                    high = mid
+            root = 0.5 * (low + high)
+        previous_z, previous_value = z, value
+    if root is None:
+        raise AssertionError("no positive Peng-Robinson compressibility root found")
+    sqrt2 = math.sqrt(2.0)
+    ln_phi = (
+        (root - 1.0 - big_b)
+        - math.log(root - big_b)
+        - (big_a / (2.0 * sqrt2 * big_b))
+        * math.log((root + (1.0 + sqrt2) * big_b) / (root + (1.0 - sqrt2) * big_b))
+    )
+    return math.exp(ln_phi)
 
 
 class GraspaWidomTests(unittest.TestCase):
@@ -469,6 +548,124 @@ class GraspaWidomTests(unittest.TestCase):
                         self.assertGreaterEqual(len(terms), 4)
                         float(terms[2])
                         float(terms[3])
+
+    def test_packaged_argon_pr_eos_constants_match_nist_reference_set(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            _copy_widom_template_assets(run_dir, ("Ar_RASPA", "O2_RASPA"), forcefield="dreiding")
+            argon_constants = _critical_constants_from_definition(
+                (run_dir / "Ar_RASPA.def").read_text(encoding="utf-8")
+            )
+            oxygen_constants = _critical_constants_from_definition(
+                (run_dir / "O2_RASPA.def").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            argon_constants,
+            (
+                _ARGON_REFERENCE_TC_KELVIN,
+                _ARGON_REFERENCE_PC_PA,
+                _ARGON_REFERENCE_ACENTRIC_FACTOR,
+            ),
+        )
+        # Regression guard for T1-17: the pre-fix argon definition repeated the
+        # bundled oxygen critical constants (upstream RASPA2's argon.def does).
+        self.assertEqual(oxygen_constants[:2], (154.581, _ARGON_LEGACY_OXYGEN_PC_PA))
+        self.assertNotEqual(argon_constants[0], oxygen_constants[0])
+        self.assertNotEqual(argon_constants[1], oxygen_constants[1])
+
+    def test_argon_fixed_fugacity_and_zero_pressure_are_distinct_from_pr_eos(self):
+        pr_eos_settings = GraspaIsothermSettings(component="Ar_RASPA", fugacity_coefficient="PR-EOS")
+        pr_eos_input = _render_isotherm_simulation_input(
+            pr_eos_settings, unit_cells=(1, 1, 1), pressure=100_000.0
+        )
+        self.assertIn("FugacityCoefficient      PR-EOS", pr_eos_input)
+
+        fixed_input = _render_isotherm_simulation_input(
+            replace(pr_eos_settings, fugacity_coefficient=0.95),
+            unit_cells=(1, 1, 1),
+            pressure=100_000.0,
+        )
+        self.assertIn("FugacityCoefficient      0.95", fixed_input)
+        self.assertNotIn("PR-EOS", fixed_input)
+
+        zero_pressure_input = _render_isotherm_simulation_input(
+            pr_eos_settings, unit_cells=(1, 1, 1), pressure=0.0
+        )
+        self.assertIn("FugacityCoefficient      1", zero_pressure_input)
+        self.assertNotIn("PR-EOS", zero_pressure_input)
+
+        # Packaged argon passes EOS validation with the corrected constants.
+        _validate_eos_component("Ar_RASPA", ())
+
+    def test_staged_argon_pr_eos_run_uses_corrected_critical_constants(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake")
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "argon_isotherm_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_isotherm_workflow(
+                    cif_path,
+                    output_dir=temp_path / "argon_isotherm",
+                    eqeq_settings=EqeqChargeSettings(),
+                    isotherm_settings=GraspaIsothermSettings(
+                        component="Ar_RASPA",
+                        pressures=(5_000_000.0,),
+                        fugacity_coefficient="PR-EOS",
+                    ),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            point = result.point_results[0]
+            pressure_run_dir = Path(point.simulation_input_path).parent
+            staged_constants = _critical_constants_from_definition(
+                (pressure_run_dir / "Ar_RASPA.def").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                staged_constants,
+                (
+                    _ARGON_REFERENCE_TC_KELVIN,
+                    _ARGON_REFERENCE_PC_PA,
+                    _ARGON_REFERENCE_ACENTRIC_FACTOR,
+                ),
+            )
+            simulation_input = Path(point.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("FugacityCoefficient      PR-EOS", simulation_input)
+
+        # Independent PR-EOS evaluation at the staged state point (298 K, 5 MPa):
+        # the corrected reference-EOS constants give phi ~= 0.920, measurably
+        # different from the pre-fix oxygen constants, so prior Ar_RASPA PR-EOS
+        # outputs are affected.
+        phi_corrected = _peng_robinson_fugacity_coefficient(298.0, 5_000_000.0, *staged_constants)
+        phi_legacy = _peng_robinson_fugacity_coefficient(
+            298.0,
+            5_000_000.0,
+            _ARGON_LEGACY_OXYGEN_TC_KELVIN,
+            _ARGON_LEGACY_OXYGEN_PC_PA,
+            _ARGON_LEGACY_OXYGEN_ACENTRIC_FACTOR,
+        )
+        self.assertAlmostEqual(phi_corrected, 0.9201, places=3)
+        self.assertLess(phi_corrected, 1.0)
+        self.assertGreater(abs(phi_corrected - phi_legacy) / phi_corrected, 1.0e-3)
 
     def test_raspa_example_binary_rejects_truncated_default_variant(self):
         with tempfile.TemporaryDirectory() as temp_dir:
