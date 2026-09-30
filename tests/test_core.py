@@ -504,6 +504,9 @@ class GenericBinaryBridgeBatchTests(unittest.TestCase):
         )
         generator = BatchStructureGenerator(
             BatchGenerationConfig(
+                # cor is a 3D net; the explicit request must name a matching
+                # target dimensionality.
+                target_dimensionality="3D",
                 topology_ids=("cor",),
                 write_cif=False,
             )

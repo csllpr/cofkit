@@ -27,6 +27,7 @@ from cofkit import (
 )
 from cofkit.geometry import add, dot, matmul_vec, normalize, scale, sub
 from cofkit.chem import rdkit as rdkit_module
+from cofkit.topologies import get_topology_hint
 from cofkit.validation import CoarseStructureValidator
 
 try:
@@ -1465,11 +1466,11 @@ class BatchStructureGeneratorTests(unittest.TestCase):
 
         self.assertEqual(
             three_plus_two_summary.metadata["topology_selection"]["available_topologies"],
-            ("hcb", "hca", "fes", "fxt", "srs"),
+            ("hcb", "hca", "fes", "fxt"),
         )
         self.assertEqual(
             three_plus_three_summary.metadata["topology_selection"]["available_topologies"],
-            ("hcb", "fes", "fxt", "srs"),
+            ("hcb", "fes", "fxt"),
         )
 
     def test_generate_pair_candidates_returns_all_supported_topologies(self):
@@ -1496,18 +1497,18 @@ class BatchStructureGeneratorTests(unittest.TestCase):
 
         summaries, candidates, attempted_structures = generator.generate_pair_candidates(amine, aldehyde)
 
-        self.assertEqual(attempted_structures, 5)
-        self.assertEqual(len(summaries), 5)
-        self.assertEqual(len(candidates), 5)
+        self.assertEqual(attempted_structures, 4)
+        self.assertEqual(len(summaries), 4)
+        self.assertEqual(len(candidates), 4)
         self.assertEqual(
             {summary.topology_id for summary in summaries},
-            {"hcb", "hca", "fes", "fxt", "srs"},
+            {"hcb", "hca", "fes", "fxt"},
         )
         instance_counts = {
             candidate.metadata["net_plan"]["topology"]: candidate.metadata["graph_summary"]["n_monomer_instances"]
             for candidate in candidates
         }
-        self.assertEqual(instance_counts, {"hcb": 5, "hca": 15, "fes": 10, "fxt": 30, "srs": 20})
+        self.assertEqual(instance_counts, {"hcb": 5, "hca": 15, "fes": 10, "fxt": 30})
         self.assertTrue(all(summary.cif_path is None for summary in summaries))
 
     def test_stacking_expansion_failure_isolates_failing_candidate(self):
@@ -1550,12 +1551,12 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         ):
             summaries, candidates, attempted_structures = generator.generate_pair_candidates(amine, aldehyde)
 
-        self.assertEqual(attempted_structures, 5)
-        self.assertEqual(len(summaries), 4)
-        self.assertEqual(len(candidates), 4)
+        self.assertEqual(attempted_structures, 4)
+        self.assertEqual(len(summaries), 3)
+        self.assertEqual(len(candidates), 3)
         self.assertEqual(
             {summary.topology_id for summary in summaries},
-            {"hca", "fes", "fxt", "srs"},
+            {"hca", "fes", "fxt"},
         )
         self.assertTrue(all(summary.status == "ok" for summary in summaries))
         for summary in summaries:
@@ -1570,6 +1571,9 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             BatchGenerationConfig(
                 rdkit_num_conformers=1,
                 retain_top_results=5,
+                # The 3D pool is only enumerated for a 3D target; the default
+                # 2D target selects the 2D families (sql/kgm) instead.
+                target_dimensionality="3D",
             )
         )
         amine = BatchMonomerRecord(
@@ -1924,6 +1928,9 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             BatchGenerationConfig(
                 rdkit_num_conformers=1,
                 retain_top_results=5,
+                # The 3D pool is only enumerated for a 3D target; the default
+                # 2D target selects the 2D families (sql) instead.
+                target_dimensionality="3D",
             )
         )
         amine = BatchMonomerRecord(
@@ -2157,6 +2164,13 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 retain_top_results=5,
             )
         )
+        generator_3d = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=5,
+                target_dimensionality="3D",
+            )
+        )
         amine = BatchMonomerRecord(
             id="hexa_amine",
             name="hexa_amine",
@@ -2178,12 +2192,26 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(summary.pair_mode, "6+2-node-linker")
         self.assertIsNotNone(candidate)
         assert candidate is not None
+        # The default 2D target keeps only the 2D family; pcu/acs are 3D and
+        # are enumerated only for a 3D target.
         self.assertEqual(
             set(summary.metadata["topology_selection"]["available_topologies"]),
-            {"pcu", "hxl", "acs"},
+            {"hxl"},
         )
-        self.assertIn(candidate.metadata["net_plan"]["topology"], {"pcu", "hxl", "acs"})
+        self.assertEqual(candidate.metadata["net_plan"]["topology"], "hxl")
         self.assertGreater(candidate.metadata["graph_summary"]["n_reaction_events"], 0)
+
+        summary_3d, candidate_3d = generator_3d.generate_pair_candidate(amine, aldehyde)
+
+        self.assertEqual(summary_3d.status, "ok")
+        self.assertIsNotNone(candidate_3d)
+        assert candidate_3d is not None
+        self.assertEqual(
+            set(summary_3d.metadata["topology_selection"]["available_topologies"]),
+            {"pcu", "acs"},
+        )
+        self.assertIn(candidate_3d.metadata["net_plan"]["topology"], {"pcu", "acs"})
+        self.assertGreater(candidate_3d.metadata["graph_summary"]["n_reaction_events"], 0)
 
     def test_six_plus_two_pair_can_target_hxl_when_requested(self):
         generator = BatchStructureGenerator(
@@ -2224,6 +2252,9 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             BatchGenerationConfig(
                 rdkit_num_conformers=1,
                 retain_top_results=5,
+                # These pools are 3D families; a 3D target is required to
+                # enumerate them.
+                target_dimensionality="3D",
             )
         )
         amine_4 = BatchMonomerRecord(
@@ -2280,7 +2311,7 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         )
         self.assertEqual(
             set(six_plus_two_summary.metadata["topology_selection"]["available_topologies"]),
-            {"pcu", "hxl", "acs"},
+            {"pcu", "acs"},
         )
 
     def test_default_selector_includes_curated_compatible_topologies(self):
@@ -2290,34 +2321,54 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 retain_top_results=5,
             )
         )
+        generator_3d = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=5,
+                target_dimensionality="3D",
+            )
+        )
 
-        three_plus_two = generator._topology_ids_for_pair(connectivities=(3, 2), pair_mode="node-linker")
-        three_plus_three = generator._topology_ids_for_pair(connectivities=(3, 3), pair_mode="node-node")
-        three_plus_four = generator._topology_ids_for_pair(connectivities=(3, 4), pair_mode="node-node")
-        three_plus_six = generator._topology_ids_for_pair(connectivities=(3, 6), pair_mode="node-node")
-        four_plus_two = generator._topology_ids_for_pair(connectivities=(4, 2), pair_mode="node-linker")
-        four_plus_four = generator._topology_ids_for_pair(connectivities=(4, 4), pair_mode="node-node")
-        six_plus_two = generator._topology_ids_for_pair(connectivities=(6, 2), pair_mode="node-linker")
-        six_plus_six = generator._topology_ids_for_pair(connectivities=(6, 6), pair_mode="node-node")
+        def ids_for(gen, connectivities, pair_mode):
+            return gen._topology_ids_for_pair(connectivities=connectivities, pair_mode=pair_mode)
 
-        self.assertIn("srs", three_plus_two)
-        self.assertIn("srs", three_plus_three)
-        self.assertIn("ctn", three_plus_four)
-        self.assertIn("bor", three_plus_four)
-        self.assertIn("tbo", three_plus_four)
-        self.assertIn("kgd", three_plus_six)
+        # 2D target: only 2D families are enumerated.
+        three_plus_two = ids_for(generator, (3, 2), "node-linker")
+        three_plus_three = ids_for(generator, (3, 3), "node-node")
+        three_plus_six = ids_for(generator, (3, 6), "node-node")
+        four_plus_two = ids_for(generator, (4, 2), "node-linker")
+        four_plus_four = ids_for(generator, (4, 4), "node-node")
+        six_plus_two = ids_for(generator, (6, 2), "node-linker")
+
         self.assertIn("sql", four_plus_two)
         self.assertIn("kgm", four_plus_two)
-        self.assertIn("pts", four_plus_two)
-        self.assertIn("lon", four_plus_two)
-        self.assertIn("qtz", four_plus_two)
         self.assertIn("sql", four_plus_four)
-        self.assertIn("pts", four_plus_four)
-        self.assertIn("lon", four_plus_four)
-        self.assertIn("qtz", four_plus_four)
+        self.assertIn("kgd", three_plus_six)
         self.assertIn("hxl", six_plus_two)
-        self.assertIn("acs", six_plus_two)
-        self.assertIn("acs", six_plus_six)
+        for selected in (three_plus_two, three_plus_three, three_plus_six, four_plus_two, four_plus_four, six_plus_two):
+            for three_d_id in ("srs", "ctn", "bor", "tbo", "pts", "lon", "qtz", "pcu", "acs", "dia"):
+                self.assertNotIn(three_d_id, selected)
+
+        # 3D target: only 3D families are enumerated.
+        self.assertIn("srs", ids_for(generator_3d, (3, 2), "node-linker"))
+        self.assertIn("srs", ids_for(generator_3d, (3, 3), "node-node"))
+        three_plus_four_3d = ids_for(generator_3d, (3, 4), "node-node")
+        self.assertIn("ctn", three_plus_four_3d)
+        self.assertIn("bor", three_plus_four_3d)
+        self.assertIn("tbo", three_plus_four_3d)
+        four_plus_two_3d = ids_for(generator_3d, (4, 2), "node-linker")
+        four_plus_four_3d = ids_for(generator_3d, (4, 4), "node-node")
+        for three_d_id in ("pts", "lon", "qtz", "dia"):
+            self.assertIn(three_d_id, four_plus_two_3d)
+            self.assertIn(three_d_id, four_plus_four_3d)
+        six_plus_two_3d = ids_for(generator_3d, (6, 2), "node-linker")
+        six_plus_six_3d = ids_for(generator_3d, (6, 6), "node-node")
+        self.assertIn("pcu", six_plus_two_3d)
+        self.assertIn("acs", six_plus_two_3d)
+        self.assertIn("acs", six_plus_six_3d)
+        for two_d_id in ("hcb", "sql", "kgm", "hxl", "kgd"):
+            self.assertNotIn(two_d_id, four_plus_two_3d)
+            self.assertNotIn(two_d_id, four_plus_four_3d)
 
     def test_file_driven_batch_runner_writes_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2407,12 +2458,13 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             manifest_rows = [line for line in (output_dir / "manifest.jsonl").read_text(encoding="utf-8").splitlines() if line]
             cif_count = sum(1 for _ in (output_dir / "cifs").rglob("*.cif"))
 
+            # The default 2D target no longer enumerates the 3D srs family.
             self.assertEqual(summary.attempted_pairs, 1)
             self.assertEqual(summary.successful_pairs, 1)
-            self.assertEqual(summary.attempted_structures, 5)
-            self.assertEqual(summary.successful_structures, 5)
-            self.assertEqual(len(manifest_rows), 5)
-            self.assertEqual(cif_count, 5)
+            self.assertEqual(summary.attempted_structures, 4)
+            self.assertEqual(summary.successful_structures, 4)
+            self.assertEqual(len(manifest_rows), 4)
+            self.assertEqual(cif_count, 4)
             self.assertTrue((output_dir / "cifs" / "valid").is_dir())
 
     def test_file_driven_batch_runner_discovers_four_and_six_connectivity_libraries(self):
@@ -2420,6 +2472,9 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             BatchGenerationConfig(
                 rdkit_num_conformers=1,
                 retain_top_results=5,
+                # dia / pcu / cor are 3D nets; a 3D target is required to
+                # enumerate them for these tetratopic/hexatopic libraries.
+                target_dimensionality="3D",
             )
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2465,6 +2520,134 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             for details in candidate.metadata["embedding"]["poses"].values()
             if details.get("role") == "linker"
         )
+
+
+@unittest.skipIf(Chem is None, "RDKit is not available")
+class BatchTargetDimensionalityTests(unittest.TestCase):
+    """The requested target dimensionality constrains topology selection.
+
+    Enumerated candidates are restricted to the requested dimensionality on
+    both the single-pair and the batch route; an explicit topology id of the
+    other dimensionality is an unsatisfiable request and raises at generator
+    construction (see tests/test_node_shape.py for the planner/engine
+    equivalents).
+    """
+
+    def test_single_pair_route_2d_target_enumerates_no_3d_topologies(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(rdkit_num_conformers=1, retain_top_results=5, write_cif=False)
+        )
+        amine = BatchMonomerRecord(
+            id="d2h_tetra_amine",
+            name="d2h_tetra_amine",
+            smiles=D2H_TETRA_AMINE,
+            motif_kind="amine",
+            expected_connectivity=4,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tpal",
+            name="tpal",
+            smiles=TEREPHTHALALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=2,
+        )
+
+        summaries, _candidates, _attempted = generator.generate_pair_candidates(amine, aldehyde)
+
+        topology_ids = {summary.topology_id for summary in summaries}
+        self.assertIn("kgm", topology_ids)
+        self.assertTrue(topology_ids)
+        for topology_id in topology_ids:
+            hint = get_topology_hint(topology_id)
+            self.assertEqual(hint.dimensionality, "2D", msg=topology_id)
+
+    def test_single_pair_route_3d_target_enumerates_no_2d_topologies(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=5,
+                write_cif=False,
+                target_dimensionality="3D",
+            )
+        )
+        amine = BatchMonomerRecord(
+            id="tetra_amine",
+            name="tetra_amine",
+            smiles=TETRA_AMINE,
+            motif_kind="amine",
+            expected_connectivity=4,
+        )
+        aldehyde = BatchMonomerRecord(
+            id="tpal",
+            name="tpal",
+            smiles=TEREPHTHALALDEHYDE,
+            motif_kind="aldehyde",
+            expected_connectivity=2,
+        )
+
+        summaries, _candidates, _attempted = generator.generate_pair_candidates(amine, aldehyde)
+
+        topology_ids = {summary.topology_id for summary in summaries}
+        self.assertIn("dia", topology_ids)
+        self.assertNotIn("sql", topology_ids)
+        self.assertNotIn("kgm", topology_ids)
+
+    def test_batch_route_2d_target_reports_dimensionality_exclusion_reasons(self):
+        # A 4+4 tetrahedral pair under the default 2D target: sql is
+        # shape-excluded and the 3D families are dimensionality-excluded, so
+        # the pair fails with explicit per-topology reasons instead of
+        # silently building dia.
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(rdkit_num_conformers=1, retain_top_results=5, write_cif=False)
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            input_dir = temp_root / "input"
+            output_dir = temp_root / "out"
+            input_dir.mkdir()
+            (input_dir / "amines_count_4.txt").write_text(f"smiles\n{TETRA_AMINE}\n", encoding="utf-8")
+            (input_dir / "aldehydes_count_4.txt").write_text(f"smiles\n{TETRA_ALDEHYDE}\n", encoding="utf-8")
+
+            summary = generator.run_imine_batch(input_dir, output_dir, write_cif=False)
+
+            self.assertEqual(summary.attempted_pairs, 1)
+            self.assertEqual(summary.successful_pairs, 0)
+            manifest_rows = [
+                json.loads(line)
+                for line in (output_dir / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+            self.assertEqual(len(manifest_rows), 1)
+            failed_topologies = manifest_rows[0]["metadata"]["failed_topologies"]
+            self.assertIn("dia", failed_topologies)
+            self.assertIn("3D", failed_topologies["dia"])
+            self.assertIn("sql", failed_topologies)
+            self.assertIn("tetrahedral", failed_topologies["sql"])
+
+    def test_batch_route_3d_target_builds_3d_topologies(self):
+        generator = BatchStructureGenerator(
+            BatchGenerationConfig(
+                rdkit_num_conformers=1,
+                retain_top_results=5,
+                write_cif=False,
+                target_dimensionality="3D",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            input_dir = temp_root / "input"
+            output_dir = temp_root / "out"
+            input_dir.mkdir()
+            (input_dir / "amines_count_4.txt").write_text(f"smiles\n{TETRA_AMINE}\n", encoding="utf-8")
+            (input_dir / "aldehydes_count_4.txt").write_text(f"smiles\n{TETRA_ALDEHYDE}\n", encoding="utf-8")
+
+            summary = generator.run_imine_batch(input_dir, output_dir, write_cif=False)
+
+            self.assertEqual(summary.attempted_pairs, 1)
+            self.assertEqual(summary.successful_pairs, 1)
+            self.assertIn("dia", summary.topology_counts)
+            for topology_id in summary.topology_counts:
+                self.assertEqual(get_topology_hint(topology_id).dimensionality, "3D")
 
 
 @unittest.skipIf(Chem is None, "RDKit is not available")

@@ -84,9 +84,10 @@ Then go straight to the module that matches the task.
 ## Topology seams
 
 - [src/cofkit/node_shape.py](../src/cofkit/node_shape.py)
-  - Whole-monomer node-shape classification (square / rectangular / tetrahedral / unknown) for 4-connecting monomers, plus net node-shape signatures from single-node layout edge directions.
+  - Geometric node-shape classification for 4-connecting monomers (square / rectangular / tetrahedral / unknown) from the embedded conformer's connector positions (the four motif-frame origins, fingerprinted by rigid-motion-invariant pairwise angles); the `NODE_SHAPE_*` tolerances are owned here with heuristic provenance. Net node shapes are canonical labels for the curated 4-connected nets (`sql` / `kgm` / `dia`); any other topology id is `unknown`. The graph-automorphism family label (`classify_monomer_graph_shape`) survives as a diagnostic only — it cannot separate square-planar from tetrahedral nodes and feeds no filtering decision.
   - Consumed by `batch.py` topology selection (`_topology_ids_for_pair`, `_topology_unavailable_errors`, decorated-`bex` gating, `_requested_shape_warnings`) and by `planner.py` compatibility checks; unknown shapes are always treated as "no opinion".
   - Shape detection only prunes enumerated topologies. Explicitly requested topologies (`--topology`, `--cofid`, `BatchGenerationConfig.topology_ids` / `single_node_topology_ids`, `NetPlanner` `target_topologies`) are kept and report `shape_warnings` in pair-summary / `NetPlan` / `COFEngine` candidate metadata instead. It can be switched off via `shape_aware_topology_filter` on `BatchGenerationConfig`, the CLI `--no-shape-aware-topology-filter`, `NetPlanner(...)`, and `COFEngineConfig(...)`; enumerations that are passed as `topology_ids` can stay filtered with `BatchGenerationConfig(shape_filter_explicit_topologies=True)`.
+  - Dimensionality is a separate, exact check: `BatchGenerationConfig.target_dimensionality` restricts enumerated pools in `_topology_ids_for_pair` (with per-topology reasons from `_topology_unavailable_errors`), and an explicit request whose dimensionality conflicts with the target is unsatisfiable — `BatchStructureGenerator(...)` construction and `NetPlanner.propose` raise `ValueError` (CLI: `error: ...`).
 - [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
   - Shared dispatch for supported topology-family builders.
 - [src/cofkit/single_node_topologies.py](../src/cofkit/single_node_topologies.py)
@@ -142,6 +143,8 @@ tunables must land here, not at consumer sites:
   - Config dataclasses own the simulation defaults (cutoffs, EQeq parameters, seeds, temperatures, Ewald tolerances); `cli_calculate.py` argparse defaults reference them.
 - [src/cofkit/vdw.py](../src/cofkit/vdw.py)
   - Bondi radii table and clash-assessment constants (pre-existing owner).
+- [src/cofkit/node_shape.py](../src/cofkit/node_shape.py)
+  - `NODE_SHAPE_*` connector-geometry classification tolerances and the derived ideal tetrahedral angle (`TETRAHEDRAL_NODE_ANGLE_DEGREES`).
 
 ## External calculation seams
 

@@ -122,6 +122,9 @@ _CURATED_DEFAULT_TOPOLOGY_IDS: tuple[str, ...] = (
 @dataclass(frozen=True)
 class BatchGenerationConfig:
     allowed_reactions: tuple[str, ...] = ("imine_bridge",)
+    # Enumerated topology candidates are restricted to this dimensionality.
+    # Explicitly requested topology ids whose dimensionality disagrees are an
+    # unsatisfiable request and raise ValueError when the generator is built.
     target_dimensionality: str = "2D"
     hcb_topology_id: str = "hcb"
     topology_ids: tuple[str, ...] = ()
@@ -180,6 +183,12 @@ class BatchGenerationConfig:
     embedding_config: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     engine_config: COFEngineConfig = field(default_factory=COFEngineConfig)
     optimizer_config: OptimizerConfig = field(default_factory=OptimizerConfig)
+
+    def __post_init__(self) -> None:
+        if self.target_dimensionality not in ("2D", "3D"):
+            raise ValueError(
+                f"target_dimensionality must be '2D' or '3D', got {self.target_dimensionality!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -303,6 +312,13 @@ class BatchStructureGenerator:
         self._topology_id_cache: dict[tuple[tuple[int, int], str], tuple[str, ...]] = {}
         self._topology_id_cache_lock = Lock()
         self._topology_repository = default_topology_repository()
+        configured_conflicts = self._configured_topology_dimensionality_conflicts()
+        if configured_conflicts:
+            raise ValueError(
+                "explicitly requested topologies conflict with target dimensionality "
+                f"{self.config.target_dimensionality!r}: "
+                + "; ".join(configured_conflicts)
+            )
         self._pair_topology_builders = PairTopologyBuilderRegistry(
             (
                 PairTopologyBuilder(
@@ -3862,6 +3878,29 @@ class BatchStructureGenerator:
     def _configured_topology_ids(self) -> tuple[str, ...]:
         return self.config.topology_ids or self.config.single_node_topology_ids
 
+    def _configured_topology_dimensionality_conflicts(self) -> tuple[str, ...]:
+        """Unsatisfiable explicit requests: named topologies of the wrong dimensionality.
+
+        Topology dimensionality is exact repository metadata, not a
+        heuristic, so an explicit id that disagrees with the requested
+        target dimensionality can never be satisfied; the generator refuses
+        the configuration instead of silently building the other
+        dimensionality. Unresolvable ids are left to the per-pair
+        KeyError reporting.
+        """
+        conflicts: list[str] = []
+        for topology_id in dict.fromkeys(self.config.topology_ids + self.config.single_node_topology_ids):
+            try:
+                hint = self._topology_repository.get_hint(topology_id)
+            except KeyError:
+                continue
+            if hint.dimensionality != self.config.target_dimensionality:
+                conflicts.append(
+                    f"topology {topology_id!r} is {hint.dimensionality} but the requested "
+                    f"target dimensionality is {self.config.target_dimensionality}"
+                )
+        return tuple(conflicts)
+
     def _topology_mode_token(self, connectivities: tuple[int, int], pair_mode: str) -> str:
         first_connectivity, second_connectivity = connectivities
         if pair_mode == "node-linker":
@@ -3993,6 +4032,11 @@ class BatchStructureGenerator:
                 hint = self._topology_repository.get_hint(topology_id)
             except KeyError:
                 continue
+            # The requested target dimensionality is enforced for every
+            # candidate; conflicting explicit ids are rejected up front when
+            # the generator is constructed.
+            if hint.dimensionality != self.config.target_dimensionality:
+                continue
             topology_modes = tuple(str(value) for value in hint.metadata.get(mode_key, ()))
             decorated_bex = configured and self._is_decorated_bex_request(
                 topology_id,
@@ -4105,6 +4149,12 @@ class BatchStructureGenerator:
                 hint = self._topology_repository.get_hint(topology_id)
             except KeyError as exc:
                 errors[topology_id] = f"{type(exc).__name__}: {exc}"
+                continue
+            if hint.dimensionality != self.config.target_dimensionality:
+                errors[topology_id] = (
+                    f"topology {topology_id!r} is {hint.dimensionality} but the requested "
+                    f"target dimensionality is {self.config.target_dimensionality}"
+                )
                 continue
             topology_modes = tuple(str(value) for value in hint.metadata.get(mode_key, ()))
             decorated_bex = self._is_decorated_bex_request(

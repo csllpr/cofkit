@@ -55,6 +55,16 @@ class NetPlanner:
 
         if target_topologies:
             hints = tuple(self._resolve_requested_topologies(target_topologies))
+            mismatched = tuple(hint for hint in hints if hint.dimensionality != target_dimensionality)
+            if mismatched:
+                # Topology dimensionality is exact metadata, so an explicit
+                # request that disagrees with the target dimensionality is
+                # unsatisfiable; refuse it instead of silently planning a
+                # different dimensionality or a topology-free fallback.
+                raise ValueError(
+                    f"requested topologies conflict with target dimensionality {target_dimensionality!r}: "
+                    + ", ".join(f"{hint.id!r} is {hint.dimensionality}" for hint in mismatched)
+                )
         else:
             hints = tuple(self._infer_repository_topologies(monomers, target_dimensionality))
 

@@ -67,9 +67,9 @@ For the current single-node topology families, `cofkit` expands supported CGD ne
 
 - `3+2` runs can currently target `hcb`, `hca`, `fes`, and `fxt`
 - `3+3` runs can currently target `hcb`, `fes`, and `fxt`
-- `4+2` and `4+4` runs default to `dia` in the batch workflow and are available directly through `COFEngine` with `target_dimensionality="3D"` or `target_topologies=("dia",)`
-- `6+2` runs default to `pcu` in the batch workflow and are available directly through `COFEngine` with `target_dimensionality="3D"` or `target_topologies=("pcu",)`
-- explicit `sql`, `kgm`, `htb`, and `hxl` requests still work in batch mode, but they are no longer the default route for the uploaded `4`- and `6`-connected fixture libraries
+- `4+2` and `4+4` runs enumerate the 2D families (`sql`, `kgm`, `htb`) under the default `2D` target, subject to node-shape compatibility; the 3D families (`dia`, `pts`, `lon`, `qtz`) require `target_dimensionality="3D"` / `--target-dimensionality 3D` or an explicit 3D topology request, and are also available directly through `COFEngine`
+- `6+2` runs enumerate `hxl` under the default `2D` target; `pcu` / `acs` require a `3D` target or an explicit request, and are available directly through `COFEngine` with `target_dimensionality="3D"` or `target_topologies=("pcu",)`
+- an explicit topology request whose dimensionality conflicts with the target (`--topology dia` with the default 2D target) is rejected with an error naming the conflict rather than silently building another dimensionality
 - `BatchStructureGenerator.generate_monomer_pair_candidate(s)` now exposes the full supported one-node family directly for single-pair imine generation, and `COFEngine.run(...)` reaches the same builders for explicit one-node topology requests plus supported `3D` single-pair defaults such as `dia` / `pcu`
 - chemistry-compatible indexed topologies from the bundled repository can now also be requested explicitly in batch and direct single-pair flows, and the default selector includes a curated subset of those indexed nets when the current chemistry metadata and builder support agree
 

@@ -87,7 +87,12 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         "--target-dimensionality",
         choices=("2D", "3D"),
         default="2D",
-        help="Target dimensionality for topology selection. Defaults to 2D.",
+        help=(
+            "Target dimensionality for topology selection. Defaults to 2D. "
+            "Enumerated topologies are restricted to this dimensionality; an explicit "
+            "--topology request of the other dimensionality is an unsatisfiable request "
+            "and fails with an error."
+        ),
     )
     parser.add_argument("--input-dir", required=False, help="Directory containing monomer libraries.")
     parser.add_argument("--output-dir", required=False, help="Directory for manifests, summaries, and CIF exports.")
@@ -133,7 +138,12 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
         "--topology",
         action="append",
         default=[],
-        help="Explicit topology id to evaluate. Repeat to request multiple indexed topologies.",
+        help=(
+            "Explicit topology id to evaluate. Repeat to request multiple indexed topologies. "
+            "Explicit requests are kept despite node-shape classifier conflicts (reported as "
+            "warnings), but a topology whose dimensionality differs from "
+            "--target-dimensionality is rejected with an error."
+        ),
     )
     parser.add_argument(
         "--use-indexed-topology-defaults",
@@ -217,33 +227,36 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
     _warn_legacy_scoring_deprecated(args)
     effective_template_id = template_id or getattr(args, "template_id", None) or "imine_bridge"
     allowed_reactions = (effective_template_id,)
-    return BatchStructureGenerator(
-        BatchGenerationConfig(
-            allowed_reactions=allowed_reactions,
-            target_dimensionality=args.target_dimensionality,
-            topology_ids=tuple(args.topology),
-            shape_aware_topology_filter=getattr(args, "shape_aware_topology_filter", True),
-            shape_aware_conformer=getattr(args, "shape_aware_conformer", True),
-            use_indexed_topology_defaults=args.use_indexed_topology_defaults,
-            stacking_ids=tuple(args.stacking),
-            rdkit_num_conformers=args.num_conformers,
-            enumerate_all_topologies=args.all_topologies,
-            post_build_conversions=tuple(getattr(args, "annotate_post_build_conversion", ())),
-            write_cif=args.write_cif,
-            max_cif_exports=args.max_cif_exports,
-            max_workers=args.max_workers,
-            repair_geometry=args.repair_geometry,
-            repair_geometry_lmp_path=args.repair_lmp_path,
-            repair_geometry_timeout_seconds=args.repair_timeout_seconds,
-            soft_relax=getattr(args, "soft_relax", False),
-            repair_geometry_settings=LammpsOptimizationSettings(
-                forcefield="dreiding",
-                charge_model="none",
-                pre_minimization_mode="soft",
-                relax_cell=True,
-            ),
+    try:
+        return BatchStructureGenerator(
+            BatchGenerationConfig(
+                allowed_reactions=allowed_reactions,
+                target_dimensionality=args.target_dimensionality,
+                topology_ids=tuple(args.topology),
+                shape_aware_topology_filter=getattr(args, "shape_aware_topology_filter", True),
+                shape_aware_conformer=getattr(args, "shape_aware_conformer", True),
+                use_indexed_topology_defaults=args.use_indexed_topology_defaults,
+                stacking_ids=tuple(args.stacking),
+                rdkit_num_conformers=args.num_conformers,
+                enumerate_all_topologies=args.all_topologies,
+                post_build_conversions=tuple(getattr(args, "annotate_post_build_conversion", ())),
+                write_cif=args.write_cif,
+                max_cif_exports=args.max_cif_exports,
+                max_workers=args.max_workers,
+                repair_geometry=args.repair_geometry,
+                repair_geometry_lmp_path=args.repair_lmp_path,
+                repair_geometry_timeout_seconds=args.repair_timeout_seconds,
+                soft_relax=getattr(args, "soft_relax", False),
+                repair_geometry_settings=LammpsOptimizationSettings(
+                    forcefield="dreiding",
+                    charge_model="none",
+                    pre_minimization_mode="soft",
+                    relax_cell=True,
+                ),
+            )
         )
-    )
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from exc
 
 
 def _add_single_pair_parser(subparsers) -> None:
@@ -308,7 +321,12 @@ def _add_single_pair_parser(subparsers) -> None:
         "--topology",
         action="append",
         default=[],
-        help="Explicit topology id to evaluate. Repeat to request multiple indexed topologies.",
+        help=(
+            "Explicit topology id to evaluate. Repeat to request multiple indexed topologies. "
+            "Explicit requests are kept despite node-shape classifier conflicts (reported as "
+            "warnings), but a topology whose dimensionality differs from "
+            "--target-dimensionality is rejected with an error."
+        ),
     )
     parser.add_argument(
         "--use-indexed-topology-defaults",
@@ -329,7 +347,12 @@ def _add_single_pair_parser(subparsers) -> None:
         "--target-dimensionality",
         choices=("2D", "3D"),
         default="2D",
-        help="Target dimensionality for topology selection. Defaults to 2D.",
+        help=(
+            "Target dimensionality for topology selection. Defaults to 2D. "
+            "Enumerated topologies are restricted to this dimensionality; an explicit "
+            "--topology request of the other dimensionality is an unsatisfiable request "
+            "and fails with an error."
+        ),
     )
     parser.add_argument(
         "--max-cif-exports",

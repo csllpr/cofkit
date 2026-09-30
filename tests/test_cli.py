@@ -491,6 +491,36 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(summary["second"]["overlap_warnings"]), 1)
             self.assertIn("keto_enamine_bridge", summary["second"]["overlap_warnings"][0])
 
+    @unittest.skipIf(Chem is None, "RDKit is not available")
+    def test_single_pair_cli_rejects_topology_dimensionality_conflict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(SystemExit) as raised:
+                cli_main(
+                    [
+                        "build",
+                        "single-pair",
+                        "--first-smiles",
+                        "Nc1cc(N)c(N)cc1N",
+                        "--second-smiles",
+                        "O=Cc1ccc(C=O)cc1",
+                        "--first-motif-kind",
+                        "amine",
+                        "--second-motif-kind",
+                        "aldehyde",
+                        "--num-conformers",
+                        "1",
+                        "--topology",
+                        "dia",
+                        "--target-dimensionality",
+                        "2D",
+                        "--output-dir",
+                        str(Path(temp_dir) / "out"),
+                    ]
+                )
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertIn("'dia' is 3D", str(raised.exception))
+
     def test_single_pair_cli_rejects_internal_post_build_conversion_flag(self):
         stderr_buffer = io.StringIO()
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(stderr_buffer):
