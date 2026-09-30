@@ -189,7 +189,7 @@ The command resets its output directory before writing. As a safety guard, it re
 Single-pair runs write:
 
 - `summary.json`
-- exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`
+- exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/invalid` (`invalid` holds the `hard_invalid` classification)
 
 Ring-forming runs write `summary.json` and, unless disabled, `ring-candidate-1.cif` directly under the selected output directory.
 
@@ -197,6 +197,6 @@ Batch runs write:
 
 - `manifest.jsonl`
 - `summary.md`
-- exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`
+- exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/invalid` (`invalid` holds the `hard_invalid` classification)
 
 Structures classified as `hard_hard_invalid` are recorded in the manifest, but CIF export is blocked and `cif_export_blocked = true` is set in the per-structure metadata.

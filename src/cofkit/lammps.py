@@ -615,7 +615,9 @@ def optimize_cif_with_lammps(
         slab_warning = (
             "the input CIF is labeled c-axis-semantics: vacuum_slab (a single 2D layer with vacuum padding "
             "along c, not a stacked solid); fix box/relax can collapse the vacuum direction into a fake "
-            "stacked solid — consider --no-relax-cell or optimizing a stacked bilayer export instead"
+            "stacked solid — disable cell relaxation (--no-relax-cell on `cofkit calculate lammps-optimize`, "
+            "or `relax_cell=false` through `cofkit validate optimize --settings-json`) or optimize a stacked "
+            "bilayer export instead"
         )
         warnings.append(slab_warning)
         print(f"warning: {slab_warning}", file=sys.stderr)

@@ -147,6 +147,45 @@ class ValidateCliTests(unittest.TestCase):
         self.assertEqual(report["optimized_cif"], str(summary.cif_path))
         self.assertEqual(report["decomposition"]["metadata"]["bond_source"], "distance_inferred")
 
+    def test_validate_optimize_cli_settings_json_accepts_relax_cell_false(self):
+        """A23/T4-26: `validate optimize --settings-json '{"relax_cell": false}'`
+        is the documented way to disable cell relaxation on this command."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            summary, _candidate = _generated_hcb_imine(temp_path)
+            settings_path = temp_path / "settings.json"
+            settings_path.write_text(json.dumps({"relax_cell": False}), encoding="utf-8")
+            fake_lammps_result = SimpleNamespace(
+                optimized_cif=str(summary.cif_path),
+                output_dir=str(temp_path / "lammps_out"),
+                to_dict=lambda: {
+                    "optimized_cif": str(summary.cif_path),
+                    "output_dir": str(temp_path / "lammps_out"),
+                },
+            )
+            buffer = io.StringIO()
+
+            with patch("cofkit.validate.optimize_cif_with_lammps", return_value=fake_lammps_result) as optimized:
+                with contextlib.redirect_stdout(buffer):
+                    cli_main(
+                        [
+                            "validate",
+                            "optimize",
+                            summary.metadata["cofid"],
+                            str(summary.cif_path),
+                            "--output-dir",
+                            str(temp_path / "lammps_out"),
+                            "--settings-json",
+                            str(settings_path),
+                            "--json",
+                        ]
+                    )
+
+        optimized.assert_called_once()
+        self.assertFalse(optimized.call_args.kwargs["settings"].relax_cell)
+        report = json.loads(buffer.getvalue())
+        self.assertEqual(report["status"], "match")
+
 
 if __name__ == "__main__":
     unittest.main()

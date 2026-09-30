@@ -146,6 +146,11 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("warning:", stderr.getvalue())
             self.assertIn("c-axis-semantics: vacuum_slab", stderr.getvalue())
             self.assertTrue(any("vacuum_slab" in warning for warning in result.warnings))
+            # A23/T4-26: the suggested remedy must name commands that actually
+            # exist — `--no-relax-cell` on `calculate lammps-optimize` and the
+            # `relax_cell` settings override on `validate optimize`.
+            self.assertIn("--no-relax-cell", stderr.getvalue())
+            self.assertIn("validate optimize --settings-json", stderr.getvalue())
 
     def test_fixed_cell_relax_on_vacuum_slab_labeled_cif_does_not_warn(self):
         with tempfile.TemporaryDirectory() as temp_dir:

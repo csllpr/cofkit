@@ -31,9 +31,10 @@ Every validation record carries a per-check `coverage` map with one of these sta
 
 - any unreacted motifs
 - missing or unparsable CIF
-- disconnected monomer-instance graph reconstructed from CIF bonding
+- disconnected monomer-instance graph reconstructed from CIF bonding (stacked multilayer exports are exempted)
 - rejected ring-participant arrangement (`ring_geometry_invalid`) or rejected exocyclic ring-monomer attachment (`ring_attachment_invalid`) on ring-forming builds
-- any nonbonded heavy-atom contact `< 1.05 A`
+- any nonbonded heavy-atom clash: `d / (r_i + r_j) < 0.75` with Bondi vdW radii (`cofkit.vdw`), or a heavy-heavy plain distance `< 2.2 A` as a radius-table-independent severe-overlap backstop; periodic 1-2/1-3/1-4 bond-graph neighbors are excluded from the scan
+- a severe overlap inside the excluded bond-graph pairs (`excluded_pair_severe_overlap`): bonded pairs below `0.7 A` are fused nuclei, and graph-excluded 1-3 / 1-4 heavy pairs below `1.05 A` / `2.2 A` mean a broken graph
 - `2D` cell area `< 10.0 A^2`
 - `3D` cell volume `< 20.0 A^3`
 
@@ -51,4 +52,4 @@ These graph-intact bridge-geometry failures are classified as `needs_optimizatio
 
 - any measured inter-monomer bridge bond distance `>= 2.5 A`
 
-Hydrogen atoms are ignored in the clash check. Warning-level bridge drift still goes through CIF-backed checks, so a candidate can be promoted from `warning` to `hard_invalid` if the exported structure shows a broken network or impossible heavy-atom contact. During generation, `valid` / `warning` / `needs_optimization` / `hard_invalid` CIFs are written into separate subdirectories under `cifs/`, while `hard_hard_invalid` structures stay manifest-only with `cif_export_blocked = true`.
+Hydrogen-involving contacts are not part of the heavy-atom clash verdict; they are reported in a separate `hydrogen_atom_clash` warning channel with their own metrics. Warning-level bridge drift still goes through CIF-backed checks, so a candidate can be promoted from `warning` to `hard_invalid` if the exported structure shows a broken network or impossible heavy-atom contact. During generation, CIFs are written into validation subdirectories under `cifs/`: `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, and `cifs/invalid` (the `invalid` bucket holds `hard_invalid` structures), while `hard_hard_invalid` structures stay manifest-only with `cif_export_blocked = true`. Reclassification with `cofkit analyze classify-output` uses a different layout: one directory per classification (`valid/`, `warning/`, `needs_optimization/`, `hard_invalid/`, `hard_hard_invalid/`, `unvalidated/`), each with its own `manifest.jsonl`.

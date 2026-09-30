@@ -255,7 +255,7 @@ tunables must land here, not at consumer sites:
 2. library resolution via [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
 3. pair enumeration and topology selection in [src/cofkit/batch.py](../src/cofkit/batch.py)
 4. topology-family dispatch via [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
-5. validation-aware CIF writing into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`; `hard_hard_invalid` structures stay manifest-only
+5. validation-aware CIF writing into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/invalid` (`_classified_cif_destination` maps both `hard_invalid` and `hard_hard_invalid` to the `invalid` bucket, but `hard_hard_invalid` blocks export before that); `hard_hard_invalid` structures stay manifest-only
 
 ### CIF decomposition from CLI
 

@@ -98,7 +98,7 @@ cofkit validate simple \
   out/cli_single_pair/cifs/valid/tapb__tfb__hcb.cif
 ```
 
-Optimize mode first runs the default LAMMPS optimization pipeline, then decomposes the optimized CIF with the same distance-inferred comparison:
+Optimize mode first runs the default LAMMPS optimization pipeline, then decomposes the optimized CIF with the same distance-inferred comparison. The verdict is a precursor-recovery identity check (monomers and linkage), not an energetic certificate; optimization convergence is reported separately through the embedded LAMMPS report. Override the optimization defaults with `--settings-json settings.json` (a JSON object of `LammpsOptimizationSettings` overrides) — for example `{"relax_cell": false}` disables the final `fix box/relax` stage, which is the remedy suggested when the input CIF is labeled `# c-axis-semantics: vacuum_slab`.
 
 ```bash
 cofkit validate optimize \

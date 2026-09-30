@@ -159,6 +159,7 @@ Primary artifacts:
 - `needs_optimization/manifest.jsonl`
 - `hard_invalid/manifest.jsonl`
 - `hard_hard_invalid/manifest.jsonl`
+- `unvalidated/manifest.jsonl`
 
 ### Recover COFid from one supported CIF
 
@@ -193,7 +194,7 @@ The decomposition logic in `cofkit` was adapted from the deCOFpose project at `h
 
 ### Validate one CIF against a COFid
 
-Use `validate simple` for a direct geometry-backed check.
+Use `validate simple` for a direct precursor-recovery identity check (the CIF is decomposed and the recovered monomers/linkage are compared to the COFid; it is not a geometric or energetic validity certificate).
 
 ```bash
 cofkit validate simple \
@@ -209,6 +210,10 @@ cofkit validate optimize \
   <STRUCTURE_CIF> \
   --output-dir <LAMMPS_OUTPUT_DIR>
 ```
+
+Useful variants:
+
+- add `--settings-json settings.json` with a JSON object of `LammpsOptimizationSettings` overrides; for example `{"relax_cell": false}` disables the final box/relax stage (no dedicated flag exists on this command)
 
 Requirements:
 
@@ -337,7 +342,7 @@ Requirements:
 - `COFKIT_EQEQ_PATH` or `--eqeq-path` selects EQeq
 - default backend is gRASPA through `COFKIT_GRASPA_PATH` or `--graspa-path`
 - RASPA2 backend uses `COFKIT_RASPA2_PATH`, `--raspa2-path`, or `--raspa-path` with `--backend raspa2`
-- every packaged selector has a mandatory model tag; default names are `TIP4P_DREIDING`, `CO2_DREIDING`, `H2_DREIDING`, `N2_DREIDING`, `SO2_DREIDING`, `Xe_GENERICMOFS`, and `Kr_GENERICMOFS`; optional shifted-LJ models are `He_RASPA`, `Ar_RASPA`, `CH4_RASPA`, `O2_RASPA`, `CO2_RASPA`, and `N2_RASPA`; untagged packaged aliases are not accepted; the tag identifies the guest parameter model and does not select the backend or restrict the framework force field; use only components with the same shifted/truncated convention in one run; guest-bundle component names and aliases become available only after `--guest-bundle`
+- every packaged selector has a mandatory model tag; default names are `TIP4P_DREIDING`, `CO2_DREIDING`, `N2_DREIDING`, `SO2_DREIDING`, `Xe_GENERICMOFS`, and `Kr_GENERICMOFS` (`H2_DREIDING` is deliberately excluded from the default set because upstream gRASPA does not implement its Feynman-Hibbs potential); optional shifted-LJ models are `He_RASPA`, `Ar_RASPA`, `CH4_RASPA`, `O2_RASPA`, `CO2_RASPA`, and `N2_RASPA`; untagged packaged aliases are not accepted; the tag identifies the guest parameter model and does not select the backend or restrict the framework force field; use only components with the same shifted/truncated convention in one run; guest-bundle component names and aliases become available only after `--guest-bundle`
 
 Primary artifacts:
 
