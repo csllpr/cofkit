@@ -91,7 +91,19 @@ def _summary_record(
     actual_distance: float = 1.4,
     target_distance: float = 1.3,
     template_id: str | None = None,
+    include_bridge_event: bool = True,
 ) -> dict[str, object]:
+    bridge_event_metrics = (
+        [
+            {
+                "distance_residual": distance_residual,
+                "actual_distance": actual_distance,
+                "target_distance": target_distance,
+            }
+        ]
+        if include_bridge_event
+        else []
+    )
     return {
         "structure_id": structure_id,
         "pair_id": structure_id,
@@ -106,17 +118,15 @@ def _summary_record(
         "flags": [],
         "cif_path": str(cif_path),
         "metadata": {
-            "graph_summary": {"n_monomer_instances": 2, "n_reaction_events": 1, "reaction_templates": {"imine_bridge": 1}},
+            "graph_summary": {
+                "n_monomer_instances": 2,
+                "n_reaction_events": 1 if include_bridge_event else 0,
+                "reaction_templates": {"imine_bridge": 1} if include_bridge_event else {},
+            },
             **({"template_id": template_id} if template_id is not None else {}),
             "score_metadata": {
                 "n_unreacted_motifs": 0,
-                "bridge_event_metrics": [
-                    {
-                        "distance_residual": distance_residual,
-                        "actual_distance": actual_distance,
-                        "target_distance": target_distance,
-                    }
-                ],
+                "bridge_event_metrics": bridge_event_metrics,
             },
         },
     }
@@ -125,6 +135,8 @@ def _summary_record(
 @unittest.skipIf(gemmi is None, "gemmi is not available")
 class CoarseValidationTests(unittest.TestCase):
     def test_validator_marks_bridge_distance_metadata_as_needs_optimization(self):
+        # The verdict comes from the measured final coordinates: the realized
+        # inter-monomer bond is 2.4 A long against the 1.3 A imine target.
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             cif_path = root / "valid.cif"
@@ -132,9 +144,10 @@ class CoarseValidationTests(unittest.TestCase):
                 cif_path,
                 atoms=[
                     ("a1_C1", "C", 0.1, 0.1, 0.1),
-                    ("b1_C1", "C", 0.25, 0.1, 0.1),
+                    ("b1_C1", "C", 0.34, 0.1, 0.1),
                 ],
                 bonds=[("a1_C1", "b1_C1")],
+                bond_distance=2.4,
             )
             record = _summary_record(
                 cif_path,
@@ -150,6 +163,70 @@ class CoarseValidationTests(unittest.TestCase):
         self.assertIn("bridge_distance_residual_max_hard", report.needs_optimization_reasons)
         self.assertIn("bridge_distance_too_long", report.needs_optimization_reasons)
         self.assertEqual(report.hard_invalid_reasons, ())
+        self.assertEqual(report.metrics["bridge_metrics_source"], "final_cif")
+        self.assertEqual(report.coverage["bridge_geometry"], "measured")
+
+    def test_distorted_final_geometry_fails_despite_clean_seed_metrics(self):
+        """A04 regression: a deliberately distorted repaired linkage must not
+        pass because the seed/assembly metrics look clean. The verdict follows
+        the measured final coordinates."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "distorted.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("a1_C1", "C", 0.1, 0.1, 0.1),
+                    ("b1_C1", "C", 0.34, 0.1, 0.1),
+                ],
+                bonds=[("a1_C1", "b1_C1")],
+                bond_distance=2.4,
+            )
+            record = _summary_record(
+                cif_path,
+                structure_id="distorted",
+                distance_residual=0.0,
+                actual_distance=1.3,
+                target_distance=1.3,
+            )
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "needs_optimization")
+        self.assertFalse(report.is_valid)
+        self.assertIn("bridge_distance_residual_max_hard", report.needs_optimization_reasons)
+        # Seed metrics survive as clearly-labeled informational assembly metrics.
+        self.assertEqual(report.metrics["seed_max_bridge_distance_residual"], 0.0)
+        self.assertAlmostEqual(report.metrics["max_bridge_distance_residual"], 1.1, places=3)
+        self.assertEqual(report.metrics["bridge_metrics_source"], "final_cif")
+
+    def test_clean_seed_metrics_survive_when_final_geometry_matches(self):
+        """Complementary control: undistorted export with clean seed metrics."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "clean.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("a1_C1", "C", 0.1, 0.1, 0.1),
+                    ("b1_C1", "C", 0.23, 0.1, 0.1),
+                ],
+                bonds=[("a1_C1", "b1_C1")],
+                bond_distance=1.3,
+            )
+            record = _summary_record(
+                cif_path,
+                structure_id="clean",
+                distance_residual=0.0,
+                actual_distance=1.3,
+                target_distance=1.3,
+            )
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertEqual(report.coverage["bridge_geometry"], "measured")
+        self.assertEqual(report.unmeasured_required_checks, ())
 
     def test_validator_marks_overlong_bridge_as_hard_hard_invalid(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -159,9 +236,10 @@ class CoarseValidationTests(unittest.TestCase):
                 cif_path,
                 atoms=[
                     ("a1_C1", "C", 0.1, 0.1, 0.1),
-                    ("b1_C1", "C", 0.25, 0.1, 0.1),
+                    ("b1_C1", "C", 0.36, 0.1, 0.1),
                 ],
                 bonds=[("a1_C1", "b1_C1")],
+                bond_distance=2.6,
             )
             record = _summary_record(
                 cif_path,
@@ -185,9 +263,10 @@ class CoarseValidationTests(unittest.TestCase):
                 cif_path,
                 atoms=[
                     ("a1_C1", "C", 0.1, 0.1, 0.1),
-                    ("b1_C1", "C", 0.25, 0.1, 0.1),
+                    ("b1_C1", "C", 0.29, 0.1, 0.1),
                 ],
                 bonds=[("a1_C1", "b1_C1")],
+                bond_distance=1.9,
             )
             record = _summary_record(
                 cif_path,
@@ -380,7 +459,7 @@ class CoarseValidationTests(unittest.TestCase):
                 bonds.append((f"bz_C{k + 1}", f"bz_C{(k + 1) % 6 + 1}", ".", ".", bond_cc))
                 bonds.append((f"bz_C{k + 1}", f"bz_H{k + 1}", ".", ".", bond_ch))
             _write_test_cif(cif_path, atoms=atoms, bonds=bonds)
-            record = _summary_record(cif_path, structure_id="benzene")
+            record = _summary_record(cif_path, structure_id="benzene", include_bridge_event=False)
 
             report = CoarseStructureValidator().validate_manifest_record(record)
 
@@ -415,7 +494,7 @@ class CoarseValidationTests(unittest.TestCase):
                 ],
                 bonds=[("ch_C1", "ch_C2", ".", ".", bond), ("ch_C2", "ch_C3", ".", ".", bond)],
             )
-            record = _summary_record(cif_path, structure_id="angle_chain")
+            record = _summary_record(cif_path, structure_id="angle_chain", include_bridge_event=False)
 
             report = CoarseStructureValidator().validate_manifest_record(record)
 
@@ -457,7 +536,7 @@ class CoarseValidationTests(unittest.TestCase):
             d14 = self._write_cis_chain_cif(cif_path, 110.0)
             self.assertGreater(d14, 2.2)  # above the severe-overlap floor
             self.assertLess(d14, 0.75 * 3.4)  # below the naive ratio cutoff
-            record = _summary_record(cif_path, structure_id="cis_chain")
+            record = _summary_record(cif_path, structure_id="cis_chain", include_bridge_event=False)
 
             report = CoarseStructureValidator().validate_manifest_record(record)
 
@@ -521,7 +600,7 @@ class CoarseValidationTests(unittest.TestCase):
                 ],
                 bonds=[],
             )
-            record = _summary_record(cif_path, structure_id="hydrogen_contact")
+            record = _summary_record(cif_path, structure_id="hydrogen_contact", include_bridge_event=False)
             record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
 
             report = CoarseStructureValidator().validate_manifest_record(record)
@@ -549,7 +628,7 @@ class CoarseValidationTests(unittest.TestCase):
                 ],
                 bonds=[],
             )
-            record = _summary_record(cif_path, structure_id="ch_contact")
+            record = _summary_record(cif_path, structure_id="ch_contact", include_bridge_event=False)
             record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
 
             report = CoarseStructureValidator().validate_manifest_record(record)
@@ -572,7 +651,7 @@ class CoarseValidationTests(unittest.TestCase):
                 ],
                 bonds=[],
             )
-            record = _summary_record(cif_path, structure_id="hh_ok")
+            record = _summary_record(cif_path, structure_id="hh_ok", include_bridge_event=False)
             record["metadata"]["graph_summary"] = {"n_monomer_instances": 1, "n_reaction_events": 1}
 
             report = CoarseStructureValidator().validate_manifest_record(record)
@@ -697,7 +776,7 @@ class CoarseValidationTests(unittest.TestCase):
             root = Path(temp_dir)
             cif_path = root / "boundary_bond.cif"
             _write_boundary_bond_cif(cif_path)
-            record = _summary_record(cif_path, structure_id="boundary_bond")
+            record = _summary_record(cif_path, structure_id="boundary_bond", include_bridge_event=False)
 
             report = CoarseStructureValidator().validate_manifest_record(record)
 
@@ -735,13 +814,14 @@ class CoarseValidationTests(unittest.TestCase):
             record = _summary_record(
                 cif_path,
                 structure_id="metadata_bad_clash",
-                distance_residual=1.2,
-                actual_distance=2.4,
+                include_bridge_event=False,
             )
+            record["metadata"]["score_metadata"]["n_unreacted_motifs"] = 1
 
             report = CoarseStructureValidator().validate_manifest_record(record)
 
         self.assertEqual(report.classification, "hard_invalid")
+        self.assertIn("unreacted_motifs", report.hard_invalid_reasons)
         self.assertIn("heavy_atom_clash", report.hard_invalid_reasons)
         self.assertNotIn("cif_checks_skipped", report.metrics)
         self.assertLess(report.metrics["min_nonbonded_heavy_distance"], 1.05)
@@ -766,19 +846,27 @@ class CoarseValidationTests(unittest.TestCase):
                 actual_distance=2.4,
                 template_id="boronate_ester_bridge",
             )
+            record["metadata"]["score_metadata"]["n_unreacted_motifs"] = 1
 
             skipped = CoarseStructureValidator().validate_manifest_record(record)
             enforced = CoarseStructureValidator(
                 thresholds=CoarseValidationThresholds(skip_cif_checks_when_metadata_invalid=False)
             ).validate_manifest_record(record)
 
-        self.assertEqual(skipped.classification, "needs_optimization")
+        self.assertEqual(skipped.classification, "hard_invalid")
+        self.assertIn("unreacted_motifs", skipped.hard_invalid_reasons)
         self.assertTrue(skipped.metrics["cif_metadata_checks_skipped"])
         self.assertNotIn("realized_bridge_bond_distance", skipped.reasons)
+        self.assertEqual(skipped.coverage["bridge_geometry"], "skipped")
         self.assertIn("min_nonbonded_heavy_distance", skipped.metrics)
-        self.assertIn("realized_bridge_bond_distance", enforced.needs_optimization_reasons)
+        self.assertEqual(enforced.classification, "hard_invalid")
+        self.assertIn("realized_bridge_bond_distance", enforced.hard_invalid_reasons)
+        self.assertEqual(enforced.coverage["bridge_geometry"], "measured")
 
     def test_validator_does_not_treat_missing_bridge_distance_data_as_zero_residual(self):
+        # One of two seed bridge events carries no distance data; the seed
+        # aggregates are informational (seed_*), and the verdict comes from
+        # the measured final coordinates (bond at 2.1 A vs the 1.3 A target).
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             cif_path = root / "missing_bridge_data.cif"
@@ -786,9 +874,10 @@ class CoarseValidationTests(unittest.TestCase):
                 cif_path,
                 atoms=[
                     ("a1_C1", "C", 0.1, 0.1, 0.1),
-                    ("b1_C1", "C", 0.25, 0.1, 0.1),
+                    ("b1_C1", "C", 0.31, 0.1, 0.1),
                 ],
                 bonds=[("a1_C1", "b1_C1")],
+                bond_distance=2.1,
             )
             record = _summary_record(cif_path, structure_id="missing_bridge_data")
             record["metadata"]["score_metadata"]["bridge_event_metrics"] = [
@@ -800,9 +889,83 @@ class CoarseValidationTests(unittest.TestCase):
 
         self.assertEqual(report.metrics["n_bridge_events"], 2)
         self.assertEqual(report.metrics["n_bridge_events_missing_distance_data"], 1)
+        self.assertAlmostEqual(report.metrics["seed_max_bridge_distance_residual"], 0.8)
+        self.assertAlmostEqual(report.metrics["seed_mean_bridge_distance_residual"], 0.8)
         self.assertAlmostEqual(report.metrics["max_bridge_distance_residual"], 0.8)
         self.assertAlmostEqual(report.metrics["mean_bridge_distance_residual"], 0.8)
+        self.assertEqual(report.metrics["bridge_metrics_source"], "final_cif")
         self.assertIn("bridge_distance_residual_max", report.warning_reasons)
+
+    def test_missing_bond_loop_marks_bridge_geometry_unmeasured_not_valid(self):
+        """A04: bridge events are claimed but the CIF has no bond loop, so the
+        linkage geometry is required-but-unmeasured: the record must land in
+        an explicit unvalidated state, never the valid bucket."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "no_bond_loop.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("a1_C1", "C", 0.1, 0.1, 0.1),
+                    ("a1_C2", "C", 0.55, 0.1, 0.1),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(cif_path, structure_id="no_bond_loop")
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "unvalidated")
+        self.assertIsNone(report.is_valid)
+        self.assertIsNone(report.passes_hard_validation)
+        self.assertEqual(report.coverage["bridge_geometry"], "missing_data")
+        self.assertIn("bridge_geometry", report.unmeasured_required_checks)
+        self.assertIn("unmeasured_required_checks", report.reasons)
+        self.assertEqual(report.metrics["bridge_metrics_source"], None)
+
+    def test_completed_contact_scan_with_zero_neighbors_is_not_missing_data(self):
+        """A04/T2-14: a completed bounded contact search that finds no
+        assessable neighbor is `no_contacts`, distinct from `missing_data`."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "isolated_pair.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("m1_C1", "C", 0.40, 0.50, 0.50),
+                    ("m1_C2", "C", 0.55, 0.50, 0.50),
+                ],
+                bonds=[("m1_C1", "m1_C2", ".", ".", 1.5)],
+            )
+            record = _summary_record(cif_path, structure_id="isolated_pair", include_bridge_event=False)
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "valid")
+        self.assertEqual(report.coverage["contact_scan"], "no_contacts")
+        self.assertEqual(report.metrics["n_nonbonded_pairs_scanned"], 0)
+        self.assertIsNone(report.metrics["min_nonbonded_heavy_distance"])
+        self.assertEqual(report.coverage["bridge_geometry"], "not_applicable")
+
+    def test_clash_contact_scan_reports_measured_coverage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cif_path = root / "clash.cif"
+            _write_test_cif(
+                cif_path,
+                atoms=[
+                    ("x1_C1", "C", 0.1, 0.1, 0.1),
+                    ("x1_C2", "C", 0.15, 0.1, 0.1),
+                ],
+                bonds=[],
+            )
+            record = _summary_record(cif_path, structure_id="clash", include_bridge_event=False)
+
+            report = CoarseStructureValidator().validate_manifest_record(record)
+
+        self.assertEqual(report.classification, "hard_invalid")
+        self.assertEqual(report.coverage["contact_scan"], "measured")
+        self.assertGreater(report.metrics["n_nonbonded_pairs_scanned"], 0)
 
     def test_topology_dimensionality_warns_on_unexpected_lookup_failure(self):
         validator = CoarseStructureValidator()
@@ -825,6 +988,7 @@ class CoarseValidationTests(unittest.TestCase):
             invalid_cif = cifs / "invalid.cif"
             needs_optimization_cif = cifs / "needs_optimization.cif"
             hard_hard_cif = cifs / "hard_hard.cif"
+            unvalidated_cif = cifs / "unvalidated.cif"
             _write_test_cif(
                 valid_cif,
                 atoms=[
@@ -837,9 +1001,10 @@ class CoarseValidationTests(unittest.TestCase):
                 warning_cif,
                 atoms=[
                     ("w1_C1", "C", 0.1, 0.1, 0.1),
-                    ("w2_C1", "C", 0.25, 0.1, 0.1),
+                    ("w2_C1", "C", 0.29, 0.1, 0.1),
                 ],
                 bonds=[("w1_C1", "w2_C1")],
+                bond_distance=1.9,
             )
             _write_test_cif(
                 invalid_cif,
@@ -853,17 +1018,29 @@ class CoarseValidationTests(unittest.TestCase):
                 needs_optimization_cif,
                 atoms=[
                     ("n1_C1", "C", 0.1, 0.1, 0.1),
-                    ("n2_C1", "C", 0.25, 0.1, 0.1),
+                    ("n2_C1", "C", 0.34, 0.1, 0.1),
                 ],
                 bonds=[("n1_C1", "n2_C1")],
+                bond_distance=2.4,
             )
             _write_test_cif(
                 hard_hard_cif,
                 atoms=[
                     ("h1_C1", "C", 0.1, 0.1, 0.1),
-                    ("h2_C1", "C", 0.25, 0.1, 0.1),
+                    ("h2_C1", "C", 0.36, 0.1, 0.1),
                 ],
                 bonds=[("h1_C1", "h2_C1")],
+                bond_distance=2.6,
+            )
+            # Bridge events claimed but no bond loop: required bridge-geometry
+            # coverage is unmeasured, so this must not land in a valid bucket.
+            _write_test_cif(
+                unvalidated_cif,
+                atoms=[
+                    ("u1_C1", "C", 0.1, 0.1, 0.1),
+                    ("u1_C2", "C", 0.55, 0.1, 0.1),
+                ],
+                bonds=[],
             )
             manifest_rows = [
                 _summary_record(valid_cif, structure_id="valid"),
@@ -886,6 +1063,7 @@ class CoarseValidationTests(unittest.TestCase):
                     actual_distance=2.4,
                 ),
                 _summary_record(invalid_cif, structure_id="invalid"),
+                _summary_record(unvalidated_cif, structure_id="unvalidated"),
             ]
             (source / "manifest.jsonl").write_text(
                 "".join(json.dumps(row, sort_keys=True) + "\n" for row in manifest_rows),
@@ -895,12 +1073,22 @@ class CoarseValidationTests(unittest.TestCase):
             output = root / "classified"
             summary = classify_batch_output(source, output, link_mode="copy", max_workers=2)
 
-            self.assertEqual(summary.total_structures, 5)
+            self.assertEqual(summary.total_structures, 6)
             self.assertEqual(summary.valid_structures, 1)
             self.assertEqual(summary.warning_structures, 1)
             self.assertEqual(summary.needs_optimization_structures, 1)
             self.assertEqual(summary.hard_hard_invalid_structures, 1)
             self.assertEqual(summary.hard_invalid_structures, 1)
+            self.assertEqual(summary.unvalidated_structures, 1)
+            self.assertEqual(
+                summary.total_structures,
+                summary.valid_structures
+                + summary.warning_structures
+                + summary.needs_optimization_structures
+                + summary.hard_hard_invalid_structures
+                + summary.hard_invalid_structures
+                + summary.unvalidated_structures,
+            )
             self.assertTrue((output / "valid" / "cifs" / "valid.cif").is_file())
             self.assertTrue((output / "warning" / "cifs" / "warning.cif").is_file())
             self.assertTrue((output / "warning" / "reasons" / "bridge_distance_residual_mean" / "warning.cif").is_file())
@@ -926,6 +1114,26 @@ class CoarseValidationTests(unittest.TestCase):
             )
             self.assertTrue((output / "hard_invalid" / "cifs" / "invalid.cif").is_file())
             self.assertTrue((output / "hard_invalid" / "reasons" / "heavy_atom_clash" / "invalid.cif").is_file())
+            self.assertTrue((output / "unvalidated" / "cifs" / "unvalidated.cif").is_file())
+            self.assertTrue((output / "unvalidated" / "manifest.jsonl").is_file())
+
+            # Serialized output distinguishes missing data from a completed
+            # contact search that found no neighbors.
+            classified_rows = [
+                json.loads(line)
+                for line in (output / "classification_manifest.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            by_id = {row["structure_id"]: row for row in classified_rows}
+            unvalidated_row = by_id["unvalidated"]["validation"]
+            self.assertEqual(unvalidated_row["classification"], "unvalidated")
+            self.assertIsNone(unvalidated_row["is_valid"])
+            self.assertEqual(unvalidated_row["coverage"]["bridge_geometry"], "missing_data")
+            self.assertIn("bridge_geometry", unvalidated_row["unmeasured_required_checks"])
+            valid_row = by_id["valid"]["validation"]
+            self.assertEqual(valid_row["coverage"]["bridge_geometry"], "measured")
+            self.assertEqual(valid_row["coverage"]["contact_scan"], "no_contacts")
+            self.assertIsNone(valid_row["metrics"]["min_nonbonded_heavy_distance"])
 
 
 if __name__ == "__main__":

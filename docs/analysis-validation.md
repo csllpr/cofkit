@@ -20,6 +20,7 @@ The classifier writes:
 - `needs_optimization/manifest.jsonl`, `needs_optimization/cifs/`, and `needs_optimization/reasons/<reason>/`
 - `hard_hard_invalid/manifest.jsonl`, `hard_hard_invalid/cifs/`, and `hard_hard_invalid/reasons/<reason>/`
 - `hard_invalid/manifest.jsonl`, `hard_invalid/cifs/`, and `hard_invalid/reasons/<reason>/`
+- `unvalidated/manifest.jsonl` and `unvalidated/cifs/` (records whose required checks could not be measured; never counted as valid)
 
 See [COARSE_VALIDATION.md](COARSE_VALIDATION.md) for bucket definitions and thresholds.
 

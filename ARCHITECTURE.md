@@ -64,7 +64,7 @@
 - `cofkit.batch`
   - batch binary-bridge generation over monomer libraries, including RDKit-backed monomer caching, detector-backed library autodiscovery, `3+3` / `3+2` / `4+4` / `4+2` / `6+2` pair handling, symmetry-expanded one-node topology builders, indexed-topology fallback, manifest output, process-level pair execution, and CIF export enabled by default
 - `cofkit.validation`
-  - coarse post-generation validation / triage into `valid`, `warning`, `needs_optimization`, `hard_invalid`, and `hard_hard_invalid` buckets using bridge metrics plus CIF-backed network and clash checks
+  - coarse post-generation validation / triage into `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`, and `unvalidated` buckets using CIF-backed network, clash, and cell checks plus bridge-linkage geometry recomputed from the final exported coordinates and periodic bond images (assembly-time seed bridge metrics are informational only); every report carries a per-check coverage map (`measured` / `no_contacts` / `missing_data` / `not_applicable` / `skipped`), and records with required-but-unmeasured checks classify as `unvalidated` rather than valid
 - `cofkit.graspa`
   - EQeq-backed charge assignment plus packaged gRASPA/RASPA2 Monte Carlo run preparation, execution, and result parsing for one CIF
 - `cofkit.cli`
@@ -95,9 +95,9 @@
 5. route supported one-node and indexed-topology pair cases through the shared topology-builder registry used by both batch generation and direct single-pair input
 6. write `manifest.jsonl` and `summary.md`
 7. run pair generation through a process pool by default in the practical batch CLIs (`8` workers unless overridden)
-8. export one CIF per successful topology-specific structure by default, routing it into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`
+8. export one CIF per successful topology-specific structure by default, routing it into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`
 9. block CIF export for `hard_hard_invalid` structures while still recording them in manifests
-10. optionally reclassify a finished output tree into `valid`, `warning`, `needs_optimization`, `hard_invalid`, and `hard_hard_invalid`
+10. optionally reclassify a finished output tree into `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`, and `unvalidated`
 
 ## CLI flow
 

@@ -61,6 +61,111 @@ PHENYLENEDIACETONITRILE = "N#CCc1ccc(CC#N)cc1"
 COF42_HYDRAZIDE = "CCOc1cc(C(=O)NN)cc(C(=O)NN)c1OCC"
 
 
+def _distort_first_bridge_bond(cif_path: Path, shift_angstrom: float = 2.1) -> str:
+    """Deliberately distort one realized linkage bond in a written CIF.
+
+    Moves the second atom of the first inter-instance bond perpendicular to
+    the bond direction (sign chosen to maximize its clearance from other
+    atoms) and rewrites its coordinate row. Returns the pristine CIF text so
+    a fake repair step can restore it. Used to prove that validation verdicts
+    follow the final coordinates, not the seed/assembly metrics.
+    """
+    from cofkit.cif_checks import cif_value_str
+    from cofkit.periodic_geometry import p1_shift
+
+    pristine = cif_path.read_text(encoding="utf-8")
+    block = gemmi.cif.read_file(str(cif_path)).sole_block()
+    small = gemmi.make_small_structure_from_block(block)
+    positions = {str(site.label): (site.fract.x, site.fract.y, site.fract.z) for site in small.sites}
+    labels1 = block.find_loop("_geom_bond_atom_site_label_1")
+    labels2 = block.find_loop("_geom_bond_atom_site_label_2")
+    syms1 = block.find_loop("_geom_bond_site_symmetry_1")
+    syms2 = block.find_loop("_geom_bond_site_symmetry_2")
+    moved_label = None
+    moved_fract = None
+    for index in range(len(labels1)):
+        label_a = cif_value_str(labels1[index])
+        label_b = cif_value_str(labels2[index])
+        if label_a.rsplit("_", 1)[0] == label_b.rsplit("_", 1)[0]:
+            continue
+        shift = tuple(
+            b - a
+            for a, b in zip(
+                p1_shift(cif_value_str(syms1[index]) if len(syms1) else "."),
+                p1_shift(cif_value_str(syms2[index]) if len(syms2) else "."),
+            )
+        )
+        cart_a = small.cell.orthogonalize(gemmi.Fractional(*positions[label_a]))
+        cart_b = small.cell.orthogonalize(
+            gemmi.Fractional(
+                positions[label_b][0] + shift[0],
+                positions[label_b][1] + shift[1],
+                positions[label_b][2] + shift[2],
+            )
+        )
+        bond_vec = (cart_b.x - cart_a.x, cart_b.y - cart_a.y, cart_b.z - cart_a.z)
+        norm = math.sqrt(sum(component * component for component in bond_vec))
+        bond_vec = tuple(component / norm for component in bond_vec)
+        # A perpendicular shift leaves the moved atom's other bonds stretched
+        # rather than compressed, avoiding fabricated severe overlaps.
+        perp = (bond_vec[1], -bond_vec[0], 0.0)
+        perp_norm = math.sqrt(sum(component * component for component in perp))
+        if perp_norm < 1e-6:
+            perp = (0.0, 0.0, 1.0)
+            perp_norm = 1.0
+        perp = tuple(component / perp_norm for component in perp)
+        others = [
+            small.cell.orthogonalize(gemmi.Fractional(*fract))
+            for label, fract in positions.items()
+            if label != label_b
+        ]
+
+        def clearance(sign: float):
+            moved = gemmi.Position(
+                cart_b.x + sign * shift_angstrom * perp[0],
+                cart_b.y + sign * shift_angstrom * perp[1],
+                cart_b.z + sign * shift_angstrom * perp[2],
+            )
+            return min(moved.dist(other) for other in others), moved
+
+        forward, backward = clearance(1.0), clearance(-1.0)
+        _best_clearance, moved_position = max(forward, backward, key=lambda item: item[0])
+        moved_fract = small.cell.fractionalize(moved_position)
+        moved_label = label_b
+        break
+    assert moved_label is not None and moved_fract is not None
+    rewritten_lines = []
+    for line in pristine.splitlines():
+        tokens = line.split()
+        if tokens and cif_value_str(tokens[0]) == moved_label and len(tokens) >= 6:
+            tokens[2] = f"{moved_fract.x:.6f}"
+            tokens[3] = f"{moved_fract.y:.6f}"
+            tokens[4] = f"{moved_fract.z:.6f}"
+            line = " ".join(tokens)
+        rewritten_lines.append(line)
+    cif_path.write_text("\n".join(rewritten_lines) + "\n", encoding="utf-8")
+    return pristine
+
+
+class _DistortingCifWriter:
+    """Test wrapper: delegate to a real CIFWriter, then distort one bridge
+    bond in the written file so the exported geometry no longer matches the
+    clean seed/assembly metrics. Records the pristine text by file name."""
+
+    def __init__(self, delegate, pristine_by_name: dict[str, str]):
+        self._delegate = delegate
+        self._pristine_by_name = pristine_by_name
+
+    def write_candidate(self, path, *args, **kwargs):
+        result = self._delegate.write_candidate(path, *args, **kwargs)
+        path = Path(path)
+        self._pristine_by_name[path.name] = _distort_first_bridge_bond(path)
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+
 @unittest.skipIf(Chem is None, "RDKit is not available")
 class BatchStructureGeneratorTests(unittest.TestCase):
     def _world_position(self, candidate, instance_id, local_position, *, image=(0, 0, 0)):
@@ -956,6 +1061,9 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertTrue(summary.metadata["cif_export_blocked"])
 
     def test_repairable_bridge_geometry_exports_to_needs_optimization_bucket(self):
+        # A04: the verdict must come from the final exported coordinates.
+        # The exported CIF is deliberately distorted after writing; the clean
+        # seed metrics must not rescue it.
         generator = BatchStructureGenerator(
             BatchGenerationConfig(
                 rdkit_num_conformers=2,
@@ -964,11 +1072,11 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 hard_hard_max_bridge_distance=10.0,
                 validation_thresholds=CoarseValidationThresholds(
                     hard_hard_max_bridge_distance=10.0,
-                    hard_max_bridge_distance_residual=0.0,
-                    hard_mean_bridge_distance_residual=0.0,
                 ),
             )
         )
+        pristine_by_name: dict[str, str] = {}
+        generator.cif_writer = _DistortingCifWriter(generator.cif_writer, pristine_by_name)
         amine = BatchMonomerRecord(
             id="tapb",
             name="tapb",
@@ -1001,6 +1109,15 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(validation["classification"], "needs_optimization")
         self.assertIn("optimization_hint", validation)
         self.assertIn("bridge_distance_residual_max_hard", validation["needs_optimization_reasons"])
+        # The verdict came from the measured final coordinates: the seed
+        # assembly metrics were clean and are informational only.
+        self.assertEqual(validation["metrics"]["bridge_metrics_source"], "final_cif")
+        self.assertLessEqual(validation["metrics"]["seed_max_bridge_distance_residual"], 0.05)
+        self.assertGreater(validation["metrics"]["max_bridge_distance_residual"], 1.0)
+        self.assertEqual(validation["coverage"]["bridge_geometry"], "measured")
+        self.assertEqual(summary.validation_classification, "needs_optimization")
+        self.assertEqual(summary.validation_coverage.get("bridge_geometry"), "measured")
+        self.assertEqual(summary.unmeasured_required_checks, ())
 
     def test_repair_geometry_runs_lammps_for_needs_optimization_candidate(self):
         generator = BatchStructureGenerator(
@@ -1012,11 +1129,11 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 repair_geometry=True,
                 validation_thresholds=CoarseValidationThresholds(
                     hard_hard_max_bridge_distance=10.0,
-                    hard_max_bridge_distance_residual=0.0,
-                    hard_mean_bridge_distance_residual=0.0,
                 ),
             )
         )
+        pristine_by_name: dict[str, str] = {}
+        generator.cif_writer = _DistortingCifWriter(generator.cif_writer, pristine_by_name)
         amine = BatchMonomerRecord(
             id="tapb",
             name="tapb",
@@ -1036,7 +1153,8 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
             optimized_cif = output_path / "optimized.cif"
-            optimized_cif.write_text(Path(cif_path).read_text(encoding="utf-8"), encoding="utf-8")
+            # The fake repair restores the pristine (pre-distortion) export.
+            optimized_cif.write_text(pristine_by_name[Path(cif_path).name], encoding="utf-8")
             return SimpleNamespace(
                 optimized_cif=str(optimized_cif),
                 output_dir=str(output_dir),
@@ -1056,14 +1174,23 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(summary.status, "ok")
         self.assertIsNotNone(candidate)
         optimized.assert_called_once()
-        repair = summary.metadata["validation"]["geometry_repair"]
+        validation = summary.metadata["validation"]
+        self.assertEqual(validation["classification"], "needs_optimization")
+        self.assertEqual(validation["metrics"]["bridge_metrics_source"], "final_cif")
+        repair = validation["geometry_repair"]
         self.assertEqual(repair["status"], "ok")
         self.assertEqual(repair["engine"], "lammps")
         self.assertEqual(repair["settings"]["forcefield"], "dreiding")
         self.assertEqual(repair["settings"]["charge_model"], "none")
         self.assertEqual(repair["settings"]["pre_minimization_mode"], "soft")
-        self.assertEqual(repair["post_repair_validation"]["classification"], "valid")
-        self.assertTrue(repair["post_repair_validation"]["became_valid"])
+        post_repair = repair["post_repair_validation"]
+        self.assertEqual(post_repair["classification"], "valid")
+        self.assertTrue(post_repair["became_valid"])
+        # The repaired CIF is re-measured from its own coordinates.
+        self.assertEqual(post_repair["scope"], "optimized_cif_final_geometry_checks")
+        self.assertEqual(post_repair["metrics"]["bridge_metrics_source"], "final_cif")
+        self.assertLess(post_repair["metrics"]["max_bridge_distance_residual"], 0.1)
+        self.assertEqual(post_repair["coverage"]["bridge_geometry"], "measured")
 
     def test_batch_geometry_repair_failures_are_counted_and_recorded(self):
         generator = BatchStructureGenerator(

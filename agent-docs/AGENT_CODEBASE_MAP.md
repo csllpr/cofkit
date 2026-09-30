@@ -70,6 +70,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/batch_models.py](../src/cofkit/batch_models.py)
   - Neutral batch-facing data classes.
   - Use these instead of adding new ad hoc summary dictionaries.
+  - `BatchPairSummary` carries typed validation accessors (`validation_classification`, `validation_coverage`, `unmeasured_required_checks`) over the serialized `metadata["validation"]` record; `BatchRunSummary.validation_counts` counts validation classifications per run.
 
 ## Topology seams
 
@@ -105,7 +106,7 @@ Then go straight to the module that matches the task.
 - [src/cofkit/vdw.py](../src/cofkit/vdw.py)
   - Shared vdW contact capability: the Bondi radii table (`BONDI_VDW_RADII`, explicit supported-element set; unsupported elements warn on stderr once and use `FALLBACK_VDW_RADIUS` — deliberately not the DREIDING force-field radii), the shared clash criterion (`assess_pair`: `d / (r_i + r_j) < 0.75` or, heavy-heavy only, `d < 2.2 Å`), and `min_periodic_pair_contact` (minimum cross-set contact over every lattice image within the cutoff, including both `(0,0,±1)` c galleries). Consumed by `validation.py` (coarse clash scan) and `stacking.py` (interlayer contact self-check); extend here when a new element needs an exact radius.
 - [src/cofkit/validation.py](../src/cofkit/validation.py)
-  - `valid` / `warning` / `needs_optimization` / `hard_invalid` / `hard_hard_invalid` triage. The contact scan (`_nonbonded_contact_scan`) applies the `vdw.py` criterion with periodic-image-aware 1-2/1-3/1-4 bond-graph exclusions (`_bond_graph_exclusions`), a severe-overlap floor for excluded pairs, and a separate hydrogen-contact metric channel.
+  - `valid` / `warning` / `needs_optimization` / `hard_invalid` / `hard_hard_invalid` / `unvalidated` triage. The contact scan (`_nonbonded_contact_scan`) applies the `vdw.py` criterion with periodic-image-aware 1-2/1-3/1-4 bond-graph exclusions (`_bond_graph_exclusions`), a severe-overlap floor for excluded pairs, and a separate hydrogen-contact metric channel. Bridge-linkage verdicts are derived from the final exported coordinates: `measure_inter_instance_bond_distances` recomputes inter-monomer bond lengths from the atom-site loop plus the explicit `_geom_bond` image codes (never the `_geom_bond_distance` column) and residuals/ratios are checked against the linkage-profile target (or `realized_bridge_bond_distance_windows`); seed `bridge_event_metrics` are recorded as informational `seed_*` metrics only. Every report carries a per-check `coverage` map with statuses `measured` / `no_contacts` (completed search, zero assessable neighbors) / `missing_data` (required check could not run) / `not_applicable` / `skipped`; required-but-unmeasured checks land in `unmeasured_required_checks` and classify the record as `unvalidated` (`is_valid is None`), routed to the `unvalidated` bucket by both `classify_batch_output` and the batch export path.
 - [src/cofkit/cif.py](../src/cofkit/cif.py)
   - CIF export, including realized inter-monomer bonds.
 - [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
@@ -166,7 +167,7 @@ tunables must land here, not at consumer sites:
 2. library resolution via [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
 3. pair enumeration and topology selection in [src/cofkit/batch.py](../src/cofkit/batch.py)
 4. topology-family dispatch via [src/cofkit/topology_builders.py](../src/cofkit/topology_builders.py)
-5. validation-aware CIF writing into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`; `hard_hard_invalid` structures stay manifest-only
+5. validation-aware CIF writing into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`; `hard_hard_invalid` structures stay manifest-only
 
 ### CIF decomposition from CLI
 

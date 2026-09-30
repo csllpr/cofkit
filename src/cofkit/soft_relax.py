@@ -51,7 +51,7 @@ import gemmi
 from ._dreiding_reference import DREIDING_FRAMEWORK_TYPE_BY_ELEMENT, DREIDING_PARAMETERS
 from .cif_checks import cif_value_str
 from .periodic_geometry import images_within, p1_shift
-from .validation import CoarseValidationThresholds
+from .validation import CoarseValidationThresholds, _instance_id
 
 # Heuristic — pending calibration: floor (A) on the gemmi neighbor-search
 # cutoff used to measure minimum heavy-atom distances and count clashes, so
@@ -143,6 +143,13 @@ class SoftRelaxReport:
     clashes_after: int
     max_bond_drift: float
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    # Current inter-monomer (bridge) bond lengths measured from the actual
+    # coordinates before/after the pass, with explicit bond-image shifts
+    # applied. None means the input had no bond loop to measure (missing
+    # data); an empty tuple means the measurement ran and found no
+    # inter-monomer bonds.
+    bridge_bond_distances_before: tuple[float, ...] | None = None
+    bridge_bond_distances_after: tuple[float, ...] | None = None
 
 
 @dataclass
@@ -355,6 +362,24 @@ def _bond_distances(cart: list[list[float]], bonds_cart) -> list[float]:
         dz = cart[j][2] + sc[2] - cart[i][2]
         distances.append(math.sqrt(dx * dx + dy * dy + dz * dz))
     return distances
+
+
+def _inter_instance_bond_distances(
+    system: _System, cart: list[list[float]]
+) -> tuple[float, ...] | None:
+    """Current inter-monomer bond lengths from the working coordinates.
+
+    Returns None when the input carried no bond loop (missing data), and an
+    empty tuple when bonds exist but none cross monomer instances.
+    """
+    if not system.bonds:
+        return None
+    bridge_bonds = [
+        ((i, j), _frac_to_cart(system.orth, shift))
+        for i, j, shift in system.bonds
+        if _instance_id(system.labels[i]) != _instance_id(system.labels[j])
+    ]
+    return tuple(_bond_distances(cart, bridge_bonds))
 
 
 def _energy_and_forces(
@@ -619,6 +644,7 @@ def relax_cif_clashes(
     bonds_cart = [(s[0], s[1]) for s in springs[:bond_count]]
 
     min_before, clashes_before = _min_heavy_distance_and_clashes(system, clash_cutoff)
+    bridge_before = _inter_instance_bond_distances(system, cart)
     pairs = _build_pair_list(system, config)
 
     stage_energies: list[float] = []
@@ -669,6 +695,7 @@ def relax_cif_clashes(
         new_frac.append([frac.x, frac.y, frac.z])
     system.frac = [list(f) for f in new_frac]
     min_after, clashes_after = _min_heavy_distance_and_clashes(system, clash_cutoff)
+    bridge_after = _inter_instance_bond_distances(system, cart)
 
     final_bonds = _bond_distances(cart, bonds_cart)
     max_bond_drift = max(
@@ -692,4 +719,6 @@ def relax_cif_clashes(
         clashes_after=clashes_after,
         max_bond_drift=max_bond_drift,
         warnings=tuple(dict.fromkeys(warnings)),
+        bridge_bond_distances_before=bridge_before,
+        bridge_bond_distances_after=bridge_after,
     )

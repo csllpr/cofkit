@@ -55,7 +55,7 @@ cofkit build single-pair \
   --output-dir out/cli_single_pair
 ```
 
-The command autodetects motif roles, evaluates all applicable default topologies, writes `summary.json`, and exports CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`.
+The command autodetects motif roles, evaluates all applicable default topologies, writes `summary.json`, and exports CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`.
 
 ## Environment Files
 

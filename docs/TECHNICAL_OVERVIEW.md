@@ -55,7 +55,7 @@ The batch binary-bridge pipeline builds on top of that:
 4. topology-family-aware candidate generation
 5. manifest / summary writing
 6. process-level pair execution by default in the practical batch CLIs (`8` workers unless overridden)
-7. CIF export into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, or `cifs/hard_invalid`
+7. CIF export into `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/hard_invalid`
 8. block CIF export for `hard_hard_invalid` structures while still recording them in the manifest
 9. optional reclassification of a finished output tree with `examples/classify_batch_output.py`
 

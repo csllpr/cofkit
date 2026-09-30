@@ -82,7 +82,13 @@ from .single_node_topologies_3d import (
 from .stacking import enumerate_candidate_stackings
 from .topology_builders import PairTopologyBuildRequest, PairTopologyBuilder, PairTopologyBuilderRegistry
 from .topologies import default_topology_repository, get_topology_hint
-from .validation import CoarseStructureValidator, CoarseValidationReport, CoarseValidationThresholds
+from .validation import (
+    CHECK_MISSING_DATA,
+    REQUIRED_COVERAGE_CHECKS,
+    CoarseStructureValidator,
+    CoarseValidationReport,
+    CoarseValidationThresholds,
+)
 
 _PROCESS_BATCH_GENERATOR = None
 
@@ -857,6 +863,7 @@ class BatchStructureGenerator:
         cifs_written = 0
         mode_counts: dict[str, int] = {}
         topology_counts: dict[str, int] = {}
+        validation_counts: dict[str, int] = {}
         geometry_repair_counts: dict[str, int] = {}
         geometry_repair_revalidation_counts: dict[str, int] = {}
         top_results: list[BatchPairSummary] = []
@@ -878,6 +885,7 @@ class BatchStructureGenerator:
                         top_results=top_results,
                         mode_counts=mode_counts,
                         topology_counts=topology_counts,
+                        validation_counts=validation_counts,
                         geometry_repair_counts=geometry_repair_counts,
                         geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
                         geometry_repair_failures=repair_failures,
@@ -897,6 +905,7 @@ class BatchStructureGenerator:
                         top_results=top_results,
                         mode_counts=mode_counts,
                         topology_counts=topology_counts,
+                        validation_counts=validation_counts,
                         geometry_repair_counts=geometry_repair_counts,
                         geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
                         geometry_repair_failures=repair_failures,
@@ -918,6 +927,7 @@ class BatchStructureGenerator:
             build_failures={key: value for key, value in build_failures.items() if value is not None},
             mode_counts=mode_counts,
             topology_counts=topology_counts,
+            validation_counts=validation_counts,
             geometry_repair_counts=geometry_repair_counts,
             geometry_repair_revalidation_counts=geometry_repair_revalidation_counts,
             geometry_repair_failed_records_path=(
@@ -1015,6 +1025,7 @@ class BatchStructureGenerator:
         top_results: list[BatchPairSummary],
         mode_counts: dict[str, int],
         topology_counts: dict[str, int],
+        validation_counts: dict[str, int],
         geometry_repair_counts: dict[str, int],
         geometry_repair_revalidation_counts: dict[str, int],
         geometry_repair_failures,
@@ -1026,6 +1037,11 @@ class BatchStructureGenerator:
                 mode_counts[summary.pair_mode] = mode_counts.get(summary.pair_mode, 0) + 1
                 if summary.topology_id is not None:
                     topology_counts[summary.topology_id] = topology_counts.get(summary.topology_id, 0) + 1
+                validation_classification = summary.validation_classification
+                if validation_classification is not None:
+                    validation_counts[validation_classification] = (
+                        validation_counts.get(validation_classification, 0) + 1
+                    )
                 top_results.append(summary)
                 top_results.sort(key=self._summary_sort_key)
                 del top_results[self.config.retain_top_results :]
@@ -4368,6 +4384,8 @@ class BatchStructureGenerator:
             "warning_reasons": list(report.warning_reasons),
             "hard_invalid_reasons": list(report.hard_invalid_reasons),
             "needs_optimization_reasons": list(report.needs_optimization_reasons),
+            "unmeasured_required_checks": list(report.unmeasured_required_checks),
+            "coverage": dict(report.coverage),
             "metrics": self._json_safe(metrics),
         }
         if report.classification == "needs_optimization":
@@ -4395,6 +4413,8 @@ class BatchStructureGenerator:
             "warning_reasons": [],
             "hard_invalid_reasons": [],
             "needs_optimization_reasons": [],
+            "unmeasured_required_checks": [],
+            "coverage": {},
             "metrics": self._json_safe({"cif_path": None, **dict(metrics)}),
         }
 
@@ -4414,6 +4434,8 @@ class BatchStructureGenerator:
             "warning_reasons": [],
             "hard_invalid_reasons": [],
             "needs_optimization_reasons": [],
+            "unmeasured_required_checks": list(REQUIRED_COVERAGE_CHECKS),
+            "coverage": {check: CHECK_MISSING_DATA for check in REQUIRED_COVERAGE_CHECKS},
             "metrics": self._json_safe({"cif_path": cif_path, "error": error}),
         }
 
@@ -4434,6 +4456,10 @@ class BatchStructureGenerator:
             bucket = "needs_optimization"
         elif classification in {"hard_invalid", "hard_hard_invalid"}:
             bucket = "invalid"
+        elif classification == "unvalidated":
+            # Unvalidated exports (e.g. validation backend unavailable or
+            # required checks unmeasured) must not be counted as valid.
+            bucket = "unvalidated"
         return output_root / bucket / f"{structure_id}.cif"
 
     def _write_classified_candidate_cif(
@@ -4482,7 +4508,7 @@ class BatchStructureGenerator:
             final_path = self._classified_cif_destination(
                 out_dir,
                 structure_id=structure_id,
-                classification="valid",
+                classification="unvalidated",
             )
             final_path.parent.mkdir(parents=True, exist_ok=True)
             staging_path.replace(final_path)
@@ -4544,6 +4570,19 @@ class BatchStructureGenerator:
             "clashes_before": report.clashes_before,
             "clashes_after": report.clashes_after,
             "max_bond_drift": report.max_bond_drift,
+            # Current inter-monomer linkage bond lengths measured from the
+            # pre-/post-repair coordinates; None when the CIF had no bond
+            # loop to measure (missing data, distinct from zero found).
+            "bridge_bond_distances_before": (
+                list(report.bridge_bond_distances_before)
+                if report.bridge_bond_distances_before is not None
+                else None
+            ),
+            "bridge_bond_distances_after": (
+                list(report.bridge_bond_distances_after)
+                if report.bridge_bond_distances_after is not None
+                else None
+            ),
             "warnings": list(report.warnings),
         }
         if not report.converged:
@@ -4919,10 +4958,13 @@ class BatchStructureGenerator:
         *,
         summary: BatchPairSummary,
     ) -> dict[str, object]:
+        # The validator recomputes bridge geometry from the optimized CIF
+        # coordinates (final-coordinate measurement), so the seed assembly
+        # metrics in the record metadata are informational only and no longer
+        # need to be cleared to avoid a stale verdict.
         metadata = dict(summary.metadata)
         source_score_metadata = metadata.get("score_metadata")
         score_metadata = dict(source_score_metadata) if isinstance(source_score_metadata, Mapping) else {}
-        score_metadata["bridge_event_metrics"] = []
         score_metadata.setdefault("n_unreacted_motifs", 0)
         metadata["score_metadata"] = score_metadata
         repair_summary = replace(
@@ -4940,12 +4982,14 @@ class BatchStructureGenerator:
                 "classification": "unvalidated",
                 "is_valid": None,
                 "became_valid": None,
-                "scope": "optimized_cif_cif_checks_without_stale_bridge_metrics",
+                "scope": "optimized_cif_final_geometry_checks",
+                "unmeasured_required_checks": list(REQUIRED_COVERAGE_CHECKS),
+                "coverage": {check: CHECK_MISSING_DATA for check in REQUIRED_COVERAGE_CHECKS},
                 "error": str(exc),
             }
         validation = self._validation_metadata(report, cif_path=str(optimized_cif))
         validation["became_valid"] = report.is_valid
-        validation["scope"] = "optimized_cif_cif_checks_without_stale_bridge_metrics"
+        validation["scope"] = "optimized_cif_final_geometry_checks"
         return validation
 
     def _hard_hard_invalid_reasons(self, candidate: Candidate) -> tuple[tuple[str, ...], dict[str, object]]:

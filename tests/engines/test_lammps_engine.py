@@ -253,3 +253,65 @@ def test_optimizer_warns_on_real_iteration_exhaustion(lmp, tmp_path):
     assert any("unconverged" in warning for warning in report["warnings"])
     convergence_json = json.loads((Path(result.output_dir) / "convergence.json").read_text())
     assert convergence_json["converged"] is False
+
+
+def test_lammps_geometry_repair_reports_final_coordinate_measurements(lmp, tmp_path):
+    """A04: the LAMMPS geometry-repair route must report linkage measurements
+    recomputed from the repaired CIF, not the pre-repair seed metrics."""
+    pytest.importorskip("rdkit")
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from test_batch import (  # noqa: E402
+        TAPB,
+        TEREPHTHALALDEHYDE,
+        _DistortingCifWriter,
+    )
+    from cofkit import (  # noqa: E402
+        BatchGenerationConfig,
+        BatchMonomerRecord,
+        BatchStructureGenerator,
+        CoarseValidationThresholds,
+    )
+
+    generator = BatchStructureGenerator(
+        BatchGenerationConfig(
+            rdkit_num_conformers=1,
+            retain_top_results=1,
+            single_node_topology_ids=("hcb",),
+            hard_hard_max_bridge_distance=10.0,
+            repair_geometry=True,
+            repair_geometry_lmp_path=lmp,
+            validation_thresholds=CoarseValidationThresholds(hard_hard_max_bridge_distance=10.0),
+        )
+    )
+    # Distort the exported linkage so the seed metrics are clean but the
+    # final coordinates are not; repair then runs for real.
+    generator.cif_writer = _DistortingCifWriter(generator.cif_writer, {})
+    amine = BatchMonomerRecord(
+        id="tapb", name="tapb", smiles=TAPB, motif_kind="amine", expected_connectivity=3
+    )
+    aldehyde = BatchMonomerRecord(
+        id="tpal",
+        name="tpal",
+        smiles=TEREPHTHALALDEHYDE,
+        motif_kind="aldehyde",
+        expected_connectivity=2,
+    )
+
+    summary, _candidate = generator.generate_pair_candidate(
+        amine, aldehyde, out_dir=tmp_path / "run", write_cif=True
+    )
+
+    assert summary.status == "ok"
+    validation = summary.metadata["validation"]
+    assert validation["classification"] == "needs_optimization"
+    assert validation["metrics"]["bridge_metrics_source"] == "final_cif"
+    repair = validation["geometry_repair"]
+    assert repair["status"] == "ok"
+    post = repair["post_repair_validation"]
+    assert post["scope"] == "optimized_cif_final_geometry_checks"
+    assert post["metrics"]["bridge_metrics_source"] == "final_cif"
+    assert post["metrics"]["n_measured_bridge_bonds"] > 0
+    assert "max_bridge_distance_residual" in post["metrics"]
+    assert post["coverage"]["bridge_geometry"] == "measured"

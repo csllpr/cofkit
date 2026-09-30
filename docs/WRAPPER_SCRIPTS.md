@@ -70,7 +70,7 @@ The shipped [`../examples/default_monomers_library`](../examples/default_monomer
 
 ## Output classification wrapper
 
-To classify a finished batch output into `valid`, `warning`, `needs_optimization`, `hard_invalid`, and `hard_hard_invalid` buckets through the wrapper:
+To classify a finished batch output into `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`, and `unvalidated` buckets through the wrapper:
 
 ```bash
 python3 examples/classify_batch_output.py \
@@ -78,12 +78,13 @@ python3 examples/classify_batch_output.py \
   --output-dir out/classified_batch
 ```
 
-That workflow writes one classification manifest plus five CIF trees:
+That workflow writes one classification manifest plus six CIF trees:
 
 - `valid/`
 - `warning/`
 - `needs_optimization/`
 - `hard_hard_invalid/`
 - `hard_invalid/`
+- `unvalidated/`
 
 The classifier keeps the source CIFs untouched and materializes the categorized views through symlinks by default.

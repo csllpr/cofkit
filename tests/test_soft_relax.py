@@ -450,3 +450,97 @@ def test_batch_soft_relax_passes_configured_clash_threshold(tmp_path):
     assert metadata["applied"] is True
     assert metadata["clashes_before"] == 1
     assert metadata["clashes_after"] == 0
+
+
+def test_soft_relax_reports_bridge_measurements_and_validation_uses_final_geometry(tmp_path):
+    """A04 regression for the soft-relax repair path.
+
+    The exported CIF is deliberately distorted after writing; the converged
+    soft-relax pass keeps the stretched linkage (its bond springs restrain to
+    the initial lengths), reports the current bridge-bond measurements, and
+    the subsequent validation verdict must come from the measured final
+    coordinates — the clean seed metrics must not pass it.
+    """
+    from test_batch import (
+        TAPB,
+        TEREPHTHALALDEHYDE,
+        _DistortingCifWriter,
+    )
+
+    amine = BatchMonomerRecord(
+        id="tapb", name="tapb", smiles=TAPB, motif_kind="amine", expected_connectivity=3
+    )
+    aldehyde = BatchMonomerRecord(
+        id="tpal",
+        name="tpal",
+        smiles=TEREPHTHALALDEHYDE,
+        motif_kind="aldehyde",
+        expected_connectivity=2,
+    )
+    generator = BatchStructureGenerator(
+        BatchGenerationConfig(
+            rdkit_num_conformers=1,
+            retain_top_results=1,
+            single_node_topology_ids=("hcb",),
+            soft_relax=True,
+            hard_hard_max_bridge_distance=10.0,
+            validation_thresholds=CoarseValidationThresholds(hard_hard_max_bridge_distance=10.0),
+        )
+    )
+    generator.cif_writer = _DistortingCifWriter(generator.cif_writer, {})
+
+    summary, _candidate = generator.generate_pair_candidate(
+        amine, aldehyde, out_dir=tmp_path / "on", write_cif=True
+    )
+
+    assert summary.status == "ok"
+    validation = summary.metadata["validation"]
+    soft = validation["soft_relax"]
+    assert soft["applied"] is True
+    # The soft-relax report carries the current (post-pass) linkage lengths.
+    assert soft["bridge_bond_distances_after"] is not None
+    assert max(soft["bridge_bond_distances_after"]) > 2.0
+    # Validation measured the relaxed final coordinates, not the clean seed
+    # metrics: the distorted linkage is flagged as repairable.
+    assert validation["classification"] == "needs_optimization"
+    assert validation["metrics"]["bridge_metrics_source"] == "final_cif"
+    assert validation["metrics"]["seed_max_bridge_distance_residual"] <= 0.05
+    assert validation["metrics"]["max_bridge_distance_residual"] > 1.0
+    assert validation["coverage"]["bridge_geometry"] == "measured"
+
+
+def test_soft_relax_bridge_measurements_distinguish_missing_from_none_found(tmp_path):
+    """No bond loop -> None (missing data); bond loop without inter-monomer
+    bonds -> empty tuple (measured, none found)."""
+    from test_validation import _write_test_cif
+
+    no_bonds = tmp_path / "no_bonds.cif"
+    _write_test_cif(
+        no_bonds,
+        atoms=[("m1_C1", "C", 0.1, 0.1, 0.1), ("m1_C2", "C", 0.6, 0.1, 0.1)],
+        bonds=[],
+    )
+    report = relax_cif_clashes(no_bonds, tmp_path / "no_bonds_relaxed.cif")
+    assert report.bridge_bond_distances_before is None
+    assert report.bridge_bond_distances_after is None
+
+    intra_only = tmp_path / "intra_only.cif"
+    _write_test_cif(
+        intra_only,
+        atoms=[("m1_C1", "C", 0.1, 0.1, 0.1), ("m1_C2", "C", 0.25, 0.1, 0.1)],
+        bonds=[("m1_C1", "m1_C2", ".", ".", 1.5)],
+    )
+    report = relax_cif_clashes(intra_only, tmp_path / "intra_relaxed.cif")
+    assert report.bridge_bond_distances_before == ()
+    assert report.bridge_bond_distances_after == ()
+
+    inter = tmp_path / "inter.cif"
+    _write_test_cif(
+        inter,
+        atoms=[("m1_C1", "C", 0.1, 0.1, 0.1), ("m2_N1", "N", 0.23, 0.1, 0.1)],
+        bonds=[("m1_C1", "m2_N1", ".", ".", 1.3)],
+    )
+    report = relax_cif_clashes(inter, tmp_path / "inter_relaxed.cif")
+    assert report.bridge_bond_distances_before is not None
+    assert len(report.bridge_bond_distances_after) == 1
+    assert abs(report.bridge_bond_distances_after[0] - 1.3) < 0.05

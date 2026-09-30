@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - import guard for incomplete environmen
 
 from .cif_checks import cif_value_str
 from .periodic_geometry import images_within, p1_shift
+from .reactions import linkage_profile
 from .topologies import get_topology_hint
 from .vdw import (
     DEFAULT_HARD_MIN_NONBONDED_PLAIN_DISTANCE,
@@ -30,9 +31,11 @@ from .vdw import (
 
 @dataclass(frozen=True)
 class CoarseValidationThresholds:
-    # Bridge-event residuals are |actual - target| linkage distances in
-    # angstrom; ratios are actual / target (dimensionless).  All threshold
-    # values in this block are heuristic — pending calibration.
+    # Bridge residuals are |measured - target| inter-monomer linkage bond
+    # distances in angstrom, measured from the final exported CIF coordinates
+    # (assembly-time seed metrics are informational only); ratios are
+    # measured / target (dimensionless).  All threshold values in this block
+    # are heuristic — pending calibration.
     # Warning tier: worst single bridge residual before a warning is raised.
     warning_max_bridge_distance_residual: float = 0.75
     # Warning tier: mean bridge residual across all events.
@@ -84,8 +87,12 @@ class CoarseValidationThresholds:
     min_2d_cell_area: float = 10.0
     min_3d_cell_volume: float = 20.0
     # Per-template acceptable distance windows for the realized inter-monomer
-    # linkage bonds written to the CIF, keyed by template id. The boronate ester
-    # window brackets the ~1.47 angstrom B-O bonds of the five-membered ring.
+    # linkage bonds measured from the exported CIF coordinates and periodic
+    # bond images (measure_inter_instance_bond_distances), keyed by template
+    # id. The boronate ester window brackets the ~1.47 angstrom B-O bonds of
+    # the five-membered ring; templates whose profile bridge_target_distance
+    # IS the realized bond length are validated by residual/ratio thresholds
+    # against that target instead.
     realized_bridge_bond_distance_windows: Mapping[str, tuple[float, float]] = field(
         default_factory=lambda: {"boronate_ester_bridge": (1.25, 1.65)}
     )
@@ -98,15 +105,115 @@ class CoarseValidationThresholds:
 @dataclass(frozen=True)
 class CoarseValidationReport:
     classification: str
-    is_valid: bool
-    passes_hard_validation: bool
+    is_valid: bool | None
+    passes_hard_validation: bool | None
     blocks_cif_export: bool = False
     reasons: tuple[str, ...] = ()
     hard_hard_invalid_reasons: tuple[str, ...] = ()
     warning_reasons: tuple[str, ...] = ()
     hard_invalid_reasons: tuple[str, ...] = ()
     needs_optimization_reasons: tuple[str, ...] = ()
+    unmeasured_required_checks: tuple[str, ...] = ()
+    coverage: Mapping[str, str] = field(default_factory=dict)
     metrics: Mapping[str, object] = field(default_factory=dict)
+
+
+# Coverage statuses for the per-check map on CoarseValidationReport.coverage.
+# They deliberately distinguish "the check ran and produced values" from "the
+# check ran to completion and found nothing" from "the check could not run".
+CHECK_MEASURED = "measured"
+# A completed bounded search/measurement that found zero items (e.g. a contact
+# scan with no non-excluded neighbor inside the search radius). Distinct from
+# missing data: the measurement was performed.
+CHECK_NO_CONTACTS = "no_contacts"
+# A required check could not be evaluated because its inputs are absent
+# (missing CIF, missing bond loop, no linkage target/window for the template).
+CHECK_MISSING_DATA = "missing_data"
+# The check does not apply to this record (e.g. bridge geometry when the
+# assembly metadata reports no bridge events and no inter-monomer bonds).
+CHECK_NOT_APPLICABLE = "not_applicable"
+# The check was deliberately skipped because metadata-level hard reasons
+# already determine the verdict (see
+# CoarseValidationThresholds.skip_cif_checks_when_metadata_invalid).
+CHECK_SKIPPED = "skipped"
+
+# Checks whose absence blocks a "valid" verdict: without them the export is
+# unvalidated, not valid. ring_geometry (ring-participant arrangement) and
+# ring_attachment (exocyclic ring-monomer bonds/angles) are covered by their
+# own metadata channel and are not part of the required set; a missing
+# attachment channel on a ring record is reported as missing_data coverage
+# but does not by itself make the record unvalidated.
+REQUIRED_COVERAGE_CHECKS = ("cell_geometry", "instance_graph", "contact_scan", "bridge_geometry")
+
+
+@dataclass(frozen=True)
+class RealizedBridgeBondMeasurement:
+    """One inter-monomer linkage bond measured from exported CIF coordinates.
+
+    The distance is recomputed from fractional coordinates and the explicit
+    periodic bond-image codes in the ``_geom_bond`` loop, never trusted from
+    the ``_geom_bond_distance`` column, so repaired/relaxed coordinates are
+    measured as exported.
+    """
+
+    label_1: str
+    label_2: str
+    image: tuple[int, int, int]
+    distance: float
+
+
+def _instance_id(atom_label: str) -> str:
+    # Atom labels are written as "{instance_id}_{symbol}{n}" and instance
+    # ids themselves may contain underscores (e.g. "bex_node"), so split
+    # off only the trailing symbol tag. Matches decompose.py:_instance_id.
+    return str(atom_label).rsplit("_", 1)[0]
+
+
+def measure_inter_instance_bond_distances(block) -> tuple[RealizedBridgeBondMeasurement, ...]:
+    """Measure inter-monomer (bridge) bond lengths from a CIF block.
+
+    Bonds are taken from the ``_geom_bond`` loop; a bond is a bridge bond when
+    its two atom labels belong to different monomer instances. Distances are
+    recomputed from the fractional coordinates and the P1 image codes in
+    ``_geom_bond_site_symmetry_1/2`` (via ``periodic_geometry.p1_shift``), so
+    bonds crossing a cell boundary measure correctly. Rows referencing unknown
+    atom labels are skipped.
+    """
+    small = gemmi.make_small_structure_from_block(block)
+    positions = {
+        str(site.label): (site.fract.x, site.fract.y, site.fract.z) for site in small.sites
+    }
+    labels1 = block.find_loop("_geom_bond_atom_site_label_1")
+    labels2 = block.find_loop("_geom_bond_atom_site_label_2")
+    sym1 = block.find_loop("_geom_bond_site_symmetry_1")
+    sym2 = block.find_loop("_geom_bond_site_symmetry_2")
+    measurements: list[RealizedBridgeBondMeasurement] = []
+    for index in range(min(len(labels1), len(labels2))):
+        label_a = cif_value_str(labels1[index])
+        label_b = cif_value_str(labels2[index])
+        if _instance_id(label_a) == _instance_id(label_b):
+            continue
+        fract_a = positions.get(label_a)
+        fract_b = positions.get(label_b)
+        if fract_a is None or fract_b is None:
+            continue
+        image_a = p1_shift(cif_value_str(sym1[index]) if len(sym1) else ".")
+        image_b = p1_shift(cif_value_str(sym2[index]) if len(sym2) else ".")
+        shift = tuple(b - a for a, b in zip(image_a, image_b))
+        vector = gemmi.Fractional(
+            fract_b[0] + shift[0] - fract_a[0],
+            fract_b[1] + shift[1] - fract_a[1],
+            fract_b[2] + shift[2] - fract_a[2],
+        )
+        measurements.append(
+            RealizedBridgeBondMeasurement(
+                label_1=label_a,
+                label_2=label_b,
+                image=shift,
+                distance=float(small.cell.orthogonalize(vector).length()),
+            )
+        )
+    return tuple(measurements)
 
 
 @dataclass(frozen=True)
@@ -123,12 +230,15 @@ class BatchOutputClassificationSummary:
     needs_optimization_reason_counts: Mapping[str, int] = field(default_factory=dict)
     hard_hard_invalid_reason_counts: Mapping[str, int] = field(default_factory=dict)
     hard_invalid_reason_counts: Mapping[str, int] = field(default_factory=dict)
+    unvalidated_structures: int = 0
+    unvalidated_reason_counts: Mapping[str, int] = field(default_factory=dict)
     classification_manifest_path: str = ""
     valid_manifest_path: str = ""
     warning_manifest_path: str = ""
     needs_optimization_manifest_path: str = ""
     hard_hard_invalid_manifest_path: str = ""
     hard_invalid_manifest_path: str = ""
+    unvalidated_manifest_path: str = ""
 
     @property
     def invalid_structures(self) -> int:
@@ -159,8 +269,10 @@ class CoarseStructureValidator:
         hard_hard_invalid_reasons: list[str] = []
         hard_invalid_reasons: list[str] = []
         metrics: dict[str, object] = {}
+        coverage: dict[str, str] = {}
 
         metadata = self._mapping(record.get("metadata"))
+        graph_summary = self._mapping(metadata.get("graph_summary"))
         score_metadata = self._mapping(metadata.get("score_metadata"))
         ring_validation = self._mapping(metadata.get("ring_validation"))
         stacking_metadata = self._mapping(metadata.get("stacking"))
@@ -175,8 +287,11 @@ class CoarseStructureValidator:
             metrics["ring_validation_classification"] = ring_classification
             metrics["ring_validation_reasons"] = ring_reasons
             metrics["ring_geometry"] = ring_validation.get("metrics", {})
+            coverage["ring_geometry"] = CHECK_MEASURED
             if ring_classification not in {None, "accepted", "valid"}:
                 hard_invalid_reasons.append("ring_geometry_invalid")
+        else:
+            coverage["ring_geometry"] = CHECK_NOT_APPLICABLE
 
         monomer_geometry_warnings = tuple(
             str(warning) for warning in metadata.get("monomer_geometry_warnings", ()) or ()
@@ -185,82 +300,80 @@ class CoarseStructureValidator:
             warning_reasons.append("monomer_geometry_degraded")
             metrics["monomer_geometry_degraded_details"] = monomer_geometry_warnings
 
+        # Assembly-time ("seed") bridge metrics are informational only: they
+        # describe the embedding/assembly coordinates, not the exported
+        # structure. Validation verdicts on bridge geometry are derived from
+        # the final CIF coordinates measured below, so a repair pass that
+        # moves atoms cannot inherit a stale passing (or failing) verdict.
         bridge_metrics = tuple(self._mapping(item) for item in score_metadata.get("bridge_event_metrics", ()))
         raw_distance_residuals = tuple(self._distance_residual(item) for item in bridge_metrics)
-        distance_residuals = tuple(value for value in raw_distance_residuals if value is not None)
-        n_missing_distance_data = len(raw_distance_residuals) - len(distance_residuals)
-        actual_distance_bounds = tuple(self._actual_distance_bounds(item) for item in bridge_metrics)
-        if distance_residuals:
-            max_residual = max(distance_residuals)
-            mean_residual = sum(distance_residuals) / len(distance_residuals)
-            bad_fraction = sum(
-                value > self.thresholds.warning_bad_bridge_distance_residual for value in distance_residuals
-            ) / len(distance_residuals)
-        else:
-            max_residual = 0.0
-            mean_residual = 0.0
-            bad_fraction = 0.0
+        seed_distance_residuals = tuple(value for value in raw_distance_residuals if value is not None)
+        n_missing_distance_data = len(raw_distance_residuals) - len(seed_distance_residuals)
         metrics["n_bridge_events"] = len(bridge_metrics)
         if n_missing_distance_data:
             metrics["n_bridge_events_missing_distance_data"] = n_missing_distance_data
-        metrics["max_bridge_distance_residual"] = max_residual
-        metrics["mean_bridge_distance_residual"] = mean_residual
-        metrics["bad_bridge_event_fraction"] = bad_fraction
-        if max_residual > self.thresholds.warning_max_bridge_distance_residual:
-            warning_reasons.append("bridge_distance_residual_max")
-        if mean_residual > self.thresholds.warning_mean_bridge_distance_residual:
-            warning_reasons.append("bridge_distance_residual_mean")
-        if bad_fraction > self.thresholds.warning_max_bad_bridge_fraction:
-            warning_reasons.append("bridge_distance_residual_fraction")
-        if max_residual > self.thresholds.hard_max_bridge_distance_residual:
-            hard_invalid_reasons.append("bridge_distance_residual_max_hard")
-        if mean_residual > self.thresholds.hard_mean_bridge_distance_residual:
-            hard_invalid_reasons.append("bridge_distance_residual_mean_hard")
-        min_ratio = None
-        max_ratio = None
-        max_actual_distance = None
-        if actual_distance_bounds:
-            finite_bounds = tuple(bounds for bounds in actual_distance_bounds if bounds is not None)
-            if finite_bounds:
-                min_ratio = min(bounds[0] for bounds in finite_bounds)
-                max_ratio = max(bounds[1] for bounds in finite_bounds)
-        actual_distances = tuple(
-            float(item.get("actual_distance"))
-            for item in bridge_metrics
-            if item.get("actual_distance") is not None
+        if seed_distance_residuals:
+            metrics["seed_max_bridge_distance_residual"] = max(seed_distance_residuals)
+            metrics["seed_mean_bridge_distance_residual"] = (
+                sum(seed_distance_residuals) / len(seed_distance_residuals)
+            )
+        seed_targets = tuple(
+            sorted(
+                {
+                    float(item["target_distance"])
+                    for item in bridge_metrics
+                    if item.get("target_distance") is not None
+                }
+            )
         )
-        if actual_distances:
-            max_actual_distance = max(actual_distances)
-        metrics["min_bridge_distance_ratio"] = min_ratio
-        metrics["max_bridge_distance_ratio"] = max_ratio
-        metrics["max_actual_bridge_distance"] = max_actual_distance
-        if (
-            max_actual_distance is not None
-            and max_actual_distance >= self.thresholds.hard_hard_max_bridge_distance
-        ):
-            hard_hard_invalid_reasons.append("bridge_distance_exceeds_cif_export_limit")
-        if min_ratio is not None and min_ratio < self.thresholds.hard_min_bridge_distance_ratio:
-            hard_invalid_reasons.append("bridge_distance_too_short")
-        if max_ratio is not None and max_ratio > self.thresholds.hard_max_bridge_distance_ratio:
-            hard_invalid_reasons.append("bridge_distance_too_long")
+        if seed_targets:
+            metrics["seed_bridge_target_distances"] = seed_targets
+        metrics["bridge_metrics_source"] = None
+
+        template_id = self._record_template_id(metadata, graph_summary)
 
         cif_path = self._resolve_cif_path(record, source_root=source_root)
         metrics["cif_path"] = str(cif_path) if cif_path is not None else None
         if cif_path is None or not cif_path.is_file():
             hard_invalid_reasons.append("cif_missing")
+            for check in REQUIRED_COVERAGE_CHECKS:
+                coverage.setdefault(check, CHECK_MISSING_DATA)
         else:
+            skip_metadata_checks = bool(
+                self.thresholds.skip_cif_checks_when_metadata_invalid and hard_invalid_reasons
+            )
             cif_metrics, cif_reasons, cif_warnings = self._validate_cif(
                 cif_path,
                 topology_id=self._string(record.get("topology_id")),
                 stacking_metadata=stacking_metadata,
-                template_id=self._string(metadata.get("template_id")),
-                skip_metadata_checks=bool(
-                    self.thresholds.skip_cif_checks_when_metadata_invalid and hard_invalid_reasons
-                ),
+                template_id=template_id,
+                skip_metadata_checks=skip_metadata_checks,
             )
             metrics.update(cif_metrics)
             hard_invalid_reasons.extend(cif_reasons)
             warning_reasons.extend(cif_warnings)
+            cif_parsed = "cif_parse_error" not in cif_metrics
+            if cif_parsed:
+                coverage["cell_geometry"] = CHECK_MEASURED
+                coverage["instance_graph"] = CHECK_MEASURED
+                coverage["contact_scan"] = (
+                    CHECK_MEASURED
+                    if int(cif_metrics.get("n_nonbonded_pairs_scanned", 0)) > 0
+                    else CHECK_NO_CONTACTS
+                )
+                coverage["bridge_geometry"] = self._apply_final_bridge_geometry_verdicts(
+                    metrics,
+                    template_id=template_id,
+                    seed_targets=seed_targets,
+                    n_bridge_events=len(bridge_metrics),
+                    window_check_skipped=bool(cif_metrics.get("cif_metadata_checks_skipped")),
+                    warning_reasons=warning_reasons,
+                    hard_invalid_reasons=hard_invalid_reasons,
+                    hard_hard_invalid_reasons=hard_hard_invalid_reasons,
+                )
+            else:
+                for check in REQUIRED_COVERAGE_CHECKS:
+                    coverage.setdefault(check, CHECK_MISSING_DATA)
 
         normalized_warning_reasons = tuple(dict.fromkeys(warning_reasons))
         normalized_hard_hard_invalid_reasons = tuple(dict.fromkeys(hard_hard_invalid_reasons))
@@ -275,9 +388,15 @@ class CoarseStructureValidator:
             needs_optimization_reasons = normalized_hard_invalid_reasons
             remaining_hard_invalid_reasons = ()
 
+        unmeasured_required_checks = tuple(
+            check for check in REQUIRED_COVERAGE_CHECKS if coverage.get(check) == CHECK_MISSING_DATA
+        )
+        if unmeasured_required_checks:
+            metrics["unmeasured_required_checks"] = unmeasured_required_checks
+
         normalized_reasons = normalized_hard_hard_invalid_reasons + remaining_hard_invalid_reasons + tuple(
             reason for reason in needs_optimization_reasons if reason not in remaining_hard_invalid_reasons
-        ) + tuple(
+        ) + (("unmeasured_required_checks",) if unmeasured_required_checks else ()) + tuple(
             reason for reason in normalized_warning_reasons if reason not in normalized_hard_invalid_reasons
         )
         classification = "valid"
@@ -287,20 +406,148 @@ class CoarseStructureValidator:
             classification = "hard_invalid"
         elif needs_optimization_reasons:
             classification = "needs_optimization"
+        elif unmeasured_required_checks:
+            # Required checks could not be evaluated: the export is honestly
+            # unvalidated, never silently valid.
+            classification = "unvalidated"
         elif normalized_warning_reasons:
             classification = "warning"
         return CoarseValidationReport(
             classification=classification,
-            is_valid=classification == "valid",
-            passes_hard_validation=classification not in {"needs_optimization", "hard_invalid", "hard_hard_invalid"},
+            is_valid=True if classification == "valid" else (None if classification == "unvalidated" else False),
+            passes_hard_validation=(
+                classification in {"valid", "warning"} if classification != "unvalidated" else None
+            ),
             blocks_cif_export=bool(normalized_hard_hard_invalid_reasons),
             reasons=normalized_reasons,
             hard_hard_invalid_reasons=normalized_hard_hard_invalid_reasons,
             warning_reasons=normalized_warning_reasons,
             hard_invalid_reasons=remaining_hard_invalid_reasons,
             needs_optimization_reasons=needs_optimization_reasons,
+            unmeasured_required_checks=unmeasured_required_checks,
+            coverage=coverage,
             metrics=metrics,
         )
+
+    def _record_template_id(
+        self,
+        metadata: Mapping[str, object],
+        graph_summary: Mapping[str, object],
+    ) -> str | None:
+        template_id = self._string(metadata.get("template_id"))
+        if template_id is not None:
+            return template_id
+        reaction_templates = graph_summary.get("reaction_templates")
+        if isinstance(reaction_templates, Mapping) and len(reaction_templates) == 1:
+            return self._string(next(iter(reaction_templates)))
+        return None
+
+    def _apply_final_bridge_geometry_verdicts(
+        self,
+        metrics: dict[str, object],
+        *,
+        template_id: str | None,
+        seed_targets: tuple[float, ...],
+        n_bridge_events: int,
+        window_check_skipped: bool,
+        warning_reasons: list[str],
+        hard_invalid_reasons: list[str],
+        hard_hard_invalid_reasons: list[str],
+    ) -> str:
+        """Derive bridge-geometry verdicts from the final CIF coordinates.
+
+        Returns the coverage status for the ``bridge_geometry`` check. The
+        measurements in ``metrics["realized_bridge_bond_measurements"]`` are
+        recomputed from the exported coordinates and periodic bond images (see
+        ``measure_inter_instance_bond_distances``), so verdicts reflect the
+        structure as written, including after any repair pass moved atoms.
+        """
+        measurements = tuple(
+            self._mapping(item) for item in metrics.get("realized_bridge_bond_measurements", ())
+        )
+        distances = tuple(
+            float(item["distance"]) for item in measurements if item.get("distance") is not None
+        )
+        thresholds = self.thresholds
+        if distances:
+            # Template-independent backstop: a realized inter-monomer "bond"
+            # beyond the export limit is disconnected/mis-assembled geometry
+            # no matter which linkage family produced it.
+            max_actual_distance = max(distances)
+            metrics["max_actual_bridge_distance"] = max_actual_distance
+            if max_actual_distance >= thresholds.hard_hard_max_bridge_distance:
+                hard_hard_invalid_reasons.append("bridge_distance_exceeds_cif_export_limit")
+        bond_window = thresholds.realized_bridge_bond_distance_windows.get(template_id or "")
+        if bond_window is not None and window_check_skipped:
+            return CHECK_SKIPPED
+        if bond_window is not None:
+            # Window verdict (realized_bridge_bond_distance) is applied by
+            # _validate_cif against the same measured distances.
+            if distances:
+                metrics["bridge_metrics_source"] = "final_cif"
+                return CHECK_MEASURED
+            if n_bridge_events:
+                metrics["bridge_geometry_coverage_detail"] = "no inter-monomer bonds in the CIF bond loop"
+                return CHECK_MISSING_DATA
+            return CHECK_NOT_APPLICABLE
+
+        profile = linkage_profile(template_id) if template_id is not None else None
+        target_distance: float | None = None
+        target_source: str | None = None
+        if profile is not None:
+            target_distance = float(profile.bridge_target_distance)
+            target_source = "linkage_profile"
+        elif len(seed_targets) == 1:
+            # Fallback for records without resolvable template metadata: the
+            # assembly-time target is a template property, not a coordinate
+            # measurement, so it stays valid after repair.
+            target_distance = float(seed_targets[0])
+            target_source = "seed_metadata"
+        if target_source is not None:
+            metrics["bridge_target_source"] = target_source
+
+        if not distances:
+            if n_bridge_events:
+                metrics["bridge_geometry_coverage_detail"] = "no inter-monomer bonds in the CIF bond loop"
+                return CHECK_MISSING_DATA
+            return CHECK_NOT_APPLICABLE
+        if target_distance is None or target_distance <= 0.0:
+            metrics["bridge_geometry_coverage_detail"] = (
+                f"no realized bridge-bond target or distance window for template {template_id!r}"
+            )
+            return CHECK_MISSING_DATA
+
+        residuals = tuple(abs(distance - target_distance) for distance in distances)
+        ratios = tuple(distance / target_distance for distance in distances)
+        max_residual = max(residuals)
+        mean_residual = sum(residuals) / len(residuals)
+        bad_fraction = (
+            sum(value > thresholds.warning_bad_bridge_distance_residual for value in residuals)
+            / len(residuals)
+        )
+        metrics["bridge_metrics_source"] = "final_cif"
+        metrics["n_measured_bridge_bonds"] = len(distances)
+        metrics["bridge_target_distance"] = target_distance
+        metrics["max_bridge_distance_residual"] = max_residual
+        metrics["mean_bridge_distance_residual"] = mean_residual
+        metrics["bad_bridge_event_fraction"] = bad_fraction
+        metrics["min_bridge_distance_ratio"] = min(ratios)
+        metrics["max_bridge_distance_ratio"] = max(ratios)
+        if max_residual > thresholds.warning_max_bridge_distance_residual:
+            warning_reasons.append("bridge_distance_residual_max")
+        if mean_residual > thresholds.warning_mean_bridge_distance_residual:
+            warning_reasons.append("bridge_distance_residual_mean")
+        if bad_fraction > thresholds.warning_max_bad_bridge_fraction:
+            warning_reasons.append("bridge_distance_residual_fraction")
+        if max_residual > thresholds.hard_max_bridge_distance_residual:
+            hard_invalid_reasons.append("bridge_distance_residual_max_hard")
+        if mean_residual > thresholds.hard_mean_bridge_distance_residual:
+            hard_invalid_reasons.append("bridge_distance_residual_mean_hard")
+        if min(ratios) < thresholds.hard_min_bridge_distance_ratio:
+            hard_invalid_reasons.append("bridge_distance_too_short")
+        if max(ratios) > thresholds.hard_max_bridge_distance_ratio:
+            hard_invalid_reasons.append("bridge_distance_too_long")
+        return CHECK_MEASURED
 
     def _validate_cif(
         self,
@@ -360,41 +607,37 @@ class CoarseStructureValidator:
         if int(contact_scan["n_hydrogen_atom_clash_pairs"]) > 0:
             warnings.append("hydrogen_atom_clash")
 
+        # Final-geometry bridge measurement: inter-monomer bond distances
+        # recomputed from the exported coordinates and periodic bond images.
+        # Verdicts are derived by validate_manifest_record (residual vs the
+        # linkage target) except the per-template distance-window check, which
+        # stays here because it is metadata-dependent and can be skipped.
+        measurements = measure_inter_instance_bond_distances(block)
+        metrics["realized_bridge_bond_count"] = len(measurements)
+        metrics["realized_bridge_bond_measurements"] = tuple(
+            {
+                "label_1": measurement.label_1,
+                "label_2": measurement.label_2,
+                "image": tuple(measurement.image),
+                "distance": measurement.distance,
+            }
+            for measurement in measurements
+        )
         if skip_metadata_checks:
             bond_window = None
             metrics["cif_metadata_checks_skipped"] = True
         else:
             bond_window = self.thresholds.realized_bridge_bond_distance_windows.get(template_id or "")
-        if bond_window is not None:
-            realized_distances = self._realized_bridge_bond_distances(block)
-            metrics["realized_bridge_bond_count"] = len(realized_distances)
-            if realized_distances:
-                min_realized = min(realized_distances)
-                max_realized = max(realized_distances)
-                metrics["realized_bridge_bond_distance_min"] = min_realized
-                metrics["realized_bridge_bond_distance_max"] = max_realized
-                if min_realized < bond_window[0] or max_realized > bond_window[1]:
-                    reasons.append("realized_bridge_bond_distance")
+        if bond_window is not None and measurements:
+            realized_distances = tuple(measurement.distance for measurement in measurements)
+            min_realized = min(realized_distances)
+            max_realized = max(realized_distances)
+            metrics["realized_bridge_bond_distance_min"] = min_realized
+            metrics["realized_bridge_bond_distance_max"] = max_realized
+            if min_realized < bond_window[0] or max_realized > bond_window[1]:
+                reasons.append("realized_bridge_bond_distance")
 
         return metrics, tuple(dict.fromkeys(reasons)), tuple(dict.fromkeys(warnings))
-
-    def _realized_bridge_bond_distances(self, block) -> tuple[float, ...]:
-        label_1 = block.find_loop("_geom_bond_atom_site_label_1")
-        label_2 = block.find_loop("_geom_bond_atom_site_label_2")
-        bond_distance = block.find_loop("_geom_bond_distance")
-        if len(label_1) == 0 or len(label_2) == 0 or len(bond_distance) == 0:
-            return ()
-        distances: list[float] = []
-        for index in range(min(len(label_1), len(label_2), len(bond_distance))):
-            instance_1 = self._instance_id(cif_value_str(label_1[index]))
-            instance_2 = self._instance_id(cif_value_str(label_2[index]))
-            if instance_1 == instance_2:
-                continue
-            try:
-                distances.append(float(cif_value_str(bond_distance[index])))
-            except ValueError:
-                continue
-        return tuple(distances)
 
     def _bonded_pairs(self, block) -> set[frozenset[str]]:
         label_1 = block.find_loop("_geom_bond_atom_site_label_1")
@@ -585,10 +828,16 @@ class CoarseStructureValidator:
         Hydrogen-involving contacts are reported in a separate metric channel
         (``min_nonbonded_hydrogen_*``) and flagged as the warning reason
         ``hydrogen_atom_clash`` rather than ``heavy_atom_clash``.
+
+        ``n_nonbonded_pairs_scanned`` counts the non-excluded pairs that
+        reached the assessment criterion; zero means the bounded search
+        completed without finding any assessable neighbor (coverage status
+        ``no_contacts``), which is distinct from the scan not running at all.
         """
         thresholds = self.thresholds
         search_radius = thresholds.nonbonded_heavy_search_radius
         search = gemmi.NeighborSearch(small, search_radius).populate(include_h=True)
+        pairs_scanned = 0
         min_heavy_distance: float | None = None
         min_heavy_ratio: float | None = None
         min_hydrogen_distance: float | None = None
@@ -652,6 +901,7 @@ class CoarseStructureValidator:
                         ratio_threshold=thresholds.min_nonbonded_heavy_vdw_ratio,
                         plain_floor=thresholds.hard_min_nonbonded_heavy_plain_distance,
                     )
+                    pairs_scanned += 1
                     if involves_hydrogen:
                         if min_hydrogen_distance is None or distance < min_hydrogen_distance:
                             min_hydrogen_distance = distance
@@ -677,6 +927,7 @@ class CoarseStructureValidator:
             "min_nonbonded_heavy_vdw_ratio": min_heavy_ratio,
             "min_nonbonded_hydrogen_distance": min_hydrogen_distance,
             "min_nonbonded_hydrogen_vdw_ratio": min_hydrogen_ratio,
+            "n_nonbonded_pairs_scanned": pairs_scanned // 2,
             "n_heavy_atom_clash_pairs": len(heavy_clash_details) // 2,
             "heavy_atom_clash_min": min(heavy_clash_details, key=lambda item: item["vdw_ratio"], default=None),
             "n_hydrogen_atom_clash_pairs": len(hydrogen_clash_details) // 2,
@@ -738,10 +989,7 @@ class CoarseStructureValidator:
             return None
 
     def _instance_id(self, atom_label: str) -> str:
-        # Atom labels are written as "{instance_id}_{symbol}{n}" and instance
-        # ids themselves may contain underscores (e.g. "bex_node"), so split
-        # off only the trailing symbol tag. Matches decompose.py:_instance_id.
-        return str(atom_label).rsplit("_", 1)[0]
+        return _instance_id(atom_label)
 
     def _n_unreacted_motifs(
         self,
@@ -818,11 +1066,13 @@ def classify_batch_output(
     needs_optimization_root = output_root / "needs_optimization"
     hard_hard_invalid_root = output_root / "hard_hard_invalid"
     hard_invalid_root = output_root / "hard_invalid"
+    unvalidated_root = output_root / "unvalidated"
     valid_root.mkdir(parents=True, exist_ok=True)
     warning_root.mkdir(parents=True, exist_ok=True)
     needs_optimization_root.mkdir(parents=True, exist_ok=True)
     hard_hard_invalid_root.mkdir(parents=True, exist_ok=True)
     hard_invalid_root.mkdir(parents=True, exist_ok=True)
+    unvalidated_root.mkdir(parents=True, exist_ok=True)
 
     classification_manifest_path = output_root / "classification_manifest.jsonl"
     valid_manifest_path = output_root / "valid" / "manifest.jsonl"
@@ -830,6 +1080,7 @@ def classify_batch_output(
     needs_optimization_manifest_path = output_root / "needs_optimization" / "manifest.jsonl"
     hard_hard_invalid_manifest_path = output_root / "hard_hard_invalid" / "manifest.jsonl"
     hard_invalid_manifest_path = output_root / "hard_invalid" / "manifest.jsonl"
+    unvalidated_manifest_path = output_root / "unvalidated" / "manifest.jsonl"
 
     max_workers = max_workers or min(8, os.cpu_count() or 1)
     pending: dict[Future[tuple[dict[str, object], CoarseValidationReport]], dict[str, object]] = {}
@@ -837,12 +1088,14 @@ def classify_batch_output(
     needs_optimization_reason_counts: Counter[str] = Counter()
     hard_hard_invalid_reason_counts: Counter[str] = Counter()
     hard_invalid_reason_counts: Counter[str] = Counter()
+    unvalidated_reason_counts: Counter[str] = Counter()
     total_structures = 0
     valid_structures = 0
     warning_structures = 0
     needs_optimization_structures = 0
     hard_hard_invalid_structures = 0
     hard_invalid_structures = 0
+    unvalidated_structures = 0
 
     with (
         manifest_path.open(encoding="utf-8") as manifest,
@@ -852,6 +1105,7 @@ def classify_batch_output(
         needs_optimization_manifest_path.open("w", encoding="utf-8") as needs_optimization_manifest,
         hard_hard_invalid_manifest_path.open("w", encoding="utf-8") as hard_hard_invalid_manifest,
         hard_invalid_manifest_path.open("w", encoding="utf-8") as hard_invalid_manifest,
+        unvalidated_manifest_path.open("w", encoding="utf-8") as unvalidated_manifest,
         ThreadPoolExecutor(max_workers=max_workers) as executor,
     ):
         for line in manifest:
@@ -866,7 +1120,14 @@ def classify_batch_output(
             pending[future] = record
             total_structures += 1
             if len(pending) >= max_workers * 4:
-                valid_structures, warning_structures, needs_optimization_structures, hard_hard_invalid_structures, hard_invalid_structures = _drain_completed(
+                (
+                    valid_structures,
+                    warning_structures,
+                    needs_optimization_structures,
+                    hard_hard_invalid_structures,
+                    hard_invalid_structures,
+                    unvalidated_structures,
+                ) = _drain_completed(
                     pending,
                     classification_manifest,
                     valid_manifest,
@@ -874,25 +1135,36 @@ def classify_batch_output(
                     needs_optimization_manifest,
                     hard_hard_invalid_manifest,
                     hard_invalid_manifest,
+                    unvalidated_manifest,
                     valid_root,
                     warning_root,
                     needs_optimization_root,
                     hard_hard_invalid_root,
                     hard_invalid_root,
+                    unvalidated_root,
                     warning_reason_counts,
                     needs_optimization_reason_counts,
                     hard_hard_invalid_reason_counts,
                     hard_invalid_reason_counts,
+                    unvalidated_reason_counts,
                     link_mode,
                     valid_count=valid_structures,
                     warning_count=warning_structures,
                     needs_optimization_count=needs_optimization_structures,
                     hard_hard_invalid_count=hard_hard_invalid_structures,
                     hard_invalid_count=hard_invalid_structures,
+                    unvalidated_count=unvalidated_structures,
                 )
 
         while pending:
-            valid_structures, warning_structures, needs_optimization_structures, hard_hard_invalid_structures, hard_invalid_structures = _drain_completed(
+            (
+                valid_structures,
+                warning_structures,
+                needs_optimization_structures,
+                hard_hard_invalid_structures,
+                hard_invalid_structures,
+                unvalidated_structures,
+            ) = _drain_completed(
                 pending,
                 classification_manifest,
                 valid_manifest,
@@ -900,21 +1172,25 @@ def classify_batch_output(
                 needs_optimization_manifest,
                 hard_hard_invalid_manifest,
                 hard_invalid_manifest,
+                unvalidated_manifest,
                 valid_root,
                 warning_root,
                 needs_optimization_root,
                 hard_hard_invalid_root,
                 hard_invalid_root,
+                unvalidated_root,
                 warning_reason_counts,
                 needs_optimization_reason_counts,
                 hard_hard_invalid_reason_counts,
                 hard_invalid_reason_counts,
+                unvalidated_reason_counts,
                 link_mode,
                 valid_count=valid_structures,
                 warning_count=warning_structures,
                 needs_optimization_count=needs_optimization_structures,
                 hard_hard_invalid_count=hard_hard_invalid_structures,
                 hard_invalid_count=hard_invalid_structures,
+                unvalidated_count=unvalidated_structures,
             )
 
     summary = BatchOutputClassificationSummary(
@@ -930,12 +1206,15 @@ def classify_batch_output(
         needs_optimization_reason_counts=dict(needs_optimization_reason_counts),
         hard_hard_invalid_reason_counts=dict(hard_hard_invalid_reason_counts),
         hard_invalid_reason_counts=dict(hard_invalid_reason_counts),
+        unvalidated_structures=unvalidated_structures,
+        unvalidated_reason_counts=dict(unvalidated_reason_counts),
         classification_manifest_path=str(classification_manifest_path),
         valid_manifest_path=str(valid_manifest_path),
         warning_manifest_path=str(warning_manifest_path),
         needs_optimization_manifest_path=str(needs_optimization_manifest_path),
         hard_hard_invalid_manifest_path=str(hard_hard_invalid_manifest_path),
         hard_invalid_manifest_path=str(hard_invalid_manifest_path),
+        unvalidated_manifest_path=str(unvalidated_manifest_path),
     )
     _write_classification_summary(output_root / "summary.md", summary, validator.thresholds)
     return summary
@@ -949,15 +1228,18 @@ def _drain_completed(
     needs_optimization_manifest,
     hard_hard_invalid_manifest,
     hard_invalid_manifest,
+    unvalidated_manifest,
     valid_root: Path,
     warning_root: Path,
     needs_optimization_root: Path,
     hard_hard_invalid_root: Path,
     hard_invalid_root: Path,
+    unvalidated_root: Path,
     warning_reason_counts: Counter[str],
     needs_optimization_reason_counts: Counter[str],
     hard_hard_invalid_reason_counts: Counter[str],
     hard_invalid_reason_counts: Counter[str],
+    unvalidated_reason_counts: Counter[str],
     link_mode: str,
     *,
     valid_count: int,
@@ -965,7 +1247,8 @@ def _drain_completed(
     needs_optimization_count: int,
     hard_hard_invalid_count: int,
     hard_invalid_count: int,
-) -> tuple[int, int, int, int, int]:
+    unvalidated_count: int,
+) -> tuple[int, int, int, int, int, int]:
     done, _not_done = wait(set(pending), return_when=FIRST_COMPLETED)
     for future in done:
         record, report = future.result()
@@ -981,11 +1264,21 @@ def _drain_completed(
             "warning_reasons": list(report.warning_reasons),
             "hard_invalid_reasons": list(report.hard_invalid_reasons),
             "needs_optimization_reasons": list(report.needs_optimization_reasons),
+            "unmeasured_required_checks": list(report.unmeasured_required_checks),
+            "coverage": dict(report.coverage),
             "metrics": _json_safe(report.metrics),
         }
         classification_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
         cif_path = report.metrics.get("cif_path")
         source = Path(str(cif_path)) if cif_path is not None else None
+        if report.classification == "unvalidated":
+            unvalidated_count += 1
+            unvalidated_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
+            for reason in report.reasons:
+                unvalidated_reason_counts[reason] += 1
+            if source is not None and source.is_file():
+                _materialize_link(source, unvalidated_root / "cifs" / source.name, link_mode)
+            continue
         if report.is_valid:
             valid_count += 1
             valid_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
@@ -1030,7 +1323,7 @@ def _drain_completed(
             _materialize_link(source, hard_invalid_root / "cifs" / source.name, link_mode)
             for reason in report.hard_invalid_reasons:
                 _materialize_link(source, hard_invalid_root / "reasons" / reason / source.name, link_mode)
-    return valid_count, warning_count, needs_optimization_count, hard_hard_invalid_count, hard_invalid_count
+    return valid_count, warning_count, needs_optimization_count, hard_hard_invalid_count, hard_invalid_count, unvalidated_count
 
 
 def _validate_record_worker(
@@ -1074,12 +1367,14 @@ def _write_classification_summary(
         f"- Needs-optimization structures: {summary.needs_optimization_structures}",
         f"- Hard-hard-invalid structures: {summary.hard_hard_invalid_structures}",
         f"- Hard-invalid structures: {summary.hard_invalid_structures}",
+        f"- Unvalidated structures (required checks unmeasured): {summary.unvalidated_structures}",
         f"- Classification manifest: `{summary.classification_manifest_path}`",
         f"- Valid manifest: `{summary.valid_manifest_path}`",
         f"- Warning manifest: `{summary.warning_manifest_path}`",
         f"- Needs-optimization manifest: `{summary.needs_optimization_manifest_path}`",
         f"- Hard-hard-invalid manifest: `{summary.hard_hard_invalid_manifest_path}`",
         f"- Hard-invalid manifest: `{summary.hard_invalid_manifest_path}`",
+        f"- Unvalidated manifest: `{summary.unvalidated_manifest_path}`",
         "",
         "## Thresholds",
         "",
@@ -1144,6 +1439,18 @@ def _write_classification_summary(
     else:
         for reason, count in sorted(summary.hard_invalid_reason_counts.items(), key=lambda item: (-item[1], item[0])):
             lines.append(f"- `{reason}`: {count}")
+    lines.extend(
+        [
+            "",
+            "## Unvalidated Reason Counts",
+            "",
+        ]
+    )
+    if not summary.unvalidated_reason_counts:
+        lines.append("- No unvalidated structures were detected.")
+    else:
+        for reason, count in sorted(summary.unvalidated_reason_counts.items(), key=lambda item: (-item[1], item[0])):
+            lines.append(f"- `{reason}`: {count}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -1157,8 +1464,16 @@ def _json_safe(value: object) -> object:
 
 __all__ = [
     "BatchOutputClassificationSummary",
+    "CHECK_MEASURED",
+    "CHECK_MISSING_DATA",
+    "CHECK_NOT_APPLICABLE",
+    "CHECK_NO_CONTACTS",
+    "CHECK_SKIPPED",
     "CoarseStructureValidator",
     "CoarseValidationReport",
     "CoarseValidationThresholds",
+    "REQUIRED_COVERAGE_CHECKS",
+    "RealizedBridgeBondMeasurement",
     "classify_batch_output",
+    "measure_inter_instance_bond_distances",
 ]

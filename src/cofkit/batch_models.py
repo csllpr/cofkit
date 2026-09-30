@@ -101,6 +101,46 @@ class BatchPairSummary:
     def aldehyde_connectivity(self) -> int:
         return int(self.reactant_connectivities.get("aldehyde", self.reactant_b_connectivity))
 
+    @property
+    def validation_classification(self) -> str | None:
+        """Coarse-validation classification of the exported structure.
+
+        One of valid / warning / needs_optimization / hard_invalid /
+        hard_hard_invalid / unvalidated; None when no validation record was
+        attached (e.g. CIF export disabled or blocked before validation).
+        """
+        validation = self.metadata.get("validation")
+        if isinstance(validation, ABCMapping):
+            value = validation.get("classification")
+            return str(value) if value is not None else None
+        return None
+
+    @property
+    def validation_coverage(self) -> Mapping[str, str]:
+        """Per-check coverage statuses from validation.
+
+        Values are the ``cofkit.validation`` coverage statuses:
+        ``measured``, ``no_contacts`` (a completed search found nothing),
+        ``missing_data`` (a required check could not be evaluated),
+        ``not_applicable``, or ``skipped``.
+        """
+        validation = self.metadata.get("validation")
+        if isinstance(validation, ABCMapping):
+            coverage = validation.get("coverage")
+            if isinstance(coverage, ABCMapping):
+                return {str(key): str(value) for key, value in coverage.items()}
+        return {}
+
+    @property
+    def unmeasured_required_checks(self) -> tuple[str, ...]:
+        """Required validation checks that could not be measured (missing data)."""
+        validation = self.metadata.get("validation")
+        if isinstance(validation, ABCMapping):
+            checks = validation.get("unmeasured_required_checks")
+            if isinstance(checks, ABCSequence) and not isinstance(checks, (str, bytes)):
+                return tuple(str(check) for check in checks)
+        return ()
+
 
 @dataclass(frozen=True)
 class BatchRunSummary:
@@ -116,6 +156,11 @@ class BatchRunSummary:
     build_failures: Mapping[str, str] = field(default_factory=dict)
     mode_counts: Mapping[str, int] = field(default_factory=dict)
     topology_counts: Mapping[str, int] = field(default_factory=dict)
+    # Per-classification counts of validation outcomes for structures with a
+    # validation record (valid / warning / needs_optimization / hard_invalid /
+    # hard_hard_invalid / unvalidated). Construction success (status == "ok")
+    # is not a validated yield; these counts are the honest destination.
+    validation_counts: Mapping[str, int] = field(default_factory=dict)
     geometry_repair_counts: Mapping[str, int] = field(default_factory=dict)
     geometry_repair_revalidation_counts: Mapping[str, int] = field(default_factory=dict)
     geometry_repair_failed_records_path: str | None = None

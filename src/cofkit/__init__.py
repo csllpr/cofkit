@@ -204,7 +204,9 @@ from .validation import (
     CoarseStructureValidator,
     CoarseValidationReport,
     CoarseValidationThresholds,
+    RealizedBridgeBondMeasurement,
     classify_batch_output,
+    measure_inter_instance_bond_distances,
 )
 from .validate import (
     COFidValidationResult,
@@ -408,6 +410,8 @@ __all__ = [
     "CoarseStructureValidator",
     "CoarseValidationReport",
     "CoarseValidationThresholds",
+    "RealizedBridgeBondMeasurement",
+    "measure_inter_instance_bond_distances",
     "default_motif_kind_registry",
     "default_topology_repository",
     "decompose_cif_to_cofid",
