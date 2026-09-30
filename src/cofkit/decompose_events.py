@@ -26,8 +26,20 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from . import decompose as legacy
+from . import decompose_ledger as ledger
 from .cofid import cofid_to_build_request, parse_cofid, serialize_cofid
 from .decompose_cif import PeriodicCifAtoms, read_periodic_cif_atoms
+from .decompose_ledger import (
+    CHARGE_SCOPE_GUEST_LOCALIZED,
+    CHARGE_SCOPE_LIMITED,
+    CHARGE_SCOPE_NOT_PRESENT,
+    CHARGE_SCOPE_PRESERVED,
+    CHARGE_SCOPE_RESTORED_BY_HEURISTIC,
+    STEREO_SCOPE_NOT_DETECTED,
+    STEREO_SCOPE_UNDETERMINED,
+    STEREO_SCOPE_UNSUPPORTED,
+    AtomLedger,
+)
 
 try:
     from rdkit import Chem
@@ -214,6 +226,7 @@ class ReconstructionHypothesis:
     validation_errors: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
     fragment_by_atom: Mapping[int, int] = field(default_factory=dict, repr=False)
+    atom_ledger: ledger.AtomLedger | None = None
 
     @property
     def family(self) -> str:
@@ -245,6 +258,11 @@ class ReconstructionHypothesis:
             "status": self.status,
             "validation_errors": list(self.validation_errors),
             "metadata": dict(self.metadata),
+            "atom_ledger_summary": (
+                self.atom_ledger.summary_dict()
+                if self.atom_ledger is not None
+                else None
+            ),
         }
 
 
@@ -1754,6 +1772,7 @@ def _reconstruct_and_validate_hypothesis(
             topology_graph=cut_result.topology_graph,
             metadata=cut_result.metadata,
             fragment_by_atom=cut_result.fragment_by_atom,
+            atom_ledger=cut_result.atom_ledger,
             score=base_score + _SCORE_CUT_RECONSTRUCTION_ATTEMPTED,
         )
         if cut_result.status != "ok":
@@ -1893,6 +1912,7 @@ class _CutReconstructionResult:
     fragment_by_atom: Mapping[int, int]
     errors: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
+    atom_ledger: ledger.AtomLedger | None = None
 
 
 def _cut_and_reconstruct(
@@ -1987,6 +2007,10 @@ def _cut_and_reconstruct(
     roles: list[ReconstructedRole] = []
     unexplained_fragments: list[dict[str, object]] = []
     ignored_guest_fragments = 0
+    ledger_fragments: list[ledger.LedgerRecoveredFragment] = []
+    ledger_guests: list[ledger.LedgerGuest] = []
+    ledger_residue_atom_indices: list[int] = []
+    ledger_unaccounted: list[ledger.LedgerUnaccountedFragment] = []
     for fragment_idx, (fragment, members) in enumerate(zip(fragments, fragment_members)):
         fragment_role_atoms: defaultdict[str, list[int]] = defaultdict(list)
         for atom in fragment.GetAtoms():
@@ -2001,14 +2025,36 @@ def _cut_and_reconstruct(
             member_set = set(members)
             if not member_set.intersection(framework_atoms):
                 ignored_guest_fragments += 1
+                guest_elements = ledger.element_counts_for_atoms(mol, members)
+                ledger_guests.append(
+                    ledger.LedgerGuest(
+                        fragment_id=fragment_idx,
+                        atom_indices=tuple(sorted(int(atom_idx) for atom_idx in members)),
+                        atom_count=len(members),
+                        elements=guest_elements,
+                        molecular_formula=ledger.hill_formula(guest_elements),
+                        net_formal_charge=ledger.net_formal_charge_for_atoms(mol, members),
+                    )
+                )
                 continue
             if member_set.issubset(allowed_residue_atoms):
+                ledger_residue_atom_indices.extend(int(atom_idx) for atom_idx in members)
                 continue
             unexplained_fragments.append({
                 "fragment_id": fragment_idx,
                 "atom_indices": list(members),
                 "atomic_numbers": [mol.GetAtomWithIdx(atom_idx).GetAtomicNum() for atom_idx in members],
             })
+            ledger_unaccounted.append(
+                ledger.LedgerUnaccountedFragment(
+                    fragment_id=fragment_idx,
+                    atom_indices=tuple(sorted(int(atom_idx) for atom_idx in members)),
+                    atom_count=len(members),
+                    elements=ledger.element_counts_for_atoms(mol, members),
+                    net_formal_charge=ledger.net_formal_charge_for_atoms(mol, members),
+                    reason="framework fragment not assigned to a recovered precursor role",
+                )
+            )
             continue
         if len(fragment_role_atoms) != 1:
             return _CutReconstructionResult(
@@ -2043,7 +2089,30 @@ def _cut_and_reconstruct(
                 validation_passed=True,
             )
         )
+        ledger_fragments.append(
+            ledger.build_recovered_fragment_record(
+                fragment_id=fragment_idx,
+                role=role,
+                mol=mol,
+                atom_indices=members,
+                recovered_canonical_smiles=monomer.canonical_smiles,
+            )
+        )
         recovered_monomers.append(monomer)
+
+    atom_ledger = ledger.build_atom_ledger(
+        family=events[0].family,
+        mol=mol,
+        recovered_fragments=tuple(ledger_fragments),
+        guests=tuple(ledger_guests),
+        residue_atom_indices=tuple(sorted(ledger_residue_atom_indices)),
+        unaccounted=tuple(ledger_unaccounted),
+        identity_evidence=(
+            build_result.metadata.get("input_identity_evidence")
+            if isinstance(build_result.metadata, Mapping)
+            else None
+        ),
+    )
 
     monomers, identity_normalization = _aggregate_event_monomers(tuple(recovered_monomers))
     topology_graph, topology_metadata = _event_topology_graph(
@@ -2080,6 +2149,7 @@ def _cut_and_reconstruct(
                 "to reconstructed precursor roles",
             ),
             metadata=metadata,
+            atom_ledger=atom_ledger,
         )
     return _CutReconstructionResult(
         status="ok",
@@ -2088,6 +2158,7 @@ def _cut_and_reconstruct(
         topology_graph=topology_graph,
         fragment_by_atom=fragment_by_atom,
         metadata=metadata,
+        atom_ledger=atom_ledger,
     )
 
 
@@ -2876,6 +2947,8 @@ def _select_event_result(
                 0,
             ),
         })
+        if selected.atom_ledger is not None:
+            metadata["atom_ledger"] = selected.atom_ledger.to_dict()
         if search_coverage["status"] == SEARCH_STATUS_TRUNCATED:
             metadata["search_note"] = (
                 "the hypothesis search was truncated at the per-family cap; "
@@ -2923,6 +2996,8 @@ def _select_event_result(
             "defect_detection": dict(defect_report),
             "successful_hypothesis_count": 0,
         })
+        if defect_hypothesis.atom_ledger is not None:
+            metadata["atom_ledger"] = defect_hypothesis.atom_ledger.to_dict()
         return legacy.CifDecompositionResult(
             status="skipped",
             input_cif=str(input_path),
@@ -2957,6 +3032,8 @@ def _select_event_result(
             "internal_error_hypothesis_count": len(internal_errors),
             "successful_hypothesis_count": 0,
         })
+        if best_internal.atom_ledger is not None:
+            metadata["atom_ledger"] = best_internal.atom_ledger.to_dict()
         return legacy.CifDecompositionResult(
             status="error",
             input_cif=str(input_path),
@@ -3038,6 +3115,8 @@ def _select_event_result(
         "best_failed_hypothesis_id": best_failure.hypothesis_id,
         "successful_hypothesis_count": 0,
     })
+    if best_failure.atom_ledger is not None:
+        metadata["atom_ledger"] = best_failure.atom_ledger.to_dict()
     return legacy.CifDecompositionResult(
         status="skipped",
         input_cif=str(input_path),
@@ -3192,6 +3271,11 @@ def _best_failed_hypothesis(
 
 
 __all__ = [
+    "CHARGE_SCOPE_GUEST_LOCALIZED",
+    "CHARGE_SCOPE_LIMITED",
+    "CHARGE_SCOPE_NOT_PRESENT",
+    "CHARGE_SCOPE_PRESERVED",
+    "CHARGE_SCOPE_RESTORED_BY_HEURISTIC",
     "EVENT_STATUS_INTERNAL_ERROR",
     "EVENT_STATUS_MIXED_FAMILY",
     "EVENT_STATUS_MULTISPECIES",
@@ -3200,6 +3284,10 @@ __all__ = [
     "IDENTITY_STATUS_EXACT",
     "SEARCH_STATUS_COMPLETE",
     "SEARCH_STATUS_TRUNCATED",
+    "STEREO_SCOPE_NOT_DETECTED",
+    "STEREO_SCOPE_UNDETERMINED",
+    "STEREO_SCOPE_UNSUPPORTED",
+    "AtomLedger",
     "EventDetectionResult",
     "LinkageEvent",
     "ReconstructedRole",

@@ -27,6 +27,7 @@ from .cofid import (
     serialize_cofid,
 )
 from .decompose_cif import PeriodicCifAtoms, read_periodic_cif_atoms
+from .decompose_ledger import perceive_stereochemistry_evidence
 from .topologies import default_topology_repository
 from .topology_symmetry import expand_topology_definition
 
@@ -1449,6 +1450,22 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
                 for candidate in candidates
             )
     mol.UpdatePropertyCache(strict=False)
+    formal_charge_values = (
+        tuple(_parse_cif_formal_charge(value) for value in formal_charges)
+        if formal_charges
+        else ()
+    )
+    input_identity_evidence = {
+        "formal_charge_column_present": bool(formal_charges),
+        "input_net_formal_charge": sum(formal_charge_values),
+        "input_charged_atom_count": sum(
+            1 for value in formal_charge_values if value != 0
+        ),
+        "stereochemistry": perceive_stereochemistry_evidence(
+            mol,
+            atoms.cartesian_positions,
+        ),
+    }
     return BondedMolBuildResult(
         mol=mol,
         metadata={
@@ -1456,6 +1473,7 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
             "n_bond_orders_inferred": inferred_order_count,
             "n_beta_ketoenamine_bond_pairs_normalized": normalized_bken_bond_count,
             "imine_bond_order_normalization": imine_normalization,
+            "input_identity_evidence": input_identity_evidence,
         },
         candidates=tuple(candidates),
     )

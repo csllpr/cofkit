@@ -61,6 +61,7 @@ The normal `CifDecompositionResult` shape is preserved. Event-specific informati
 - `successful_alternatives`: every distinct complete decomposition (family, topology, COFid, score, hypothesis id) — a one-entry list on success, the full ambiguity set on `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`;
 - `supporting_hypothesis_count`: on success, how many complete hypotheses converged on the selected COFid before deduplication;
 - `precursor_identity`: the identity basis of the recovered precursors — `exact` when every recovered fragment of a reaction role had one identical canonical SMILES, or `element_graph_ambiguous` when chemically distinct bond-order/tautomer forms shared one molecular formula and element graph and were collapsed onto a deterministic buildable representative. The ambiguous case preserves every input form with its fragment count under `alternatives`; the selected form is a canonicalization, not an exact chemical identity;
+- `atom_ledger`: the full atom accounting of the selected (or best failed) reconstruction — see the next section;
 - `event_detection`: accepted and locally suppressed events;
 - `hypothesis_generation`: site counts, bounded-enumeration diagnostics, and potential non-overlapping family combinations;
 - `hypotheses`: every evaluated hypothesis, its events, repaired roles, validation status, and failure reasons;
@@ -70,6 +71,28 @@ The normal `CifDecompositionResult` shape is preserved. Event-specific informati
 - `multispecies_precursor_recovery`: when present, every distinct recovered species, its declared and detected motif count, fragment count, and role-wise reactive-site balance;
 - `defect_detection`: when present, the dominant precursor combination, fragment-agreement fraction, minority fragments, and structural-glitch evidence for a probable defective input;
 - `benchmark_contract`: compatibility metadata recording the default mode, legacy availability, and selection unit; it does not certify predictive accuracy.
+
+## Atom ledger and charge/stereo scope
+
+Every event-mode cut/reconstruction produces a typed `AtomLedger` (`cofkit.decompose_ledger`), serialized in full as `metadata["atom_ledger"]` on the selected or best-failed result and as a compact `atom_ledger_summary` on each serialized hypothesis. The ledger assigns every input CIF atom to exactly one bucket:
+
+- `recovered_fragments`: product atoms mapped to a fragment repaired into a precursor (per-fragment atom indices, element counts, role, recovered SMILES);
+- `guests`: disconnected components with no linkage-event atoms. Each guest molecule is one ledger entry with its own atom count, Hill formula, and net formal charge; `guest_molecule_count` is deliberately distinct from `guest_atom_count`;
+- `residue`: product-side atoms excluded from precursor recovery by the linkage chemistry (currently boroxine ring oxygens), with a recorded `residue_policy`;
+- `unaccounted`: framework fragments not assignable to a precursor role. These still invalidate the hypothesis with `FAILED_UNEXPLAINED_FRAMEWORK`; the ledger itemizes their atoms rather than only counting them.
+
+Because precursor repair restores condensation byproduct atoms and re-expresses product-state hydrogens, raw fragment-vs-input atom sums are not a valid conservation check. The ledger therefore records `reaction_additions` (atoms restored during repair, e.g. one O per imine aldehyde endpoint; two hydroxyl O per boronic-acid endpoint against three residue ring oxygens per boroxine ring — net 3 H2O per ring) and `reaction_deletions` (product-state explicit hydrogens re-expressed as implicit hydrogens), and verifies the explicit-atom balance per element:
+
+    input + reaction_additions = recovered_precursor_explicit_atoms + reaction_deletions + residue + guests + unaccounted
+
+Recovered-precursor implicit-hydrogen and total-atom counts are reported informationally alongside.
+
+Charge and stereochemistry scope is conservative:
+
+- `charge_scope`: formal charges from a CIF `_atom_site_pdbx_formal_charge` column are applied to the decomposition graph and verified per fragment against the recovered precursor SMILES (formal charge survives canonicalization and rides into the COFid). Statuses: `preserved` (charged input fragments recovered with the same net charge), `guest_localized` (charge only on reported guest molecules, which the COFid does not capture), `restored_by_heuristic` (charge created during repair by the valence-driven tetravalent-nitrogen rule on an input that declared none), `limited` (charge altered/lost on a recovered fragment, or charge on residue/unaccounted atoms — an explicit unsupported marker, never silent loss), or `not_present`. `charge_conserved` checks net charge across precursors + guests + residue + unaccounted.
+- `stereo_scope`: decomposition never preserves stereochemistry — canonical SMILES and the COFid format use `isomericSmiles=False`. Input stereo evidence (tetrahedral atom chirality perceived from the 3D coordinates; bond E/Z perception is unavailable in this RDKit line) is recorded under `input_identity_evidence`, and `stereo_scope.status` is `unsupported` whenever evidence was detected, `not_detected` otherwise, `undetermined` if perception could not run. `preserved` is always `false`.
+
+Atom-resolved formal-charge export into atomistic CIF charge columns, and ionic or stereochemical assembly, remain out of scope. The legacy decomposition engine does not compute an atom ledger.
 
 Detailed event statuses include `SUCCESS_COMPLETE`, `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`, `DETECTED_PROBABLE_STRUCTURAL_DEFECT`, `UNSUPPORTED_MULTISPECIES_PRECURSORS`, `UNSUPPORTED_MIXED_LINKAGE_FAMILY`, `FAILED_CHEMICAL_VALIDATION`, `FAILED_ENDPOINT_ACCOUNTING`, `FAILED_TOPOLOGY_VALIDATION`, `FAILED_UNEXPLAINED_FRAMEWORK`, `FAILED_INTERNAL_ERROR`, `UNSUPPORTED_LINKAGE`, and `SUPPRESSED_TRIAZINE_MOTIF`. `FAILED_INTERNAL_ERROR` marks an unexpected internal failure (the original `TypeName: message` cause is preserved in `validation_errors` and an `internal_error` metadata block) and surfaces as result `status="error"`; it is never a chemical verdict. `UNSUPPORTED_MIXED_LINKAGE_FAMILY` marks a framework whose non-overlapping linkage families each reconstruct part of the structure but cannot be serialized under the one-family COFid contract — an explicit unsupported-representation verdict, not a chemical incompatibility verdict.
 
@@ -84,5 +107,5 @@ A probable defect remains a `skipped` decomposition and never produces a guessed
 - COFid currently serializes one linkage family. When detected non-overlapping families each genuinely reconstruct part of the framework, event mode aborts with the explicit `UNSUPPORTED_MIXED_LINKAGE_FAMILY` verdict; it does not serialize a mixed-linkage COFid.
 - Multivariate COFs with several chemically distinct precursors in the same reaction role are not yet supported as complete decompositions. Such reconstructions abstain with `UNSUPPORTED_MULTISPECIES_PRECURSORS`; external provenance is still required before calling a particular CIF intentionally multivariate. Distinct precursor identities are retained; they are not collapsed into a binary COFid or classified as defects solely because multiple species are present.
 - Hypothesis enumeration chooses one interpretation per detected site and is capped at 256 combinations per family. It does not yet search arbitrary subsets of high-confidence sites. When the cap cuts off combinations, the result carries `search_status: "truncated"` with explored/theoretical coverage counts instead of presenting the search as exhaustive. Enumeration order is canonical with respect to input atom/label permutation, so the explored subset — and therefore the verdict under truncation — is independent of CIF row order. Assessment note: raising the cap from 256 to 4096 changed no verdict across the repository's decomposition fixtures, generated imine/vinylene round trips, and a 25-structure CoRE-COF sample (largest theoretical hypothesis count observed: 72), so the default cap is unchanged.
-- Guest handling is conservative: disconnected components with no event atoms are ignored, while unexplained fragments from the event-bearing framework component invalidate a hypothesis.
+- Guest handling is conservative: disconnected components with no event atoms are treated as guests — now itemized in the atom ledger (per-molecule atom counts, formula, charge) and included in the atom balance — while unexplained fragments from the event-bearing framework component invalidate a hypothesis and are itemized as `unaccounted`.
 - The same `P1`, bond-source, topology-repository, and supported-linkage restrictions as legacy mode still apply.
