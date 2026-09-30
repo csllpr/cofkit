@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from collections import Counter
 from dataclasses import replace
-from math import cos, pi, sin, sqrt
+from math import acos, cos, degrees, pi, sin, sqrt
 from pathlib import Path
 
 
@@ -20,9 +20,14 @@ from cofkit.cif import CIFWriter
 from cofkit.cli import main as cli_main
 from cofkit.cofid import cofid_to_build_request, generate_cofid
 from cofkit.geometry import Frame
-from cofkit.model import MonomerSpec, ReactiveMotif
+from cofkit.model import AssemblyState, MonomerSpec, MotifRef, Pose, ReactionEvent, ReactiveMotif
 from cofkit.reaction_realization import ReactionRealizer
-from cofkit.ring_geometry import validate_ring_geometry
+from cofkit.ring_geometry import (
+    RING_ATTACHMENT_IDEAL_ANGLE_DEGREES,
+    ring_attachment_report,
+    ring_geometry_profile,
+    validate_ring_geometry,
+)
 from cofkit.stacking import DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
 
 
@@ -592,6 +597,306 @@ class RingFormingWorkflowTests(unittest.TestCase):
                     cif_lines[0],
                     f"# COFid: {row['generated_cofid']} stacking={row['stacking']['id']}",
                 )
+
+
+class RingAttachmentGeometryTests(unittest.TestCase):
+    """A05: exocyclic ring-monomer attachment geometry is measured and
+    classified separately from the ring-participant arrangement verdict."""
+
+    FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "ring_attachment"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.para_precursor = build_rdkit_monomer(
+            "para",
+            "benzene-1,4-diboronic acid",
+            "OB(O)c1ccc(B(O)O)cc1",
+            "boronic_acid",
+            num_conformers=1,
+        )
+        cls.ortho_precursor = build_rdkit_monomer(
+            "ortho",
+            "benzene-1,2-diboronic acid",
+            "OB(O)c1ccccc1B(O)O",
+            "boronic_acid",
+            num_conformers=1,
+        )
+
+    def _attachment_angles_from_cif(self, cif_path: Path) -> list[float]:
+        block = gemmi.cif.read_file(str(cif_path)).sole_block()
+        structure = gemmi.make_small_structure_from_block(block)
+        by_label = {str(site.label): site for site in structure.sites}
+        neighbors: dict[str, set[str]] = {}
+        labels1 = block.find_loop("_geom_bond_atom_site_label_1")
+        labels2 = block.find_loop("_geom_bond_atom_site_label_2")
+        for index in range(min(len(labels1), len(labels2))):
+            first, second = str(labels1[index]), str(labels2[index])
+            neighbors.setdefault(first, set()).add(second)
+            neighbors.setdefault(second, set()).add(first)
+        angles: list[float] = []
+        for site in structure.sites:
+            if site.element.name != "B":
+                continue
+            boron = structure.cell.orthogonalize(site.fract)
+            for neighbor_label in neighbors.get(str(site.label), ()):
+                neighbor = by_label[neighbor_label]
+                if neighbor.element.name != "C":
+                    continue
+                for other_label in neighbors.get(str(site.label), ()):
+                    other = by_label[other_label]
+                    if other.element.name != "O":
+                        continue
+                    vectors = [
+                        structure.cell.find_nearest_pbc_position(
+                            boron, structure.cell.orthogonalize(partner.fract), 0
+                        )
+                        - boron
+                        for partner in (neighbor, other)
+                    ]
+                    first, second = vectors
+                    cosine = max(-1.0, min(1.0, first.dot(second) / first.length() / second.length()))
+                    angles.append(degrees(acos(cosine)))
+        return sorted(angles)
+
+    def test_saved_para_ortho_fixtures_distinguish_attachment_angles(self):
+        """The saved fixtures reproduce the review evidence: ordinary aromatic
+        sp2 attachment at ~120 deg (para) versus the pathological ~64/175 deg
+        case (ortho)."""
+        profile = ring_geometry_profile("boroxine_trimerization")
+        para_angles = self._attachment_angles_from_cif(self.FIXTURE_DIR / "para.cif")
+        ortho_angles = self._attachment_angles_from_cif(self.FIXTURE_DIR / "ortho.cif")
+
+        self.assertEqual(len(para_angles), 12)
+        self.assertEqual(len(ortho_angles), 12)
+        for angle in para_angles:
+            self.assertLessEqual(
+                abs(angle - RING_ATTACHMENT_IDEAL_ANGLE_DEGREES),
+                profile.attachment_warning_deviation_degrees,
+            )
+        # Ortho pathology: ~64.3/~175.3 deg, i.e. ~55 deg off ideal — well
+        # beyond the rejection tolerance.
+        self.assertAlmostEqual(ortho_angles[0], 64.31, delta=0.5)
+        self.assertAlmostEqual(ortho_angles[-1], 175.31, delta=0.5)
+        self.assertGreater(
+            min(abs(angle - RING_ATTACHMENT_IDEAL_ANGLE_DEGREES) for angle in ortho_angles[:6]),
+            profile.attachment_rejection_deviation_degrees,
+        )
+        self.assertGreater(
+            min(abs(angle - RING_ATTACHMENT_IDEAL_ANGLE_DEGREES) for angle in ortho_angles[6:]),
+            profile.attachment_rejection_deviation_degrees,
+        )
+
+    def test_para_attachment_accepted_and_ortho_attachment_rejected(self):
+        para = RingFormingStructureGenerator().build(self.para_precursor, "boroxine_trimerization")
+        ortho = RingFormingStructureGenerator().build(self.ortho_precursor, "boroxine_trimerization")
+
+        para_validation = para.candidate.metadata["ring_validation"]
+        self.assertEqual(para_validation["classification"], "accepted")
+        self.assertEqual(para_validation["arrangement_classification"], "accepted")
+        self.assertEqual(para_validation["attachment_classification"], "accepted")
+        self.assertEqual(para_validation["attachment_status"], "measured")
+        self.assertNotIn("ring_attachment_rejected", para.candidate.flags)
+        self.assertNotIn("ring_attachment_warning", para.candidate.flags)
+        for measurement in para_validation["attachment"]["measurements"]:
+            for angle in measurement["ring_angles_degrees"]:
+                self.assertAlmostEqual(angle, RING_ATTACHMENT_IDEAL_ANGLE_DEGREES, delta=1.0)
+
+        ortho_validation = ortho.candidate.metadata["ring_validation"]
+        # The arrangement channel still passes (the review evidence: both
+        # precursors pass the ring test); the attachment channel rejects.
+        self.assertEqual(ortho_validation["arrangement_classification"], "accepted")
+        self.assertEqual(ortho_validation["attachment_classification"], "rejected")
+        self.assertEqual(ortho_validation["classification"], "rejected")
+        self.assertEqual(ortho_validation["attachment_status"], "measured")
+        self.assertIn("ring_attachment_rejected", ortho.candidate.flags)
+        self.assertNotIn("ring_geometry_rejected", ortho.candidate.flags)
+        ortho_angles = sorted(
+            angle
+            for measurement in ortho_validation["attachment"]["measurements"]
+            for angle in measurement["ring_angles_degrees"]
+        )
+        self.assertAlmostEqual(ortho_angles[0], 64.31, delta=0.5)
+        self.assertAlmostEqual(ortho_angles[-1], 175.31, delta=0.5)
+        self.assertTrue(ortho_validation["reasons"])
+
+    def test_coarse_validation_reports_attachment_channel_separately(self):
+        """validate_manifest_record: the ortho pathology lands in the
+        attachment channel (ring_attachment_invalid), not the arrangement
+        channel (ring_geometry_invalid), and the coverage map records both
+        channels as measured."""
+        for name, precursor, expected_classification in (
+            ("para", self.para_precursor, "valid"),
+            ("ortho", self.ortho_precursor, "hard_invalid"),
+        ):
+            candidate = RingFormingStructureGenerator().generate(precursor, "boroxine_trimerization")
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                cif_path = Path(temporary_dir) / f"{name}.cif"
+                CIFWriter().write_candidate(cif_path, candidate, {precursor.id: precursor})
+                report = CoarseStructureValidator().validate_manifest_record(
+                    {
+                        "topology_id": "hcb",
+                        "cif_path": str(cif_path),
+                        "flags": list(candidate.flags),
+                        "metadata": dict(candidate.metadata),
+                    }
+                )
+            self.assertEqual(report.classification, expected_classification)
+            self.assertEqual(report.coverage["ring_geometry"], "measured")
+            self.assertEqual(report.coverage["ring_attachment"], "measured")
+            if name == "ortho":
+                self.assertIn("ring_attachment_invalid", report.hard_invalid_reasons)
+                self.assertNotIn("ring_geometry_invalid", report.hard_invalid_reasons)
+                self.assertEqual(report.metrics["ring_attachment_classification"], "rejected")
+
+    def test_legacy_ring_record_without_attachment_channel_reports_missing_data(self):
+        """Records whose ring_validation metadata predates the attachment
+        channel keep their arrangement verdict but honestly report the
+        attachment channel as unmeasured."""
+        candidate = RingFormingStructureGenerator().generate(self.para_precursor, "boroxine_trimerization")
+        legacy_ring_validation = {
+            "classification": candidate.metadata["ring_validation"]["classification"],
+            "reasons": [],
+            "metrics": dict(candidate.metadata["ring_validation"]["metrics"]),
+        }
+        metadata = dict(candidate.metadata)
+        metadata["ring_validation"] = legacy_ring_validation
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            cif_path = Path(temporary_dir) / "para.cif"
+            CIFWriter().write_candidate(cif_path, candidate, {self.para_precursor.id: self.para_precursor})
+            report = CoarseStructureValidator().validate_manifest_record(
+                {
+                    "topology_id": "hcb",
+                    "cif_path": str(cif_path),
+                    "flags": list(candidate.flags),
+                    "metadata": metadata,
+                }
+            )
+        self.assertEqual(report.coverage["ring_attachment"], "missing_data")
+        self.assertEqual(report.coverage["ring_geometry"], "measured")
+        # ring_attachment is not a required check: the record can still be
+        # valid, but the missing channel is explicit.
+        self.assertEqual(report.classification, "valid")
+        self.assertNotIn("ring_attachment", report.unmeasured_required_checks)
+
+    def test_arrangement_and_attachment_verdicts_are_independent(self):
+        """An off-radius participant fails the arrangement channel while the
+        attachment channel (radially outward exocyclic bond) stays accepted.
+
+        The 0.20 A offset exceeds the arrangement radial tolerance (0.18 A)
+        but stretches the exocyclic bond by only 0.20/1.55 = 12.9%, below the
+        attachment warning fraction (15%)."""
+        events, state, spec = _synthetic_ring_assembly(radial_offset=0.20)
+        validation = validate_ring_geometry(events, state, {spec.id: spec})
+
+        self.assertEqual(validation.arrangement_classification, "rejected")
+        self.assertEqual(validation.attachment_classification, "accepted")
+        self.assertEqual(validation.classification, "rejected")
+        self.assertTrue(any("radial residual" in reason for reason in validation.reasons))
+
+    def test_attachment_warning_tier_for_moderately_strained_geometry(self):
+        events, state, spec = _synthetic_ring_assembly(deviation_degrees=25.0)
+        profile = ring_geometry_profile("boroxine_trimerization")
+        self.assertGreater(25.0, profile.attachment_warning_deviation_degrees)
+        self.assertLess(25.0, profile.attachment_rejection_deviation_degrees)
+
+        validation = validate_ring_geometry(events, state, {spec.id: spec})
+
+        self.assertEqual(validation.arrangement_classification, "accepted")
+        self.assertEqual(validation.attachment_classification, "warning")
+        self.assertEqual(validation.classification, "warning")
+        self.assertTrue(any("warning tolerance" in reason for reason in validation.reasons))
+
+    def test_attachment_rejection_tier_for_severely_strained_geometry(self):
+        events, state, spec = _synthetic_ring_assembly(deviation_degrees=55.0)
+
+        validation = validate_ring_geometry(events, state, {spec.id: spec})
+
+        self.assertEqual(validation.arrangement_classification, "accepted")
+        self.assertEqual(validation.attachment_classification, "rejected")
+        self.assertEqual(validation.classification, "rejected")
+
+    def test_attachment_missing_atom_metadata_is_not_a_pass(self):
+        events, state, spec = _synthetic_ring_assembly(with_atom_metadata=False)
+        validation = validate_ring_geometry(events, state, {spec.id: spec})
+        report = ring_attachment_report(events, state, {spec.id: spec})
+
+        self.assertEqual(report.status, "missing_data")
+        self.assertEqual(report.n_unmeasured_participants, 3)
+        self.assertEqual(report.classification, "not_applicable")
+        self.assertEqual(validation.attachment.status, "missing_data")
+        # Arrangement acceptance is unaffected; the missing attachment channel
+        # is reported through the status, not silently counted as passing.
+        self.assertEqual(validation.arrangement_classification, "accepted")
+        self.assertEqual(validation.classification, "accepted")
+
+
+def _synthetic_ring_assembly(
+    deviation_degrees: float = 0.0,
+    radial_offset: float = 0.0,
+    with_atom_metadata: bool = True,
+) -> tuple[tuple[ReactionEvent, ...], AssemblyState, MonomerSpec]:
+    """Three two-atom (B/C) monomer instances on a regular boroxine ring.
+
+    The anchor (C) sits 1.55 A from the reactive atom (B), pointing radially
+    outward plus `deviation_degrees` of in-plane rotation, so both exocyclic
+    attachment angles deviate from the 120-degree ideal by that amount.
+    `radial_offset` moves every participant off the ring radius to exercise
+    the arrangement channel independently.
+    """
+    profile = ring_geometry_profile("boroxine_trimerization")
+    radius = profile.ring_atom_bond_length
+    metadata = {"reactive_atom_id": 0, "anchor_atom_id": 1} if with_atom_metadata else {}
+    spec = MonomerSpec(
+        id="synthetic",
+        name="synthetic boronic acid",
+        motifs=(
+            ReactiveMotif(
+                id="bor1",
+                kind="boronic_acid",
+                atom_ids=(0, 1),
+                frame=Frame(origin=(0.0, 0.0, 0.0), primary=(1.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)),
+                metadata=metadata,
+            ),
+        ),
+        atom_symbols=("B", "C"),
+        atom_positions=((0.0, 0.0, 0.0), (1.55, 0.0, 0.0)),
+    )
+    deviation = deviation_degrees * pi / 180.0
+    poses: dict[str, Pose] = {}
+    refs: list[MotifRef] = []
+    for index in range(3):
+        ring_angle = 2.0 * pi * index / 3.0
+        vertex = (
+            (radius + radial_offset) * cos(ring_angle),
+            (radius + radial_offset) * sin(ring_angle),
+            0.0,
+        )
+        anchor_angle = ring_angle + deviation
+        rotation = (
+            (cos(anchor_angle), -sin(anchor_angle), 0.0),
+            (sin(anchor_angle), cos(anchor_angle), 0.0),
+            (0.0, 0.0, 1.0),
+        )
+        instance_id = f"p{index + 1}"
+        poses[instance_id] = Pose(translation=vertex, rotation_matrix=rotation)
+        refs.append(MotifRef(instance_id, spec.id, "bor1"))
+    event = ReactionEvent(
+        id="r1",
+        template_id="boroxine_trimerization",
+        participants=tuple(refs),
+        product_state="boroxine",
+        metadata={
+            "ring_center_fractional": (0.0, 0.0, 0.0),
+            "ring_normal": (0.0, 0.0, 1.0),
+            "ring_atom_bond_length": radius,
+        },
+    )
+    state = AssemblyState(
+        cell=((30.0, 0.0, 0.0), (0.0, 30.0, 0.0), (0.0, 0.0, 8.0)),
+        monomer_poses=poses,
+        stacking_state="disabled",
+    )
+    return (event,), state, spec
 
 
 if __name__ == "__main__":

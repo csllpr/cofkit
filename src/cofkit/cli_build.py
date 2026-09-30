@@ -743,18 +743,34 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
     print("variants:", len(candidates))
     print("generated_cofid:", generated_cofid or "-")
     for row in result_rows:
+        ring_validation = row["ring_validation"]
+        arrangement = ring_validation.get("arrangement_classification") or ring_validation["classification"]
+        attachment = ring_validation.get("attachment_classification") or "not_applicable"
         print(
             "result:",
             row["candidate_id"],
             (row["stacking"] or {}).get("id", "unstacked") if isinstance(row["stacking"], dict) else "unstacked",
-            row["ring_validation"]["classification"],
+            ring_validation["classification"],
+            f"(arrangement={arrangement} attachment={attachment})",
             row["cif_path"] or "-",
         )
-        if row["ring_validation"]["classification"] != "accepted":
-            reasons = row["ring_validation"].get("reasons") or ()
-            detail = "; ".join(str(reason) for reason in reasons) or "no reasons recorded"
+        reasons = tuple(str(reason) for reason in ring_validation.get("reasons") or ())
+        detail = "; ".join(reasons) or "no reasons recorded"
+        if arrangement != "accepted":
             print(
-                f"warning: candidate {row['candidate_id']!r} failed ring geometry validation "
+                f"warning: candidate {row['candidate_id']!r} failed ring arrangement validation "
+                f"({detail}); the CIF was still written",
+                file=sys.stderr,
+            )
+        if attachment == "rejected":
+            print(
+                f"warning: candidate {row['candidate_id']!r} failed ring attachment validation "
+                f"({detail}); the CIF was still written",
+                file=sys.stderr,
+            )
+        elif attachment == "warning":
+            print(
+                f"warning: candidate {row['candidate_id']!r} has strained ring attachment geometry "
                 f"({detail}); the CIF was still written",
                 file=sys.stderr,
             )

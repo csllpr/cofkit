@@ -282,16 +282,53 @@ class CoarseStructureValidator:
             hard_invalid_reasons.append("unreacted_motifs")
 
         if ring_validation:
+            # Arrangement and attachment verdicts are separate channels:
+            # arrangement covers the ring participants themselves, attachment
+            # the exocyclic ring-monomer bonds/angles. Legacy records carry
+            # only the combined "classification"; treat it as the arrangement
+            # verdict and report attachment coverage as missing data.
             ring_classification = self._string(ring_validation.get("classification"))
+            arrangement_classification = self._string(ring_validation.get("arrangement_classification"))
+            if arrangement_classification is None:
+                arrangement_classification = ring_classification
+            attachment_classification = self._string(ring_validation.get("attachment_classification"))
+            attachment_status = self._string(ring_validation.get("attachment_status"))
             ring_reasons = tuple(str(reason) for reason in ring_validation.get("reasons", ()))
             metrics["ring_validation_classification"] = ring_classification
             metrics["ring_validation_reasons"] = ring_reasons
             metrics["ring_geometry"] = ring_validation.get("metrics", {})
             coverage["ring_geometry"] = CHECK_MEASURED
-            if ring_classification not in {None, "accepted", "valid"}:
+            if arrangement_classification not in {None, "accepted", "valid"}:
                 hard_invalid_reasons.append("ring_geometry_invalid")
+            attachment_block = self._mapping(ring_validation.get("attachment"))
+            if attachment_classification is None:
+                coverage["ring_attachment"] = CHECK_MISSING_DATA
+                metrics["ring_attachment_coverage_detail"] = (
+                    "ring_validation metadata carries no attachment channel (record predates "
+                    "attachment measurement or the attachment report was dropped)"
+                )
+            elif attachment_status == CHECK_MISSING_DATA or attachment_block.get("status") == CHECK_MISSING_DATA:
+                coverage["ring_attachment"] = CHECK_MISSING_DATA
+                metrics["ring_attachment_classification"] = attachment_classification
+                metrics["ring_attachment_coverage_detail"] = (
+                    f"{attachment_block.get('n_unmeasured_participants', '?')} ring participant(s) "
+                    "lacked atom metadata/positions for attachment measurement"
+                )
+                metrics["ring_attachment"] = attachment_block
+            elif attachment_classification == "not_applicable":
+                coverage["ring_attachment"] = CHECK_NOT_APPLICABLE
+                metrics["ring_attachment_classification"] = attachment_classification
+            else:
+                coverage["ring_attachment"] = CHECK_MEASURED
+                metrics["ring_attachment_classification"] = attachment_classification
+                metrics["ring_attachment"] = attachment_block
+                if attachment_classification == "rejected":
+                    hard_invalid_reasons.append("ring_attachment_invalid")
+                elif attachment_classification == "warning":
+                    warning_reasons.append("ring_attachment_strained")
         else:
             coverage["ring_geometry"] = CHECK_NOT_APPLICABLE
+            coverage["ring_attachment"] = CHECK_NOT_APPLICABLE
 
         monomer_geometry_warnings = tuple(
             str(warning) for warning in metadata.get("monomer_geometry_warnings", ()) or ()

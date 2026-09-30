@@ -126,7 +126,7 @@ tunables must land here, not at consumer sites:
 - [src/cofkit/constants.py](../src/cofkit/constants.py)
   - Cross-cutting assembly defaults (`DEFAULT_MONOLAYER_C_ANGSTROM`, `DEFAULT_LATERAL_SPAN_ANGSTROM`).
 - [src/cofkit/ring_geometry.py](../src/cofkit/ring_geometry.py)
-  - Ring-template bond lengths for boroxine/triazine ring formation.
+  - Ring-template bond lengths for boroxine/triazine ring formation, the ring-arrangement acceptance tolerances (`RingGeometryProfile`), and the exocyclic attachment acceptance criteria (`RING_ATTACHMENT_IDEAL_ANGLE_DEGREES`, derived; `attachment_*` warning/rejection tolerances, heuristic — pending calibration) measured by `ring_attachment_report` and combined in `validate_ring_geometry` (arrangement and attachment verdicts reported separately).
 - [src/cofkit/validation.py](../src/cofkit/validation.py)
   - `CoarseValidationThresholds` owns the nine validation thresholds; `cli_analyze.py` argparse defaults reference its fields.
 - [src/cofkit/graspa.py](../src/cofkit/graspa.py) and [src/cofkit/lammps.py](../src/cofkit/lammps.py)

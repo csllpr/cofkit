@@ -428,6 +428,9 @@ def _apply_layer_registry(
     if ring_validation_metrics:
         ring_validation["metrics"] = _duplicate_ring_geometry_metrics(ring_validation_metrics, registry.id)
     if ring_validation:
+        attachment = _mapping(ring_validation.get("attachment"))
+        if attachment:
+            ring_validation["attachment"] = _duplicate_ring_attachment_report(attachment, registry.id)
         base_reasons = tuple(str(reason) for reason in ring_validation.get("reasons", ()))
         if base_reasons:
             ring_validation["reasons"] = tuple(
@@ -888,6 +891,40 @@ def _duplicate_ring_geometry_metrics(metrics: Mapping[str, object], registry_id:
         )
         if recomputed is not None:
             result["total_residual"] = recomputed
+    return result
+
+
+def _duplicate_ring_attachment_report(attachment: Mapping[str, object], registry_id: str) -> dict[str, object]:
+    """Per-layer copy of the ring attachment report for stacked candidates.
+
+    Same duplication contract as `_duplicate_ring_geometry_metrics`: each
+    attachment measurement is per ring event, so the measurements are copied
+    once per layer with suffixed event ids and layer provenance; reasons are
+    duplicated with the same per-layer prefixes as the arrangement reasons.
+    Verdicts (status/classification) are layer-independent and carried over
+    unchanged.
+    """
+    measurements = tuple(item for item in attachment.get("measurements", ()) if isinstance(item, Mapping))
+    duplicated_measurements: list[dict[str, object]] = []
+    for layer_index, layer_suffix in enumerate(_STACKING_LAYER_SUFFIXES):
+        for measurement in measurements:
+            duplicated = dict(measurement)
+            event_id = duplicated.get("event_id")
+            if event_id is not None:
+                duplicated["event_id"] = f"{event_id}{layer_suffix}"
+            duplicated["layer_index"] = layer_index
+            duplicated["stacking_registry"] = registry_id
+            duplicated_measurements.append(duplicated)
+    result = dict(attachment)
+    if measurements:
+        result["measurements"] = tuple(duplicated_measurements)
+    base_reasons = tuple(str(reason) for reason in attachment.get("reasons", ()))
+    if base_reasons:
+        result["reasons"] = tuple(
+            f"{layer_suffix}: {reason}"
+            for layer_suffix in _STACKING_LAYER_SUFFIXES
+            for reason in base_reasons
+        )
     return result
 
 

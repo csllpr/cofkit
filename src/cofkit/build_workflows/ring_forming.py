@@ -315,9 +315,7 @@ class RingFormingStructureGenerator:
         state = optimization.state if optimization is not None else initial_state
         geometry = ring_geometry_report(tuple(events), state, {monomer.id: monomer})
         validation = validate_ring_geometry(tuple(events), state, {monomer.id: monomer})
-        flags = ["contains_ring_forming_event", "stacking_disabled"]
-        if validation.classification != "accepted":
-            flags.append("ring_geometry_rejected")
+        flags = ["contains_ring_forming_event", "stacking_disabled"] + _ring_validation_flags(validation)
         candidate = Candidate(
             id=candidate_id,
             score=None,
@@ -343,11 +341,7 @@ class RingFormingStructureGenerator:
                     "max_residual": max(edge_placement_residuals.values(), default=0.0),
                     "residuals_by_edge": dict(sorted(edge_placement_residuals.items())),
                 },
-                "ring_validation": {
-                    "classification": validation.classification,
-                    "reasons": validation.reasons,
-                    "metrics": dict(validation.metrics),
-                },
+                "ring_validation": _ring_validation_metadata(validation),
                 "topology_assignment_mode": "virtual_node_topology",
             },
         )
@@ -545,9 +539,7 @@ class RingFormingStructureGenerator:
         state = optimization.state if optimization is not None else state
         geometry = ring_geometry_report(tuple(events), state, {monomer.id: monomer})
         validation = validate_ring_geometry(tuple(events), state, {monomer.id: monomer})
-        flags = ["contains_ring_forming_event", "stacking_disabled", "indexed_virtual_node_topology"]
-        if validation.classification != "accepted":
-            flags.append("ring_geometry_rejected")
+        flags = ["contains_ring_forming_event", "stacking_disabled", "indexed_virtual_node_topology"] + _ring_validation_flags(validation)
         candidate = Candidate(
             id=candidate_id,
             score=None,
@@ -562,11 +554,7 @@ class RingFormingStructureGenerator:
                 "instance_to_monomer": {instance.id: monomer.id for instance in instances},
                 "score_metadata": {"ring_geometry": geometry.as_dict(), "n_unreacted_motifs": 0},
                 "optimization": dict(optimization.metrics) if optimization is not None else {"enabled": False},
-                "ring_validation": {
-                    "classification": validation.classification,
-                    "reasons": validation.reasons,
-                    "metrics": dict(validation.metrics),
-                },
+                "ring_validation": _ring_validation_metadata(validation),
                 "topology_assignment_mode": "virtual_node_topology",
             },
         )
@@ -731,6 +719,33 @@ class RingFormingStructureGenerator:
             ),
             (0.0, 0.0, self.config.layer_spacing),
         )
+
+
+def _ring_validation_flags(validation) -> list[str]:
+    """Candidate flags for the ring verdicts; arrangement and attachment stay
+    separately interpretable."""
+    flags: list[str] = []
+    if validation.arrangement_classification != "accepted":
+        flags.append("ring_geometry_rejected")
+    if validation.attachment_classification == "rejected":
+        flags.append("ring_attachment_rejected")
+    elif validation.attachment_classification == "warning":
+        flags.append("ring_attachment_warning")
+    return flags
+
+
+def _ring_validation_metadata(validation) -> dict[str, object]:
+    return {
+        "classification": validation.classification,
+        "arrangement_classification": validation.arrangement_classification,
+        "attachment_classification": validation.attachment_classification,
+        "attachment_status": validation.attachment.status if validation.attachment is not None else "not_applicable",
+        "reasons": validation.reasons,
+        "metrics": dict(validation.metrics),
+        "attachment": (
+            validation.attachment.as_dict() if validation.attachment is not None else None
+        ),
+    }
 
 
 def _monomer_normal(monomer: MonomerSpec) -> Vec3:

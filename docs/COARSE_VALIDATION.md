@@ -32,6 +32,7 @@ Every validation record carries a per-check `coverage` map with one of these sta
 - any unreacted motifs
 - missing or unparsable CIF
 - disconnected monomer-instance graph reconstructed from CIF bonding
+- rejected ring-participant arrangement (`ring_geometry_invalid`) or rejected exocyclic ring-monomer attachment (`ring_attachment_invalid`) on ring-forming builds
 - any nonbonded heavy-atom contact `< 1.05 A`
 - `2D` cell area `< 10.0 A^2`
 - `3D` cell volume `< 20.0 A^3`
