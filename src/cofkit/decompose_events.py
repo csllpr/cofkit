@@ -7,7 +7,9 @@ the decision model:
 
 1. detect immutable local linkage events;
 2. resolve only chemically local overlaps;
-3. enumerate bounded reconstruction hypotheses;
+3. enumerate bounded reconstruction hypotheses in a canonical order derived
+   from graph invariants, so input atom/label permutation cannot change
+   which hypotheses the per-family cap explores;
 4. validate each complete hypothesis globally;
 5. select a result only after chemical and topological validation.
 
@@ -96,7 +98,9 @@ _CONFIDENCE_SCORE = {"low": 1.0, "medium": 2.0, "high": 3.0}
 # Heuristic — pending calibration: cap on enumerated event combinations per
 # linkage family, bounding the combinatorial blow-up of hypothesis
 # generation for dense frameworks. 256 is far above the event counts seen
-# in practice while keeping pathological inputs finite.
+# in practice while keeping pathological inputs finite. Enumeration order is
+# canonical (see `_event_search_key`), so the explored subset is invariant
+# under input atom/label permutation.
 _MAX_FAMILY_HYPOTHESES = 256
 _ORIGINAL_ATOM_INDEX_PROP = "cofkit_event_original_atom_idx"
 # Heuristic — pending calibration: minimum fraction of fragments per
@@ -1378,8 +1382,24 @@ def _detect_ring_events(
     used_atoms: set[int] = set()
     periodic_rejected = 0
     overlap_rejected = 0
-    for raw_ring in mol.GetRingInfo().AtomRings():
-        ring = tuple(int(atom_idx) for atom_idx in raw_ring)
+    ring_order = _canonical_search_order(mol)
+
+    def _ring_iteration_key(ring: Sequence[int]) -> tuple[object, ...]:
+        sorted_ring = tuple(sorted(int(atom_idx) for atom_idx in ring))
+        if ring_order is None:
+            return (sorted_ring,)
+        # Greedy overlap rejection keeps the first accepted ring, so the
+        # iteration order must be a graph invariant, not CIF row order.
+        return (
+            tuple(sorted(ring_order.atom_ranks[atom_idx] for atom_idx in sorted_ring)),
+            sorted_ring,
+        )
+
+    atom_rings = sorted(
+        (tuple(int(atom_idx) for atom_idx in ring) for ring in mol.GetRingInfo().AtomRings()),
+        key=_ring_iteration_key,
+    )
+    for ring in atom_rings:
         ring_key = frozenset(ring)
         if ring_key in seen_rings or not legacy._matches_ring_decomposition_pattern(mol, ring, spec):
             continue
@@ -1497,6 +1517,87 @@ def _resolve_local_overlaps(
     return tuple(accepted), tuple(suppressed)
 
 
+@dataclass(frozen=True)
+class _CanonicalSearchOrder:
+    """Input-permutation-invariant graph labels for hypothesis ordering.
+
+    ``atom_ranks`` are RDKit canonical symmetry classes computed with
+    ``breakTies=False``, so automorphism-equivalent atoms share a class and
+    no class depends on input atom numbering.  ``bond_keys`` labels each
+    bond by its order and the symmetry classes of its endpoints.
+    """
+
+    atom_ranks: tuple[int, ...]
+    bond_keys: tuple[tuple[float, int, int], ...]
+
+
+def _canonical_search_order(mol) -> _CanonicalSearchOrder | None:
+    if mol is None or Chem is None:
+        return None
+    atom_ranks = tuple(
+        int(rank) for rank in Chem.CanonicalRankAtoms(mol, breakTies=False)
+    )
+    bond_keys = tuple(
+        (
+            float(bond.GetBondTypeAsDouble()),
+            *sorted(
+                (
+                    atom_ranks[int(bond.GetBeginAtomIdx())],
+                    atom_ranks[int(bond.GetEndAtomIdx())],
+                )
+            ),
+        )
+        for bond in mol.GetBonds()
+    )
+    return _CanonicalSearchOrder(atom_ranks=atom_ranks, bond_keys=bond_keys)
+
+
+def _event_search_key(
+    event: LinkageEvent,
+    order: _CanonicalSearchOrder | None,
+) -> tuple[object, ...]:
+    """Permutation-stable ordering key for hypothesis enumeration.
+
+    Event and site identifiers embed raw atom/bond indices assigned in CIF
+    row order, so sorting by them makes the bounded search explore a
+    different subset of hypotheses when the input atom order is shuffled.
+    This key is derived from graph invariants instead; the raw identifier
+    remains only as a final tie-break between genuinely symmetry-equivalent
+    events, whose reconstructions are interchangeable.
+    """
+
+    confidence_rank = -_CONFIDENCE_SCORE.get(event.confidence, 0.0)
+    if order is None or (
+        event.atoms and max(event.atoms) >= len(order.atom_ranks)
+    ) or (
+        (event.bonds or event.cut_bonds)
+        and max((*event.bonds, *event.cut_bonds)) >= len(order.bond_keys)
+    ):
+        return (
+            event.family,
+            confidence_rank,
+            len(event.atoms),
+            len(event.cut_bonds),
+            event.site_id,
+            event.event_id,
+        )
+    atom_signature = tuple(sorted(order.atom_ranks[idx] for idx in event.atoms))
+    endpoint_signature = tuple(
+        sorted((order.atom_ranks[idx], role) for idx, role in event.endpoint_roles)
+    )
+    bond_signature = tuple(sorted(order.bond_keys[idx] for idx in event.bonds))
+    cut_signature = tuple(sorted(order.bond_keys[idx] for idx in event.cut_bonds))
+    return (
+        event.family,
+        confidence_rank,
+        atom_signature,
+        endpoint_signature,
+        cut_signature,
+        bond_signature,
+        event.event_id,
+    )
+
+
 def _generate_and_validate_hypotheses(
     input_path: Path,
     atoms: PeriodicCifAtoms,
@@ -1509,6 +1610,7 @@ def _generate_and_validate_hypotheses(
     events_by_family: defaultdict[str, list[LinkageEvent]] = defaultdict(list)
     for event in events:
         events_by_family[event.family].append(event)
+    search_order = _canonical_search_order(getattr(build_result, "mol", None))
 
     hypotheses: list[ReconstructionHypothesis] = []
     family_metadata: dict[str, object] = {}
@@ -1522,7 +1624,10 @@ def _generate_and_validate_hypotheses(
                 "truncated": False,
             }
             continue
-        event_sets, truncated, theoretical_count = _family_event_sets(family_events)
+        event_sets, truncated, theoretical_count = _family_event_sets(
+            family_events,
+            search_order,
+        )
         family_hypotheses = [
             _reconstruct_and_validate_hypothesis(
                 input_path,
@@ -1587,6 +1692,7 @@ def _generate_and_validate_hypotheses(
 
 def _family_event_sets(
     events: tuple[LinkageEvent, ...],
+    order: _CanonicalSearchOrder | None = None,
 ) -> tuple[tuple[tuple[LinkageEvent, ...], ...], bool, int]:
     groups: defaultdict[str, list[LinkageEvent]] = defaultdict(list)
     for event in events:
@@ -1595,10 +1701,16 @@ def _family_event_sets(
         tuple(
             sorted(
                 variants,
-                key=lambda event: (-_CONFIDENCE_SCORE.get(event.confidence, 0.0), event.event_id),
+                key=lambda event: _event_search_key(event, order),
             )
         )
-        for _site_id, variants in sorted(groups.items())
+        for _site_id, variants in sorted(
+            groups.items(),
+            key=lambda item: (
+                min(_event_search_key(event, order) for event in item[1]),
+                item[0],
+            ),
+        )
     )
     theoretical_count = 1
     for variants in ordered_groups:
@@ -2043,6 +2155,13 @@ def _aggregate_event_monomers(
                 "input_forms": dict(sorted(smiles_counts.items())),
                 "selected_buildable_form": representative,
                 "fragment_count": sum(smiles_counts.values()),
+                "identity_basis": "molecular_formula_plus_element_graph",
+                "chemically_distinct_form_count": len(smiles_counts),
+                "identity_caveat": (
+                    "the distinct input forms share one element graph but differ in "
+                    "bond order/H placement; the selected form is a deterministic "
+                    "buildable canonicalization, not an exact chemical identity"
+                ),
             })
             continue
         for smiles, amount in sorted(smiles_counts.items()):
@@ -2086,6 +2205,11 @@ def _aggregate_event_monomers(
             "applied": bool(merged_groups),
             "merged_group_count": len(merged_groups),
             "merged_groups": merged_groups,
+            "identity_status": (
+                IDENTITY_STATUS_ELEMENT_GRAPH_AMBIGUOUS
+                if merged_groups
+                else IDENTITY_STATUS_EXACT
+            ),
         },
     )
 
@@ -2712,12 +2836,19 @@ def _select_event_result(
     )
 
     search_coverage = _search_coverage(generation_metadata, hypotheses)
+    status_counts = Counter(hypothesis.status for hypothesis in considered)
+    supporting_counts = Counter(
+        (hypothesis.family, hypothesis.cofid)
+        for hypothesis in considered
+        if hypothesis.complete and hypothesis.cofid is not None
+    )
     metadata: dict[str, object] = {
         "decomposition_mode": "event",
         "event_pipeline_version": 2,
         "event_detection": detection.to_dict(),
         "hypothesis_generation": dict(generation_metadata),
         "hypotheses": [hypothesis.to_dict() for hypothesis in hypotheses],
+        "hypothesis_status_counts": dict(sorted(status_counts.items())),
         "search_status": search_coverage["status"],
         "search_coverage": search_coverage,
         "benchmark_contract": {
@@ -2738,6 +2869,12 @@ def _select_event_result(
             "event_status": EVENT_STATUS_COMPLETE,
             "selected_hypothesis_id": selected.hypothesis_id,
             "successful_hypothesis_count": 1,
+            "precursor_identity": _precursor_identity_report(selected.metadata),
+            "successful_alternatives": [_alternative_record(selected)],
+            "supporting_hypothesis_count": supporting_counts.get(
+                (selected.family, selected.cofid),
+                0,
+            ),
         })
         if search_coverage["status"] == SEARCH_STATUS_TRUNCATED:
             metadata["search_note"] = (
@@ -2763,6 +2900,9 @@ def _select_event_result(
             "event_status": EVENT_STATUS_AMBIGUOUS,
             "successful_hypothesis_count": len(complete),
             "successful_hypothesis_ids": [hypothesis.hypothesis_id for hypothesis in complete],
+            "successful_alternatives": [
+                _alternative_record(hypothesis) for hypothesis in complete
+            ],
         })
         return legacy.CifDecompositionResult(
             status="ambiguous",
@@ -2799,6 +2939,8 @@ def _select_event_result(
         if hypothesis.status == EVENT_STATUS_INTERNAL_ERROR
     )
     if internal_errors:
+        # ``considered`` preserves the canonical enumeration order, so the
+        # first maximal hypothesis is the permutation-stable tie-break.
         best_internal = max(
             internal_errors,
             key=lambda hypothesis: hypothesis.score,
@@ -2969,6 +3111,59 @@ def _actionable_mixed_family_pairs(
     return tuple(pairs)
 
 
+def _precursor_identity_report(
+    hypothesis_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    """Verdict-level identity basis of the recovered precursors.
+
+    ``exact`` means every recovered fragment of a reaction role had one
+    identical canonical SMILES.  ``element_graph_ambiguous`` means chemically
+    distinct bond-order/tautomer forms shared an element graph and were
+    collapsed onto a deterministic buildable representative; the alternatives
+    and their fragment counts are preserved rather than discarded.
+    """
+
+    normalization = hypothesis_metadata.get("fragment_identity_normalization")
+    if not isinstance(normalization, Mapping):
+        return {
+            "status": IDENTITY_STATUS_EXACT,
+            "basis": "canonical_smiles_identity",
+            "merged_group_count": 0,
+            "alternatives": [],
+        }
+    merged_groups = [
+        dict(group) for group in normalization.get("merged_groups", ())
+    ]
+    if not merged_groups:
+        return {
+            "status": IDENTITY_STATUS_EXACT,
+            "basis": "canonical_smiles_identity",
+            "merged_group_count": 0,
+            "alternatives": [],
+        }
+    return {
+        "status": IDENTITY_STATUS_ELEMENT_GRAPH_AMBIGUOUS,
+        "basis": "molecular_formula_plus_element_graph",
+        "merged_group_count": len(merged_groups),
+        "alternatives": merged_groups,
+        "note": (
+            "chemically distinct input forms shared one element graph; the "
+            "selected precursor form is a deterministic buildable "
+            "canonicalization and the alternatives above were not ruled out"
+        ),
+    }
+
+
+def _alternative_record(hypothesis: ReconstructionHypothesis) -> dict[str, object]:
+    return {
+        "hypothesis_id": hypothesis.hypothesis_id,
+        "family": hypothesis.family,
+        "topology": hypothesis.topology,
+        "cofid": hypothesis.cofid,
+        "score": hypothesis.score,
+    }
+
+
 def _best_failed_hypothesis(
     hypotheses: tuple[ReconstructionHypothesis, ...],
 ) -> ReconstructionHypothesis | None:
@@ -2984,12 +3179,14 @@ def _best_failed_hypothesis(
         EVENT_STATUS_ENDPOINT: 2,
         EVENT_STATUS_UNSUPPORTED: 1,
     }
+    # ``hypotheses`` arrives in canonical enumeration order; on tied
+    # progress/score the first maximal hypothesis is the permutation-stable
+    # choice, so no input-label-dependent identifier tie-break is used.
     return max(
         hypotheses,
         key=lambda hypothesis: (
             status_progress.get(hypothesis.status, 0),
             hypothesis.score,
-            hypothesis.hypothesis_id,
         ),
     )
 
@@ -2999,6 +3196,8 @@ __all__ = [
     "EVENT_STATUS_MIXED_FAMILY",
     "EVENT_STATUS_MULTISPECIES",
     "EVENT_STATUS_PROBABLE_DEFECT",
+    "IDENTITY_STATUS_ELEMENT_GRAPH_AMBIGUOUS",
+    "IDENTITY_STATUS_EXACT",
     "SEARCH_STATUS_COMPLETE",
     "SEARCH_STATUS_TRUNCATED",
     "EventDetectionResult",

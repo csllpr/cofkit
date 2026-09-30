@@ -55,6 +55,8 @@ from cofkit.decompose_events import (
     EVENT_STATUS_TOPOLOGY,
     EVENT_STATUS_TRIAZINE_MOTIF,
     EVENT_STATUS_UNEXPLAINED,
+    IDENTITY_STATUS_ELEMENT_GRAPH_AMBIGUOUS,
+    IDENTITY_STATUS_EXACT,
     SEARCH_STATUS_TRUNCATED,
     EventDetectionResult,
     LinkageEvent,
@@ -381,6 +383,49 @@ def _with_generic_atom_labels(source_path: str | Path, target_path: Path) -> Pat
                     next_index += 1
                 index = next_index
                 continue
+        output.append(lines[index])
+        index += 1
+    return _write_cif_lines(output, target_path)
+
+
+def _with_permuted_atom_and_bond_rows(
+    source_path: str | Path,
+    target_path: Path,
+    seed: int,
+) -> Path:
+    """Same structure with shuffled atom-site and bond-loop row order.
+
+    Labels travel with their rows, so the graph is unchanged; only the input
+    ordering (and hence RDKit atom/bond indices) is permuted.
+    """
+
+    lines = _cif_lines_without_cofid(source_path)
+    rng = random.Random(seed)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() == "loop_":
+            next_index = index + 1
+            headers: list[str] = []
+            while next_index < len(lines) and lines[next_index].lstrip().startswith("_"):
+                headers.append(lines[next_index].strip())
+                next_index += 1
+            rows: list[str] = []
+            while (
+                next_index < len(lines)
+                and lines[next_index].strip()
+                and lines[next_index].strip() != "loop_"
+                and not lines[next_index].lstrip().startswith("_")
+            ):
+                rows.append(lines[next_index])
+                next_index += 1
+            if "_atom_site_label" in headers or "_geom_bond_atom_site_label_1" in headers:
+                rng.shuffle(rows)
+            output.append(lines[index])
+            output.extend(headers)
+            output.extend(rows)
+            index = next_index
+            continue
         output.append(lines[index])
         index += 1
     return _write_cif_lines(output, target_path)
@@ -2130,6 +2175,350 @@ class DecomposeConfidenceHonestyTests(unittest.TestCase):
 
         self.assertNotEqual(result.metadata["event_status"], EVENT_STATUS_MIXED_FAMILY)
         self.assertEqual(result.metadata["event_status"], EVENT_STATUS_TRIAZINE_MOTIF)
+
+
+class DecomposeSearchAndIdentityTests(unittest.TestCase):
+    """A16: canonical search ordering, coverage beyond the cap, identity basis."""
+
+    @staticmethod
+    def _result_semantics(result: CifDecompositionResult) -> tuple[object, ...]:
+        """Input-order-independent projection of a decomposition result.
+
+        Hypothesis/event identifiers embed raw atom and bond indices, so
+        they legitimately change under atom-row permutation; every semantic
+        quantity must not.
+        """
+
+        return (
+            result.status,
+            result.topology,
+            result.linkage,
+            result.cofid,
+            tuple(
+                (
+                    monomer.connectivity,
+                    monomer.reactive_group,
+                    monomer.canonical_smiles,
+                    monomer.amount,
+                )
+                for monomer in result.monomers
+            ),
+            result.metadata.get("event_status"),
+            result.metadata.get("search_status"),
+            tuple(
+                (
+                    hypothesis["status"],
+                    hypothesis["score"],
+                    hypothesis["cofid"],
+                    tuple(monomer["canonical_smiles"] for monomer in hypothesis["monomers"]),
+                )
+                for hypothesis in result.metadata.get("hypotheses", [])
+            ),
+            tuple(
+                sorted(
+                    (
+                        event["family"],
+                        event["confidence"],
+                        len(event["atoms"]),
+                        len(event["cut_bonds"]),
+                    )
+                    for event in result.metadata["event_detection"]["events"]
+                )
+            ),
+        )
+
+    def test_input_permutation_leaves_event_decomposition_deterministic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            # Vinylene branches candidate orientations per site, so this
+            # fixture exercises variant ordering, not just site ordering.
+            summary, _candidate = _generator("vinylene_bridge").generate_pair_candidate(
+                _record("tmt", TMT, "activated_methylene", 3),
+                _record("pda", PDA, "aldehyde", 2),
+                out_dir=temp_path,
+                write_cif=True,
+            )
+            cif_path = Path(summary.cif_path)
+            permuted_paths = [
+                _with_permuted_atom_and_bond_rows(cif_path, temp_path / f"permuted_{seed}.cif", seed)
+                for seed in (3, 11, 27)
+            ]
+
+            for cap in (None, 2):
+                # ``cap=None`` runs the full default search; ``cap=2`` forces
+                # truncation below the theoretical combination count, where
+                # lexicographic ordering used to make the explored subset
+                # depend on input atom order.
+                with contextlib.ExitStack() as stack:
+                    if cap is not None:
+                        stack.enter_context(
+                            mock.patch.object(
+                                decompose_events_module,
+                                "_MAX_FAMILY_HYPOTHESES",
+                                cap,
+                            )
+                        )
+                    base = decompose_cif_to_cofid(cif_path, decomposition_mode="event")
+                    base_semantics = self._result_semantics(base)
+                    for permuted_path in permuted_paths:
+                        permuted = decompose_cif_to_cofid(
+                            permuted_path,
+                            decomposition_mode="event",
+                        )
+                        self.assertEqual(
+                            base_semantics,
+                            self._result_semantics(permuted),
+                            f"cap={cap} path={permuted_path.name}",
+                        )
+
+                self.assertTrue(base.ok, base.reason)
+                self.assertEqual(base.metadata["event_status"], EVENT_STATUS_COMPLETE)
+                coverage = base.metadata["search_coverage"]
+                if cap is None:
+                    self.assertEqual(base.metadata["search_status"], "complete")
+                else:
+                    self.assertEqual(base.metadata["search_status"], SEARCH_STATUS_TRUNCATED)
+                    self.assertLess(
+                        coverage["explored_hypothesis_count"],
+                        coverage["theoretical_hypothesis_count"],
+                    )
+
+    def test_solution_beyond_cap_reports_truncated_and_is_found_when_raised(self):
+        events = _site_variant_events("imine", site_count=9, variants_per_site=2)
+        # Canonical enumeration explores the 512 combinations with the first
+        # site pinned to its first variant for the first 256; the only valid
+        # decomposition takes variant v1 at site0 and therefore lies beyond
+        # the default cap.
+        solution_ids = ("imine:site0:v1",) + tuple(
+            f"imine:site{site}:v0" for site in range(1, 9)
+        )
+        solution_cofid = (
+            "3:amine:Nc1ccc(N)cc1.3:aldehyde:O=Cc1ccc(C=O)cc1&&hcb&&imine"
+        )
+
+        def fake_reconstruct(input_path, atoms, build_result, selected_events, *, topology, bond_mode):
+            event_ids = tuple(event.event_id for event in selected_events)
+            hypothesis_id = "imine:" + "|".join(event_ids)
+            if event_ids == solution_ids:
+                return ReconstructionHypothesis(
+                    hypothesis_id=hypothesis_id,
+                    events=selected_events,
+                    cofid=solution_cofid,
+                    status=EVENT_STATUS_COMPLETE,
+                    score=1000.0,
+                )
+            return ReconstructionHypothesis(
+                hypothesis_id=hypothesis_id,
+                events=selected_events,
+                status=EVENT_STATUS_CHEMICAL,
+                validation_errors=("synthetic chemical failure",),
+            )
+
+        def run_search():
+            hypotheses, generation_metadata = (
+                decompose_events_module._generate_and_validate_hypotheses(
+                    Path("dense.cif"),
+                    None,
+                    None,
+                    events,
+                    topology=None,
+                    bond_mode="auto",
+                )
+            )
+            return _select_event_result(
+                Path("dense.cif"),
+                requested_family=None,
+                topology=None,
+                detection=EventDetectionResult(events=events),
+                hypotheses=hypotheses,
+                generation_metadata=generation_metadata,
+            )
+
+        with mock.patch.object(
+            decompose_events_module,
+            "_reconstruct_and_validate_hypothesis",
+            side_effect=fake_reconstruct,
+        ):
+            truncated_result = run_search()
+            self.assertFalse(truncated_result.ok)
+            self.assertEqual(
+                truncated_result.metadata["search_status"],
+                SEARCH_STATUS_TRUNCATED,
+            )
+            coverage = truncated_result.metadata["search_coverage"]
+            self.assertEqual(coverage["explored_hypothesis_count"], 256)
+            self.assertEqual(coverage["theoretical_hypothesis_count"], 512)
+            self.assertIn("hypothesis search incomplete", truncated_result.reason)
+
+            with mock.patch.object(
+                decompose_events_module,
+                "_MAX_FAMILY_HYPOTHESES",
+                1024,
+            ):
+                raised_result = run_search()
+
+        self.assertTrue(raised_result.ok, raised_result.reason)
+        self.assertEqual(raised_result.cofid, solution_cofid)
+        self.assertEqual(raised_result.metadata["search_status"], "complete")
+        self.assertEqual(
+            raised_result.metadata["search_coverage"]["theoretical_hypothesis_count"],
+            512,
+        )
+        self.assertEqual(
+            raised_result.metadata["precursor_identity"]["status"],
+            IDENTITY_STATUS_EXACT,
+        )
+
+    def test_element_graph_variants_are_not_labeled_exact_identity(self):
+        # Acetaldehyde and vinyl alcohol share molecular formula and element
+        # graph but differ in bond order/H placement: chemically distinct
+        # forms that must not be reported as exact identity.
+        keto = DecomposedMonomer(
+            connectivity=1,
+            reactive_group="aldehyde",
+            canonical_smiles="CC=O",
+            amount=2,
+        )
+        enol = DecomposedMonomer(
+            connectivity=1,
+            reactive_group="aldehyde",
+            canonical_smiles="C=CO",
+            amount=1,
+        )
+
+        monomers, normalization = _aggregate_event_monomers((keto, enol))
+
+        self.assertEqual(len(monomers), 1)
+        self.assertEqual(monomers[0].canonical_smiles, "CC=O")
+        self.assertEqual(monomers[0].amount, 3)
+        self.assertEqual(
+            normalization["identity_status"],
+            IDENTITY_STATUS_ELEMENT_GRAPH_AMBIGUOUS,
+        )
+        self.assertEqual(normalization["merged_group_count"], 1)
+        group = normalization["merged_groups"][0]
+        self.assertEqual(group["input_forms"], {"C=CO": 1, "CC=O": 2})
+        self.assertEqual(group["chemically_distinct_form_count"], 2)
+        self.assertEqual(group["selected_buildable_form"], "CC=O")
+
+        exact_monomers, exact_normalization = _aggregate_event_monomers((keto, keto))
+        self.assertEqual(len(exact_monomers), 1)
+        self.assertEqual(exact_monomers[0].amount, 4)
+        self.assertEqual(exact_normalization["identity_status"], IDENTITY_STATUS_EXACT)
+        self.assertEqual(exact_normalization["merged_group_count"], 0)
+
+        event = _site_variant_events("imine", 1, 1)[0]
+        hypothesis = ReconstructionHypothesis(
+            hypothesis_id="imine:merged",
+            events=(event,),
+            cofid="1:aldehyde:CC=O&&hcb&&imine",
+            status=EVENT_STATUS_COMPLETE,
+            metadata={"fragment_identity_normalization": normalization},
+        )
+        result = _select_event_result(
+            Path("merged.cif"),
+            requested_family=None,
+            topology=None,
+            detection=EventDetectionResult(events=(event,)),
+            hypotheses=(hypothesis,),
+            generation_metadata={},
+        )
+
+        self.assertTrue(result.ok)
+        identity = result.metadata["precursor_identity"]
+        self.assertEqual(identity["status"], IDENTITY_STATUS_ELEMENT_GRAPH_AMBIGUOUS)
+        self.assertEqual(identity["merged_group_count"], 1)
+        self.assertEqual(identity["alternatives"][0]["input_forms"], {"C=CO": 1, "CC=O": 2})
+        self.assertNotEqual(identity["status"], IDENTITY_STATUS_EXACT)
+
+        exact_hypothesis = ReconstructionHypothesis(
+            hypothesis_id="imine:exact",
+            events=(event,),
+            cofid="1:aldehyde:CC=O&&hcb&&imine",
+            status=EVENT_STATUS_COMPLETE,
+            metadata={"fragment_identity_normalization": exact_normalization},
+        )
+        exact_result = _select_event_result(
+            Path("exact.cif"),
+            requested_family=None,
+            topology=None,
+            detection=EventDetectionResult(events=(event,)),
+            hypotheses=(exact_hypothesis,),
+            generation_metadata={},
+        )
+        self.assertEqual(
+            exact_result.metadata["precursor_identity"]["status"],
+            IDENTITY_STATUS_EXACT,
+        )
+
+    def test_alternatives_and_supporting_counts_are_preserved(self):
+        event = _site_variant_events("imine", 1, 1)[0]
+        detection = EventDetectionResult(events=(event,))
+
+        # Two complete hypotheses converging on one COFid: the near-tie is
+        # collapsed to one answer but the support count is retained.
+        strong = ReconstructionHypothesis(
+            hypothesis_id="imine:strong",
+            events=(event,),
+            cofid="cofid-a",
+            topology="hcb",
+            status=EVENT_STATUS_COMPLETE,
+            score=1000.0,
+        )
+        weak_duplicate = ReconstructionHypothesis(
+            hypothesis_id="imine:weak",
+            events=(event,),
+            cofid="cofid-a",
+            topology="hcb",
+            status=EVENT_STATUS_COMPLETE,
+            score=900.0,
+        )
+        result = _select_event_result(
+            Path("tie.cif"),
+            requested_family=None,
+            topology=None,
+            detection=detection,
+            hypotheses=(weak_duplicate, strong),
+            generation_metadata={},
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.metadata["selected_hypothesis_id"], "imine:strong")
+        self.assertEqual(result.metadata["supporting_hypothesis_count"], 2)
+        self.assertEqual(len(result.metadata["successful_alternatives"]), 1)
+        self.assertEqual(
+            result.metadata["hypothesis_status_counts"],
+            {EVENT_STATUS_COMPLETE: 2},
+        )
+
+        # Two complete hypotheses with distinct COFids: both alternatives
+        # remain listed with their identities, not just their count.
+        other = ReconstructionHypothesis(
+            hypothesis_id="imine:other",
+            events=(event,),
+            cofid="cofid-b",
+            topology="sql",
+            status=EVENT_STATUS_COMPLETE,
+            score=950.0,
+        )
+        ambiguous = _select_event_result(
+            Path("ambiguous.cif"),
+            requested_family=None,
+            topology=None,
+            detection=detection,
+            hypotheses=(strong, other),
+            generation_metadata={},
+        )
+        self.assertEqual(ambiguous.status, "ambiguous")
+        alternatives = ambiguous.metadata["successful_alternatives"]
+        self.assertEqual(
+            [alternative["cofid"] for alternative in alternatives],
+            ["cofid-a", "cofid-b"],
+        )
+        self.assertEqual(
+            [alternative["topology"] for alternative in alternatives],
+            ["hcb", "sql"],
+        )
+        self.assertEqual(ambiguous.metadata["successful_hypothesis_count"], 2)
 
 
 class RingDecomposeRoundTripTests(unittest.TestCase):
