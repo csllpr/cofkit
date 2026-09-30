@@ -19,6 +19,9 @@ from cofkit.graspa import (
     COFKIT_EQEQ_ENV_VAR,
     COFKIT_GRASPA_ENV_VAR,
     COFKIT_RASPA2_ENV_VAR,
+    FRAMEWORK_CHARGE_SOURCE_EQEQ_STAGED_CIF,
+    FRAMEWORK_CHARGE_SOURCE_NEUTRAL_PSEUDO_ATOMS,
+    GUEST_CHARGE_SOURCE_GUEST_MODELS,
     EqeqChargeSettings,
     GraspaConfigurationError,
     GraspaMixtureComponentSettings,
@@ -339,6 +342,64 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertEqual(report["component_results"][4]["henry"], 5e-05)
             self.assertEqual(report["component_results"][5]["component"], "Kr_GENERICMOFS")
             self.assertEqual(report["component_results"][5]["henry"], 6e-05)
+            # A24/T4-21: the report identifies which charges entered the engine.
+            self.assertEqual(
+                report["charge_provenance"]["framework"],
+                FRAMEWORK_CHARGE_SOURCE_EQEQ_STAGED_CIF,
+            )
+            self.assertEqual(
+                report["charge_provenance"]["guests"],
+                GUEST_CHARGE_SOURCE_GUEST_MODELS,
+            )
+            self.assertFalse(any("did not enter the engine" in warning for warning in report["warnings"]))
+
+    def test_run_graspa_widom_workflow_without_cif_charges_reports_unused_eqeq_work(self):
+        """A24/T4-21: with use_charges_from_cif_file=False the backend ignores
+        the EQeq-staged framework charges; the report must say so."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_graspa_binary(temp_path / "graspa_fake")
+            cif_path = temp_path / "example_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_widom_workflow(
+                    cif_path,
+                    output_dir=temp_path / "widom_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    widom_settings=GraspaWidomSettings(use_charges_from_cif_file=False),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            self.assertEqual(
+                result.charge_provenance["framework"],
+                FRAMEWORK_CHARGE_SOURCE_NEUTRAL_PSEUDO_ATOMS,
+            )
+            self.assertTrue(any("did not enter the engine" in warning for warning in result.warnings))
+            simulation_input = Path(result.simulation_input_path).read_text(encoding="utf-8")
+            self.assertIn("UseChargesFromCIFFile no", simulation_input)
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["charge_provenance"]["framework"],
+                FRAMEWORK_CHARGE_SOURCE_NEUTRAL_PSEUDO_ATOMS,
+            )
 
     def test_run_graspa_isotherm_workflow_accepts_external_guest_bundle(self):
         with tempfile.TemporaryDirectory() as temp_dir:

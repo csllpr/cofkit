@@ -200,3 +200,12 @@ Batch runs write:
 - exported CIFs under `cifs/valid`, `cifs/warning`, `cifs/needs_optimization`, `cifs/unvalidated`, or `cifs/invalid` (`invalid` holds the `hard_invalid` classification)
 
 Structures classified as `hard_hard_invalid` are recorded in the manifest, but CIF export is blocked and `cif_export_blocked = true` is set in the per-structure metadata.
+
+## CIF Export Modes
+
+Every exported CIF declares its export mode in machine-readable header comment lines:
+
+- `# export_mode: atomistic | mixed | coarse` — `atomistic` when every monomer instance provides atom coordinates, `coarse` when none does (monomer centers and motif origins are exported as pseudo-sites labeled `<instance>_CTR` / `<instance>_M<n>`), and `mixed` when only some instances are atomistic
+- `# atomistic_instances: <n>` and `# coarse_instances: <n>` — the per-mode instance counts
+
+The same information is available programmatically as `CIFExportResult.mode` and `CIFExportResult.metadata`. Coarse and mixed exports use ordinary element/occupancy atom-site rows for what are really pseudo-sites, so external consumers must check the `export_mode` marker before treating the CIF as atomistic. In particular, the calculation wrappers require fully atomistic input: `calculate lammps-optimize` / `calculate hybrid-mdmc` need an explicit-bond `P1` CIF with `_geom_bond_*` loops and `_ccdc_geom_bond_type`, the `graspa-*` workflows need an atomistic CIF for EQeq charge staging and framework geometry, and `analyze decompose` covers atomistic CIFs of the supported linkages. A coarse or mixed CIF is a visualization/inspection artifact, not simulation input.

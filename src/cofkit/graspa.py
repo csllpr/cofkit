@@ -55,6 +55,48 @@ AVAILABLE_WIDOM_COMPONENTS = tuple(metadata.name for metadata in PACKAGED_GUEST_
 # the order of the 2_000_000-cycle Widom production budget divided across the
 # default component set.
 DEFAULT_WIDOM_MOVES_PER_COMPONENT = 285_715
+
+# Charge-source vocabulary recorded as `charge_provenance` on every
+# gRASPA/RASPA2 workflow report (impact-review claim T4-21, action A24), so a
+# consumer can tell which charges actually entered the engine instead of
+# inferring it from the staging layout.
+# Framework atom charges are read from the cofkit EQeq-staged charged CIF
+# (`UseChargesFromCIFFile yes`, the default).
+FRAMEWORK_CHARGE_SOURCE_EQEQ_STAGED_CIF = "eqeq_staged_cif"
+# `UseChargesFromCIFFile no`: the backend ignores CIF charges; the cofkit
+# framework pseudo-atom rows are all zero-charge, so the framework runs
+# uncharged. Guest charges are unaffected and `ChargeMethod Ewald` still
+# applies to them.
+FRAMEWORK_CHARGE_SOURCE_NEUTRAL_PSEUDO_ATOMS = "neutral_framework_pseudo_atoms"
+# Guest charges always come from the selected guest models' pseudo-atom /
+# molecule definitions (packaged or guest-bundle), never from EQeq.
+GUEST_CHARGE_SOURCE_GUEST_MODELS = "guest_model_pseudo_atoms"
+
+
+def _charge_provenance(*, use_charges_from_cif_file: bool, charge_method: str) -> dict[str, object]:
+    return {
+        "framework": (
+            FRAMEWORK_CHARGE_SOURCE_EQEQ_STAGED_CIF
+            if use_charges_from_cif_file
+            else FRAMEWORK_CHARGE_SOURCE_NEUTRAL_PSEUDO_ATOMS
+        ),
+        "guests": GUEST_CHARGE_SOURCE_GUEST_MODELS,
+        "charge_method": charge_method,
+        "use_charges_from_cif_file": use_charges_from_cif_file,
+    }
+
+
+def _unused_eqeq_charges_warning(*, use_charges_from_cif_file: bool) -> str | None:
+    if use_charges_from_cif_file:
+        return None
+    return (
+        "use_charges_from_cif_file=False (UseChargesFromCIFFile no): the backend ignores framework CIF "
+        "charges, so the EQeq charges staged above did not enter the engine — the framework runs uncharged "
+        "(the cofkit framework pseudo-atom rows are zero-charge) while guest charges still come from the "
+        "guest models and ChargeMethod still applies to them. The EQeq stage still runs because its "
+        "charge-validated CIF is the staging source for the framework geometry; only its charge values are "
+        "unused in this configuration."
+    )
 # RASPA-family run-control defaults shared by the Widom/isotherm/mixture
 # settings dataclasses below (heuristic — pending calibration; values follow
 # the RASPA2/gRASPA example-input convention).
@@ -391,6 +433,9 @@ class GraspaWidomResult:
     component_results: tuple[GraspaWidomComponentResult, ...]
     warnings: tuple[str, ...] = ()
     framework_forcefield_metadata: dict[str, object] = field(default_factory=dict)
+    # Which charges actually entered the MC engine (A24): see
+    # FRAMEWORK_CHARGE_SOURCE_* / GUEST_CHARGE_SOURCE_GUEST_MODELS.
+    charge_provenance: Mapping[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -427,6 +472,7 @@ class GraspaWidomResult:
             ],
             "component_results": [component.to_dict() for component in self.component_results],
             "warnings": list(self.warnings),
+            "charge_provenance": dict(self.charge_provenance),
         }
 
 
@@ -591,6 +637,9 @@ class GraspaIsothermResult:
     point_results: tuple[GraspaIsothermPointResult, ...]
     warnings: tuple[str, ...] = ()
     framework_forcefield_metadata: dict[str, object] = field(default_factory=dict)
+    # Which charges actually entered the MC engine (A24): see
+    # FRAMEWORK_CHARGE_SOURCE_* / GUEST_CHARGE_SOURCE_GUEST_MODELS.
+    charge_provenance: Mapping[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -623,6 +672,7 @@ class GraspaIsothermResult:
             ],
             "point_results": [point.to_dict() for point in self.point_results],
             "warnings": list(self.warnings),
+            "charge_provenance": dict(self.charge_provenance),
         }
 
 
@@ -842,6 +892,9 @@ class GraspaMixtureResult:
     point_results: tuple[GraspaMixturePointResult, ...]
     warnings: tuple[str, ...] = ()
     framework_forcefield_metadata: dict[str, object] = field(default_factory=dict)
+    # Which charges actually entered the MC engine (A24): see
+    # FRAMEWORK_CHARGE_SOURCE_* / GUEST_CHARGE_SOURCE_GUEST_MODELS.
+    charge_provenance: Mapping[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -875,6 +928,7 @@ class GraspaMixtureResult:
             ],
             "point_results": [point.to_dict() for point in self.point_results],
             "warnings": list(self.warnings),
+            "charge_provenance": dict(self.charge_provenance),
         }
 
 
@@ -1151,6 +1205,11 @@ def run_graspa_widom_workflow(
     warnings.extend(parse_diagnostics)
     if widom_settings.components == DEFAULT_WIDOM_COMPONENTS:
         warnings.append("The default probe set excludes H2_DREIDING: its Feynman-Hibbs potential is unsupported by upstream gRASPA.")
+    unused_eqeq_warning = _unused_eqeq_charges_warning(
+        use_charges_from_cif_file=widom_settings.use_charges_from_cif_file
+    )
+    if unused_eqeq_warning is not None:
+        warnings.append(unused_eqeq_warning)
     if eqeq_result.eqeq_json_output_path is None:
         warnings.append("EQeq did not write the companion JSON output file.")
     if len(data_file_paths) > 1:
@@ -1197,6 +1256,10 @@ def run_graspa_widom_workflow(
         component_results=component_results,
         warnings=tuple(warnings),
         framework_forcefield_metadata=resolve_forcefield_metadata(widom_settings.forcefield).to_dict(),
+        charge_provenance=_charge_provenance(
+            use_charges_from_cif_file=widom_settings.use_charges_from_cif_file,
+            charge_method=widom_settings.charge_method,
+        ),
     )
     atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
     finish_attempt(run_dir)
@@ -1372,6 +1435,12 @@ def run_graspa_isotherm_workflow(
     if eqeq_result.eqeq_json_output_path is None:
         warnings.append("EQeq did not write the companion JSON output file.")
 
+    unused_eqeq_warning = _unused_eqeq_charges_warning(
+        use_charges_from_cif_file=isotherm_settings.use_charges_from_cif_file
+    )
+    if unused_eqeq_warning is not None:
+        warnings.append(unused_eqeq_warning)
+
     results_csv_path = isotherm_root_dir / "results.csv"
     _write_isotherm_results_csv(point_results, results_csv_path)
 
@@ -1398,6 +1467,10 @@ def run_graspa_isotherm_workflow(
         point_results=tuple(point_results),
         warnings=tuple(warnings),
         framework_forcefield_metadata=resolve_forcefield_metadata(isotherm_settings.forcefield).to_dict(),
+        charge_provenance=_charge_provenance(
+            use_charges_from_cif_file=isotherm_settings.use_charges_from_cif_file,
+            charge_method=isotherm_settings.charge_method,
+        ),
     )
     atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
     finish_attempt(run_dir)
@@ -1595,6 +1668,12 @@ def run_graspa_mixture_workflow(
     if eqeq_result.eqeq_json_output_path is None:
         warnings.append("EQeq did not write the companion JSON output file.")
 
+    unused_eqeq_warning = _unused_eqeq_charges_warning(
+        use_charges_from_cif_file=mixture_settings.use_charges_from_cif_file
+    )
+    if unused_eqeq_warning is not None:
+        warnings.append(unused_eqeq_warning)
+
     component_results_csv_path = mixture_root_dir / "component_results.csv"
     _write_mixture_component_results_csv(point_results, component_results_csv_path)
     warnings.append("Selectivity uncertainty is unavailable: backend marginal loading errors do not provide paired covariance/statistics.")
@@ -1625,6 +1704,10 @@ def run_graspa_mixture_workflow(
         point_results=tuple(point_results),
         warnings=tuple(warnings),
         framework_forcefield_metadata=resolve_forcefield_metadata(mixture_settings.forcefield).to_dict(),
+        charge_provenance=_charge_provenance(
+            use_charges_from_cif_file=mixture_settings.use_charges_from_cif_file,
+            charge_method=mixture_settings.charge_method,
+        ),
     )
     atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
     finish_attempt(run_dir)

@@ -53,7 +53,6 @@ Then go straight to the module that matches the task.
     `## Construction settings (conformer provenance)` section of
     `summary.md`.
 
-
 ## Core chemistry seams
 
 - [src/cofkit/reactions.py](../src/cofkit/reactions.py)
@@ -93,6 +92,14 @@ Then go straight to the module that matches the task.
     to all 3+-motif precursors) and `SHAPE_SELECTION_MIN_CONFORMERS`
     (ensemble floor 16).
   - Conformer-construction provenance (A18): `MonomerSpec.metadata` records
+    the effective embedding budget (`requested_num_conformers`, as handed to
+    the embedder — callers may have applied the shape-aware floor), the
+    actual embedded count (`n_conformers`), the seed (`random_seed`),
+    `shape_aware_selection_requested` vs the applied `conformer_selection`
+    (`energy` / `motif_shape`, with `conformer_selection_note` when a
+    requested shape selection was skipped), embedding fallback fields, and
+    implementation identity (`cofkit_version`, `rdkit_version`).
+    `DEFAULT_RDKIT_RANDOM_SEED` owns the default embedding seed.
   - New motif kinds normally need a match handler here.
 - [src/cofkit/chem/detector.py](../src/cofkit/chem/detector.py)
   - Lightweight non-RDKit fallback detector; not on the CLI/batch/library
@@ -162,7 +169,12 @@ Then go straight to the module that matches the task.
 - [src/cofkit/validation.py](../src/cofkit/validation.py)
   - `valid` / `warning` / `needs_optimization` / `hard_invalid` / `hard_hard_invalid` / `unvalidated` triage. The contact scan (`_nonbonded_contact_scan`) applies the `vdw.py` criterion with periodic-image-aware 1-2/1-3/1-4 bond-graph exclusions (`_bond_graph_exclusions`), a severe-overlap floor for excluded pairs, and a separate hydrogen-contact metric channel. Bridge-linkage verdicts are derived from the final exported coordinates: `measure_inter_instance_bond_distances` recomputes inter-monomer bond lengths from the atom-site loop plus the explicit `_geom_bond` image codes (never the `_geom_bond_distance` column) and residuals/ratios are checked against the linkage-profile target (or `realized_bridge_bond_distance_windows`); seed `bridge_event_metrics` are recorded as informational `seed_*` metrics only. Every report carries a per-check `coverage` map with statuses `measured` / `no_contacts` (completed search, zero assessable neighbors) / `missing_data` (required check could not run) / `not_applicable` / `skipped`; required-but-unmeasured checks land in `unmeasured_required_checks` and classify the record as `unvalidated` (`is_valid is None`), routed to the `unvalidated` bucket by both `classify_batch_output` and the batch export path.
 - [src/cofkit/cif.py](../src/cofkit/cif.py)
-  - CIF export, including realized inter-monomer bonds.
+  - CIF export, including realized inter-monomer bonds. Every export declares
+    its mode in machine-readable header comments (`# export_mode:
+    atomistic|mixed|coarse`, `# atomistic_instances:` / `# coarse_instances:`,
+    mirrored by `CIFExportResult.mode` / `.metadata`); coarse/mixed exports
+    write pseudo-sites (`<instance>_CTR` / `<instance>_M<n>`) as ordinary
+    atom-site rows and are inspection artifacts, not simulation input.
 - [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
   - CIF atom-site and explicit-bond extraction for decomposition without adding ASE.
 - [src/cofkit/decompose.py](../src/cofkit/decompose.py)
@@ -170,7 +182,7 @@ Then go straight to the module that matches the task.
   - Topology auto-detection (`detect_cif_topology`) owns the typed confidence/provenance vocabulary (`TOPOLOGY_CONFIDENCE_*`, `TOPOLOGY_IDENTIFICATION_*`): an embedded COFid comment is promoted to `exact` only when the quotient-graph matcher independently verifies the annotated net (`verified_periodic_graph`); a merely rank/connectivity-compatible comment is an unverified hint (`compatible_unverified`, tie-break confidence `compatible` / `compatible_annotation_unverified`).
   - This logic was adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`.
 - [src/cofkit/decompose_events.py](../src/cofkit/decompose_events.py)
-  - Default event/hypothesis decomposition engine: local event detection, bounded per-family hypothesis enumeration (`_MAX_FAMILY_HYPOTHESES`), global validation, and selection. Owns the typed verdict vocabulary (`EVENT_STATUS_*`, including `FAILED_INTERNAL_ERROR` for internal failures — never a chemistry verdict — and `UNSUPPORTED_MIXED_LINKAGE_FAMILY` for multi-family frameworks the one-family COFid contract cannot serialize) and the search-coverage status (`SEARCH_STATUS_*` with explored/theoretical counts; a truncated failed search must not read as exhaustive), and the precursor-identity basis (`IDENTITY_STATUS_*`: `exact` versus `element_graph_ambiguous` when bond-order/tautomer variants sharing one element graph are collapsed onto a buildable representative — alternatives and counts preserved under `precursor_identity.alternatives`).
+  - Default event/hypothesis decomposition engine: local event detection, bounded per-family hypothesis enumeration (`_MAX_FAMILY_HYPOTHESES`), global validation, and selection. Owns the typed verdict vocabulary (`EVENT_STATUS_*`, including `FAILED_INTERNAL_ERROR` for internal failures — never a chemistry verdict — and `UNSUPPORTED_MIXED_LINKAGE_FAMILY` for multi-family frameworks the one-family COFid contract cannot serialize), the search-coverage status (`SEARCH_STATUS_*` with explored/theoretical counts; a truncated failed search must not read as exhaustive), and the precursor-identity basis (`IDENTITY_STATUS_*`: `exact` versus `element_graph_ambiguous` when bond-order/tautomer variants sharing one element graph are collapsed onto a buildable representative — alternatives and counts preserved under `precursor_identity.alternatives`).
   - Hypothesis enumeration order is canonical w.r.t. input permutation (`_canonical_search_order` / `_event_search_key`: RDKit canonical atom symmetry classes with `breakTies=False`, never raw atom/bond indices or CIF labels), so the cap-truncated explored subset — and any tie-break via enumeration order — is independent of input atom/label order; ring-event greedy overlap acceptance iterates candidate rings in the same canonical order.
   - `_cut_and_reconstruct` builds the decomposition atom ledger (owned by `decompose_ledger.py`) for every fully classified hypothesis; `ReconstructionHypothesis.atom_ledger` carries it typed, hypothesis serialization emits a compact `atom_ledger_summary`, and `_select_event_result` serializes the full ledger as `metadata["atom_ledger"]` on the selected / best-failed result.
 - [src/cofkit/decompose_ledger.py](../src/cofkit/decompose_ledger.py)
@@ -220,6 +232,7 @@ tunables must land here, not at consumer sites:
   - Structural preconditions shared by the calculation adapters (`read_ordered_structure`) and EQeq charge-assignment validation (`validate_charge_assignment`: atom-count/cell/charge-coverage/net-charge checks plus a verified geometric atom bijection that restores the input labels in the charged CIF). `cif_value_str` is the shared unquoting helper: raw CIF loop tokens keep their delimiters, so any label read from a loop must go through it before being compared with a gemmi-parsed label.
 - [src/cofkit/graspa.py](../src/cofkit/graspa.py)
   - EQeq to gRASPA/RASPA2 Widom, single-component isotherm, and mixture workflows; framework mixing-rule generation; simulation.input rendering; result parsing.
+  - Charge-source reporting (A24): owns the `FRAMEWORK_CHARGE_SOURCE_*` / `GUEST_CHARGE_SOURCE_GUEST_MODELS` vocabulary; every Widom/isotherm/mixture report carries a `charge_provenance` block (`_charge_provenance`) recording which charges actually entered the engine, and `use_charges_from_cif_file=False` adds an explicit unused-EQeq warning (`_unused_eqeq_charges_warning`) — the EQeq stage still runs because its charge-validated CIF is the framework staging source.
   - Result parsing (A21) detects the backend output schema from file content (`_detect_output_backend_schemas`, never filenames) and parses both layouts when a file mixes them: disjoint coverage merges with a `Mixed-schema file ...` diagnostic, identical duplicate blocks deduplicate, conflicting duplicate blocks raise an explicit ambiguous-schema `GraspaParseError`. Per-component schema provenance rides on `GraspaWidomComponentResult.source_schema`, `GraspaIsothermPointResult.source_schema`, and `GraspaMixturePointResult.component_source_schemas`; the strict requested-component checks name missing/unexpected/duplicated components.
 - [src/cofkit/zeopp.py](../src/cofkit/zeopp.py)
   - Zeo++ pore-property wrapper (`-res` / `-resex` / `-chan` / `-sa` / `-vol` / `-axs`) with content-based output parsing. Owns the Monte Carlo sampling defaults (`DEFAULT_SURFACE_SAMPLES_PER_ATOM` / `DEFAULT_VOLUME_SAMPLES_TOTAL`, referenced by `cli_analyze.py` argparse defaults) and radii provenance: `radii_file=` (CLI `--zeopp-radii-file`) passes a custom atomic radii file to Zeo++ as `-r`, and every report carries `ZeoppRadiiProvenance` identifying the effective radii source (`ZEOPP_BUILTIN_RADII_SOURCE` vs `ZEOPP_CUSTOM_RADII_SOURCE`) plus baseline/probe radii.
@@ -230,8 +243,8 @@ tunables must land here, not at consumer sites:
 - [src/cofkit/guest_restart.py](../src/cofkit/guest_restart.py)
   - GCMC movie/restart snapshot discovery, guest force-field asset synchronization from packaged/bundle RASPA rows into LAMMPS-ready guest sites/templates, binary guest parsing, and zero-mass pseudo-site rejection.
   - Site-to-component lookup is deduplicated per template (`_site_component_candidates`) so multisite guests with repeated site labels (CO2, SO2) parse; a label is ambiguous only when genuinely shared between components.
-  - Guest-model conversion/conflict diagnostics (A11): `LammpsGuestSite` keeps the source row's `interaction` kind (`lennard-jones` / `feynman-hibbs-lennard-jones`) and `override_conflicts` (disagreements between a bundle's `lammps.masses` / `charges` / `pair_coeff_rows` overrides and the RASPA-side pseudo-atom/mixing-rule rows); `guest_site_model_diagnostics` turns them into explicit warning strings that ride on the restart state warnings, so a Feynman-Hibbs row staged as classical LJ or a divergent MD-side override is always reported, never silent.
   - Population accounting is explicit in both handoff directions: `LammpsGuestRestartState` carries `skipped_molecules` / `skipped_unknown_site_counts` / `n_skipped_ambiguous_atoms`, and the MD→MC conversion warns with a recovered-vs-input atom summary whenever counts differ. Framework atoms embedded in gRASPA movies are excluded by label and counted, never silently dropped.
+  - Guest-model conversion/conflict diagnostics (A11): `LammpsGuestSite` keeps the source row's `interaction` kind (`lennard-jones` / `feynman-hibbs-lennard-jones`) and `override_conflicts` (disagreements between a bundle's `lammps.masses` / `charges` / `pair_coeff_rows` overrides and the RASPA-side pseudo-atom/mixing-rule rows); `guest_site_model_diagnostics` turns them into explicit warning strings that ride on the restart state warnings, so a Feynman-Hibbs row staged as classical LJ or a divergent MD-side override is always reported, never silent.
   - gRASPA snapshot production is verified against the backend: movies are written during production at `cycle % MoviesEvery == 0` (0-based; default 5000). `GraspaIsothermSettings` / `GraspaMixtureSettings` `movies_every` renders an explicit `MoviesEvery` line (gRASPA only), and hybrid `guest_restart` mode sets it to `max(1, production_cycles - 1)` to guarantee a final-cycle snapshot.
   - Real-backend smoke coverage lives in `tests/engines/test_graspa_engine.py`, gated on `COFKIT_TEST_GRASPA` / `COFKIT_TEST_EQEQ` / `COFKIT_TEST_LMP` like the LAMMPS engine tests.
 - [src/cofkit/guest_bundles.py](../src/cofkit/guest_bundles.py)
