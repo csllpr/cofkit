@@ -3,7 +3,14 @@ from .batch import (
     BatchGenerationConfig,
     BatchStructureGenerator,
 )
-from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
+from .batch_models import (
+    BatchMonomerRecord,
+    BatchPairSummary,
+    BatchRunSummary,
+    BuiltBatchMonomer,
+    ConformerConstructionSettings,
+    MonomerConformerProvenance,
+)
 from .build_workflows import (
     BuildWorkflowDefinition,
     BuildWorkflowRegistry,
@@ -262,6 +269,8 @@ __all__ = [
     "RingFormingStructureGenerator",
     "BinaryBridgeLibraryLoader",
     "BuiltBatchMonomer",
+    "ConformerConstructionSettings",
+    "MonomerConformerProvenance",
     "CIFExportResult",
     "CIFWriter",
     "CifDecompositionResult",

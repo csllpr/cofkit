@@ -20,10 +20,94 @@ class BatchMonomerRecord:
 
 
 @dataclass(frozen=True)
+class MonomerConformerProvenance:
+    """Effective conformer-construction settings and outcome for one built
+    monomer (impact-review claims T1-7 / T3.5 / T3.11, action A18).
+
+    ``requested_num_conformers`` is the user/config-requested budget;
+    ``effective_num_conformers`` is the budget actually handed to the builder
+    after the shape-aware ensemble floor. The ``actual_*`` / outcome fields
+    come from the built monomer's metadata and are None when the build failed
+    or a custom builder records no conformer metadata.
+    """
+
+    requested_num_conformers: int
+    effective_num_conformers: int
+    random_seed: int
+    shape_aware_requested: bool
+    shape_aware_applied: bool
+    builder: str
+    cofkit_version: str
+    actual_num_conformers: int | None = None
+    selected_conformer_id: int | None = None
+    conformer_selection: str | None = None
+    conformer_selection_note: str | None = None
+    embedding_method: str | None = None
+    embedding_fallback: bool | None = None
+    rdkit_version: str | None = None
+
+
+@dataclass(frozen=True)
+class ConformerConstructionSettings:
+    """Run-level effective conformer-construction settings (A18).
+
+    Recorded on ``BatchRunSummary.conformer_settings`` and rendered into
+    ``summary.md`` / the CLI batch summary so the durable record alone
+    explains the two-conformer autodetection clamp, shape-aware ensemble
+    increases, and where per-monomer selected-conformer provenance lives.
+    """
+
+    requested_num_conformers: int
+    autodetect_num_conformers: int
+    shape_aware_conformer: bool
+    shape_aware_ensemble_floor: int
+    shape_aware_min_motifs: int
+    shape_aware_validated_max_motifs: int
+    random_seed: int
+    cofkit_version: str
+
+    def explanation_lines(self) -> tuple[str, ...]:
+        if self.shape_aware_conformer:
+            shape_line = (
+                f"Shape-aware conformer selection: enabled for monomers with "
+                f"{self.shape_aware_min_motifs}..{self.shape_aware_validated_max_motifs} motifs; "
+                f"their embedding budget is raised to at least "
+                f"{self.shape_aware_ensemble_floor} conformers and the conformer whose motif "
+                f"origins best form a regular planar polygon is selected instead of the "
+                f"lowest-energy one"
+            )
+        else:
+            shape_line = (
+                "Shape-aware conformer selection: disabled; the lowest-energy conformer "
+                "is selected for every monomer"
+            )
+        return (
+            f"Requested conformer budget per monomer: {self.requested_num_conformers}",
+            (
+                f"Motif-kind autodetection probes embed at most {self.autodetect_num_conformers} "
+                f"conformer(s) (clamped from the requested budget); the actual monomer build "
+                f"re-embeds at the full budget above"
+            ),
+            shape_line,
+            f"RDKit embedding random seed: {self.random_seed}",
+            f"Implementation: cofkit {self.cofkit_version}",
+            (
+                "Per-monomer requested/effective budgets, embedded conformer counts, selected "
+                "conformer ids, selection mode, and embedding fallback status are recorded in "
+                "monomers.jsonl (`conformer_provenance`) and per structure in manifest.jsonl "
+                "(`metadata.reactant_conformer_provenance`)"
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class BuiltBatchMonomer:
     record: BatchMonomerRecord
     monomer: MonomerSpec | None = None
     error: str | None = None
+    # Effective conformer-construction settings and build outcome (A18);
+    # None for monomers built before this provenance was attached.
+    conformer_provenance: MonomerConformerProvenance | None = None
 
     @property
     def ok(self) -> bool:
@@ -141,6 +225,20 @@ class BatchPairSummary:
                 return tuple(str(check) for check in checks)
         return ()
 
+    @property
+    def reactant_conformer_provenance(self) -> Mapping[str, object]:
+        """Per-reactant selected-conformer provenance (A18).
+
+        Keyed by monomer id; each value carries the requested/effective
+        conformer budget, embedding seed, selection mode, selected conformer
+        id, and embedding fallback status recorded at monomer build time.
+        Empty for records that predate this metadata.
+        """
+        mapping = self.metadata.get("reactant_conformer_provenance")
+        if isinstance(mapping, ABCMapping):
+            return {str(key): value for key, value in mapping.items()}
+        return {}
+
 
 @dataclass(frozen=True)
 class BatchRunSummary:
@@ -178,6 +276,11 @@ class BatchRunSummary:
     # failure causes and overlap warnings otherwise confined to stderr), and
     # its build outcome.
     monomer_records_path: str | None = None
+    # Run-level effective conformer-construction settings (A18): requested vs
+    # autodetect budgets, the shape-aware gate/ensemble floor, the embedding
+    # seed, and the cofkit version. None for summaries built before this
+    # provenance existed.
+    conformer_settings: ConformerConstructionSettings | None = None
     top_results: tuple[BatchPairSummary, ...] = ()
 
     @property

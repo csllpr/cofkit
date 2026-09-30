@@ -8,13 +8,17 @@ from ..geometry import Frame, centroid, covariance_eigenpairs, cross, dot, norm,
 from ..model import MonomerSpec, ReactiveMotif
 from .motif_registry import MotifKindDefinition, MotifKindRegistry, default_motif_kind_registry
 
+from .._version import __version__ as _COFKIT_VERSION
+
 try:
     from rdkit import Chem
+    from rdkit import __version__ as _RDKIT_VERSION
     from rdkit.Chem import AllChem, rdDepictor
 except ImportError:  # pragma: no cover - handled at call sites
     Chem = None
     AllChem = None
     rdDepictor = None
+    _RDKIT_VERSION = None
 
 
 # Heuristic — pending calibration: a molecule at or above this atom count
@@ -88,6 +92,13 @@ SHAPE_SELECTION_VALIDATED_MAX_MOTIFS = 3
 # the conformer builder is what consumes the ensemble size; callers
 # (ring-forming CLI, batch builds) reference this constant, never retype it.
 SHAPE_SELECTION_MIN_CONFORMERS = 16
+
+# Heuristic: fixed default seed for RDKit ETKDG conformer embedding so default
+# builds are reproducible run to run. Owned here (the embedding module);
+# BatchGenerationConfig.rdkit_random_seed and the monomer-library autodetect
+# paths reference this constant instead of retyping the literal.
+DEFAULT_RDKIT_RANDOM_SEED = 0xC0F
+
 
 # Heuristic — pending calibration: upper bound on the heavy-atom RMS distance
 # to the best-fit molecular plane for a ditopic/monotopic conformer to carry a
@@ -215,7 +226,7 @@ class RDKitMotifBuilder:
         motif_kind: str,
         *,
         num_conformers: int = 8,
-        random_seed: int = 0xC0F,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
         optimization_max_iterations: int = 500,
         optimization_attempts: int = 1,
         select_conformer_by_motif_shape: bool = False,
@@ -268,20 +279,33 @@ class RDKitMotifBuilder:
 
         conformer_selection = "energy"
         shape_score: float | None = None
-        if select_conformer_by_motif_shape and len(detected) >= SHAPE_SELECTION_MIN_MOTIFS:
-            shape_choice = self._select_conformer_by_motif_shape(
-                molecule,
-                embedding.conformer_ids,
-                definition,
-                reference_motif_count=len(detected),
-                energies=selection.conformer_energies,
-            )
-            if shape_choice is not None:
-                conformer_id, shape_score = shape_choice
-                if conformer_id != selection.conformer_id:
-                    conformer = molecule.GetConformer(conformer_id)
-                    detected = self._detect_motifs(molecule, conformer, definition)
-                conformer_selection = "motif_shape"
+        selection_note: str | None = None
+        if select_conformer_by_motif_shape:
+            if len(detected) < SHAPE_SELECTION_MIN_MOTIFS:
+                selection_note = (
+                    f"shape-aware selection skipped: {len(detected)} detected motifs below "
+                    f"SHAPE_SELECTION_MIN_MOTIFS ({SHAPE_SELECTION_MIN_MOTIFS}); "
+                    "kept the energy-selected conformer"
+                )
+            else:
+                shape_choice = self._select_conformer_by_motif_shape(
+                    molecule,
+                    embedding.conformer_ids,
+                    definition,
+                    reference_motif_count=len(detected),
+                    energies=selection.conformer_energies,
+                )
+                if shape_choice is None:
+                    selection_note = (
+                        "shape-aware selection found no conformer with a measurable "
+                        "motif arrangement; kept the energy-selected conformer"
+                    )
+                else:
+                    conformer_id, shape_score = shape_choice
+                    if conformer_id != selection.conformer_id:
+                        conformer = molecule.GetConformer(conformer_id)
+                        detected = self._detect_motifs(molecule, conformer, definition)
+                    conformer_selection = "motif_shape"
 
         atom_positions, motifs, plane_fit = _build_geometry(detected, molecule, conformer, definition)
         atom_symbols = tuple(atom.GetSymbol() for atom in molecule.GetAtoms())
@@ -317,8 +341,23 @@ class RDKitMotifBuilder:
                 "n_atoms": molecule.GetNumAtoms(),
                 "n_heavy_atoms": base.GetNumAtoms(),
                 "n_conformers": len(embedding.conformer_ids),
+                # A18 provenance: the budget actually handed to the embedder
+                # (callers may have raised it to SHAPE_SELECTION_MIN_CONFORMERS
+                # for shape-aware selection — that bump is recorded by the
+                # caller), the embedding seed, and whether shape-aware
+                # selection was requested (vs applied, see conformer_selection).
+                "requested_num_conformers": num_conformers,
+                "random_seed": random_seed,
+                "shape_aware_selection_requested": select_conformer_by_motif_shape,
                 "selected_conformer_id": conformer_id,
                 "conformer_selection": conformer_selection,
+                **(
+                    {"conformer_selection_note": selection_note}
+                    if selection_note is not None
+                    else {}
+                ),
+                "cofkit_version": _COFKIT_VERSION,
+                "rdkit_version": _RDKIT_VERSION,
                 **(
                     {"selected_conformer_shape_score": shape_score}
                     if shape_score is not None
@@ -442,7 +481,7 @@ def build_rdkit_monomer(
     motif_kind: str,
     *,
     num_conformers: int = 8,
-    random_seed: int = 0xC0F,
+    random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     optimization_max_iterations: int = 500,
     optimization_attempts: int = 1,
     select_conformer_by_motif_shape: bool = False,

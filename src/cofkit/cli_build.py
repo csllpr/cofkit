@@ -6,12 +6,14 @@ import shutil
 import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable, Mapping
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
 from .chem.rdkit import (
+    DEFAULT_RDKIT_RANDOM_SEED,
     SHAPE_SELECTION_MIN_CONFORMERS,
     SHAPE_SELECTION_MIN_MOTIFS,
     SHAPE_SELECTION_VALIDATED_MAX_MOTIFS,
@@ -24,8 +26,19 @@ from .cif import CIFWriter
 from .cofid import cofid_to_build_request, generate_cofid_with_cause
 from .constants import DEFAULT_MONOLAYER_C_ANGSTROM
 from .lammps import LammpsOptimizationSettings
-from .monomer_library import MonomerRoleResolver
+from .monomer_library import AUTODETECT_MAX_CONFORMERS, MonomerRoleResolver
 from .reactions import ReactionLibrary
+
+
+# Heuristic — pending calibration: default conformer-sampling budget for the
+# interactive build CLI commands (single-pair, ring-forming, batch-binary-bridge
+# / batch-all-binary-bridges). Deliberately cheaper than the library-API
+# default (BatchGenerationConfig.rdkit_num_conformers, 8) so interactive runs
+# stay fast; raise it with --num-conformers. Shape-aware conformer selection
+# raises the effective budget to SHAPE_SELECTION_MIN_CONFORMERS where it
+# applies, regardless of this default. Single owner of the CLI default: the
+# three --num-conformers argparse defaults below reference this constant.
+DEFAULT_CLI_NUM_CONFORMERS = 4
 
 
 def _default_repo_path(*parts: str) -> str:
@@ -112,7 +125,7 @@ def _add_common_batch_generation_arguments(parser: argparse.ArgumentParser) -> N
     parser.add_argument(
         "--num-conformers",
         type=int,
-        default=4,
+        default=DEFAULT_CLI_NUM_CONFORMERS,
         help="Number of RDKit conformers to sample per monomer during batch construction.",
     )
     parser.add_argument(
@@ -295,7 +308,7 @@ def _add_single_pair_parser(subparsers) -> None:
     parser.add_argument(
         "--num-conformers",
         type=int,
-        default=4,
+        default=DEFAULT_CLI_NUM_CONFORMERS,
         help="Number of RDKit conformers to sample per monomer during monomer construction.",
     )
     parser.add_argument(
@@ -527,6 +540,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             "motif_count": len(first.motifs),
             "overlap_warnings": list(first_warnings),
             **({"autodetection": first_autodetection} if first_autodetection else {}),
+            "conformers": _monomer_conformer_summary(args, first),
             "geometry": _monomer_geometry_summary(first),
         },
         "second": {
@@ -536,6 +550,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             "motif_count": len(second.motifs),
             "overlap_warnings": list(second_warnings),
             **({"autodetection": second_autodetection} if second_autodetection else {}),
+            "conformers": _monomer_conformer_summary(args, second),
             "geometry": _monomer_geometry_summary(second),
         },
         "attempted_structures": attempted_structures,
@@ -587,7 +602,7 @@ def _add_ring_forming_parser(subparsers) -> None:
     parser.add_argument("--monomer-name", default=None)
     parser.add_argument("--motif-kind", choices=("boronic_acid", "nitrile"), default=None)
     parser.add_argument("--topology", default="hcb", help="Three-connected product topology. Default: hcb.")
-    parser.add_argument("--num-conformers", type=int, default=4)
+    parser.add_argument("--num-conformers", type=int, default=DEFAULT_CLI_NUM_CONFORMERS)
     parser.add_argument(
         "--shape-aware-conformer",
         action=argparse.BooleanOptionalAction,
@@ -769,6 +784,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
             "id": monomer.id,
             "motif_kind": motif_kind,
             "motif_count": len(monomer.motifs),
+            "conformers": _monomer_conformer_summary(args, monomer),
             "geometry": _monomer_geometry_summary(monomer),
         },
         **first_result,
@@ -849,7 +865,7 @@ def _resolve_single_pair_motif_kind(
             # Autodetection probes are clamped to the cheap two-conformer
             # budget (monomer_library.AUTODETECT_MAX_CONFORMERS); the actual
             # monomer build re-embeds at the full budget.
-            "probe_num_conformers": max(1, min(2, num_conformers)),
+            "probe_num_conformers": max(1, min(AUTODETECT_MAX_CONFORMERS, num_conformers)),
         }
     warnings = resolver.forced_kind_warnings(
         smiles,
@@ -859,6 +875,33 @@ def _resolve_single_pair_motif_kind(
         num_conformers=num_conformers,
     )
     return kind, warnings, autodetection
+
+
+def _monomer_conformer_summary(args: argparse.Namespace, monomer) -> dict[str, object]:
+    """Requested-vs-actual conformer construction provenance (A18).
+
+    ``requested_num_conformers`` is the CLI budget; ``effective_num_conformers``
+    is the budget actually handed to the embedder (raised to
+    ``SHAPE_SELECTION_MIN_CONFORMERS`` when shape-aware selection fired);
+    ``actual_num_conformers`` is the number of conformers RDKit embedded.
+    """
+    metadata = monomer.metadata
+    return {
+        "requested_num_conformers": args.num_conformers,
+        "effective_num_conformers": metadata.get("requested_num_conformers"),
+        "actual_num_conformers": metadata.get("n_conformers"),
+        "random_seed": metadata.get("random_seed", DEFAULT_RDKIT_RANDOM_SEED),
+        "shape_aware_requested": bool(getattr(args, "shape_aware_conformer", True)),
+        "shape_aware_applied": bool(metadata.get("shape_aware_selection_requested", False)),
+        "conformer_selection": metadata.get("conformer_selection"),
+        "conformer_selection_note": metadata.get("conformer_selection_note"),
+        "selected_conformer_id": metadata.get("selected_conformer_id"),
+        "selected_conformer_shape_score": metadata.get("selected_conformer_shape_score"),
+        "embedding_method": metadata.get("embedding_method"),
+        "embedding_fallback": bool(metadata.get("embedding_fallback", False)),
+        "cofkit_version": metadata.get("cofkit_version"),
+        "rdkit_version": metadata.get("rdkit_version"),
+    }
 
 
 def _monomer_geometry_summary(monomer) -> dict[str, object]:
@@ -947,6 +990,12 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     print("successful_pairs:", summary.successful_pairs)
     print("attempted_structures:", summary.attempted_structures)
     print("successful_structures:", summary.successful_structures)
+    # Explicit split: construction success is not a validated yield.
+    print("constructed_structures:", summary.constructed_structures, "(status ok; construction success, not a validation verdict)")
+    print("exported_structures:", summary.exported_structures)
+    print("screened_structures:", summary.screened_structures, "(validation record attached)")
+    print("unvalidated_structures:", summary.unvalidated_structures, "(required checks unmeasured)")
+    print("validation_counts:", dict(summary.validation_counts))
     print("built_monomers:", summary.built_monomers)
     print("failed_monomers:", summary.failed_monomers)
     print("failed_records:", len(summary.record_failures))
@@ -964,6 +1013,10 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     print("cifs_written:", summary.cifs_written)
     print("manifest:", summary.manifest_path)
     print("monomer_records:", summary.monomer_records_path or "-")
+    if summary.conformer_settings is not None:
+        print("conformer_settings:")
+        for line in summary.conformer_settings.explanation_lines():
+            print("  ", line)
     failed_repairs = int(summary.geometry_repair_counts.get("failed", 0))
     if failed_repairs > 0:
         print(
@@ -1068,6 +1121,9 @@ def _add_batch_all_binary_bridges_parser(subparsers) -> None:
         func=_run_batch_all_binary_bridges,
         input_dir=_default_repo_path("examples", "default_monomers_library"),
         output_dir=_default_repo_path("out", "available_binary_bridge_batches"),
+        # Intentional command-specific budget (not DEFAULT_CLI_NUM_CONFORMERS):
+        # this command runs every available linkage template over the library,
+        # so per-template runs default to a cheaper 2-conformer sample.
         num_conformers=2,
     )
 
@@ -1181,6 +1237,9 @@ def _summary_to_json(summary) -> dict[str, object]:
         "geometry_repair_failed_records_path": summary.geometry_repair_failed_records_path,
         "manifest_path": summary.manifest_path,
         "monomer_records_path": summary.monomer_records_path,
+        "conformer_settings": (
+            asdict(summary.conformer_settings) if summary.conformer_settings is not None else None
+        ),
     }
 
 
@@ -1197,6 +1256,8 @@ def _add_default_library_parser(subparsers) -> None:
         "--output-dir",
         default=_default_repo_path("examples", "default_monomers_library"),
     )
+    # Intentional command-specific budget (not DEFAULT_CLI_NUM_CONFORMERS):
+    # default-library only scans/detects monomers, so 2 conformers suffice.
     parser.add_argument("--num-conformers", type=int, default=2)
     parser.add_argument(
         "--force",

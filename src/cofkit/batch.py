@@ -4,15 +4,24 @@ import json
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from itertools import permutations, product
 from math import atan2, cos, pi, sin
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Mapping
 
-from .batch_models import BatchMonomerRecord, BatchPairSummary, BatchRunSummary, BuiltBatchMonomer
+from .batch_models import (
+    BatchMonomerRecord,
+    BatchPairSummary,
+    BatchRunSummary,
+    BuiltBatchMonomer,
+    ConformerConstructionSettings,
+    MonomerConformerProvenance,
+)
+from ._version import __version__
 from .chem.rdkit import (
+    DEFAULT_RDKIT_RANDOM_SEED,
     SHAPE_SELECTION_MIN_CONFORMERS,
     SHAPE_SELECTION_MIN_MOTIFS,
     SHAPE_SELECTION_VALIDATED_MAX_MOTIFS,
@@ -41,7 +50,7 @@ from .geometry import (
     sub,
 )
 from .model import AssemblyState, Candidate, MonomerInstance, MonomerSpec, MotifRef, Pose, ReactionEvent, ReactionTemplate, order_candidates, residual_ranking_key
-from .monomer_library import BinaryBridgeLibraryLoader, MonomerRoleResolver
+from .monomer_library import AUTODETECT_MAX_CONFORMERS, BinaryBridgeLibraryLoader, MonomerRoleResolver
 from .node_shape import (
     KNOWN_SHAPE_LABELS,
     SHAPE_RECTANGULAR,
@@ -149,7 +158,7 @@ class BatchGenerationConfig:
     # the planar target is wrong for them. Only applies to the default RDKit
     # monomer builder; custom smiles_monomer_builder callables are untouched.
     shape_aware_conformer: bool = True
-    rdkit_random_seed: int = 0xC0F
+    rdkit_random_seed: int = DEFAULT_RDKIT_RANDOM_SEED
     # Heuristic — pending calibration: how many best-ranked pair summaries
     # the running top list keeps for the final report.
     retain_top_results: int = 25
@@ -513,6 +522,10 @@ class BatchStructureGenerator:
         if cached is not None:
             return replace(cached, record=record)
 
+        # Custom builders never receive the shape-selection flag, so record
+        # what was actually applied rather than what the gate computed.
+        shape_applied = shape_selection and self.smiles_monomer_builder is build_rdkit_monomer
+        builder_name = getattr(self.smiles_monomer_builder, "__name__", str(self.smiles_monomer_builder))
         try:
             extra_kwargs = (
                 {"select_conformer_by_motif_shape": shape_selection}
@@ -536,9 +549,29 @@ class BatchStructureGenerator:
                 )
             for geometry_warning in monomer_geometry_degradation_warnings(monomer):
                 print(f"warning: {geometry_warning}", file=sys.stderr)
-            result = BuiltBatchMonomer(record=record, monomer=monomer)
+            result = BuiltBatchMonomer(
+                record=record,
+                monomer=monomer,
+                conformer_provenance=self._conformer_provenance(
+                    monomer,
+                    requested=self.config.rdkit_num_conformers,
+                    effective=num_conformers,
+                    shape_applied=shape_applied,
+                    builder_name=builder_name,
+                ),
+            )
         except Exception as exc:  # pragma: no cover - exercised against large fixture libraries
-            result = BuiltBatchMonomer(record=record, error=f"{type(exc).__name__}: {exc}")
+            result = BuiltBatchMonomer(
+                record=record,
+                error=f"{type(exc).__name__}: {exc}",
+                conformer_provenance=self._conformer_provenance(
+                    None,
+                    requested=self.config.rdkit_num_conformers,
+                    effective=num_conformers,
+                    shape_applied=shape_applied,
+                    builder_name=builder_name,
+                ),
+            )
 
         with self._monomer_cache_lock:
             existing = self._monomer_cache.get(cache_key)
@@ -547,6 +580,49 @@ class BatchStructureGenerator:
             self._monomer_cache[cache_key] = result
         return result
 
+    def _conformer_provenance(
+        self,
+        monomer: MonomerSpec | None,
+        *,
+        requested: int,
+        effective: int,
+        shape_applied: bool,
+        builder_name: str,
+    ) -> MonomerConformerProvenance:
+        """Combine caller-side effective settings with the builder-recorded outcome (A18)."""
+        metadata = monomer.metadata if monomer is not None else {}
+        embedding_fallback = metadata.get("embedding_fallback")
+        return MonomerConformerProvenance(
+            requested_num_conformers=requested,
+            effective_num_conformers=effective,
+            random_seed=self.config.rdkit_random_seed,
+            shape_aware_requested=self.config.shape_aware_conformer,
+            shape_aware_applied=shape_applied,
+            builder=builder_name,
+            cofkit_version=__version__,
+            actual_num_conformers=(
+                int(metadata["n_conformers"]) if metadata.get("n_conformers") is not None else None
+            ),
+            selected_conformer_id=(
+                int(metadata["selected_conformer_id"])
+                if metadata.get("selected_conformer_id") is not None
+                else None
+            ),
+            conformer_selection=(
+                str(metadata["conformer_selection"]) if metadata.get("conformer_selection") is not None else None
+            ),
+            conformer_selection_note=(
+                str(metadata["conformer_selection_note"])
+                if metadata.get("conformer_selection_note") is not None
+                else None
+            ),
+            embedding_method=(
+                str(metadata["embedding_method"]) if metadata.get("embedding_method") is not None else None
+            ),
+            embedding_fallback=bool(embedding_fallback) if embedding_fallback is not None else None,
+            rdkit_version=str(metadata["rdkit_version"]) if metadata.get("rdkit_version") is not None else None,
+        )
+
     def _shape_aware_conformer_selection(self, expected_connectivity: int) -> bool:
         return (
             self.config.shape_aware_conformer
@@ -554,7 +630,7 @@ class BatchStructureGenerator:
         )
 
     def _autodetect_num_conformers(self) -> int:
-        return max(1, min(2, self.config.rdkit_num_conformers))
+        return max(1, min(AUTODETECT_MAX_CONFORMERS, self.config.rdkit_num_conformers))
 
     def _selected_binary_bridge_template(self, *, template_id: str | None = None) -> ReactionTemplate:
         return self._library_loader.selected_binary_bridge_template(
@@ -965,6 +1041,16 @@ class BatchStructureGenerator:
             ),
             manifest_path=str(manifest_path),
             monomer_records_path=str(monomer_records_path),
+            conformer_settings=ConformerConstructionSettings(
+                requested_num_conformers=self.config.rdkit_num_conformers,
+                autodetect_num_conformers=self._autodetect_num_conformers(),
+                shape_aware_conformer=self.config.shape_aware_conformer,
+                shape_aware_ensemble_floor=SHAPE_SELECTION_MIN_CONFORMERS,
+                shape_aware_min_motifs=SHAPE_SELECTION_MIN_MOTIFS,
+                shape_aware_validated_max_motifs=SHAPE_SELECTION_VALIDATED_MAX_MOTIFS,
+                random_seed=self.config.rdkit_random_seed,
+                cofkit_version=__version__,
+            ),
             top_results=tuple(top_results),
         )
         staging_dir = output_root / "cifs" / ".staging"
@@ -997,6 +1083,14 @@ class BatchStructureGenerator:
                     "source_path": record.source_path,
                     "source_line": record.source_line,
                     "metadata": self._json_safe(dict(record.metadata)),
+                    # A18: per-monomer requested/effective conformer budget,
+                    # seed, selection mode, and fallback status; None only when
+                    # the record was never attempted.
+                    "conformer_provenance": (
+                        self._json_safe(asdict(result.conformer_provenance))
+                        if result is not None and result.conformer_provenance is not None
+                        else None
+                    ),
                     "build_status": "ok" if result is not None and result.ok else "failed",
                     "build_error": result.error if result is not None else None,
                 }
@@ -1034,11 +1128,14 @@ class BatchStructureGenerator:
     ) -> tuple[tuple[tuple[BatchPairSummary, ...], int], ...]:
         """Run pair tasks in a process pool, falling back to a thread pool.
 
-        Results are fully buffered before returning. If the process pool
-        fails partway through (for example a worker dies and raises
-        ``BrokenProcessPool``), the partially computed results are discarded
-        and every task is re-executed exactly once in the thread pool, so
-        callers never record the same pair twice.
+        Results are fully buffered before returning. A worker task exception
+        is converted into a recorded failure for that pair (type name and
+        message survive process serialization) and the remaining pairs are
+        still collected. If the process pool itself fails partway through
+        (for example a worker dies and raises ``BrokenProcessPool``), the
+        partially computed results are discarded and every task is re-executed
+        exactly once in the thread pool, so callers never record the same
+        pair twice.
         """
         if self._supports_process_pair_pool():
             try:
@@ -4517,6 +4614,32 @@ class BatchStructureGenerator:
             )
         return next(iter(kinds))
 
+    @staticmethod
+    def _monomer_conformer_provenance_metadata(monomer: MonomerSpec) -> dict[str, object]:
+        """Selected-conformer provenance for one reactant, from builder metadata (A18).
+
+        ``effective_num_conformers`` is the budget actually handed to the
+        embedder (the builder records it as ``requested_num_conformers``;
+        callers may have raised it to the shape-aware ensemble floor), while
+        ``actual_num_conformers`` is the number of conformers RDKit embedded.
+        """
+        metadata = monomer.metadata
+        return {
+            "effective_num_conformers": metadata.get("requested_num_conformers"),
+            "actual_num_conformers": metadata.get("n_conformers"),
+            "random_seed": metadata.get("random_seed"),
+            "shape_aware_selection_requested": metadata.get("shape_aware_selection_requested"),
+            "conformer_selection": metadata.get("conformer_selection"),
+            "conformer_selection_note": metadata.get("conformer_selection_note"),
+            "selected_conformer_id": metadata.get("selected_conformer_id"),
+            "selected_conformer": next(iter(monomer.conformer_ids), None),
+            "selected_conformer_shape_score": metadata.get("selected_conformer_shape_score"),
+            "embedding_method": metadata.get("embedding_method"),
+            "embedding_fallback": metadata.get("embedding_fallback"),
+            "cofkit_version": metadata.get("cofkit_version"),
+            "rdkit_version": metadata.get("rdkit_version"),
+        }
+
     def _candidate_to_summary(
         self,
         *,
@@ -4543,6 +4666,7 @@ class BatchStructureGenerator:
         reactant_node_shapes: Mapping[str, str] | None = None,
         shape_warnings: tuple[str, ...] = (),
         monomer_geometry_warnings: tuple[str, ...] = (),
+        reactant_conformer_provenance: Mapping[str, object] | None = None,
     ) -> BatchPairSummary:
         export_blocked = bool(hard_hard_invalid_reasons)
         return BatchPairSummary(
@@ -4579,6 +4703,9 @@ class BatchStructureGenerator:
                 "reactant_roles": reactant_roles,
                 "shape_warnings": tuple(shape_warnings),
                 "monomer_geometry_warnings": tuple(monomer_geometry_warnings),
+                # A18: per-reactant selected-conformer provenance (requested/
+                # effective budget, seed, selection mode, fallback status).
+                "reactant_conformer_provenance": dict(reactant_conformer_provenance or {}),
                 "template_id": template_id,
                 **(
                     {"stacking": dict(candidate.metadata["stacking"])}
@@ -4944,6 +5071,10 @@ class BatchStructureGenerator:
                             "reactant_connectivities": role_connectivities,
                             "reactant_node_shapes": role_node_shapes,
                             "reactant_roles": pair.role_ids,
+                            "reactant_conformer_provenance": {
+                                first.id: self._monomer_conformer_provenance_metadata(first),
+                                second.id: self._monomer_conformer_provenance_metadata(second),
+                            },
                             "template_id": pair.template.id,
                         },
                     ),
@@ -4979,6 +5110,10 @@ class BatchStructureGenerator:
                             "reactant_node_shapes": role_node_shapes,
                             "reactant_roles": pair.role_ids,
                             "shape_warnings": evaluation.shape_warnings,
+                            "reactant_conformer_provenance": {
+                                first.id: self._monomer_conformer_provenance_metadata(first),
+                                second.id: self._monomer_conformer_provenance_metadata(second),
+                            },
                             "template_id": pair.template.id,
                         },
                     ),
@@ -5035,6 +5170,10 @@ class BatchStructureGenerator:
                             "reactant_node_shapes": role_node_shapes,
                             "reactant_roles": pair.role_ids,
                             "shape_warnings": evaluation.shape_warnings,
+                            "reactant_conformer_provenance": {
+                                first.id: self._monomer_conformer_provenance_metadata(first),
+                                second.id: self._monomer_conformer_provenance_metadata(second),
+                            },
                             "template_id": pair.template.id,
                         },
                     ),
@@ -5086,6 +5225,10 @@ class BatchStructureGenerator:
                 monomer_geometry_warnings=monomer_geometry_warnings,
                 hard_hard_invalid_reasons=hard_hard_invalid_reasons,
                 hard_hard_invalid_metrics=hard_hard_invalid_metrics,
+                reactant_conformer_provenance={
+                    first.id: self._monomer_conformer_provenance_metadata(first),
+                    second.id: self._monomer_conformer_provenance_metadata(second),
+                },
             )
             cif_path = None
             validation_metadata = None
@@ -5920,10 +6063,23 @@ class BatchStructureGenerator:
             f"- Validation classification counts: {dict(summary.validation_counts)}",
             f"- Geometry repair counts: {dict(summary.geometry_repair_counts)}",
             f"- Geometry repair revalidation counts: {dict(summary.geometry_repair_revalidation_counts)}",
-            "",
-            "## Top results",
-            "",
         ]
+        if summary.conformer_settings is not None:
+            lines.extend(
+                [
+                    "",
+                    "## Construction settings (conformer provenance)",
+                    "",
+                    *(f"- {line}" for line in summary.conformer_settings.explanation_lines()),
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                "## Top results",
+                "",
+            ]
+        )
         failed_repairs = int(summary.geometry_repair_counts.get("failed", 0))
         if failed_repairs > 0:
             lines.extend(

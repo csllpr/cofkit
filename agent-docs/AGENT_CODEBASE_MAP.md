@@ -40,6 +40,19 @@ Then go straight to the module that matches the task.
     run-level `_require_writable_output_root` probe that aborts on an
     unwritable output root before any record is attempted.
   - Durable reporting (A12): `run_binary_bridge_batch` also writes
+    `monomers.jsonl` (per-record detection metadata — autodetect failure
+    causes, overlap warnings — plus build outcome), and best-effort COFid
+    generation goes through `cofid.generate_cofid_with_cause` so a failed
+    generation is recorded as `cofid_error` in the manifest metadata instead
+    of silently omitting the token.
+  - Construction-settings provenance (A18): `build_monomer` attaches a typed
+    `MonomerConformerProvenance` to every `BuiltBatchMonomer` (serialized as
+    `conformer_provenance` in `monomers.jsonl`), pair summaries carry
+    per-reactant `reactant_conformer_provenance` manifest metadata, and the
+    run summary carries `conformer_settings` rendered into a
+    `## Construction settings (conformer provenance)` section of
+    `summary.md`.
+
 
 ## Core chemistry seams
 
@@ -71,6 +84,7 @@ Then go straight to the module that matches the task.
     evidence: trigonal improves, tetrahedral worsens; ring-forming applies it
     to all 3+-motif precursors) and `SHAPE_SELECTION_MIN_CONFORMERS`
     (ensemble floor 16).
+  - Conformer-construction provenance (A18): `MonomerSpec.metadata` records
   - New motif kinds normally need a match handler here.
 - [src/cofkit/chem/detector.py](../src/cofkit/chem/detector.py)
   - Lightweight non-RDKit fallback detector.
@@ -91,6 +105,7 @@ Then go straight to the module that matches the task.
   - Use these instead of adding new ad hoc summary dictionaries.
   - `BatchPairSummary` carries typed validation accessors (`validation_classification`, `validation_coverage`, `unmeasured_required_checks`) over the serialized `metadata["validation"]` record; `BatchRunSummary.validation_counts` counts validation classifications per run, and `BatchRunSummary.record_failures` aggregates every non-`ok` manifest record as structure id → `TypeName: message` (surfaced in `summary.md` and the console/JSON summaries).
   - `BatchRunSummary` yield accounting (A12): derived `constructed_structures` (status `ok`; the legacy `successful_structures` field remains as an alias — construction success is not a validated yield), `exported_structures` (alias of `cifs_written`), `screened_structures` (validation record attached), and `unvalidated_structures` properties, plus `monomer_records_path` pointing at the durable per-monomer `monomers.jsonl` ledger.
+  - Conformer-construction provenance (A18): `ConformerConstructionSettings` (run-level requested vs autodetect budgets, shape-aware gate/ensemble floor, seed, cofkit version; `explanation_lines()` is the single source of the summary.md / console explanation text) on `BatchRunSummary.conformer_settings`; `MonomerConformerProvenance` (requested vs effective budget, seed, shape-aware requested/applied, builder identity, and the builder-recorded outcome: actual conformer count, selected id, selection mode/note, embedding method/fallback) on `BuiltBatchMonomer.conformer_provenance`, serialized per record as `conformer_provenance` in `monomers.jsonl`; `BatchPairSummary.reactant_conformer_provenance` reads the per-reactant manifest metadata.
 
 ## Topology seams
 
@@ -153,6 +168,21 @@ tunables must land here, not at consumer sites:
 
 - [src/cofkit/constants.py](../src/cofkit/constants.py)
   - Cross-cutting assembly defaults (`DEFAULT_MONOLAYER_C_ANGSTROM`, `DEFAULT_LATERAL_SPAN_ANGSTROM`).
+- [src/cofkit/chem/rdkit.py](../src/cofkit/chem/rdkit.py)
+  - `DEFAULT_RDKIT_RANDOM_SEED` (default ETKDG embedding seed — referenced by
+    the builder signatures, `BatchGenerationConfig.rdkit_random_seed`, and the
+    monomer-library autodetect paths) and the `SHAPE_SELECTION_*` gates.
+- [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
+  - `AUTODETECT_MAX_CONFORMERS` (two-conformer autodetection probe cap —
+    referenced by `BatchStructureGenerator._autodetect_num_conformers` and the
+    resolver defaults).
+- [src/cofkit/cli_build.py](../src/cofkit/cli_build.py)
+  - `DEFAULT_CLI_NUM_CONFORMERS` (interactive build-CLI conformer budget,
+    deliberately cheaper than the `BatchGenerationConfig.rdkit_num_conformers`
+    library default; the `single-pair` / `ring-forming` / batch
+    `--num-conformers` argparse defaults reference it). The cheaper
+    `batch-all-binary-bridges` (2) and `default-library` (2) budgets are
+    intentional command-specific overrides, documented at their call sites.
 - [src/cofkit/ring_geometry.py](../src/cofkit/ring_geometry.py)
   - Ring-template bond lengths for boroxine/triazine ring formation, the ring-arrangement acceptance tolerances (`RingGeometryProfile`), and the exocyclic attachment acceptance criteria (`RING_ATTACHMENT_IDEAL_ANGLE_DEGREES`, derived; `attachment_*` warning/rejection tolerances, heuristic — pending calibration) measured by `ring_attachment_report` and combined in `validate_ring_geometry` (arrangement and attachment verdicts reported separately).
 - [src/cofkit/validation.py](../src/cofkit/validation.py)

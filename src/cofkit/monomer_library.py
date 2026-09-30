@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from .batch_models import BatchMonomerRecord
-from .chem.rdkit import RDKitMotifBuilder
+from .chem.rdkit import DEFAULT_RDKIT_RANDOM_SEED, RDKitMotifBuilder
 from .model import MonomerSpec, ReactionTemplate
 from .reactions import BinaryBridgeRole, ReactionLibrary
 
@@ -13,6 +13,14 @@ from .reactions import BinaryBridgeRole, ReactionLibrary
 _AUTO_DETECT_GENERIC_SUPPRESSION: Mapping[str, tuple[str, ...]] = {
     "aldehyde": ("keto_aldehyde",),
 }
+
+# Heuristic — pending calibration: conformer budget cap for motif-kind
+# autodetection probes. Detection only needs one plausible conformer per
+# candidate kind, so probing is clamped to two conformers regardless of the
+# (larger) construction budget; the real build re-embeds at the full budget.
+# Single owner: BatchStructureGenerator._autodetect_num_conformers and the
+# resolver defaults below reference this constant.
+AUTODETECT_MAX_CONFORMERS = 2
 
 
 @dataclass(frozen=True)
@@ -34,8 +42,8 @@ class MonomerRoleResolver:
         smiles: str,
         *,
         allowed_motif_kinds: Iterable[str] | None = None,
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> dict[str, MonomerSpec]:
         candidates, _failure_causes = self.auto_detect_monomer_candidates_with_causes(
             smiles,
@@ -50,8 +58,8 @@ class MonomerRoleResolver:
         smiles: str,
         *,
         allowed_motif_kinds: Iterable[str] | None = None,
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> tuple[dict[str, MonomerSpec], dict[str, str]]:
         """Autodetect candidate motif kinds, retaining per-kind failure causes.
 
@@ -78,7 +86,7 @@ class MonomerRoleResolver:
                     "__auto_detect__",
                     smiles,
                     motif_kind,
-                    num_conformers=max(1, min(2, num_conformers)),
+                    num_conformers=max(1, min(AUTODETECT_MAX_CONFORMERS, num_conformers)),
                     random_seed=random_seed,
                 )
             except Exception as exc:
@@ -94,8 +102,8 @@ class MonomerRoleResolver:
         assigned_kind: str,
         monomer_id: str,
         template_id: str | None = None,
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> tuple[str, ...]:
         """Warn when a forced/assigned generic kind shadows a more specific kind.
 
@@ -117,7 +125,7 @@ class MonomerRoleResolver:
                     monomer_id,
                     smiles,
                     specific_kind,
-                    num_conformers=max(1, min(2, num_conformers)),
+                    num_conformers=max(1, min(AUTODETECT_MAX_CONFORMERS, num_conformers)),
                     random_seed=random_seed,
                 )
             except Exception:
@@ -184,8 +192,8 @@ class MonomerRoleResolver:
         source_line: int = 0,
         allowed_motif_kinds: Iterable[str] | None = None,
         library_stem: str = "",
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> BatchMonomerRecord:
         candidates, autodetect_failure_causes = self.auto_detect_monomer_candidates_with_causes(
             smiles,
@@ -204,6 +212,11 @@ class MonomerRoleResolver:
                 kind: len(candidate.motifs)
                 for kind, candidate in sorted(candidates.items())
             },
+            # Motif kinds that did not build during autodetection, with the
+            # retained ``TypeName: message`` cause (expected non-matches and
+            # internal failures alike), so an absent candidate kind is never
+            # an unexplained omission.
+            "autodetect_failure_causes": dict(sorted(autodetect_failure_causes.items())),
             "overlap_warnings": self.forced_kind_warnings(
                 smiles,
                 assigned_kind=motif_kind,
@@ -211,11 +224,6 @@ class MonomerRoleResolver:
                 num_conformers=num_conformers,
                 random_seed=random_seed,
             ),
-            # Motif kinds that did not build during autodetection, with the
-            # retained ``TypeName: message`` cause (expected non-matches and
-            # internal failures alike), so an absent candidate kind is never
-            # an unexplained omission.
-            "autodetect_failure_causes": dict(sorted(autodetect_failure_causes.items())),
         }
         if library_stem:
             metadata["library_stem"] = library_stem
@@ -325,8 +333,8 @@ class BinaryBridgeLibraryLoader:
         *,
         allowed_motif_kinds: Iterable[str] | None = None,
         id_prefix: str | None = None,
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> tuple[BatchMonomerRecord, ...]:
         library_path = Path(path)
         prefix = id_prefix or library_path.stem
@@ -361,8 +369,8 @@ class BinaryBridgeLibraryLoader:
         allowed_reactions: Iterable[str],
         template_id: str | None = None,
         auto_detect: bool = False,
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> dict[str, tuple[BatchMonomerRecord, ...]]:
         if auto_detect:
             return self.load_binary_bridge_test_set_auto(
@@ -398,8 +406,8 @@ class BinaryBridgeLibraryLoader:
         *,
         allowed_reactions: Iterable[str],
         template_id: str | None = None,
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> dict[str, tuple[BatchMonomerRecord, ...]]:
         base = Path(root)
         template = self.selected_binary_bridge_template(
@@ -426,8 +434,8 @@ class BinaryBridgeLibraryLoader:
         *,
         allowed_reactions: Iterable[str] | None = None,
         auto_detect_libraries: bool = False,
-        num_conformers: int = 2,
-        random_seed: int = 0xC0F,
+        num_conformers: int = AUTODETECT_MAX_CONFORMERS,
+        random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> tuple[str, ...]:
         base = Path(root)
         allowed = set(allowed_reactions or self.reaction_library.templates)
