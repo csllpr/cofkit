@@ -275,9 +275,17 @@ class HybridMdMcTests(unittest.TestCase):
         self.assertEqual(gcmc_initial_restart_files, [None, None])
         self.assertEqual(gcmc_restart_flags, [False, False])
         self.assertEqual([cycle.n_output_guest_atoms for cycle in result.cycle_results], [0, 0])
-        self.assertIn(
-            "adsorbate population is being treated as empty",
-            result.cycle_results[0].warnings[0],
+        self.assertTrue(
+            any(
+                "adsorbate population is being treated as empty" in warning
+                for warning in result.cycle_results[0].warnings
+            )
+        )
+        self.assertTrue(
+            any(
+                "counts by label: C: 1, O: 2" in warning
+                for warning in result.cycle_results[0].warnings
+            )
         )
 
     def test_hybrid_mdmc_guest_restart_rejects_raspa2_backend(self):

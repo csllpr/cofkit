@@ -107,6 +107,7 @@ from .hybrid_mdmc import (
 from .guest_restart import (
     GraspaRestartFileResult,
     GuestRestartError,
+    GuestRestartSkippedMolecule,
     LammpsGuestRestartCell,
     LammpsGuestRestartState,
     LammpsGuestSite,
@@ -329,6 +330,7 @@ __all__ = [
     "GraspaWidomSettings",
     "GraspaRestartFileResult",
     "GuestRestartError",
+    "GuestRestartSkippedMolecule",
     "HybridMdMcCycleResult",
     "HybridMdMcResult",
     "HybridMdMcSettings",

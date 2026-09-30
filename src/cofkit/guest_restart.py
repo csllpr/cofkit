@@ -93,6 +93,24 @@ class LammpsGuestSnapshotAtom:
 
 
 @dataclass(frozen=True)
+class GuestRestartSkippedMolecule:
+    component: str
+    molecule_key: str
+    n_sites_found: int
+    n_sites_expected: int
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "component": self.component,
+            "molecule_key": self.molecule_key,
+            "n_sites_found": self.n_sites_found,
+            "n_sites_expected": self.n_sites_expected,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
 class LammpsGuestRestartState:
     source_snapshot_path: str
     atoms: tuple[LammpsGuestSnapshotAtom, ...]
@@ -100,6 +118,13 @@ class LammpsGuestRestartState:
     templates: tuple[LammpsGuestTemplate, ...]
     snapshot_cell: LammpsGuestRestartCell | None = None
     warnings: tuple[str, ...] = ()
+    # Population accounting for every parsed row that did not make it into
+    # `atoms`: incomplete/ambiguous guest molecules and rows whose site labels
+    # match no requested guest component (framework atoms or mislabeled
+    # guests). Skipped rows must never disappear without landing here.
+    skipped_molecules: tuple[GuestRestartSkippedMolecule, ...] = ()
+    skipped_unknown_site_counts: tuple[tuple[str, int], ...] = ()
+    n_skipped_ambiguous_atoms: int = 0
 
     @property
     def n_atoms(self) -> int:
@@ -125,6 +150,9 @@ class LammpsGuestRestartState:
             "templates": [template.to_dict() for template in self.templates],
             "snapshot_cell": self.snapshot_cell.to_dict() if self.snapshot_cell is not None else None,
             "warnings": list(self.warnings),
+            "skipped_molecules": [molecule.to_dict() for molecule in self.skipped_molecules],
+            "skipped_unknown_site_counts": [list(entry) for entry in self.skipped_unknown_site_counts],
+            "n_skipped_ambiguous_atoms": self.n_skipped_ambiguous_atoms,
         }
 
 
@@ -188,15 +216,17 @@ def build_lammps_guest_restart_state_from_lammps_md_result(
     if not data_path.is_file():
         raise GuestRestartError(f"LAMMPS MD data file does not exist: {data_path}")
     positions_by_atom_id, cell = parse_lammps_md_dump_guest_positions(dump_path)
-    identities = _parse_lammps_guest_atom_identities_from_data(
+    identity_parse = _parse_lammps_guest_atom_identities_from_data(
         data_path.read_text(encoding="utf-8", errors="replace"),
         previous_guest_restart_state=previous_guest_restart_state,
     )
     atoms: list[LammpsGuestSnapshotAtom] = []
-    warnings: list[str] = []
-    for identity in identities:
+    warnings: list[str] = list(identity_parse.warnings)
+    n_missing_dump_positions = 0
+    for identity in identity_parse.identities:
         position = positions_by_atom_id.get(identity["atom_id"])
         if position is None:
+            n_missing_dump_positions += 1
             warnings.append(
                 f"LAMMPS dump did not contain final coordinates for guest atom id {identity['atom_id']}; skipped."
             )
@@ -217,6 +247,16 @@ def build_lammps_guest_restart_state_from_lammps_md_result(
         raise GuestRestartError(
             f"No guest atoms from the previous restart state were recovered from LAMMPS MD dump {dump_path}."
         )
+    n_input_guest_atoms = previous_guest_restart_state.n_atoms
+    if len(atoms) != n_input_guest_atoms:
+        n_dropped = n_input_guest_atoms - len(atoms)
+        warnings.append(
+            f"MD-to-MC guest handoff recovered {len(atoms)} of {n_input_guest_atoms} guest atoms from the "
+            f"previous restart state; {n_dropped} atom(s) were dropped ("
+            f"{len(identity_parse.skipped_molecules)} incomplete molecule group(s), "
+            f"{identity_parse.n_skipped_ambiguous_atoms} ambiguous atom(s), "
+            f"{n_missing_dump_positions} atom(s) missing final dump coordinates)."
+        )
     state = LammpsGuestRestartState(
         source_snapshot_path=str(dump_path),
         atoms=tuple(atoms),
@@ -224,6 +264,9 @@ def build_lammps_guest_restart_state_from_lammps_md_result(
         templates=previous_guest_restart_state.templates,
         snapshot_cell=cell,
         warnings=tuple(dict.fromkeys((*previous_guest_restart_state.warnings, *warnings))),
+        skipped_molecules=identity_parse.skipped_molecules,
+        skipped_unknown_site_counts=identity_parse.skipped_unknown_site_counts,
+        n_skipped_ambiguous_atoms=identity_parse.n_skipped_ambiguous_atoms,
     )
     return state, cell
 
@@ -523,20 +566,21 @@ def parse_lammps_guest_restart_snapshot(
     raw_atoms = _parse_lammps_data_atom_rows(text, type_labels=type_labels)
     _validate_lammps_snapshot_atom_table(text, parsed_rows=raw_atoms, data_path=path)
 
-    site_to_components: dict[str, list[str]] = {}
+    site_to_components = _site_component_candidates(templates)
     template_by_component = {template.component: template for template in templates}
-    for template in templates:
-        for site_label in template.site_labels:
-            site_to_components.setdefault(site_label, []).append(template.component)
 
     grouped: dict[tuple[str, str], list[tuple[str, float, float, float]]] = {}
+    unknown_site_counts: dict[str, int] = {}
+    n_skipped_ambiguous_atoms = 0
     warnings: list[str] = []
     for row in raw_atoms:
         label = row["label"]
         if label not in known_sites:
+            unknown_site_counts[label] = unknown_site_counts.get(label, 0) + 1
             continue
         component_candidates = site_to_components.get(label, [])
         if len(component_candidates) != 1:
+            n_skipped_ambiguous_atoms += 1
             warnings.append(
                 f"Snapshot atom with pseudo atom {label!r} could not be assigned uniquely to a component; skipped."
             )
@@ -544,7 +588,18 @@ def parse_lammps_guest_restart_snapshot(
         component = component_candidates[0]
         molecule_key = f"{component}:{row['molecule_id']}"
         grouped.setdefault((component, molecule_key), []).append((label, row["x"], row["y"], row["z"]))
+    if unknown_site_counts:
+        formatted_counts = ", ".join(
+            f"{label}: {count}" for label, count in sorted(unknown_site_counts.items())
+        )
+        warnings.append(
+            f"Excluded {sum(unknown_site_counts.values())} atom row(s) from the guest restart state because "
+            f"their site labels match no requested guest component (counts by label: {formatted_counts}). "
+            "These are expected to be framework or other non-guest atoms; if any row was meant to be a guest, "
+            "its snapshot label does not match the guest force-field site labels."
+        )
 
+    skipped_molecules: list[GuestRestartSkippedMolecule] = []
     atoms: list[LammpsGuestSnapshotAtom] = []
     for (component, molecule_key), rows in grouped.items():
         template = template_by_component[component]
@@ -553,9 +608,19 @@ def parse_lammps_guest_restart_snapshot(
                 f"Skipped incomplete {component} molecule {molecule_key!r}: "
                 f"found {len(rows)} sites, expected {len(template.site_labels)}."
             )
+            skipped_molecules.append(
+                GuestRestartSkippedMolecule(
+                    component=component,
+                    molecule_key=molecule_key,
+                    n_sites_found=len(rows),
+                    n_sites_expected=len(template.site_labels),
+                    reason="incomplete molecule in snapshot",
+                )
+            )
             continue
         used = [False] * len(rows)
         ordered_rows: list[tuple[str, float, float, float]] = []
+        missing_site_label: str | None = None
         for site_label in template.site_labels:
             match_index = next(
                 (index for index, row in enumerate(rows) if not used[index] and row[0] == site_label),
@@ -565,10 +630,22 @@ def parse_lammps_guest_restart_snapshot(
                 warnings.append(
                     f"Skipped {component} molecule {molecule_key!r}: missing expected site {site_label!r}."
                 )
+                missing_site_label = site_label
                 ordered_rows = []
                 break
             used[match_index] = True
             ordered_rows.append(rows[match_index])
+        if missing_site_label is not None:
+            skipped_molecules.append(
+                GuestRestartSkippedMolecule(
+                    component=component,
+                    molecule_key=molecule_key,
+                    n_sites_found=len(rows),
+                    n_sites_expected=len(template.site_labels),
+                    reason=f"missing expected site {missing_site_label!r}",
+                )
+            )
+            continue
         for site_index, (site_label, x, y, z) in enumerate(ordered_rows):
             atoms.append(
                 LammpsGuestSnapshotAtom(
@@ -606,6 +683,9 @@ def parse_lammps_guest_restart_snapshot(
         templates=tuple(templates),
         snapshot_cell=snapshot_cell,
         warnings=tuple(dict.fromkeys(warnings)),
+        skipped_molecules=tuple(skipped_molecules),
+        skipped_unknown_site_counts=tuple(sorted(unknown_site_counts.items())),
+        n_skipped_ambiguous_atoms=n_skipped_ambiguous_atoms,
     )
 
 
@@ -899,24 +979,47 @@ def _parse_lammps_data_atom_count(text: str, *, data_path: Path) -> int:
     raise GuestRestartError(f"LAMMPS-style guest snapshot {data_path} does not declare an atom count.")
 
 
+def _site_component_candidates(templates: Sequence[LammpsGuestTemplate]) -> dict[str, list[str]]:
+    # Deduplicate both repeated site labels within one template (e.g. the two
+    # O_co2 sites of CO2) and repeated components across templates, so a site
+    # label is ambiguous only when genuinely shared between components.
+    site_to_components: dict[str, list[str]] = {}
+    for template in templates:
+        for site_label in dict.fromkeys(template.site_labels):
+            components = site_to_components.setdefault(site_label, [])
+            if template.component not in components:
+                components.append(template.component)
+    return site_to_components
+
+
+@dataclass(frozen=True)
+class _LammpsGuestIdentityParseResult:
+    identities: tuple[dict[str, object], ...]
+    warnings: tuple[str, ...]
+    skipped_molecules: tuple[GuestRestartSkippedMolecule, ...]
+    skipped_unknown_site_counts: tuple[tuple[str, int], ...]
+    n_skipped_ambiguous_atoms: int
+
+
 def _parse_lammps_guest_atom_identities_from_data(
     text: str,
     *,
     previous_guest_restart_state: LammpsGuestRestartState,
-) -> tuple[dict[str, object], ...]:
+) -> _LammpsGuestIdentityParseResult:
     known_sites = {site.label for site in previous_guest_restart_state.sites}
     type_labels = _parse_lammps_mass_type_labels(text)
     raw_atoms = _parse_lammps_data_atom_rows(text, type_labels=type_labels)
     template_by_component = previous_guest_restart_state.template_by_component()
-    site_to_components: dict[str, list[str]] = {}
-    for template in previous_guest_restart_state.templates:
-        for site_label in template.site_labels:
-            site_to_components.setdefault(site_label, []).append(template.component)
+    site_to_components = _site_component_candidates(previous_guest_restart_state.templates)
 
     grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
+    unknown_site_counts: dict[str, int] = {}
+    n_skipped_ambiguous_atoms = 0
+    warnings: list[str] = []
     for row in raw_atoms:
         site_label = str(row["label"])
         if site_label not in known_sites:
+            unknown_site_counts[site_label] = unknown_site_counts.get(site_label, 0) + 1
             continue
         component = row.get("component")
         if isinstance(component, str) and component in template_by_component:
@@ -924,16 +1027,36 @@ def _parse_lammps_guest_atom_identities_from_data(
         else:
             candidates = site_to_components.get(site_label, [])
             if len(candidates) != 1:
+                n_skipped_ambiguous_atoms += 1
+                warnings.append(
+                    f"LAMMPS MD data guest atom with pseudo atom {site_label!r} could not be assigned "
+                    "uniquely to a component; skipped."
+                )
                 continue
             resolved_component = candidates[0]
         molecule_id = str(row["molecule_id"])
         grouped.setdefault((resolved_component, molecule_id), []).append(row)
 
     identities: list[dict[str, object]] = []
+    skipped_molecules: list[GuestRestartSkippedMolecule] = []
     for (component, molecule_id), rows in grouped.items():
         template = template_by_component[component]
         ordered_rows = sorted(rows, key=lambda row: int(row["atom_id"]))
         if len(ordered_rows) != len(template.site_labels):
+            molecule_key = f"{component}:md:{molecule_id}"
+            warnings.append(
+                f"Skipped incomplete {component} molecule {molecule_key!r} in LAMMPS MD data: "
+                f"found {len(ordered_rows)} sites, expected {len(template.site_labels)}."
+            )
+            skipped_molecules.append(
+                GuestRestartSkippedMolecule(
+                    component=component,
+                    molecule_key=molecule_key,
+                    n_sites_found=len(ordered_rows),
+                    n_sites_expected=len(template.site_labels),
+                    reason="incomplete molecule in LAMMPS MD data",
+                )
+            )
             continue
         for site_index, row in enumerate(ordered_rows):
             expected_label = template.site_labels[site_index]
@@ -953,7 +1076,13 @@ def _parse_lammps_guest_atom_identities_from_data(
             )
     if not identities:
         raise GuestRestartError("No guest atom identities were recovered from the LAMMPS MD data file.")
-    return tuple(identities)
+    return _LammpsGuestIdentityParseResult(
+        identities=tuple(identities),
+        warnings=tuple(dict.fromkeys(warnings)),
+        skipped_molecules=tuple(skipped_molecules),
+        skipped_unknown_site_counts=tuple(sorted(unknown_site_counts.items())),
+        n_skipped_ambiguous_atoms=n_skipped_ambiguous_atoms,
+    )
 
 
 def _atom_section_rows(text: str) -> tuple[str, list[str]]:
@@ -1210,6 +1339,7 @@ def _is_float_token(value: str) -> bool:
 
 __all__ = [
     "GuestRestartError",
+    "GuestRestartSkippedMolecule",
     "GraspaRestartFileResult",
     "KCAL_PER_MOL_PER_K",
     "LammpsGuestRestartCell",

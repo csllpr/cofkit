@@ -440,6 +440,18 @@ def _normalize_hybrid_raspa_backend(backend: str) -> str:
     return backend.strip().lower().replace("-", "").replace("_", "")
 
 
+def _hybrid_guest_snapshot_movies_every(settings: HybridMdMcSettings) -> int | None:
+    if settings.exchange_mode != "guest_restart":
+        return None
+    # derived: gRASPA writes Movies/System_0/result_<cycle>.data during the
+    # production phase whenever cycle % MoviesEvery == 0 with 0-based cycle
+    # indexing (gRASPA axpy.cu GatherStatisticsDuringSimulation), so
+    # MoviesEvery = production_cycles - 1 guarantees a guest snapshot at the
+    # final production cycle for the MC->MD handoff, alongside the cycle-0
+    # snapshot; clamped to >= 1 for single-cycle production runs.
+    return max(1, settings.production_cycles - 1)
+
+
 def _isotherm_settings_from_hybrid(
     settings: HybridMdMcSettings,
     component: GraspaMixtureComponentSettings,
@@ -456,6 +468,7 @@ def _isotherm_settings_from_hybrid(
         equilibration_cycles=settings.equilibration_cycles,
         production_cycles=settings.production_cycles,
         restart_file=settings.exchange_mode == "guest_restart",
+        movies_every=_hybrid_guest_snapshot_movies_every(settings),
         number_of_trial_positions=settings.number_of_trial_positions,
         number_of_trial_orientations=settings.number_of_trial_orientations,
         cutoff_vdw=settings.cutoff_vdw,
@@ -481,6 +494,7 @@ def _mixture_settings_from_hybrid(settings: HybridMdMcSettings) -> GraspaMixture
         equilibration_cycles=settings.equilibration_cycles,
         production_cycles=settings.production_cycles,
         restart_file=settings.exchange_mode == "guest_restart",
+        movies_every=_hybrid_guest_snapshot_movies_every(settings),
         number_of_trial_positions=settings.number_of_trial_positions,
         number_of_trial_orientations=settings.number_of_trial_orientations,
         cutoff_vdw=settings.cutoff_vdw,

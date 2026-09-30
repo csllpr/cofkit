@@ -425,6 +425,12 @@ class GraspaIsothermSettings:
     reinsertion_probability: float = 1.0
     swap_probability: float = 1.0
     create_number_of_molecules: int = 0
+    # None keeps the backend default snapshot cadence (cited: gRASPA writes
+    # Movies/System_0/result_<cycle>.data during production whenever
+    # cycle % MoviesEvery == 0, with 0-based cycles and a default
+    # MoviesEvery of 5000 — gRASPA data_struct.h). Setting this renders an
+    # explicit `MoviesEvery` line; only the gRASPA backend supports it.
+    movies_every: int | None = None
     use_dnn_for_host_guest: bool = False
     save_output_to_file: bool = True
 
@@ -467,6 +473,7 @@ class GraspaIsothermSettings:
             "reinsertion_probability": self.reinsertion_probability,
             "swap_probability": self.swap_probability,
             "create_number_of_molecules": self.create_number_of_molecules,
+            "movies_every": self.movies_every,
             "use_dnn_for_host_guest": self.use_dnn_for_host_guest,
             "save_output_to_file": self.save_output_to_file,
         }
@@ -629,6 +636,12 @@ class GraspaMixtureSettings:
     cutoff_vdw: float = DEFAULT_CUTOFF_ANGSTROM
     cutoff_coulomb: float = DEFAULT_CUTOFF_ANGSTROM
     ewald_precision: float = DEFAULT_EWALD_PRECISION
+    # None keeps the backend default snapshot cadence (cited: gRASPA writes
+    # Movies/System_0/result_<cycle>.data during production whenever
+    # cycle % MoviesEvery == 0, with 0-based cycles and a default
+    # MoviesEvery of 5000 — gRASPA data_struct.h). Setting this renders an
+    # explicit `MoviesEvery` line; only the gRASPA backend supports it.
+    movies_every: int | None = None
     use_dnn_for_host_guest: bool = False
     save_output_to_file: bool = True
 
@@ -665,6 +678,7 @@ class GraspaMixtureSettings:
             "cutoff_vdw": self.cutoff_vdw,
             "cutoff_coulomb": self.cutoff_coulomb,
             "ewald_precision": self.ewald_precision,
+            "movies_every": self.movies_every,
             "use_dnn_for_host_guest": self.use_dnn_for_host_guest,
             "save_output_to_file": self.save_output_to_file,
         }
@@ -1787,6 +1801,12 @@ def _validate_calculation_contract(settings, guest_bundles: Sequence[GuestBundle
         raise ValueError("random_seed must be non-negative.")
     if settings.number_of_blocks > settings.production_cycles:
         raise ValueError("number_of_blocks cannot exceed production_cycles.")
+    movies_every = getattr(settings, "movies_every", None)
+    if movies_every is not None:
+        if movies_every <= 0:
+            raise ValueError("movies_every must be positive when provided.")
+        if backend != "graspa":
+            raise ValueError("movies_every is currently supported only for the gRASPA backend.")
     if isinstance(settings, GraspaIsothermSettings):
         components = (settings.component,)
         moves = (settings,)
@@ -2549,6 +2569,10 @@ def _render_isotherm_simulation_input(
         f"            FugacityCoefficient      {_render_fugacity_coefficient(settings.fugacity_coefficient)}",
         f"            TranslationProbability   {_format_simulation_number(settings.translation_probability)}",
     ]
+    if settings.movies_every is not None:
+        # gRASPA scans simulation.input line-by-line for MoviesEvery
+        # (read_movies_stats_print), so keyword placement is order-independent.
+        lines.extend([f"MoviesEvery {settings.movies_every}", ""])
     if _component_is_rotatable(settings.component, guest_bundles) and settings.rotation_probability > 0.0:
         lines.append(
             f"            RotationProbability      {_format_simulation_number(settings.rotation_probability)}"
@@ -2624,6 +2648,10 @@ def _render_mixture_simulation_input(
         f"SaveOutputToFile {_bool_token(settings.save_output_to_file)}",
         "",
     ]
+    if settings.movies_every is not None:
+        # gRASPA scans simulation.input line-by-line for MoviesEvery
+        # (read_movies_stats_print), so keyword placement is order-independent.
+        lines.extend([f"MoviesEvery {settings.movies_every}", ""])
     for index, component in enumerate(settings.components):
         lines.extend(
             [

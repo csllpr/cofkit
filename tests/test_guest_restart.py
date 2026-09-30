@@ -255,7 +255,13 @@ class GuestRestartTests(unittest.TestCase):
 
         self.assertEqual(state.n_atoms, 0)
         self.assertEqual(state.components, ())
-        self.assertIn("adsorbate population is being treated as empty", state.warnings[0])
+        self.assertTrue(
+            any("adsorbate population is being treated as empty" in warning for warning in state.warnings)
+        )
+        self.assertEqual(state.skipped_unknown_site_counts, (("C", 1), ("H", 1)))
+        self.assertTrue(
+            any("counts by label: C: 1, H: 1" in warning for warning in state.warnings)
+        )
 
     def test_parse_empty_guest_population_rejects_incomplete_atom_table(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -330,6 +336,395 @@ class GuestRestartTests(unittest.TestCase):
             load_lammps_guest_force_field_assets(("TIP4P_DREIDING",))
 
         self.assertIn("zero or negative mass", str(raised.exception))
+
+    def test_parse_complete_co2_multisite_snapshot_from_packaged_force_fields(self):
+        # Regression for repeated site labels: CO2 templates enumerate
+        # O_co2 twice, which must not make the component ambiguous.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "6 atoms",
+                        "2 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 15.9994 # O_co2",
+                        "2 12.0107 # C_co2",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 -0.35 1.0 2.0 3.16 0 0 0 # CO2_DREIDING O_co2",
+                        "2 1 2 0.70 1.0 2.0 2.0 0 0 0 # CO2_DREIDING C_co2",
+                        "3 1 1 -0.35 1.0 2.0 0.84 0 0 0 # CO2_DREIDING O_co2",
+                        "4 2 1 -0.35 5.0 6.0 7.16 0 0 0 # CO2_DREIDING O_co2",
+                        "5 2 2 0.70 5.0 6.0 6.0 0 0 0 # CO2_DREIDING C_co2",
+                        "6 2 1 -0.35 5.0 6.0 4.84 0 0 0 # CO2_DREIDING O_co2",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("CO2_DREIDING",))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(state.n_atoms, 6)
+        self.assertEqual(state.components, ("CO2_DREIDING",))
+        self.assertEqual([atom.site_label for atom in state.atoms[:3]], ["O_co2", "C_co2", "O_co2"])
+        self.assertEqual([atom.molecule_key for atom in state.atoms], ["CO2_DREIDING:1"] * 3 + ["CO2_DREIDING:2"] * 3)
+        self.assertEqual(state.warnings, ())
+        self.assertEqual(state.skipped_molecules, ())
+        self.assertEqual(state.skipped_unknown_site_counts, ())
+        self.assertEqual(state.n_skipped_ambiguous_atoms, 0)
+        self.assertGreater(state.site_by_label()["O_co2"].mass, 0.0)
+
+    def test_parse_complete_so2_massive_multisite_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "3 atoms",
+                        "2 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 15.9994 # O_so2",
+                        "2 32.065 # S_so2",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 -0.295 0.0 0.507 0.0 0 0 0 # SO2_DREIDING O_so2",
+                        "2 1 2 0.59 0.8619 0.0 0.0 0 0 0 # SO2_DREIDING S_so2",
+                        "3 1 1 -0.295 1.7239 0.507 0.0 0 0 0 # SO2_DREIDING O_so2",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("SO2_DREIDING",))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(state.n_atoms, 3)
+        self.assertEqual(state.components, ("SO2_DREIDING",))
+        self.assertEqual([atom.site_label for atom in state.atoms], ["O_so2", "S_so2", "O_so2"])
+        self.assertEqual(state.warnings, ())
+
+    def test_mislabeled_guest_rows_are_explicitly_accounted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "5 atoms",
+                        "4 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 15.9994 # O_co2",
+                        "2 12.0107 # C_co2",
+                        "3 12.011 # C_3",
+                        "4 15.9994 # O_co2_typo",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 -0.35 1.0 2.0 3.16 0 0 0 # CO2_DREIDING O_co2",
+                        "2 1 2 0.70 1.0 2.0 2.0 0 0 0 # CO2_DREIDING C_co2",
+                        "3 1 1 -0.35 1.0 2.0 0.84 0 0 0 # CO2_DREIDING O_co2",
+                        "4 2 3 0.0 0.0 0.0 0.0 0 0 0 # C_3",
+                        "5 2 4 -0.35 4.0 4.0 4.0 0 0 0 # CO2_DREIDING O_co2_typo",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("CO2_DREIDING",))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        # The complete CO2 molecule survives; the framework row and the
+        # mislabeled O_co2_typo row are excluded but explicitly accounted.
+        self.assertEqual(state.n_atoms, 3)
+        self.assertEqual(state.skipped_unknown_site_counts, (("C_3", 1), ("O_co2_typo", 1)))
+        self.assertTrue(
+            any("counts by label: C_3: 1, O_co2_typo: 1" in warning for warning in state.warnings)
+        )
+
+    def test_incomplete_guest_molecule_is_explicitly_accounted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "5 atoms",
+                        "2 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 15.9994 # O_co2",
+                        "2 12.0107 # C_co2",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 -0.35 1.0 2.0 3.16 0 0 0 # CO2_DREIDING O_co2",
+                        "2 1 2 0.70 1.0 2.0 2.0 0 0 0 # CO2_DREIDING C_co2",
+                        "3 1 1 -0.35 1.0 2.0 0.84 0 0 0 # CO2_DREIDING O_co2",
+                        "4 2 1 -0.35 5.0 6.0 7.16 0 0 0 # CO2_DREIDING O_co2",
+                        "5 2 2 0.70 5.0 6.0 6.0 0 0 0 # CO2_DREIDING C_co2",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            templates, sites = load_lammps_guest_force_field_assets(("CO2_DREIDING",))
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(state.n_atoms, 3)
+        self.assertEqual(len(state.skipped_molecules), 1)
+        skipped = state.skipped_molecules[0]
+        self.assertEqual(skipped.component, "CO2_DREIDING")
+        self.assertEqual(skipped.molecule_key, "CO2_DREIDING:2")
+        self.assertEqual(skipped.n_sites_found, 2)
+        self.assertEqual(skipped.n_sites_expected, 3)
+        self.assertTrue(
+            any("Skipped incomplete CO2_DREIDING molecule" in warning for warning in state.warnings)
+        )
+        state_dict = state.to_dict()
+        self.assertEqual(state_dict["skipped_molecules"][0]["n_sites_found"], 2)
+
+    def test_lammps_md_handoff_conserves_co2_population(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "3 atoms",
+                        "2 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 15.9994 # O_co2",
+                        "2 12.0107 # C_co2",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 -0.35 1.0 2.0 3.16 0 0 0 # CO2_DREIDING O_co2",
+                        "2 1 2 0.70 1.0 2.0 2.0 0 0 0 # CO2_DREIDING C_co2",
+                        "3 1 1 -0.35 1.0 2.0 0.84 0 0 0 # CO2_DREIDING O_co2",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            templates, sites = load_lammps_guest_force_field_assets(("CO2_DREIDING",))
+            previous_state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+            data_path = temp_path / "lammps_md_input.data"
+            data_path.write_text(
+                "\n".join(
+                    [
+                        "LAMMPS data",
+                        "",
+                        "6 atoms",
+                        "4 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 12.011 # C_3",
+                        "2 15.999 # O_3",
+                        "3 15.9994 # O_co2",
+                        "4 12.0107 # C_co2",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 0.0 0.0 0.0 0.0 0 0 0 # C_3",
+                        "2 1 2 0.0 1.0 0.0 0.0 0 0 0 # O_3",
+                        "3 1 2 0.0 0.0 1.0 0.0 0 0 0 # O_3",
+                        "4 2 3 -0.35 1.1 2.1 3.2 0 0 0 # O_co2 CO2_DREIDING",
+                        "5 2 4 0.70 1.1 2.1 2.1 0 0 0 # C_co2 CO2_DREIDING",
+                        "6 2 3 -0.35 1.1 2.1 0.9 0 0 0 # O_co2 CO2_DREIDING",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            dump_path = temp_path / "lammps_md_trajectory.lammpstrj"
+            dump_path.write_text(
+                "\n".join(
+                    [
+                        "ITEM: TIMESTEP",
+                        "10",
+                        "ITEM: NUMBER OF ATOMS",
+                        "6",
+                        "ITEM: BOX BOUNDS pp pp pp",
+                        "0 20",
+                        "0 21",
+                        "0 22",
+                        "ITEM: ATOMS id type x y z",
+                        "1 1 0.0 0.0 0.0",
+                        "2 2 1.0 0.0 0.0",
+                        "3 2 0.0 1.0 0.0",
+                        "4 3 1.1 2.1 3.2",
+                        "5 4 1.1 2.1 2.1",
+                        "6 3 1.1 2.1 0.9",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            md_state, cell = build_lammps_guest_restart_state_from_lammps_md_result(
+                SimpleNamespace(lammps_data_path=str(data_path), lammps_dump_path=str(dump_path)),
+                previous_guest_restart_state=previous_state,
+            )
+            restart_result = write_graspa_restart_file(
+                md_state,
+                temp_path / "restartfile",
+                cell=cell,
+                component_order=("CO2_DREIDING",),
+            )
+            restart_text = Path(restart_result.restart_file_path).read_text(encoding="utf-8")
+
+        self.assertEqual(md_state.n_atoms, 3)
+        self.assertEqual(md_state.components, ("CO2_DREIDING",))
+        self.assertEqual([atom.site_label for atom in md_state.atoms], ["O_co2", "C_co2", "O_co2"])
+        self.assertEqual(md_state.skipped_molecules, ())
+        self.assertFalse(any("handoff recovered" in warning for warning in md_state.warnings))
+        self.assertEqual(restart_result.n_adsorbate_atoms, 3)
+        self.assertEqual(restart_result.n_adsorbate_molecules, 1)
+        self.assertIn("Components: 1 (Adsorbates 1, Cations 0)", restart_text)
+        self.assertIn("Component: 0   Adsorbate 1 molecules of CO2_DREIDING", restart_text)
+        self.assertEqual(restart_text.count("Adsorbate-atom-position:"), 3)
+        self.assertEqual(restart_result.warnings, ())
+
+    def test_lammps_md_handoff_accounts_dropped_guest_atoms(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "result_0.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "6 atoms",
+                        "2 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 15.9994 # O_co2",
+                        "2 12.0107 # C_co2",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 -0.35 1.0 2.0 3.16 0 0 0 # CO2_DREIDING O_co2",
+                        "2 1 2 0.70 1.0 2.0 2.0 0 0 0 # CO2_DREIDING C_co2",
+                        "3 1 1 -0.35 1.0 2.0 0.84 0 0 0 # CO2_DREIDING O_co2",
+                        "4 2 1 -0.35 5.0 6.0 7.16 0 0 0 # CO2_DREIDING O_co2",
+                        "5 2 2 0.70 5.0 6.0 6.0 0 0 0 # CO2_DREIDING C_co2",
+                        "6 2 1 -0.35 5.0 6.0 4.84 0 0 0 # CO2_DREIDING O_co2",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            templates, sites = load_lammps_guest_force_field_assets(("CO2_DREIDING",))
+            previous_state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+            # The second CO2 molecule lost a site in the MD data file: it must
+            # be accounted, not silently dropped.
+            data_path = temp_path / "lammps_md_input.data"
+            data_path.write_text(
+                "\n".join(
+                    [
+                        "LAMMPS data",
+                        "",
+                        "8 atoms",
+                        "4 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 12.011 # C_3",
+                        "2 15.999 # O_3",
+                        "3 15.9994 # O_co2",
+                        "4 12.0107 # C_co2",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 0.0 0.0 0.0 0.0 0 0 0 # C_3",
+                        "2 1 2 0.0 1.0 0.0 0.0 0 0 0 # O_3",
+                        "3 1 2 0.0 0.0 1.0 0.0 0 0 0 # O_3",
+                        "4 2 3 -0.35 1.1 2.1 3.2 0 0 0 # O_co2 CO2_DREIDING",
+                        "5 2 4 0.70 1.1 2.1 2.1 0 0 0 # C_co2 CO2_DREIDING",
+                        "6 2 3 -0.35 1.1 2.1 0.9 0 0 0 # O_co2 CO2_DREIDING",
+                        "7 3 3 -0.35 5.1 6.1 7.2 0 0 0 # O_co2 CO2_DREIDING",
+                        "8 3 4 0.70 5.1 6.1 6.1 0 0 0 # C_co2 CO2_DREIDING",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            dump_path = temp_path / "lammps_md_trajectory.lammpstrj"
+            dump_path.write_text(
+                "\n".join(
+                    [
+                        "ITEM: TIMESTEP",
+                        "10",
+                        "ITEM: NUMBER OF ATOMS",
+                        "8",
+                        "ITEM: BOX BOUNDS pp pp pp",
+                        "0 20",
+                        "0 21",
+                        "0 22",
+                        "ITEM: ATOMS id type x y z",
+                        "1 1 0.0 0.0 0.0",
+                        "2 2 1.0 0.0 0.0",
+                        "3 2 0.0 1.0 0.0",
+                        "4 3 1.1 2.1 3.2",
+                        "5 4 1.1 2.1 2.1",
+                        "6 3 1.1 2.1 0.9",
+                        "7 3 5.1 6.1 7.2",
+                        "8 4 5.1 6.1 6.1",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            md_state, _cell = build_lammps_guest_restart_state_from_lammps_md_result(
+                SimpleNamespace(lammps_data_path=str(data_path), lammps_dump_path=str(dump_path)),
+                previous_guest_restart_state=previous_state,
+            )
+
+        self.assertEqual(md_state.n_atoms, 3)
+        self.assertEqual(len(md_state.skipped_molecules), 1)
+        skipped = md_state.skipped_molecules[0]
+        self.assertEqual(skipped.molecule_key, "CO2_DREIDING:md:3")
+        self.assertEqual(skipped.n_sites_found, 2)
+        self.assertTrue(
+            any("incomplete CO2_DREIDING molecule" in warning for warning in md_state.warnings)
+        )
+        self.assertTrue(
+            any("handoff recovered 3 of 6 guest atoms" in warning for warning in md_state.warnings)
+        )
 
     def test_lammps_md_guest_coordinates_write_graspa_restart_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
