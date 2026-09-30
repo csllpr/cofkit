@@ -733,6 +733,7 @@ class GraspaMixturePointResult:
     component_results: tuple[GraspaMixturePointComponentResult, ...]
     selectivity_results: tuple[GraspaMixtureSelectivityResult, ...]
     initial_restart_file_path: str | None = None
+    warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -746,6 +747,7 @@ class GraspaMixturePointResult:
             "initial_restart_file_path": self.initial_restart_file_path,
             "component_results": [component.to_dict() for component in self.component_results],
             "selectivity_results": [result.to_dict() for result in self.selectivity_results],
+            "warnings": list(self.warnings),
         }
 
 
@@ -1466,6 +1468,7 @@ def run_graspa_mixture_workflow(
                 initial_restart_file_path=str(staged_initial_restart_file),
             )
         point_results.append(point_result)
+        warnings.extend(point_result.warnings)
 
         if len(data_file_paths) > 1:
             warnings.append(
@@ -3042,16 +3045,37 @@ def _parse_mixture_result_files(
             if not resolved_components:
                 continue
 
-        total_loading_mol_per_kg = sum(
-            values["loading_mol_per_kg"][0]
-            for _, values in resolved_components
-            if math.isfinite(values["loading_mol_per_kg"][0])
-        )
         loading_by_component = {
             component_name: values["loading_mol_per_kg"][0]
             for component_name, values in resolved_components
         }
-
+        point_warnings: list[str] = []
+        nonfinite_loading_components = tuple(
+            component_name
+            for component_name, loading in loading_by_component.items()
+            if not math.isfinite(loading)
+        )
+        if nonfinite_loading_components:
+            # A complete adsorbed composition requires every required component
+            # loading; normalizing over only the finite subset would fabricate
+            # full fractions (e.g. 1.0) for the measured components, so the
+            # composition stays unavailable and per-component loadings remain
+            # marginal measurements.
+            total_loading_mol_per_kg = math.nan
+            point_warnings.append(
+                f"Adsorbed mixture composition is unavailable at pressure {pressure:g} Pa: "
+                f"non-finite loading for component(s) {list(nonfinite_loading_components)!r} means the "
+                "normalization denominator is incomplete; per-component loadings are retained as "
+                "marginal measurements."
+            )
+        else:
+            total_loading_mol_per_kg = sum(loading_by_component.values())
+            if total_loading_mol_per_kg <= 0.0:
+                point_warnings.append(
+                    f"Adsorbed mixture composition is unavailable at pressure {pressure:g} Pa: "
+                    "the total adsorbed loading is zero (measured zero loadings, not missing data), "
+                    "so mole fractions are undefined."
+                )
 
         component_results = tuple(
             GraspaMixturePointComponentResult(
@@ -3105,6 +3129,7 @@ def _parse_mixture_result_files(
             source_data_file=str(path),
             component_results=component_results,
             selectivity_results=selectivity_results,
+            warnings=tuple(point_warnings),
         )
 
     raise GraspaParseError(

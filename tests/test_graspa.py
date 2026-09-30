@@ -1,4 +1,5 @@
 import contextlib
+import csv
 import io
 import json
 import math
@@ -1107,6 +1108,173 @@ class GraspaWidomTests(unittest.TestCase):
             self.assertIn("IdentityChangeProbability 1", simulation_input)
             self.assertNotIn("UseGPUReduction", simulation_input)
 
+    def test_run_graspa_mixture_workflow_leaves_composition_unavailable_for_nan_loading(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_graspa_binary(
+                temp_path / "graspa_fake",
+                mixture_loading_overrides={2: math.nan},
+            )
+            cif_path = temp_path / "mixture_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_mixture_workflow(
+                    cif_path,
+                    output_dir=temp_path / "mixture_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    mixture_settings=GraspaMixtureSettings(
+                        components=(
+                            GraspaMixtureComponentSettings("Kr_GENERICMOFS", 0.1, fugacity_coefficient="PR-EOS"),
+                            GraspaMixtureComponentSettings("Xe_GENERICMOFS", 0.9, fugacity_coefficient="PR-EOS"),
+                        ),
+                        pressures=(10000.0,),
+                    ),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            first_point = result.point_results[0]
+            kr_result = first_point.component_results[0]
+            xe_result = first_point.component_results[1]
+            self.assertEqual(kr_result.component, "Kr_GENERICMOFS")
+            self.assertEqual(xe_result.component, "Xe_GENERICMOFS")
+            self.assertAlmostEqual(kr_result.loading_mol_per_kg, 0.01)
+            self.assertTrue(math.isnan(xe_result.loading_mol_per_kg))
+            # No fabricated complete composition from an incomplete denominator.
+            self.assertTrue(math.isnan(kr_result.adsorbed_mol_fraction))
+            self.assertTrue(math.isnan(xe_result.adsorbed_mol_fraction))
+            for selectivity_result in first_point.selectivity_results:
+                self.assertTrue(math.isnan(selectivity_result.selectivity))
+
+            self.assertTrue(
+                any(
+                    "Adsorbed mixture composition is unavailable" in warning
+                    and "Xe_GENERICMOFS" in warning
+                    for warning in first_point.warnings
+                )
+            )
+            self.assertTrue(
+                any("Adsorbed mixture composition is unavailable" in warning for warning in result.warnings)
+            )
+            self.assertTrue(
+                any("selectivity values are non-finite" in warning for warning in result.warnings)
+            )
+
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            report_components = report["point_results"][0]["component_results"]
+            self.assertIsNone(report_components[0]["adsorbed_mol_fraction"])
+            self.assertIsNone(report_components[1]["adsorbed_mol_fraction"])
+            self.assertAlmostEqual(report_components[0]["loading_mol_per_kg"], 0.01)
+            self.assertIsNone(report_components[1]["loading_mol_per_kg"])
+            self.assertTrue(
+                any(
+                    "Adsorbed mixture composition is unavailable" in warning
+                    for warning in report["point_results"][0]["warnings"]
+                )
+            )
+            self.assertTrue(
+                any("Adsorbed mixture composition is unavailable" in warning for warning in report["warnings"])
+            )
+            self.assertIsNone(report["point_results"][0]["selectivity_results"][0]["selectivity"])
+
+            with Path(result.component_results_csv_path).open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 2)
+            for row in rows:
+                self.assertEqual(row["adsorbed_mol_fraction"], "nan")
+                self.assertNotEqual(row["adsorbed_mol_fraction"], "1.0")
+            rows_by_component = {row["component"]: row for row in rows}
+            self.assertAlmostEqual(float(rows_by_component["Kr_GENERICMOFS"]["loading_mol_per_kg"]), 0.01)
+            self.assertEqual(rows_by_component["Xe_GENERICMOFS"]["loading_mol_per_kg"], "nan")
+
+    def test_run_graspa_mixture_workflow_zero_total_loading_reports_measured_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_eqeq = self._write_fake_eqeq_binary(temp_path / "eqeq_fake", strip_leading_cofid_comment=True)
+            fake_graspa = self._write_fake_graspa_binary(
+                temp_path / "graspa_fake",
+                mixture_loading_overrides={1: 0.0, 2: 0.0},
+            )
+            cif_path = temp_path / "mixture_framework.cif"
+            cif_path.write_text(
+                "data_example\n"
+                "_cell_length_a 26.0\n"
+                "_cell_length_b 13.0\n"
+                "_cell_length_c 9.0\n"
+                "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+                "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+                "C1 C 0.1 0.1 0.1\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    COFKIT_EQEQ_ENV_VAR: str(fake_eqeq),
+                    COFKIT_GRASPA_ENV_VAR: str(fake_graspa),
+                },
+                clear=False,
+            ):
+                result = run_graspa_mixture_workflow(
+                    cif_path,
+                    output_dir=temp_path / "mixture_out",
+                    eqeq_settings=EqeqChargeSettings(),
+                    mixture_settings=GraspaMixtureSettings(
+                        components=(
+                            GraspaMixtureComponentSettings("Kr_GENERICMOFS", 0.1, fugacity_coefficient="PR-EOS"),
+                            GraspaMixtureComponentSettings("Xe_GENERICMOFS", 0.9, fugacity_coefficient="PR-EOS"),
+                        ),
+                        pressures=(10000.0,),
+                    ),
+                    graspa_timeout_seconds=30.0,
+                )
+
+            first_point = result.point_results[0]
+            for component_result in first_point.component_results:
+                self.assertEqual(component_result.loading_mol_per_kg, 0.0)
+                self.assertTrue(math.isnan(component_result.adsorbed_mol_fraction))
+                self.assertTrue(math.isfinite(component_result.feed_mol_fraction))
+            for selectivity_result in first_point.selectivity_results:
+                self.assertTrue(math.isnan(selectivity_result.selectivity))
+
+            self.assertTrue(
+                any(
+                    "total adsorbed loading is zero" in warning and "measured zero" in warning
+                    for warning in first_point.warnings
+                )
+            )
+            self.assertTrue(
+                any("total adsorbed loading is zero" in warning for warning in result.warnings)
+            )
+
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+            report_components = report["point_results"][0]["component_results"]
+            self.assertEqual(report_components[0]["loading_mol_per_kg"], 0.0)
+            self.assertIsNone(report_components[0]["adsorbed_mol_fraction"])
+            self.assertTrue(
+                any(
+                    "total adsorbed loading is zero" in warning
+                    for warning in report["point_results"][0]["warnings"]
+                )
+            )
+
     def test_calculate_help_lists_graspa_widom(self):
         buffer = io.StringIO()
         with self.assertRaises(SystemExit), contextlib.redirect_stdout(buffer):
@@ -1320,7 +1488,16 @@ class GraspaWidomTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
         return path
 
-    def _write_fake_graspa_binary(self, path: Path) -> Path:
+    def _write_fake_graspa_binary(
+        self,
+        path: Path,
+        *,
+        mixture_loading_overrides: dict[int, float] | None = None,
+    ) -> Path:
+        override_items = ", ".join(
+            f"{index}: float('nan')" if math.isnan(value) else f"{index}: {value!r}"
+            for index, value in (mixture_loading_overrides or {}).items()
+        )
         path.write_text(
             f"#!{sys.executable}\n"
             "from __future__ import annotations\n"
@@ -1411,6 +1588,9 @@ class GraspaWidomTests(unittest.TestCase):
             "    sections.append('=====================BLOCK AVERAGES (LOADING: mol/kg)=============')\n"
             "    for index, (component, mol_fraction) in enumerate(zip(components, mol_fractions), start=1):\n"
             "        loading_mol = pressure / 100000.0 * mol_fraction * index\n"
+            f"        loading_overrides = {{{override_items}}}\n"
+            "        if index in loading_overrides:\n"
+            "            loading_mol = loading_overrides[index]\n"
             "        loading_err = loading_mol * 0.1\n"
             "        sections.extend([\n"
             "            f'COMPONENT [{index}] ({component})',\n"
