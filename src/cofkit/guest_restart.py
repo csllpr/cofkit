@@ -27,6 +27,17 @@ class LammpsGuestSite:
     charge: float
     epsilon_k: float
     sigma: float
+    # Interaction kind of the winning parameter row ("lennard-jones" or
+    # "feynman-hibbs-lennard-jones"). LAMMPS staging only ever emits a plain
+    # classical Lennard-Jones term; a Feynman-Hibbs source row means the
+    # quantum correction is dropped here and must be diagnosed (see
+    # guest_site_model_diagnostics), never silently treated as equivalent.
+    interaction: str = "lennard-jones"
+    # Diagnosed conflicts between a guest bundle's LAMMPS-side overrides
+    # (lammps.masses / charges / pair_coeff_rows) and the RASPA-side rows the
+    # MC engine stages; each entry means the MD and MC legs see different
+    # guest model values for this site.
+    override_conflicts: tuple[str, ...] = ()
 
     @property
     def epsilon_kcal_per_mol(self) -> float:
@@ -41,6 +52,8 @@ class LammpsGuestSite:
             "epsilon_k": self.epsilon_k,
             "epsilon_kcal_per_mol": self.epsilon_kcal_per_mol,
             "sigma": self.sigma,
+            "interaction": self.interaction,
+            "override_conflicts": list(self.override_conflicts),
         }
 
 
@@ -572,7 +585,7 @@ def parse_lammps_guest_restart_snapshot(
     grouped: dict[tuple[str, str], list[tuple[str, float, float, float]]] = {}
     unknown_site_counts: dict[str, int] = {}
     n_skipped_ambiguous_atoms = 0
-    warnings: list[str] = []
+    warnings: list[str] = list(guest_site_model_diagnostics(sites))
     for row in raw_atoms:
         label = row["label"]
         if label not in known_sites:
@@ -811,9 +824,19 @@ def _parse_guest_sites(
         pseudo = pseudo_by_label.get(label)
         if pseudo is None:
             raise GuestRestartError(f"Missing pseudo-atom row for guest site {label!r}.")
-        mixing = lammps_pair_rows.get(label) or mixing_by_label.get(label)
+        raspa_pair_row = mixing_by_label.get(label)
+        lammps_pair_row = lammps_pair_rows.get(label)
+        mixing = lammps_pair_row or raspa_pair_row
         if mixing is None:
             raise GuestRestartError(f"Missing Lennard-Jones row for guest site {label!r}.")
+        override_conflicts = _guest_site_override_conflicts(
+            label,
+            pseudo=pseudo,
+            raspa_pair_row=raspa_pair_row,
+            lammps_masses=lammps_masses,
+            lammps_charges=lammps_charges,
+            lammps_pair_row=lammps_pair_row,
+        )
         sites.append(
             LammpsGuestSite(
                 label=label,
@@ -822,9 +845,47 @@ def _parse_guest_sites(
                 charge=lammps_charges.get(label, pseudo["charge"]),
                 epsilon_k=mixing["epsilon_k"],
                 sigma=mixing["sigma"],
+                interaction=str(mixing["interaction"]),
+                override_conflicts=override_conflicts,
             )
         )
     return tuple(sites)
+
+
+def _guest_site_override_conflicts(
+    label: str,
+    *,
+    pseudo: Mapping[str, float | str],
+    raspa_pair_row: Mapping[str, float | str] | None,
+    lammps_masses: Mapping[str, float],
+    lammps_charges: Mapping[str, float],
+    lammps_pair_row: Mapping[str, float | str] | None,
+) -> tuple[str, ...]:
+    conflicts: list[str] = []
+    if label in lammps_masses and lammps_masses[label] != pseudo["mass"]:
+        conflicts.append(
+            f"mass override {lammps_masses[label]} differs from the RASPA-side pseudo-atom mass {pseudo['mass']}"
+        )
+    if label in lammps_charges and lammps_charges[label] != pseudo["charge"]:
+        conflicts.append(
+            f"charge override {lammps_charges[label]} differs from the RASPA-side pseudo-atom charge {pseudo['charge']}"
+        )
+    if lammps_pair_row is not None and raspa_pair_row is not None:
+        if (
+            lammps_pair_row["epsilon_k"] != raspa_pair_row["epsilon_k"]
+            or lammps_pair_row["sigma"] != raspa_pair_row["sigma"]
+        ):
+            conflicts.append(
+                "Lennard-Jones override "
+                f"(epsilon_k={lammps_pair_row['epsilon_k']}, sigma={lammps_pair_row['sigma']}) differs from the "
+                f"RASPA-side mixing-rule row (epsilon_k={raspa_pair_row['epsilon_k']}, sigma={raspa_pair_row['sigma']})"
+            )
+        if lammps_pair_row["interaction"] != raspa_pair_row["interaction"]:
+            conflicts.append(
+                f"interaction kind override {lammps_pair_row['interaction']!r} differs from the RASPA-side "
+                f"mixing-rule row kind {raspa_pair_row['interaction']!r}"
+            )
+    return tuple(conflicts)
 
 
 def _parse_pseudo_atom_rows(rows: Sequence[str]) -> dict[str, dict[str, float | str]]:
@@ -844,8 +905,8 @@ def _parse_pseudo_atom_rows(rows: Sequence[str]) -> dict[str, dict[str, float | 
     return parsed
 
 
-def _parse_mixing_rule_rows(rows: Sequence[str]) -> dict[str, dict[str, float]]:
-    parsed: dict[str, dict[str, float]] = {}
+def _parse_mixing_rule_rows(rows: Sequence[str]) -> dict[str, dict[str, float | str]]:
+    parsed: dict[str, dict[str, float | str]] = {}
     for row in rows:
         parts = _strip_inline_comment(row).split()
         if len(parts) < 4 or parts[0].startswith("#"):
@@ -854,10 +915,42 @@ def _parse_mixing_rule_rows(rows: Sequence[str]) -> dict[str, dict[str, float]]:
         if interaction not in {"lennard-jones", "feynman-hibbs-lennard-jones"}:
             continue
         try:
-            parsed[parts[0]] = {"epsilon_k": float(parts[2]), "sigma": float(parts[3])}
+            parsed[parts[0]] = {
+                "epsilon_k": float(parts[2]),
+                "sigma": float(parts[3]),
+                # Keep the interaction kind: the epsilon/sigma columns alone
+                # cannot distinguish a Feynman-Hibbs-corrected potential from
+                # a classical Lennard-Jones one after staging.
+                "interaction": interaction,
+            }
         except ValueError:
             continue
     return parsed
+
+
+def guest_site_model_diagnostics(sites: Sequence[LammpsGuestSite]) -> tuple[str, ...]:
+    """Explicit diagnostics for guest model conversions/conflicts at MD staging.
+
+    Every Feynman-Hibbs source row staged as a classical Lennard-Jones term
+    and every LAMMPS-side override that disagrees with the RASPA-side staged
+    values produces one entry here, so the two hybrid legs can never silently
+    run different guest models.
+    """
+    diagnostics: list[str] = []
+    for site in sites:
+        if site.interaction == "feynman-hibbs-lennard-jones":
+            diagnostics.append(
+                f"Guest site {site.label!r} is parameterized as a Feynman-Hibbs-corrected Lennard-Jones "
+                f"potential (epsilon_k={site.epsilon_k}, sigma={site.sigma}); LAMMPS guest staging runs it as a "
+                "plain classical Lennard-Jones term, so the Feynman-Hibbs quantum correction is dropped in the "
+                "MD leg and the MD/MC legs do not share the same guest model."
+            )
+        for conflict in site.override_conflicts:
+            diagnostics.append(
+                f"Guest site {site.label!r} has a LAMMPS-side override that conflicts with the RASPA-side "
+                f"staging: {conflict}. The MD and MC legs will use different guest model values."
+            )
+    return tuple(diagnostics)
 
 
 def _parse_lammps_mass_type_labels(text: str) -> dict[int, str]:
@@ -1350,6 +1443,7 @@ __all__ = [
     "build_lammps_guest_restart_state_from_lammps_md_result",
     "build_lammps_guest_restart_state_from_gcmc_result",
     "find_latest_gcmc_movie_snapshot",
+    "guest_site_model_diagnostics",
     "load_lammps_guest_force_field_assets",
     "parse_lammps_md_dump_guest_positions",
     "parse_lammps_guest_restart_snapshot",

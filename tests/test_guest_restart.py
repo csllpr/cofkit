@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from cofkit.guest_restart import (
     GuestRestartError,
     build_lammps_guest_restart_state_from_lammps_md_result,
+    guest_site_model_diagnostics,
     load_lammps_guest_force_field_assets,
     parse_lammps_guest_restart_snapshot,
     write_graspa_restart_file,
@@ -833,6 +835,172 @@ class GuestRestartTests(unittest.TestCase):
         self.assertIn("Adsorbate-atom-charge: 0 0 0.000000", restart_text)
         self.assertIn("Adsorbate-atom-scaling: 0 0 1", restart_text)
         self.assertIn("Adsorbate-atom-fixed: 0 0 0  0  0", restart_text)
+
+    def test_feynman_hibbs_guest_row_is_diagnosed_not_converted_silently(self):
+        # Impact-review claim T4-20 / action A11: a massive external guest
+        # parameterized as feynman-hibbs-lennard-jones is staged into LAMMPS
+        # as plain classical LJ numbers; that conversion must be an explicit
+        # diagnostic, never silent.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bundle_path = _write_guest_bundle(
+                temp_path / "h2fh_bundle.json",
+                name="H2FH_CUSTOM",
+                site_label="H2_fh",
+                element="H",
+                mass=2.016,
+                charge=0.0,
+                mixing_rule_row="H2_fh feynman-hibbs-lennard-jones 36.7000 2.95800",
+            )
+            templates, sites = load_lammps_guest_force_field_assets(
+                ("H2FH_CUSTOM",), guest_bundles=[str(bundle_path)]
+            )
+            snapshot_path = temp_path / "result_5.data"
+            snapshot_path.write_text(
+                "\n".join(
+                    [
+                        "gRASPA movie snapshot",
+                        "",
+                        "1 atoms",
+                        "1 atom types",
+                        "",
+                        "Masses",
+                        "",
+                        "1 2.016 # H2_fh",
+                        "",
+                        "Atoms # full",
+                        "",
+                        "1 1 1 0.0 1.0 2.0 3.0 0 0 0",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            state = parse_lammps_guest_restart_snapshot(snapshot_path, templates=templates, sites=sites)
+
+        self.assertEqual(sites[0].interaction, "feynman-hibbs-lennard-jones")
+        self.assertEqual(sites[0].epsilon_k, 36.7)
+        diagnostics = guest_site_model_diagnostics(sites)
+        self.assertEqual(len(diagnostics), 1)
+        self.assertIn("Feynman-Hibbs", diagnostics[0])
+        self.assertIn("classical Lennard-Jones", diagnostics[0])
+        self.assertIn("'H2_fh'", diagnostics[0])
+        self.assertTrue(
+            any("Feynman-Hibbs" in warning for warning in state.warnings),
+            msg=f"state warnings did not carry the conversion diagnostic: {state.warnings}",
+        )
+        self.assertEqual(state.to_dict()["sites"][0]["interaction"], "feynman-hibbs-lennard-jones")
+
+    def test_conflicting_guest_overrides_are_diagnosed(self):
+        # Impact-review claim T4-24 / action A11: bundle lammps-section
+        # overrides that disagree with the raspa-section rows staged for the
+        # MC engine make the two hybrid legs run different guest models;
+        # that conflict must be an explicit diagnostic.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bundle_path = _write_guest_bundle(
+                temp_path / "xe_conflict_bundle.json",
+                name="XE_CONFLICT",
+                site_label="Xe_c",
+                element="Xe",
+                mass=131.293,
+                charge=0.0,
+                mixing_rule_row="Xe_c lennard-jones 221.0 4.01000",
+                lammps_overrides={
+                    "charges": {"Xe_c": -0.05},
+                    "pair_coeff_rows": ["Xe_c lennard-jones 230.0 4.01000"],
+                },
+            )
+            _templates, sites = load_lammps_guest_force_field_assets(
+                ("XE_CONFLICT",), guest_bundles=[str(bundle_path)]
+            )
+
+        site = sites[0]
+        self.assertEqual(site.charge, -0.05)
+        self.assertEqual(site.epsilon_k, 230.0)
+        self.assertEqual(len(site.override_conflicts), 2)
+        self.assertTrue(any("charge override -0.05 differs from the RASPA-side" in c for c in site.override_conflicts))
+        self.assertTrue(any("epsilon_k=230.0" in c and "epsilon_k=221.0" in c for c in site.override_conflicts))
+        diagnostics = guest_site_model_diagnostics(sites)
+        self.assertEqual(len(diagnostics), 2)
+        self.assertTrue(all("different guest model values" in d for d in diagnostics))
+
+    def test_matching_guest_overrides_produce_no_conflict_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bundle_path = _write_guest_bundle(
+                temp_path / "xe_ok_bundle.json",
+                name="XE_OK",
+                site_label="Xe_o",
+                element="Xe",
+                mass=131.293,
+                charge=0.0,
+                mixing_rule_row="Xe_o lennard-jones 221.0 4.01000",
+                lammps_overrides={
+                    "masses": {"Xe_o": 131.293},
+                    "charges": {"Xe_o": 0.0},
+                    "pair_coeff_rows": ["Xe_o lennard-jones 221.0 4.01000"],
+                },
+            )
+            _templates, sites = load_lammps_guest_force_field_assets(
+                ("XE_OK",), guest_bundles=[str(bundle_path)]
+            )
+
+        self.assertEqual(sites[0].override_conflicts, ())
+        self.assertEqual(guest_site_model_diagnostics(sites), ())
+
+
+def _write_guest_bundle(
+    path: Path,
+    *,
+    name: str,
+    site_label: str,
+    element: str,
+    mass: float,
+    charge: float,
+    mixing_rule_row: str,
+    lammps_overrides: dict | None = None,
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "name": name,
+                "parameter_family": "dreiding",
+                "parameter_source": "test guest model",
+                "raspa": {
+                    "molecule_definition": (
+                        "# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]\n"
+                        "100.0\n"
+                        "1000000.0\n"
+                        "0.0\n"
+                        "#Number Of Atoms\n"
+                        " 1\n"
+                        "# Number of groups\n"
+                        "1\n"
+                        "# test-group\n"
+                        "rigid\n"
+                        "# number of atoms\n"
+                        "1\n"
+                        "# atomic positions\n"
+                        f"0 {site_label}     0.0 0.0 0.0\n"
+                        "# Chiral centers Bond  BondDipoles Bend  UrayBradley InvBend  Torsion Imp. Torsion Bond/Bond Stretch/Bend Bend/Bend Stretch/Torsion Bend/Torsion IntraVDW IntraCoulomb\n"
+                        "               0    0            0    0            0       0        0            0         0            0         0               0            0        0            0\n"
+                        "# Number of config moves\n"
+                        "0\n"
+                    ),
+                    "pseudo_atom_rows": [
+                        f"{site_label}      yes     {element}     {element}     0          {mass}    {charge}      0.0          1.0      0.720  0            0           relative           0",
+                    ],
+                    "mixing_rule_rows": [mixing_rule_row],
+                },
+                "lammps": {"units": "real", "atom_style": "full", **(lammps_overrides or {})},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 if __name__ == "__main__":

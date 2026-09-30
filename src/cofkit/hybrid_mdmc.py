@@ -7,6 +7,8 @@ from typing import Literal
 
 from .calculation_io import atomic_write_text, begin_attempt, derive_seed, finish_attempt, validate_numbers
 from .graspa import (
+    _canonical_component_name,
+    _guest_nonbonded_convention,
     _load_graspa_guest_bundles, _canonicalize_isotherm_settings, _canonicalize_mixture_settings,
     _validate_isotherm_settings, _validate_mixture_settings,
     DEFAULT_RASPA_BACKEND,
@@ -25,6 +27,8 @@ from .guest_restart import (
     build_lammps_guest_restart_state_from_gcmc_result,
     build_lammps_guest_restart_state_from_lammps_md_result,
     write_graspa_restart_file,
+    guest_site_model_diagnostics,
+    load_lammps_guest_force_field_assets,
 )
 from .guest_forcefields import packaged_guest_forcefield_catalog
 from .lammps import LammpsMdResult, LammpsMdSettings, run_lammps_md_on_cif
@@ -131,6 +135,92 @@ class HybridMdMcCycleResult:
         }
 
 
+# The hybrid workflow never samples one shared Hamiltonian: fixed-length
+# LAMMPS MD segments alternate with grand-canonical gRASPA/RASPA2 segments and
+# exchange snapshots. This label is the machine-readable statement of that
+# contract in every hybrid report.
+HYBRID_MODEL_CONTRACT_KIND = "approximate_alternating_md_mc"
+
+@dataclass(frozen=True)
+class HybridModelContractDifference:
+    aspect: str
+    md_value: object
+    mc_value: object
+    note: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "aspect": self.aspect,
+            "md_value": self.md_value,
+            "mc_value": self.mc_value,
+            "note": self.note,
+        }
+
+
+@dataclass(frozen=True)
+class HybridInteractionSide:
+    engine: str
+    role: str
+    forcefield: str
+    vdw_cutoff_angstrom: float
+    coulomb_cutoff_angstrom: float
+    ewald_precision: float
+    temperature_k: float
+    vdw_treatment: str
+    tail_corrections: bool
+    mixing_rule: str
+    framework_lj_typing: str
+    framework_rigidity: str
+    guest_presence: str
+    charge_treatment: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "engine": self.engine,
+            "role": self.role,
+            "forcefield": self.forcefield,
+            "vdw_cutoff_angstrom": self.vdw_cutoff_angstrom,
+            "coulomb_cutoff_angstrom": self.coulomb_cutoff_angstrom,
+            "ewald_precision": self.ewald_precision,
+            "temperature_k": self.temperature_k,
+            "vdw_treatment": self.vdw_treatment,
+            "tail_corrections": self.tail_corrections,
+            "mixing_rule": self.mixing_rule,
+            "framework_lj_typing": self.framework_lj_typing,
+            "framework_rigidity": self.framework_rigidity,
+            "guest_presence": self.guest_presence,
+            "charge_treatment": self.charge_treatment,
+        }
+
+
+@dataclass(frozen=True)
+class HybridModelContract:
+    """Honest statement of what the alternating MD/MC workflow simulates.
+
+    `differences` lists every interaction/constraint aspect where the LAMMPS
+    MD leg and the gRASPA/RASPA2 MC leg do not run equivalent models;
+    `guest_model_diagnostics` carries detected guest-model conversions
+    (Feynman-Hibbs staged as classical LJ) and conflicting bundle overrides.
+    """
+
+    workflow_kind: str
+    description: str
+    md_side: HybridInteractionSide
+    mc_side: HybridInteractionSide
+    differences: tuple[HybridModelContractDifference, ...]
+    guest_model_diagnostics: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "workflow_kind": self.workflow_kind,
+            "description": self.description,
+            "md_side": self.md_side.to_dict(),
+            "mc_side": self.mc_side.to_dict(),
+            "differences": [difference.to_dict() for difference in self.differences],
+            "guest_model_diagnostics": list(self.guest_model_diagnostics),
+        }
+
+
 @dataclass(frozen=True)
 class HybridMdMcResult:
     input_cif: str
@@ -142,6 +232,7 @@ class HybridMdMcResult:
     lammps_eqeq_settings: EqeqChargeSettings
     raspa_eqeq_settings: EqeqChargeSettings
     cycle_results: tuple[HybridMdMcCycleResult, ...]
+    model_contract: HybridModelContract
     warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -155,6 +246,7 @@ class HybridMdMcResult:
             "lammps_eqeq_settings": self.lammps_eqeq_settings.to_dict(),
             "raspa_eqeq_settings": self.raspa_eqeq_settings.to_dict(),
             "cycle_results": [cycle.to_dict() for cycle in self.cycle_results],
+            "model_contract": self.model_contract.to_dict(),
             "warnings": list(self.warnings),
         }
 
@@ -193,6 +285,21 @@ def run_hybrid_mdmc_workflow(
     run_dir = begin_attempt(run_dir, input_path=input_path, settings=settings, binary=None)
 
     warnings = _hybrid_exchange_warnings(settings)
+    model_contract = _build_hybrid_model_contract(
+        settings,
+        lammps_md_settings,
+        lammps_eqeq_settings=lammps_eqeq_settings,
+        raspa_eqeq_settings=raspa_eqeq_settings,
+    )
+    warnings = tuple(
+        dict.fromkeys(
+            (
+                *warnings,
+                _model_contract_summary_warning(model_contract),
+                *model_contract.guest_model_diagnostics,
+            )
+        )
+    )
 
     current_cif = input_path
     current_guest_restart_state: LammpsGuestRestartState | None = None
@@ -348,6 +455,7 @@ def run_hybrid_mdmc_workflow(
         lammps_eqeq_settings=lammps_eqeq_settings,
         raspa_eqeq_settings=raspa_eqeq_settings,
         cycle_results=tuple(cycle_results),
+        model_contract=model_contract,
         warnings=warnings,
     )
     atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
@@ -440,6 +548,225 @@ def _normalize_hybrid_raspa_backend(backend: str) -> str:
     return backend.strip().lower().replace("-", "").replace("_", "")
 
 
+def _lammps_charge_treatment_description(lammps_md_settings: LammpsMdSettings) -> str:
+    if lammps_md_settings.charge_model == "none":
+        return "uncharged (charge_model='none')"
+    return "EQeq point charges with Ewald kspace (charge_model='eqeq')"
+
+
+def _build_hybrid_model_contract(
+    settings: HybridMdMcSettings,
+    lammps_md_settings: LammpsMdSettings,
+    *,
+    lammps_eqeq_settings: EqeqChargeSettings,
+    raspa_eqeq_settings: EqeqChargeSettings,
+) -> HybridModelContract:
+    bundles = _load_graspa_guest_bundles(settings.guest_bundles)
+    component_names = tuple(
+        _canonical_component_name(component.component, bundles) for component in settings.components
+    )
+    mc_vdw_treatment, mc_tail_corrections, mc_mixing_rule = _guest_nonbonded_convention(component_names, bundles)
+    guest_restart = settings.exchange_mode == "guest_restart"
+    md_charge = _lammps_charge_treatment_description(lammps_md_settings)
+    mc_charge = (
+        "framework: EQeq point charges from the staged charged CIF (UseChargesFromCIFFile yes); "
+        "guests: pseudo-atom model charges from the selected guest models (charge_method Ewald)"
+    )
+    md_side = HybridInteractionSide(
+        engine="lammps",
+        role="md",
+        forcefield=lammps_md_settings.forcefield,
+        vdw_cutoff_angstrom=lammps_md_settings.pair_cutoff,
+        coulomb_cutoff_angstrom=lammps_md_settings.coulomb_cutoff,
+        ewald_precision=lammps_md_settings.ewald_precision,
+        temperature_k=lammps_md_settings.temperature,
+        # The LAMMPS staging always emits lj/cut-family pair styles:
+        # truncated, unshifted, without tail corrections.
+        vdw_treatment="truncated",
+        tail_corrections=False,
+        # Guest PairIJ rows mix epsilon geometrically and sigma
+        # arithmetically, matching the RASPA-side lorentz_berthelot rule.
+        mixing_rule="lorentz_berthelot",
+        framework_lj_typing=f"full {lammps_md_settings.forcefield.strip().lower()} per-atom-type assignment",
+        framework_rigidity="flexible (bonded force field, molecular dynamics)",
+        guest_presence=(
+            "guests injected as massive sites held by stiff harmonic springs (approximately rigid)"
+            if guest_restart
+            else "none: guests never enter the MD leg in exchange_mode='framework'"
+        ),
+        charge_treatment=md_charge,
+    )
+    mc_side = HybridInteractionSide(
+        engine=_normalize_hybrid_raspa_backend(settings.raspa_backend),
+        role="mc",
+        forcefield=settings.raspa_forcefield,
+        vdw_cutoff_angstrom=settings.cutoff_vdw,
+        coulomb_cutoff_angstrom=settings.cutoff_coulomb,
+        ewald_precision=settings.ewald_precision,
+        temperature_k=settings.temperature,
+        vdw_treatment=mc_vdw_treatment,
+        tail_corrections=mc_tail_corrections,
+        mixing_rule=mc_mixing_rule,
+        framework_lj_typing=(
+            "one representative Lennard-Jones row per element "
+            "(element-keyed; not synchronized with the LAMMPS per-type assignment)"
+        ),
+        framework_rigidity="rigid (framework fixed at the staged CIF)",
+        guest_presence="rigid guest molecules sampled grand-canonically",
+        charge_treatment=mc_charge,
+    )
+
+    differences: list[HybridModelContractDifference] = [
+        HybridModelContractDifference(
+            aspect="ensemble_and_sampling",
+            md_value=f"{lammps_md_settings.ensemble} molecular dynamics (fixed atom count)",
+            mc_value="grand-canonical Monte Carlo (fluctuating guest count)",
+            note=(
+                "The workflow alternates the two legs and exchanges snapshots; it is not a "
+                "consistently sampled shared ensemble, and cycle-to-cycle observables are not "
+                "equilibration evidence for one joint Hamiltonian."
+            ),
+        ),
+        HybridModelContractDifference(
+            aspect="framework_rigidity",
+            md_value=md_side.framework_rigidity,
+            mc_value=mc_side.framework_rigidity,
+            note="The MC leg evaluates guest insertion on a frozen framework while the MD leg moves it.",
+        ),
+        HybridModelContractDifference(
+            aspect="framework_lj_typing",
+            md_value=md_side.framework_lj_typing,
+            mc_value=mc_side.framework_lj_typing,
+            note=(
+                "Force-field types of the same element with different Lennard-Jones parameters "
+                "collapse to one representative on the MC leg."
+            ),
+        ),
+    ]
+    if guest_restart:
+        differences.append(
+            HybridModelContractDifference(
+                aspect="guest_rigidity",
+                md_value=md_side.guest_presence,
+                mc_value=mc_side.guest_presence,
+                note="MD-side guests are held by finite harmonic springs; MC-side guests are exactly rigid.",
+            )
+        )
+    else:
+        differences.append(
+            HybridModelContractDifference(
+                aspect="guests_in_md_leg",
+                md_value=md_side.guest_presence,
+                mc_value=mc_side.guest_presence,
+                note="Guest-framework and guest-guest interactions only act on the MC leg.",
+            )
+        )
+    if lammps_md_settings.forcefield.strip().lower() != settings.raspa_forcefield.strip().lower():
+        differences.append(
+            HybridModelContractDifference(
+                aspect="forcefield_family",
+                md_value=lammps_md_settings.forcefield,
+                mc_value=settings.raspa_forcefield,
+                note="The two legs parameterize the framework with different force-field families.",
+            )
+        )
+    numeric_aspects = (
+        ("cutoff_vdw", lammps_md_settings.pair_cutoff, settings.cutoff_vdw, "angstrom"),
+        ("cutoff_coulomb", lammps_md_settings.coulomb_cutoff, settings.cutoff_coulomb, "angstrom"),
+        ("ewald_precision", lammps_md_settings.ewald_precision, settings.ewald_precision, None),
+        ("temperature_k", lammps_md_settings.temperature, settings.temperature, "K"),
+    )
+    for aspect, md_value, mc_value, unit in numeric_aspects:
+        if md_value != mc_value:
+            unit_note = f" {unit}" if unit else ""
+            differences.append(
+                HybridModelContractDifference(
+                    aspect=aspect,
+                    md_value=md_value,
+                    mc_value=mc_value,
+                    note=f"The two legs truncate/temper interactions at different{unit_note} settings.",
+                )
+            )
+    if mc_vdw_treatment != md_side.vdw_treatment:
+        differences.append(
+            HybridModelContractDifference(
+                aspect="vdw_treatment",
+                md_value=md_side.vdw_treatment,
+                mc_value=mc_vdw_treatment,
+                note="The MC leg applies a shifted potential while the LAMMPS leg runs truncated unshifted lj/cut.",
+            )
+        )
+    if mc_tail_corrections != md_side.tail_corrections:
+        differences.append(
+            HybridModelContractDifference(
+                aspect="tail_corrections",
+                md_value=md_side.tail_corrections,
+                mc_value=mc_tail_corrections,
+                note="The MC leg applies analytic tail corrections that the LAMMPS leg does not include.",
+            )
+        )
+    if lammps_md_settings.charge_model == "none":
+        differences.append(
+            HybridModelContractDifference(
+                aspect="charge_treatment",
+                md_value=md_charge,
+                mc_value=mc_charge,
+                note="The MC leg is charged while the MD leg runs without electrostatics.",
+            )
+        )
+    else:
+        eqeq_differences = sorted(
+            key
+            for key, value in lammps_eqeq_settings.to_dict().items()
+            if raspa_eqeq_settings.to_dict().get(key) != value
+        )
+        if eqeq_differences:
+            differences.append(
+                HybridModelContractDifference(
+                    aspect="eqeq_settings",
+                    md_value={key: lammps_eqeq_settings.to_dict()[key] for key in eqeq_differences},
+                    mc_value={key: raspa_eqeq_settings.to_dict()[key] for key in eqeq_differences},
+                    note="The two legs equilibrate framework charges with different EQeq settings.",
+                )
+            )
+
+    guest_model_diagnostics: tuple[str, ...] = ()
+    if guest_restart:
+        try:
+            _templates, guest_sites = load_lammps_guest_force_field_assets(
+                component_names, guest_bundles=settings.guest_bundles
+            )
+        except GuestRestartError:
+            # Staging failures are raised with full context at the actual
+            # handoff; the contract only reports successful asset loads.
+            guest_sites = ()
+        guest_model_diagnostics = guest_site_model_diagnostics(guest_sites)
+
+    return HybridModelContract(
+        workflow_kind=HYBRID_MODEL_CONTRACT_KIND,
+        description=(
+            "The hybrid workflow alternates fixed-length LAMMPS MD segments with gRASPA/RASPA2 GCMC "
+            "segments and exchanges framework (and optionally guest) snapshots between them. This is an "
+            "approximate alternating workflow between two different interaction/constraint models, not a "
+            "consistently sampled ensemble of one shared Hamiltonian."
+        ),
+        md_side=md_side,
+        mc_side=mc_side,
+        differences=tuple(differences),
+        guest_model_diagnostics=guest_model_diagnostics,
+    )
+
+
+def _model_contract_summary_warning(contract: HybridModelContract) -> str:
+    aspects = ", ".join(difference.aspect for difference in contract.differences)
+    return (
+        f"Hybrid model contract: approximate alternating LAMMPS-MD / {contract.mc_side.engine} GCMC "
+        "workflow, not a consistently sampled ensemble; "
+        f"{len(contract.differences)} interaction/constraint aspect(s) differ between the MD and MC legs "
+        f"({aspects}). See model_contract in hybrid_mdmc_report.json."
+    )
+
+
 def _hybrid_guest_snapshot_movies_every(settings: HybridMdMcSettings) -> int | None:
     if settings.exchange_mode != "guest_restart":
         return None
@@ -504,6 +831,10 @@ def _mixture_settings_from_hybrid(settings: HybridMdMcSettings) -> GraspaMixture
 
 
 __all__ = [
+    "HYBRID_MODEL_CONTRACT_KIND",
+    "HybridInteractionSide",
+    "HybridModelContract",
+    "HybridModelContractDifference",
     "HybridMdMcCycleResult",
     "HybridMdMcResult",
     "HybridMdMcSettings",

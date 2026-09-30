@@ -327,6 +327,224 @@ class HybridMdMcTests(unittest.TestCase):
         self.assertIn("not supported for packaged guest model(s): CH4_RASPA", str(raised.exception))
         self.assertIn("exchange_mode='framework'", str(raised.exception))
 
+    def test_hybrid_report_model_contract_flags_side_differences(self):
+        # Action A11 (reporting half): the hybrid report must state the
+        # approximate-alternating model contract and flag every aspect where
+        # the LAMMPS MD leg and the gRASPA MC leg run different interaction
+        # settings — here a deliberately changed MD cutoff plus the known
+        # default divergences (force field, charge model, temperature).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_cif = temp_path / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+
+            def fake_lammps(cif_path, *, output_dir, settings, **kwargs):
+                input_path = Path(cif_path)
+                run_dir = Path(output_dir)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                output_cif = run_dir / f"{input_path.stem}_md.cif"
+                output_cif.write_text("data_cycle\n", encoding="utf-8")
+                return _fake_lammps_result(input_path, run_dir, output_cif, settings)
+
+            def fake_isotherm(cif_path, *, output_dir, isotherm_settings, **kwargs):
+                input_path = Path(cif_path)
+                run_dir = Path(output_dir)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                return _fake_isotherm_result(input_path, run_dir, isotherm_settings.component)
+
+            with patch("cofkit.hybrid_mdmc.run_lammps_md_on_cif", side_effect=fake_lammps):
+                with patch("cofkit.hybrid_mdmc.run_graspa_isotherm_workflow", side_effect=fake_isotherm):
+                    result = run_hybrid_mdmc_workflow(
+                        input_cif,
+                        output_dir=temp_path / "hybrid_out",
+                        settings=HybridMdMcSettings(
+                            cycles=1,
+                            pressure=100000.0,
+                            components=(GraspaMixtureComponentSettings(component="CO2_DREIDING", mol_fraction=1.0),),
+                            initialization_cycles=1,
+                            equilibration_cycles=1,
+                            production_cycles=10,
+                        ),
+                        lammps_md_settings=LammpsMdSettings(
+                            forcefield="uff",
+                            charge_model="none",
+                            steps=5,
+                            pair_cutoff=10.0,
+                        ),
+                        lammps_eqeq_settings=EqeqChargeSettings(),
+                        raspa_eqeq_settings=EqeqChargeSettings(),
+                    )
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+
+        contract = report["model_contract"]
+        self.assertEqual(contract["workflow_kind"], "approximate_alternating_md_mc")
+        self.assertIn("not a consistently sampled ensemble", contract["description"])
+        self.assertEqual(contract["md_side"]["vdw_cutoff_angstrom"], 10.0)
+        self.assertEqual(contract["mc_side"]["vdw_cutoff_angstrom"], 12.8)
+        self.assertEqual(contract["md_side"]["vdw_treatment"], "truncated")
+        self.assertEqual(contract["mc_side"]["framework_rigidity"], "rigid (framework fixed at the staged CIF)")
+
+        differences = {entry["aspect"]: entry for entry in contract["differences"]}
+        # The deliberately introduced side difference:
+        self.assertEqual(differences["cutoff_vdw"]["md_value"], 10.0)
+        self.assertEqual(differences["cutoff_vdw"]["mc_value"], 12.8)
+        # Known default divergences that were previously undocumented:
+        self.assertEqual(differences["temperature_k"]["md_value"], 300.0)
+        self.assertEqual(differences["temperature_k"]["mc_value"], 298.0)
+        self.assertEqual(differences["cutoff_coulomb"]["md_value"], 12.0)
+        self.assertEqual(differences["cutoff_coulomb"]["mc_value"], 12.8)
+        self.assertEqual(differences["forcefield_family"]["md_value"], "uff")
+        self.assertEqual(differences["forcefield_family"]["mc_value"], "dreiding")
+        # Structural differences are always reported:
+        for aspect in (
+            "ensemble_and_sampling",
+            "framework_rigidity",
+            "framework_lj_typing",
+            "guests_in_md_leg",
+            "charge_treatment",
+        ):
+            self.assertIn(aspect, differences)
+        # Matching settings are not flagged:
+        self.assertNotIn("ewald_precision", differences)
+        self.assertNotIn("vdw_treatment", differences)
+
+        self.assertTrue(
+            any("Hybrid model contract" in warning and "approximate alternating" in warning for warning in result.warnings)
+        )
+        self.assertEqual(result.model_contract.guest_model_diagnostics, ())
+
+    def test_hybrid_guest_restart_reports_conflicting_guest_overrides(self):
+        # Action A11 (reporting half): a guest bundle whose lammps-section
+        # overrides disagree with the raspa-section rows staged for the MC
+        # engine must produce explicit diagnostics in the hybrid report and
+        # the cycle warnings, not silently divergent legs.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bundle_path = temp_path / "xe_conflict_bundle.json"
+            bundle_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "name": "XE_CONFLICT",
+                        "parameter_family": "genericmofs",
+                        "parameter_source": "test xenon model",
+                        "raspa": {
+                            "molecule_definition": (
+                                "# critical constants: Temperature [T], Pressure [Pa], and Acentric factor [-]\n"
+                                "289.733\n"
+                                "5840000.0\n"
+                                "0.0\n"
+                                "#Number Of Atoms\n"
+                                " 1\n"
+                                "# Number of groups\n"
+                                "1\n"
+                                "# xenon-group\n"
+                                "rigid\n"
+                                "# number of atoms\n"
+                                "1\n"
+                                "# atomic positions\n"
+                                "0 Xe_c     0.0 0.0 0.0\n"
+                                "# Chiral centers Bond  BondDipoles Bend  UrayBradley InvBend  Torsion Imp. Torsion Bond/Bond Stretch/Bend Bend/Bend Stretch/Torsion Bend/Torsion IntraVDW IntraCoulomb\n"
+                                "               0    0            0    0            0       0        0            0         0            0         0               0            0        0            0\n"
+                                "# Number of config moves\n"
+                                "0\n"
+                            ),
+                            "pseudo_atom_rows": [
+                                "Xe_c      yes     Xe     Xe     0          131.293    0.0      0.0          1.0      0.720  0            0           relative           0",
+                            ],
+                            "mixing_rule_rows": [
+                                "Xe_c          lennard-jones   221.0000   4.01000      // test xenon guest bundle",
+                            ],
+                        },
+                        "lammps": {
+                            "units": "real",
+                            "atom_style": "full",
+                            "charges": {"Xe_c": -0.05},
+                            "pair_coeff_rows": ["Xe_c lennard-jones 230.0 4.01000"],
+                        },
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            input_cif = temp_path / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+
+            def fake_lammps(cif_path, *, output_dir, settings, guest_restart_state=None, **kwargs):
+                input_path = Path(cif_path)
+                run_dir = Path(output_dir)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                output_cif = run_dir / f"{input_path.stem}_md.cif"
+                output_cif.write_text("data_cycle\n", encoding="utf-8")
+                return _fake_lammps_result(
+                    input_path, run_dir, output_cif, settings, guest_restart_state=guest_restart_state
+                )
+
+            def fake_isotherm(cif_path, *, output_dir, isotherm_settings, **kwargs):
+                input_path = Path(cif_path)
+                run_dir = Path(output_dir)
+                movie_dir = run_dir / "isotherm" / "pressure_100000" / "Movies" / "System_0"
+                movie_dir.mkdir(parents=True, exist_ok=True)
+                (movie_dir / "result_9.data").write_text(
+                    "\n".join(
+                        [
+                            "gRASPA movie snapshot",
+                            "",
+                            "1 atoms",
+                            "1 atom types",
+                            "",
+                            "Masses",
+                            "",
+                            "1 131.293 # Xe_c",
+                            "",
+                            "Atoms # full",
+                            "",
+                            "1 1 1 -0.05 1.0 2.0 3.0 0 0 0",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                return _fake_isotherm_result(input_path, run_dir, isotherm_settings.component)
+
+            with patch("cofkit.hybrid_mdmc.run_lammps_md_on_cif", side_effect=fake_lammps):
+                with patch("cofkit.hybrid_mdmc.run_graspa_isotherm_workflow", side_effect=fake_isotherm):
+                    result = run_hybrid_mdmc_workflow(
+                        input_cif,
+                        output_dir=temp_path / "hybrid_guest_out",
+                        settings=HybridMdMcSettings(
+                            cycles=2,
+                            exchange_mode="guest_restart",
+                            pressure=100000.0,
+                            components=(GraspaMixtureComponentSettings(component="XE_CONFLICT", mol_fraction=1.0),),
+                            guest_bundles=(str(bundle_path),),
+                            initialization_cycles=1,
+                            equilibration_cycles=1,
+                            production_cycles=10,
+                        ),
+                        lammps_md_settings=LammpsMdSettings(forcefield="uff", charge_model="none", steps=5),
+                        lammps_eqeq_settings=EqeqChargeSettings(),
+                        raspa_eqeq_settings=EqeqChargeSettings(),
+                    )
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+
+        diagnostics = report["model_contract"]["guest_model_diagnostics"]
+        self.assertEqual(len(diagnostics), 2)
+        self.assertTrue(any("charge override -0.05 differs from the RASPA-side" in d for d in diagnostics))
+        self.assertTrue(any("epsilon_k=230.0" in d and "epsilon_k=221.0" in d for d in diagnostics))
+        self.assertTrue(all("different guest model values" in d for d in diagnostics))
+        self.assertTrue(
+            any("conflicts with the RASPA-side staging" in warning for warning in result.warnings)
+        )
+        self.assertTrue(
+            any(
+                "conflicts with the RASPA-side staging" in warning
+                for warning in result.cycle_results[0].warnings
+            )
+        )
+        aspects = {entry["aspect"] for entry in report["model_contract"]["differences"]}
+        self.assertIn("guest_rigidity", aspects)
+
 
 def _fake_lammps_result(
     input_path: Path,
