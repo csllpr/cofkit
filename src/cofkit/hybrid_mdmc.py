@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -9,8 +10,11 @@ from .calculation_io import atomic_write_text, begin_attempt, derive_seed, finis
 from .graspa import (
     _canonical_component_name,
     _guest_nonbonded_convention,
-    _load_graspa_guest_bundles, _canonicalize_isotherm_settings, _canonicalize_mixture_settings,
-    _validate_isotherm_settings, _validate_mixture_settings,
+    _load_graspa_guest_bundles,
+    _canonicalize_isotherm_settings,
+    _canonicalize_mixture_settings,
+    _validate_isotherm_settings,
+    _validate_mixture_settings,
     DEFAULT_RASPA_BACKEND,
     EqeqChargeSettings,
     GraspaIsothermResult,
@@ -26,9 +30,9 @@ from .guest_restart import (
     LammpsGuestRestartState,
     build_lammps_guest_restart_state_from_gcmc_result,
     build_lammps_guest_restart_state_from_lammps_md_result,
-    write_graspa_restart_file,
     guest_site_model_diagnostics,
     load_lammps_guest_force_field_assets,
+    write_graspa_restart_file,
 )
 from .guest_forcefields import packaged_guest_forcefield_catalog
 from .lammps import LammpsMdResult, LammpsMdSettings, run_lammps_md_on_cif
@@ -141,6 +145,37 @@ class HybridMdMcCycleResult:
 # contract in every hybrid report.
 HYBRID_MODEL_CONTRACT_KIND = "approximate_alternating_md_mc"
 
+# Run-status vocabulary of the "status" field in hybrid_mdmc_report.json:
+# "in_progress" for the partial report (re)written after each completed
+# cycle, "completed" when every requested cycle finished, "failed" when a
+# cycle raised — in which case `failure` records the cycle, stage, and cause
+# and no dependent cycle was run afterwards.
+HYBRID_RUN_STATUS_IN_PROGRESS = "in_progress"
+HYBRID_RUN_STATUS_COMPLETED = "completed"
+HYBRID_RUN_STATUS_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class HybridMdMcFailure:
+    """Where and why a hybrid run stopped.
+
+    `stage` is one of "lammps_md", "md_to_gcmc_restart", "gcmc",
+    "gcmc_to_lammps_restart", or "cycle_record"; `error` is the cause as
+    ``TypeName: message``.
+    """
+
+    cycle: int
+    stage: str
+    error: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "cycle": self.cycle,
+            "stage": self.stage,
+            "error": self.error,
+        }
+
+
 @dataclass(frozen=True)
 class HybridModelContractDifference:
     aspect: str
@@ -234,6 +269,10 @@ class HybridMdMcResult:
     cycle_results: tuple[HybridMdMcCycleResult, ...]
     model_contract: HybridModelContract
     warnings: tuple[str, ...] = ()
+    # "in_progress" (partial report between cycles) / "completed" / "failed";
+    # see HYBRID_RUN_STATUS_*.
+    status: str = HYBRID_RUN_STATUS_COMPLETED
+    failure: HybridMdMcFailure | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -248,6 +287,8 @@ class HybridMdMcResult:
             "cycle_results": [cycle.to_dict() for cycle in self.cycle_results],
             "model_contract": self.model_contract.to_dict(),
             "warnings": list(self.warnings),
+            "status": self.status,
+            "failure": self.failure.to_dict() if self.failure is not None else None,
         }
 
 
@@ -304,161 +345,206 @@ def run_hybrid_mdmc_workflow(
     current_cif = input_path
     current_guest_restart_state: LammpsGuestRestartState | None = None
     cycle_results: list[HybridMdMcCycleResult] = []
-    for cycle in range(1, settings.cycles + 1):
-        cycle_dir = run_dir / f"cycle_{cycle:03d}"
-        input_guest_restart_state = current_guest_restart_state
-        lammps_result = run_lammps_md_on_cif(
-            current_cif,
-            output_dir=cycle_dir / "1.lammps_md",
-            lmp_path=lmp_path,
-            eqeq_path=eqeq_path,
-            settings=replace(lammps_md_settings, velocity_seed=derive_seed(lammps_md_settings.velocity_seed, "md", cycle)),
-            timeout_seconds=lammps_timeout_seconds,
-            eqeq_settings=lammps_eqeq_settings,
-            eqeq_timeout_seconds=eqeq_timeout_seconds,
-            guest_restart_state=input_guest_restart_state,
+    report_path = run_dir / "hybrid_mdmc_report.json"
+
+    def _write_report(status: str, failure: HybridMdMcFailure | None) -> HybridMdMcResult:
+        report_result = HybridMdMcResult(
+            input_cif=str(input_path),
+            output_dir=str(run_dir),
+            report_path=str(report_path),
+            final_framework_cif=str(current_cif),
+            settings=settings,
+            lammps_md_settings=lammps_md_settings,
+            lammps_eqeq_settings=lammps_eqeq_settings,
+            raspa_eqeq_settings=raspa_eqeq_settings,
+            cycle_results=tuple(cycle_results),
+            model_contract=model_contract,
+            warnings=warnings,
+            status=status,
+            failure=failure,
         )
-        md_framework_cif = Path(lammps_result.output_cif)
-        md_output_guest_restart_state: LammpsGuestRestartState | None = None
-        gcmc_initial_restart_file_path: str | None = None
-        cycle_warnings: list[str] = []
-        if settings.exchange_mode == "guest_restart" and input_guest_restart_state is not None:
-            try:
-                md_output_guest_restart_state, restart_cell = build_lammps_guest_restart_state_from_lammps_md_result(
-                    lammps_result,
-                    previous_guest_restart_state=input_guest_restart_state,
-                )
-                restart_file_result = write_graspa_restart_file(
-                    md_output_guest_restart_state,
-                    cycle_dir / "md_to_gcmc_restartfile",
-                    cell=restart_cell,
-                    component_order=tuple(component.component for component in settings.components),
-                )
-            except GuestRestartError as exc:
-                raise GuestRestartError(
-                    f"Failed to convert LAMMPS MD guest coordinates to a gRASPA initial restart file "
-                    f"for hybrid cycle {cycle}: {exc}"
-                ) from exc
-            gcmc_initial_restart_file_path = restart_file_result.restart_file_path
-            cycle_warnings.extend(md_output_guest_restart_state.warnings)
-            cycle_warnings.extend(restart_file_result.warnings)
-        gcmc_result_type: str
-        if len(settings.components) == 1:
-            component = settings.components[0]
-            gcmc_result_type = "isotherm"
-            isotherm_settings = replace(_isotherm_settings_from_hybrid(settings, component),
-                random_seed=derive_seed(lammps_md_settings.velocity_seed, "mc", cycle))
-            if settings.exchange_mode == "guest_restart":
-                isotherm_settings = replace(
-                    isotherm_settings,
-                    restart_file=gcmc_initial_restart_file_path is not None,
-                )
-            gcmc_result = run_graspa_isotherm_workflow(
-                md_framework_cif,
-                output_dir=cycle_dir / "2.gcmc",
+        atomic_write_text(report_path, json.dumps(report_result.to_dict(), indent=2, allow_nan=False))
+        return report_result
+
+    # Stage tracking: on a failure the partial report records the failed stage
+    # so the cause is attributable (MD leg, MD->MC restart staging, GCMC leg,
+    # or MC->MD restart parsing), not just the cycle number.
+    cycle = 0
+    stage = "setup"
+    try:
+        for cycle in range(1, settings.cycles + 1):
+            cycle_dir = run_dir / f"cycle_{cycle:03d}"
+            input_guest_restart_state = current_guest_restart_state
+            stage = "lammps_md"
+            lammps_result = run_lammps_md_on_cif(
+                current_cif,
+                output_dir=cycle_dir / "1.lammps_md",
+                lmp_path=lmp_path,
                 eqeq_path=eqeq_path,
-                graspa_path=graspa_path,
-                raspa_path=raspa_path,
-                raspa2_path=raspa2_path,
-                eqeq_settings=raspa_eqeq_settings,
-                isotherm_settings=isotherm_settings,
-                initial_restart_file=gcmc_initial_restart_file_path,
+                settings=replace(lammps_md_settings, velocity_seed=derive_seed(lammps_md_settings.velocity_seed, "md", cycle)),
+                timeout_seconds=lammps_timeout_seconds,
+                eqeq_settings=lammps_eqeq_settings,
                 eqeq_timeout_seconds=eqeq_timeout_seconds,
-                graspa_timeout_seconds=graspa_timeout_seconds,
+                guest_restart_state=input_guest_restart_state,
+            )
+            md_framework_cif = Path(lammps_result.output_cif)
+            md_output_guest_restart_state: LammpsGuestRestartState | None = None
+            gcmc_initial_restart_file_path: str | None = None
+            cycle_warnings: list[str] = []
+            if settings.exchange_mode == "guest_restart" and input_guest_restart_state is not None:
+                stage = "md_to_gcmc_restart"
+                try:
+                    md_output_guest_restart_state, restart_cell = build_lammps_guest_restart_state_from_lammps_md_result(
+                        lammps_result,
+                        previous_guest_restart_state=input_guest_restart_state,
+                    )
+                    restart_file_result = write_graspa_restart_file(
+                        md_output_guest_restart_state,
+                        cycle_dir / "md_to_gcmc_restartfile",
+                        cell=restart_cell,
+                        component_order=tuple(component.component for component in settings.components),
+                    )
+                except GuestRestartError as exc:
+                    raise GuestRestartError(
+                        f"Failed to convert LAMMPS MD guest coordinates to a gRASPA initial restart file "
+                        f"for hybrid cycle {cycle}: {exc}"
+                    ) from exc
+                gcmc_initial_restart_file_path = restart_file_result.restart_file_path
+                cycle_warnings.extend(md_output_guest_restart_state.warnings)
+                cycle_warnings.extend(restart_file_result.warnings)
+            gcmc_result_type: str
+            stage = "gcmc"
+            if len(settings.components) == 1:
+                component = settings.components[0]
+                gcmc_result_type = "isotherm"
+                isotherm_settings = replace(_isotherm_settings_from_hybrid(settings, component),
+                    random_seed=derive_seed(lammps_md_settings.velocity_seed, "mc", cycle))
+                if settings.exchange_mode == "guest_restart":
+                    isotherm_settings = replace(
+                        isotherm_settings,
+                        restart_file=gcmc_initial_restart_file_path is not None,
+                    )
+                gcmc_result = run_graspa_isotherm_workflow(
+                    md_framework_cif,
+                    output_dir=cycle_dir / "2.gcmc",
+                    eqeq_path=eqeq_path,
+                    graspa_path=graspa_path,
+                    raspa_path=raspa_path,
+                    raspa2_path=raspa2_path,
+                    eqeq_settings=raspa_eqeq_settings,
+                    isotherm_settings=isotherm_settings,
+                    initial_restart_file=gcmc_initial_restart_file_path,
+                    eqeq_timeout_seconds=eqeq_timeout_seconds,
+                    graspa_timeout_seconds=graspa_timeout_seconds,
+                )
+            else:
+                gcmc_result_type = "mixture"
+                mixture_settings = replace(_mixture_settings_from_hybrid(settings),
+                    random_seed=derive_seed(lammps_md_settings.velocity_seed, "mc", cycle))
+                if settings.exchange_mode == "guest_restart":
+                    mixture_settings = replace(
+                        mixture_settings,
+                        restart_file=gcmc_initial_restart_file_path is not None,
+                    )
+                gcmc_result = run_graspa_mixture_workflow(
+                    md_framework_cif,
+                    output_dir=cycle_dir / "2.gcmc",
+                    eqeq_path=eqeq_path,
+                    graspa_path=graspa_path,
+                    raspa_path=raspa_path,
+                    raspa2_path=raspa2_path,
+                    eqeq_settings=raspa_eqeq_settings,
+                    mixture_settings=mixture_settings,
+                    initial_restart_file=gcmc_initial_restart_file_path,
+                    eqeq_timeout_seconds=eqeq_timeout_seconds,
+                    graspa_timeout_seconds=graspa_timeout_seconds,
+                )
+            output_guest_restart_state: LammpsGuestRestartState | None = None
+            if settings.exchange_mode == "guest_restart":
+                stage = "gcmc_to_lammps_restart"
+                output_guest_restart_state = build_lammps_guest_restart_state_from_gcmc_result(
+                    gcmc_result,
+                    components=tuple(component.component for component in settings.components),
+                    guest_bundles=settings.guest_bundles,
+                )
+                cycle_warnings.extend(output_guest_restart_state.warnings)
+            stage = "cycle_record"
+            cycle_results.append(
+                HybridMdMcCycleResult(
+                    cycle=cycle,
+                    input_framework_cif=str(current_cif),
+                    lammps_md_result=lammps_result,
+                    gcmc_result_type=gcmc_result_type,
+                    gcmc_result=gcmc_result,
+                    output_framework_cif=str(md_framework_cif),
+                    input_guest_restart_source_path=(
+                        input_guest_restart_state.source_snapshot_path
+                        if input_guest_restart_state is not None
+                        else None
+                    ),
+                    md_output_guest_restart_source_path=(
+                        md_output_guest_restart_state.source_snapshot_path
+                        if md_output_guest_restart_state is not None
+                        else None
+                    ),
+                    gcmc_initial_restart_file_path=gcmc_initial_restart_file_path,
+                    output_guest_restart_source_path=(
+                        output_guest_restart_state.source_snapshot_path
+                        if output_guest_restart_state is not None
+                        else None
+                    ),
+                    n_input_guest_atoms=input_guest_restart_state.n_atoms if input_guest_restart_state is not None else 0,
+                    n_md_output_guest_atoms=(
+                        md_output_guest_restart_state.n_atoms if md_output_guest_restart_state is not None else 0
+                    ),
+                    n_output_guest_atoms=output_guest_restart_state.n_atoms if output_guest_restart_state is not None else 0,
+                    input_guest_components=(
+                        input_guest_restart_state.components if input_guest_restart_state is not None else ()
+                    ),
+                    md_output_guest_components=(
+                        md_output_guest_restart_state.components if md_output_guest_restart_state is not None else ()
+                    ),
+                    output_guest_components=(
+                        output_guest_restart_state.components if output_guest_restart_state is not None else ()
+                    ),
+                    warnings=tuple(dict.fromkeys(cycle_warnings)),
+                )
+            )
+            current_cif = md_framework_cif
+            current_guest_restart_state = (
+                output_guest_restart_state
+                if output_guest_restart_state is not None and output_guest_restart_state.n_atoms > 0
+                else None
+            )
+            # Partial report after every completed cycle: a failure in a later
+            # cycle must not lose the completed cycles or their warnings.
+            _write_report(HYBRID_RUN_STATUS_IN_PROGRESS, None)
+    except Exception as exc:
+        # Cycles are dependent simulation states: stop the run instead of
+        # continuing from an undefined state, and preserve what completed.
+        failure = HybridMdMcFailure(
+            cycle=cycle,
+            stage=stage,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        try:
+            _write_report(HYBRID_RUN_STATUS_FAILED, failure)
+        except OSError as report_exc:
+            print(
+                f"warning: could not write the partial hybrid MD/MC report to {report_path} "
+                f"({type(report_exc).__name__}: {report_exc})",
+                file=sys.stderr,
             )
         else:
-            gcmc_result_type = "mixture"
-            mixture_settings = replace(_mixture_settings_from_hybrid(settings),
-                random_seed=derive_seed(lammps_md_settings.velocity_seed, "mc", cycle))
-            if settings.exchange_mode == "guest_restart":
-                mixture_settings = replace(
-                    mixture_settings,
-                    restart_file=gcmc_initial_restart_file_path is not None,
-                )
-            gcmc_result = run_graspa_mixture_workflow(
-                md_framework_cif,
-                output_dir=cycle_dir / "2.gcmc",
-                eqeq_path=eqeq_path,
-                graspa_path=graspa_path,
-                raspa_path=raspa_path,
-                raspa2_path=raspa2_path,
-                eqeq_settings=raspa_eqeq_settings,
-                mixture_settings=mixture_settings,
-                initial_restart_file=gcmc_initial_restart_file_path,
-                eqeq_timeout_seconds=eqeq_timeout_seconds,
-                graspa_timeout_seconds=graspa_timeout_seconds,
+            print(
+                f"warning: hybrid MD/MC run failed at cycle {failure.cycle} stage {failure.stage!r} "
+                f"({failure.error}); partial report preserving {len(cycle_results)} completed "
+                f"cycle(s) written to {report_path}. Dependent cycles were not run.",
+                file=sys.stderr,
             )
-        output_guest_restart_state: LammpsGuestRestartState | None = None
-        if settings.exchange_mode == "guest_restart":
-            output_guest_restart_state = build_lammps_guest_restart_state_from_gcmc_result(
-                gcmc_result,
-                components=tuple(component.component for component in settings.components),
-                guest_bundles=settings.guest_bundles,
-            )
-            cycle_warnings.extend(output_guest_restart_state.warnings)
-        cycle_results.append(
-            HybridMdMcCycleResult(
-                cycle=cycle,
-                input_framework_cif=str(current_cif),
-                lammps_md_result=lammps_result,
-                gcmc_result_type=gcmc_result_type,
-                gcmc_result=gcmc_result,
-                output_framework_cif=str(md_framework_cif),
-                input_guest_restart_source_path=(
-                    input_guest_restart_state.source_snapshot_path
-                    if input_guest_restart_state is not None
-                    else None
-                ),
-                md_output_guest_restart_source_path=(
-                    md_output_guest_restart_state.source_snapshot_path
-                    if md_output_guest_restart_state is not None
-                    else None
-                ),
-                gcmc_initial_restart_file_path=gcmc_initial_restart_file_path,
-                output_guest_restart_source_path=(
-                    output_guest_restart_state.source_snapshot_path
-                    if output_guest_restart_state is not None
-                    else None
-                ),
-                n_input_guest_atoms=input_guest_restart_state.n_atoms if input_guest_restart_state is not None else 0,
-                n_md_output_guest_atoms=(
-                    md_output_guest_restart_state.n_atoms if md_output_guest_restart_state is not None else 0
-                ),
-                n_output_guest_atoms=output_guest_restart_state.n_atoms if output_guest_restart_state is not None else 0,
-                input_guest_components=(
-                    input_guest_restart_state.components if input_guest_restart_state is not None else ()
-                ),
-                md_output_guest_components=(
-                    md_output_guest_restart_state.components if md_output_guest_restart_state is not None else ()
-                ),
-                output_guest_components=(
-                    output_guest_restart_state.components if output_guest_restart_state is not None else ()
-                ),
-                warnings=tuple(dict.fromkeys(cycle_warnings)),
-            )
-        )
-        current_cif = md_framework_cif
-        current_guest_restart_state = (
-            output_guest_restart_state
-            if output_guest_restart_state is not None and output_guest_restart_state.n_atoms > 0
-            else None
-        )
+        raise
 
-    report_path = run_dir / "hybrid_mdmc_report.json"
-    result = HybridMdMcResult(
-        input_cif=str(input_path),
-        output_dir=str(run_dir),
-        report_path=str(report_path),
-        final_framework_cif=str(current_cif),
-        settings=settings,
-        lammps_md_settings=lammps_md_settings,
-        lammps_eqeq_settings=lammps_eqeq_settings,
-        raspa_eqeq_settings=raspa_eqeq_settings,
-        cycle_results=tuple(cycle_results),
-        model_contract=model_contract,
-        warnings=warnings,
-    )
-    atomic_write_text(report_path, json.dumps(result.to_dict(), indent=2, allow_nan=False))
+    result = _write_report(HYBRID_RUN_STATUS_COMPLETED, None)
     finish_attempt(run_dir)
     return result
 
@@ -832,11 +918,15 @@ def _mixture_settings_from_hybrid(settings: HybridMdMcSettings) -> GraspaMixture
 
 __all__ = [
     "HYBRID_MODEL_CONTRACT_KIND",
+    "HYBRID_RUN_STATUS_COMPLETED",
+    "HYBRID_RUN_STATUS_FAILED",
+    "HYBRID_RUN_STATUS_IN_PROGRESS",
     "HybridInteractionSide",
-    "HybridModelContract",
-    "HybridModelContractDifference",
     "HybridMdMcCycleResult",
+    "HybridMdMcFailure",
     "HybridMdMcResult",
     "HybridMdMcSettings",
+    "HybridModelContract",
+    "HybridModelContractDifference",
     "run_hybrid_mdmc_workflow",
 ]

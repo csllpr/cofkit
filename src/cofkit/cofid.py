@@ -54,6 +54,19 @@ class COFidComment:
     suffix: str | None = None
 
 
+@dataclass(frozen=True)
+class COFidGenerationOutcome:
+    """Result of best-effort COFid generation.
+
+    `cofid` is None exactly when generation failed; `error` then carries the
+    cause as ``TypeName: message`` so callers can persist it instead of
+    silently dropping the token.
+    """
+
+    cofid: str | None
+    error: str | None = None
+
+
 _LINKAGE_CODE_TO_TEMPLATE_ID: Mapping[str, str] = {
     "azine": "azine_bridge",
     "azine_bridge": "azine_bridge",
@@ -267,10 +280,23 @@ def try_generate_cofid(
     candidate: Candidate,
     monomer_specs: Mapping[str, MonomerSpec] | Iterable[MonomerSpec],
 ) -> str | None:
+    return generate_cofid_with_cause(candidate, monomer_specs).cofid
+
+
+def generate_cofid_with_cause(
+    candidate: Candidate,
+    monomer_specs: Mapping[str, MonomerSpec] | Iterable[MonomerSpec],
+) -> COFidGenerationOutcome:
+    """Best-effort COFid generation that preserves the failure cause.
+
+    Same swallowed-exception contract as `try_generate_cofid`, but the
+    ``TypeName: message`` of the swallowed error is returned instead of being
+    discarded.
+    """
     try:
-        return generate_cofid(candidate, monomer_specs)
-    except (KeyError, RuntimeError, ValueError):
-        return None
+        return COFidGenerationOutcome(cofid=generate_cofid(candidate, monomer_specs))
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return COFidGenerationOutcome(cofid=None, error=f"{type(exc).__name__}: {exc}")
 
 
 def serialize_cofid(

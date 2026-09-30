@@ -1926,4 +1926,9 @@ def _run_hybrid_mdmc(args: argparse.Namespace) -> None:
     print("components:", [component.component for component in result.settings.components])
     print("final_framework_cif:", result.final_framework_cif)
     print("warnings:", list(result.warnings))
+    # Cycle warnings are durable in hybrid_mdmc_report.json; echo them so the
+    # console summary does not omit them.
+    for cycle_result in result.cycle_results:
+        for warning in cycle_result.warnings:
+            print(f"warning: cycle {cycle_result.cycle}: {warning}", file=sys.stderr)
     print("report_path:", result.report_path)

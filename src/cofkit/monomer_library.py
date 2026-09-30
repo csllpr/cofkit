@@ -37,6 +37,29 @@ class MonomerRoleResolver:
         num_conformers: int = 2,
         random_seed: int = 0xC0F,
     ) -> dict[str, MonomerSpec]:
+        candidates, _failure_causes = self.auto_detect_monomer_candidates_with_causes(
+            smiles,
+            allowed_motif_kinds=allowed_motif_kinds,
+            num_conformers=num_conformers,
+            random_seed=random_seed,
+        )
+        return candidates
+
+    def auto_detect_monomer_candidates_with_causes(
+        self,
+        smiles: str,
+        *,
+        allowed_motif_kinds: Iterable[str] | None = None,
+        num_conformers: int = 2,
+        random_seed: int = 0xC0F,
+    ) -> tuple[dict[str, MonomerSpec], dict[str, str]]:
+        """Autodetect candidate motif kinds, retaining per-kind failure causes.
+
+        A motif kind that does not build (expected non-match, embedding
+        failure, or any other internal error) is still skipped as a candidate,
+        but its ``TypeName: message`` cause is returned in the second element
+        keyed by motif kind instead of being discarded by the per-kind catch.
+        """
         if allowed_motif_kinds is None:
             motif_kinds = self.motif_builder.supported_motif_kinds()
         else:
@@ -47,6 +70,7 @@ class MonomerRoleResolver:
                 if motif_kind in allowed
             )
         candidates: dict[str, MonomerSpec] = {}
+        failure_causes: dict[str, str] = {}
         for motif_kind in motif_kinds:
             try:
                 monomer = self.motif_builder.build_monomer(
@@ -57,10 +81,11 @@ class MonomerRoleResolver:
                     num_conformers=max(1, min(2, num_conformers)),
                     random_seed=random_seed,
                 )
-            except Exception:
+            except Exception as exc:
+                failure_causes[motif_kind] = f"{type(exc).__name__}: {exc}"
                 continue
             candidates[motif_kind] = monomer
-        return candidates
+        return candidates, failure_causes
 
     def forced_kind_warnings(
         self,
@@ -119,12 +144,18 @@ class MonomerRoleResolver:
     def resolve_detected_motif_kind(
         self,
         candidates: Mapping[str, MonomerSpec],
+        *,
+        failure_causes: Mapping[str, str] | None = None,
     ) -> tuple[str, MonomerSpec]:
         if not candidates:
             allowed_text = tuple(self.motif_builder.supported_motif_kinds())
-            raise ValueError(
-                f"could not auto-detect a supported motif kind from SMILES against {allowed_text!r}"
-            )
+            message = f"could not auto-detect a supported motif kind from SMILES against {allowed_text!r}"
+            if failure_causes:
+                cause_text = "; ".join(
+                    f"{motif_kind}: {cause}" for motif_kind, cause in sorted(failure_causes.items())
+                )
+                message = f"{message}; per-kind detection causes: {cause_text}"
+            raise ValueError(message)
         remaining = dict(candidates)
         for generic_kind, specific_kinds in self.generic_suppression.items():
             if generic_kind not in remaining:
@@ -156,13 +187,16 @@ class MonomerRoleResolver:
         num_conformers: int = 2,
         random_seed: int = 0xC0F,
     ) -> BatchMonomerRecord:
-        candidates = self.auto_detect_monomer_candidates(
+        candidates, autodetect_failure_causes = self.auto_detect_monomer_candidates_with_causes(
             smiles,
             allowed_motif_kinds=allowed_motif_kinds,
             num_conformers=num_conformers,
             random_seed=random_seed,
         )
-        motif_kind, monomer = self.resolve_detected_motif_kind(candidates)
+        motif_kind, monomer = self.resolve_detected_motif_kind(
+            candidates,
+            failure_causes=autodetect_failure_causes,
+        )
         metadata: dict[str, object] = {
             "auto_detected": True,
             "detected_motif_kinds": tuple(sorted(candidates)),
@@ -177,6 +211,11 @@ class MonomerRoleResolver:
                 num_conformers=num_conformers,
                 random_seed=random_seed,
             ),
+            # Motif kinds that did not build during autodetection, with the
+            # retained ``TypeName: message`` cause (expected non-matches and
+            # internal failures alike), so an absent candidate kind is never
+            # an unexplained omission.
+            "autodetect_failure_causes": dict(sorted(autodetect_failure_causes.items())),
         }
         if library_stem:
             metadata["library_stem"] = library_stem

@@ -39,6 +39,7 @@ Then go straight to the module that matches the task.
     failures keep the discard-and-rerun-in-threads fallback), and the
     run-level `_require_writable_output_root` probe that aborts on an
     unwritable output root before any record is attempted.
+  - Durable reporting (A12): `run_binary_bridge_batch` also writes
 
 ## Core chemistry seams
 
@@ -82,12 +83,14 @@ Then go straight to the module that matches the task.
 
 - [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
   - `MonomerRoleResolver` for autodetection from SMILES.
-  - `MonomerRoleResolver.forced_kind_warnings` for non-blocking motif-overlap warnings: a monomer assigned a generic kind (per `_AUTO_DETECT_GENERIC_SUPPRESSION`, currently `aldehyde`) that also builds as the shadowed specific kind (currently `keto_aldehyde`) yields a warning suggesting the specific kind's templates. `infer_record` and `BinaryBridgeLibraryLoader.load_smiles_library` attach these to record metadata as `overlap_warnings`; the CLI echoes them to stderr.
+  - `MonomerRoleResolver.forced_kind_warnings` for non-blocking motif-overlap warnings: a monomer assigned a generic kind (per `_AUTO_DETECT_GENERIC_SUPPRESSION`, currently `aldehyde`) that also builds as the shadowed specific kind (currently `keto_aldehyde`) yields a warning suggesting the specific kind's templates. `infer_record` and `BinaryBridgeLibraryLoader.load_smiles_library` attach these to record metadata as `overlap_warnings`; the CLI echoes them to stderr, and batch runs persist them in the `monomers.jsonl` ledger.
+  - Autodetection retains per-kind failure causes (A12): `auto_detect_monomer_candidates_with_causes` returns each skipped kind's `TypeName: message` cause alongside the candidates (expected non-matches and internal failures alike); `infer_record` stores them as `autodetect_failure_causes` in record metadata, and a total detection failure raises a `ValueError` listing the per-kind causes.
   - `BinaryBridgeLibraryLoader` for explicit and autodetected batch libraries.
 - [src/cofkit/batch_models.py](../src/cofkit/batch_models.py)
   - Neutral batch-facing data classes.
   - Use these instead of adding new ad hoc summary dictionaries.
   - `BatchPairSummary` carries typed validation accessors (`validation_classification`, `validation_coverage`, `unmeasured_required_checks`) over the serialized `metadata["validation"]` record; `BatchRunSummary.validation_counts` counts validation classifications per run, and `BatchRunSummary.record_failures` aggregates every non-`ok` manifest record as structure id → `TypeName: message` (surfaced in `summary.md` and the console/JSON summaries).
+  - `BatchRunSummary` yield accounting (A12): derived `constructed_structures` (status `ok`; the legacy `successful_structures` field remains as an alias — construction success is not a validated yield), `exported_structures` (alias of `cifs_written`), `screened_structures` (validation record attached), and `unvalidated_structures` properties, plus `monomer_records_path` pointing at the durable per-monomer `monomers.jsonl` ledger.
 
 ## Topology seams
 
@@ -167,6 +170,7 @@ tunables must land here, not at consumer sites:
   - EQeq to gRASPA/RASPA2 Widom, single-component isotherm, and mixture workflows; framework mixing-rule generation; simulation.input rendering; result parsing.
 - [src/cofkit/hybrid_mdmc.py](../src/cofkit/hybrid_mdmc.py)
   - Cyclic LAMMPS MD plus gRASPA/RASPA2 GCMC workflow. Default framework exchange passes the MD-updated framework CIF between segments; opt-in guest-restart exchange parses final GCMC guest snapshots and passes massive guest atoms into the following LAMMPS MD segment.
+  - Partial/failure reporting (A12): `hybrid_mdmc_report.json` is (re)written after every completed cycle (`status: "in_progress"`) and on failure (`status: "failed"`); `HybridMdMcResult.status` / `.failure` (`HybridMdMcFailure`: cycle, failed stage — `lammps_md` / `md_to_gcmc_restart` / `gcmc` / `gcmc_to_lammps_restart` / `cycle_record` — and `TypeName: message` cause) preserve the completed cycles and their warnings. Cycles are dependent simulation states, so a failure stops the run and re-raises after a stderr warning naming the partial report path.
   - Model-contract reporting (A11): every run builds a typed `HybridModelContract` (`_build_hybrid_model_contract`) recorded as `model_contract` on `HybridMdMcResult` and in `hybrid_mdmc_report.json` — kind `approximate_alternating_md_mc` (never a consistently sampled ensemble), the effective interaction settings of each leg (`HybridInteractionSide` md/mc), a `differences` list flagging every divergent aspect (per-run setting mismatches plus the standing structural ones: NVT-MD vs grand-canonical MC, flexible vs rigid framework, element-keyed MC framework LJ rows vs per-type MD assignment, guest presence/rigidity), and `guest_model_diagnostics` (Feynman-Hibbs → classical-LJ conversions and conflicting bundle overrides from `guest_restart.guest_site_model_diagnostics`). A run-level summary warning lists the differing aspects.
 - [src/cofkit/guest_restart.py](../src/cofkit/guest_restart.py)
   - GCMC movie/restart snapshot discovery, guest force-field asset synchronization from packaged/bundle RASPA rows into LAMMPS-ready guest sites/templates, binary guest parsing, and zero-mass pseudo-site rejection.

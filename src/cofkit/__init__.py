@@ -100,6 +100,7 @@ from .guest_forcefields import (
 )
 from .hybrid_mdmc import (
     HybridMdMcCycleResult,
+    HybridMdMcFailure,
     HybridMdMcResult,
     HybridMdMcSettings,
     run_hybrid_mdmc_workflow,
@@ -332,6 +333,7 @@ __all__ = [
     "GuestRestartError",
     "GuestRestartSkippedMolecule",
     "HybridMdMcCycleResult",
+    "HybridMdMcFailure",
     "HybridMdMcResult",
     "HybridMdMcSettings",
     "LammpsConfigurationError",

@@ -545,6 +545,190 @@ class HybridMdMcTests(unittest.TestCase):
         aspects = {entry["aspect"] for entry in report["model_contract"]["differences"]}
         self.assertIn("guest_rigidity", aspects)
 
+    def test_hybrid_failure_at_cycle_k_preserves_completed_cycles_and_cause(self):
+        # A12 / T2-4: a GCMC failure at cycle 2 of 3 must leave a durable
+        # partial report with cycle 1 (including its warnings), the failed
+        # stage, and the cause — and cycle 3 must never run.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_cif = temp_path / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+            lammps_calls = []
+            gcmc_calls = []
+
+            def fake_lammps(cif_path, *, output_dir, settings, guest_restart_state=None, **kwargs):
+                lammps_calls.append(Path(cif_path))
+                run_dir = Path(output_dir)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                output_cif = run_dir / "md.cif"
+                output_cif.write_text(f"data_cycle_{len(lammps_calls)}\n", encoding="utf-8")
+                return _fake_lammps_result(
+                    Path(cif_path), run_dir, output_cif, settings, guest_restart_state=guest_restart_state
+                )
+
+            def fake_mixture(cif_path, *, output_dir, mixture_settings, initial_restart_file=None, **kwargs):
+                gcmc_calls.append(Path(cif_path))
+                if len(gcmc_calls) == 2:
+                    raise RuntimeError("injected gcmc failure")
+                run_dir = Path(output_dir)
+                pressure_run_dir = run_dir / "mixture" / "pressure_100000"
+                movie_dir = pressure_run_dir / "Movies" / "System_0"
+                movie_dir.mkdir(parents=True, exist_ok=True)
+                # Framework rows only: produces the empty-population cycle warnings.
+                (movie_dir / "result_2.data").write_text(
+                    "\n".join(
+                        [
+                            "gRASPA movie snapshot",
+                            "",
+                            "3 atoms",
+                            "4 atom types",
+                            "",
+                            "Masses",
+                            "",
+                            "1 12.011 # C",
+                            "2 15.999 # O",
+                            "3 131.293 # Xe",
+                            "4 83.798 # Kr",
+                            "",
+                            "Atoms # full",
+                            "",
+                            "1 1 1 0.0 0.0 0.0 0.0 # C",
+                            "2 1 2 0.0 1.0 0.0 0.0 # O",
+                            "3 1 2 0.0 0.0 1.0 0.0 # O",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                return _FakeMixtureResult(run_dir, pressure_run_dir, mixture_settings)
+
+            output_dir = temp_path / "hybrid_out"
+            with patch("cofkit.hybrid_mdmc.run_lammps_md_on_cif", side_effect=fake_lammps):
+                with patch("cofkit.hybrid_mdmc.run_graspa_mixture_workflow", side_effect=fake_mixture):
+                    with self.assertRaises(RuntimeError) as raised:
+                        run_hybrid_mdmc_workflow(
+                            input_cif,
+                            output_dir=output_dir,
+                            settings=HybridMdMcSettings(
+                                cycles=3,
+                                exchange_mode="guest_restart",
+                                pressure=100000.0,
+                                components=(
+                                    GraspaMixtureComponentSettings(component="Xe_GENERICMOFS", mol_fraction=0.5),
+                                    GraspaMixtureComponentSettings(component="Kr_GENERICMOFS", mol_fraction=0.5),
+                                ),
+                                initialization_cycles=1,
+                                equilibration_cycles=1,
+                                production_cycles=10,
+                            ),
+                            lammps_md_settings=LammpsMdSettings(forcefield="uff", charge_model="none", steps=5),
+                            lammps_eqeq_settings=EqeqChargeSettings(),
+                            raspa_eqeq_settings=EqeqChargeSettings(),
+                        )
+
+            self.assertIn("injected gcmc failure", str(raised.exception))
+            # Dependent cycle 3 never ran (cycles are dependent states).
+            self.assertEqual(len(lammps_calls), 2)
+            self.assertEqual(len(gcmc_calls), 2)
+
+            report_path = output_dir / "hybrid_mdmc_report.json"
+            self.assertTrue(report_path.is_file())
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["failure"]["cycle"], 2)
+            self.assertEqual(report["failure"]["stage"], "gcmc")
+            self.assertEqual(report["failure"]["error"], "RuntimeError: injected gcmc failure")
+            # Cycle 1 survives with its warnings.
+            self.assertEqual(len(report["cycle_results"]), 1)
+            self.assertEqual(report["cycle_results"][0]["cycle"], 1)
+            self.assertTrue(
+                any(
+                    "adsorbate population is being treated as empty" in warning
+                    for warning in report["cycle_results"][0]["warnings"]
+                )
+            )
+            # The attempt manifest stays honest (never marked completed).
+            attempt = json.loads((output_dir / "attempt.json").read_text(encoding="utf-8"))
+            self.assertEqual(attempt["status"], "incomplete")
+
+    def test_hybrid_failure_at_first_md_stage_writes_empty_partial_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_cif = temp_path / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+
+            def failing_lammps(cif_path, *, output_dir, settings, **kwargs):
+                raise RuntimeError("injected md failure")
+
+            output_dir = temp_path / "hybrid_out"
+            with patch("cofkit.hybrid_mdmc.run_lammps_md_on_cif", side_effect=failing_lammps):
+                with self.assertRaises(RuntimeError):
+                    run_hybrid_mdmc_workflow(
+                        input_cif,
+                        output_dir=output_dir,
+                        settings=HybridMdMcSettings(
+                            cycles=2,
+                            components=(GraspaMixtureComponentSettings(component="CO2_DREIDING", mol_fraction=1.0),),
+                            initialization_cycles=1,
+                            equilibration_cycles=1,
+                            production_cycles=10,
+                        ),
+                        lammps_md_settings=LammpsMdSettings(forcefield="uff", charge_model="none", steps=5),
+                        lammps_eqeq_settings=EqeqChargeSettings(),
+                        raspa_eqeq_settings=EqeqChargeSettings(),
+                    )
+
+            report = json.loads((output_dir / "hybrid_mdmc_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["failure"]["cycle"], 1)
+            self.assertEqual(report["failure"]["stage"], "lammps_md")
+            self.assertEqual(report["failure"]["error"], "RuntimeError: injected md failure")
+            self.assertEqual(report["cycle_results"], [])
+
+    def test_hybrid_report_status_completed_on_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_cif = temp_path / "framework.cif"
+            input_cif.write_text("data_framework\n", encoding="utf-8")
+
+            def fake_lammps(cif_path, *, output_dir, settings, **kwargs):
+                input_path = Path(cif_path)
+                run_dir = Path(output_dir)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                output_cif = run_dir / "md.cif"
+                output_cif.write_text("data_cycle\n", encoding="utf-8")
+                return _fake_lammps_result(input_path, run_dir, output_cif, settings)
+
+            def fake_isotherm(cif_path, *, output_dir, isotherm_settings, **kwargs):
+                input_path = Path(cif_path)
+                run_dir = Path(output_dir)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                return _fake_isotherm_result(input_path, run_dir, isotherm_settings.component)
+
+            with patch("cofkit.hybrid_mdmc.run_lammps_md_on_cif", side_effect=fake_lammps):
+                with patch("cofkit.hybrid_mdmc.run_graspa_isotherm_workflow", side_effect=fake_isotherm):
+                    result = run_hybrid_mdmc_workflow(
+                        input_cif,
+                        output_dir=temp_path / "hybrid_out",
+                        settings=HybridMdMcSettings(
+                            cycles=2,
+                            components=(GraspaMixtureComponentSettings(component="CO2_DREIDING", mol_fraction=1.0),),
+                            initialization_cycles=1,
+                            equilibration_cycles=1,
+                            production_cycles=10,
+                        ),
+                        lammps_md_settings=LammpsMdSettings(forcefield="uff", charge_model="none", steps=5),
+                        lammps_eqeq_settings=EqeqChargeSettings(),
+                        raspa_eqeq_settings=EqeqChargeSettings(),
+                    )
+            report = json.loads(Path(result.report_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(result.status, "completed")
+        self.assertIsNone(result.failure)
+        self.assertEqual(report["status"], "completed")
+        self.assertIsNone(report["failure"])
+        self.assertEqual(len(report["cycle_results"]), 2)
+
 
 def _fake_lammps_result(
     input_path: Path,

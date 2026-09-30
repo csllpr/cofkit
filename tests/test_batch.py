@@ -305,6 +305,52 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(record.motif_kind, "aldehyde")
         self.assertEqual(record.metadata["overlap_warnings"], ())
 
+    def test_infer_monomer_record_retains_autodetect_failure_causes(self):
+        # A12 / T2-2: kinds that do not build during autodetection are no
+        # longer silent omissions; each retains its "TypeName: message" cause.
+        record = self.generator.infer_monomer_record(
+            PPD,
+            record_id="generic_0001",
+        )
+
+        self.assertEqual(record.motif_kind, "amine")
+        causes = record.metadata["autodetect_failure_causes"]
+        self.assertIsInstance(causes, dict)
+        self.assertNotIn("amine", causes)
+        self.assertTrue(causes)
+        for kind, cause in causes.items():
+            self.assertRegex(cause, r"^\w+(Error|Exception): ", msg=f"{kind}: {cause}")
+
+    def test_infer_monomer_record_total_failure_lists_per_kind_causes(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.generator.infer_monomer_record(
+                "this is not a SMILES",
+                record_id="broken_0001",
+            )
+
+        message = str(ctx.exception)
+        self.assertIn("could not auto-detect", message)
+        self.assertIn("per-kind detection causes", message)
+        self.assertIn("RDKit could not parse SMILES", message)
+
+    def test_autodetect_retains_internal_failure_cause(self):
+        # An internal (non-match) failure in one kind must be recorded as its
+        # own cause, not hidden as an absent candidate kind.
+        resolver = MonomerRoleResolver.builtin()
+        original_build = resolver.motif_builder.build_monomer
+
+        def flaky_build(monomer_id, name, smiles, motif_kind, **kwargs):
+            if motif_kind == "keto_aldehyde":
+                raise RuntimeError("injected internal failure")
+            return original_build(monomer_id, name, smiles, motif_kind, **kwargs)
+
+        with patch.object(resolver.motif_builder, "build_monomer", flaky_build):
+            record = resolver.infer_record(TP, record_id="tp")
+
+        self.assertEqual(record.motif_kind, "aldehyde")
+        causes = record.metadata["autodetect_failure_causes"]
+        self.assertEqual(causes["keto_aldehyde"], "RuntimeError: injected internal failure")
+
     def test_load_smiles_library_attaches_overlap_warnings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "aldehydes_count_3.txt"
@@ -3161,6 +3207,121 @@ class BatchFailureIsolationTests(unittest.TestCase):
             self.assertIn("not writable", str(ctx.exception))
             self.assertFalse((output_dir / "manifest.jsonl").exists())
             self.assertEqual(self._cif_tree_files(output_dir), [])
+
+    def test_mixed_run_counts_reconcile_with_durable_records(self):
+        # A12 / T2-5 / T2-6: attempted / constructed / exported / screened /
+        # unvalidated counts must reconcile with the manifest rows under a
+        # mixed run (one export failure, one unvalidated export, two normal).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_tiny_library(root / "input")
+            generator = self._make_generator()
+
+            original_validate = generator.structure_validator.validate_manifest_record
+            calls = {"count": 0}
+
+            def flaky_validate(record):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise ValueError("injected validation failure")
+                if calls["count"] == 2:
+                    raise ModuleNotFoundError("gemmi is required for coarse validation")
+                return original_validate(record)
+
+            with patch.object(generator.structure_validator, "validate_manifest_record", flaky_validate):
+                summary = generator.run_binary_bridge_batch(root / "input", root / "output")
+
+            rows = self._manifest_rows(root / "output")
+            self.assertEqual(len(rows), 4)
+            ok_rows = [row for row in rows if row["status"] == "ok"]
+            failed_rows = [row for row in rows if row["status"] != "ok"]
+            exported_rows = [row for row in rows if row["cif_path"] is not None]
+            screened_rows = [
+                row for row in rows if isinstance(row["metadata"].get("validation"), dict)
+            ]
+            classifications = {}
+            for row in screened_rows:
+                classification = row["metadata"]["validation"]["classification"]
+                classifications[classification] = classifications.get(classification, 0) + 1
+
+            # Every summary count reconciles with the durable manifest rows.
+            self.assertEqual(summary.attempted_pairs, 4)
+            self.assertEqual(summary.successful_pairs, 3)
+            self.assertEqual(len(failed_rows), 1)
+            self.assertEqual(failed_rows[0]["status"], "export-failed")
+            self.assertEqual(
+                summary.record_failures,
+                {failed_rows[0]["structure_id"]: "ValueError: injected validation failure"},
+            )
+            self.assertEqual(summary.constructed_structures, len(ok_rows))
+            self.assertEqual(summary.constructed_structures, summary.successful_structures)
+            self.assertEqual(summary.exported_structures, len(exported_rows))
+            self.assertEqual(summary.exported_structures, summary.cifs_written)
+            self.assertEqual(summary.exported_structures, 3)
+            self.assertEqual(summary.screened_structures, len(screened_rows))
+            self.assertEqual(summary.screened_structures, 3)
+            self.assertEqual(dict(summary.validation_counts), classifications)
+            self.assertEqual(summary.unvalidated_structures, 1)
+            self.assertEqual(classifications["unvalidated"], 1)
+            # The unvalidated structure is exported to its own bucket, not valid.
+            unvalidated_row = next(
+                row
+                for row in screened_rows
+                if row["metadata"]["validation"]["classification"] == "unvalidated"
+            )
+            self.assertIn("unvalidated", unvalidated_row["cif_path"])
+            self.assertTrue(
+                (root / "output" / "cifs" / "unvalidated" / f"{unvalidated_row['structure_id']}.cif").is_file()
+            )
+            # summary.md exposes the separated counts.
+            summary_text = (root / "output" / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("Constructed structures", summary_text)
+            self.assertIn("Screened structures", summary_text)
+            self.assertIn("Unvalidated structures", summary_text)
+            # The per-monomer ledger is durable and complete.
+            self.assertTrue(summary.monomer_records_path)
+            monomer_rows = [
+                json.loads(line)
+                for line in Path(summary.monomer_records_path).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(monomer_rows), 4)
+            self.assertEqual(
+                {row["build_status"] for row in monomer_rows},
+                {"ok"},
+            )
+            for row in monomer_rows:
+                self.assertIn("overlap_warnings", row["metadata"])
+
+    def test_monomer_records_persist_stderr_overlap_warnings(self):
+        # A12 / T2-15: motif-overlap warnings previously echoed only on stderr
+        # are persisted per monomer record in monomers.jsonl.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = root / "input"
+            input_dir.mkdir(parents=True)
+            (input_dir / "amines_count_3.txt").write_text(f"smiles\n{TAPB}\n{TAPB}\n", encoding="utf-8")
+            # TP also matches the more specific keto_aldehyde kind.
+            (input_dir / "aldehydes_count_3.txt").write_text(f"smiles\n{TP}\n{TFB}\n", encoding="utf-8")
+            generator = self._make_generator()
+
+            summary = generator.run_binary_bridge_batch(root / "input", root / "output")
+
+            monomer_rows = {
+                row["id"]: row
+                for row in (
+                    json.loads(line)
+                    for line in Path(summary.monomer_records_path).read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                )
+            }
+            keto_row = next(row for row in monomer_rows.values() if row["smiles"] == TP)
+            overlap_warnings = keto_row["metadata"]["overlap_warnings"]
+            self.assertEqual(len(overlap_warnings), 1)
+            self.assertIn("keto_enamine_bridge", overlap_warnings[0])
+            plain_row = next(row for row in monomer_rows.values() if row["smiles"] == TFB)
+            self.assertEqual(plain_row["metadata"]["overlap_warnings"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

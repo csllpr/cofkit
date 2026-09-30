@@ -149,6 +149,9 @@ class BatchRunSummary:
     attempted_pairs: int
     successful_pairs: int
     attempted_structures: int
+    # Construction successes (status == "ok") only — NOT a validated yield.
+    # Use the derived properties below (constructed/exported/screened/
+    # unvalidated) for reporting; validation_counts is the quality breakdown.
     successful_structures: int
     cifs_written: int
     built_monomers: int
@@ -170,4 +173,34 @@ class BatchRunSummary:
     geometry_repair_revalidation_counts: Mapping[str, int] = field(default_factory=dict)
     geometry_repair_failed_records_path: str | None = None
     manifest_path: str | None = None
+    # Durable per-monomer record ledger (monomers.jsonl): every library record
+    # with its source, detection metadata (including autodetect per-kind
+    # failure causes and overlap warnings otherwise confined to stderr), and
+    # its build outcome.
+    monomer_records_path: str | None = None
     top_results: tuple[BatchPairSummary, ...] = ()
+
+    @property
+    def constructed_structures(self) -> int:
+        """Structures whose construction succeeded (status "ok").
+
+        This is identical to the legacy `successful_structures` field; the
+        new name states explicitly that it is a construction count, not a
+        validated yield.
+        """
+        return self.successful_structures
+
+    @property
+    def exported_structures(self) -> int:
+        """Structures with a written CIF (identical to `cifs_written`)."""
+        return self.cifs_written
+
+    @property
+    def screened_structures(self) -> int:
+        """Constructed structures that received a validation record."""
+        return sum(int(count) for count in self.validation_counts.values())
+
+    @property
+    def unvalidated_structures(self) -> int:
+        """Structures whose required validation checks could not be measured."""
+        return int(self.validation_counts.get("unvalidated", 0))

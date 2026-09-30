@@ -21,7 +21,7 @@ from .chem.rdkit import (
     monomer_geometry_degradation_warnings,
 )
 from .cif import CIFWriter
-from .cofid import cofid_to_build_request, try_generate_cofid
+from .cofid import cofid_to_build_request, generate_cofid_with_cause
 from .constants import DEFAULT_MONOLAYER_C_ANGSTROM
 from .lammps import LammpsOptimizationSettings
 from .monomer_library import MonomerRoleResolver
@@ -459,7 +459,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
     allowed_motif_kinds = tuple(role.motif_kind for role in profile.binary_bridge_roles)
     resolver = MonomerRoleResolver.builtin()
 
-    first_kind, first_warnings = _resolve_single_pair_motif_kind(
+    first_kind, first_warnings, first_autodetection = _resolve_single_pair_motif_kind(
         smiles=args.first_smiles,
         explicit_kind=args.first_motif_kind,
         monomer_id=args.first_id,
@@ -469,7 +469,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         template_id=args.template_id,
         num_conformers=args.num_conformers,
     )
-    second_kind, second_warnings = _resolve_single_pair_motif_kind(
+    second_kind, second_warnings, second_autodetection = _resolve_single_pair_motif_kind(
         smiles=args.second_smiles,
         explicit_kind=args.second_motif_kind,
         monomer_id=args.second_id,
@@ -526,6 +526,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             "motif_kind": first_kind,
             "motif_count": len(first.motifs),
             "overlap_warnings": list(first_warnings),
+            **({"autodetection": first_autodetection} if first_autodetection else {}),
             "geometry": _monomer_geometry_summary(first),
         },
         "second": {
@@ -534,10 +535,13 @@ def _run_single_pair(args: argparse.Namespace) -> None:
             "motif_kind": second_kind,
             "motif_count": len(second.motifs),
             "overlap_warnings": list(second_warnings),
+            **({"autodetection": second_autodetection} if second_autodetection else {}),
             "geometry": _monomer_geometry_summary(second),
         },
         "attempted_structures": attempted_structures,
         "successful_structures": sum(1 for summary in summaries if summary.status == "ok"),
+        # Explicit split: construction success is not a validated yield.
+        "constructed_structures": sum(1 for summary in summaries if summary.status == "ok"),
         "cifs_written": sum(1 for summary in summaries if summary.cif_path is not None),
         "shape_warnings": list(shape_warnings),
         "results": [_summary_to_single_pair_result(summary) for summary in summaries],
@@ -692,12 +696,22 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         reaction_library=library,
     )
     candidates = generator.generate_candidates(monomer, args.template_id)
-    generated_cofid = try_generate_cofid(candidates[0], {monomer.id: monomer})
+    generated_cofid_outcome = generate_cofid_with_cause(candidates[0], {monomer.id: monomer})
+    generated_cofid = generated_cofid_outcome.cofid
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     result_rows: list[dict[str, object]] = []
     for candidate in candidates:
-        candidate_cofid = try_generate_cofid(candidate, {monomer.id: monomer})
+        candidate_cofid_outcome = generate_cofid_with_cause(candidate, {monomer.id: monomer})
+        candidate_cofid = candidate_cofid_outcome.cofid
+        if candidate_cofid_outcome.error is not None:
+            # COFid generation is best-effort: keep the cause durable in the
+            # report row instead of letting the token silently disappear.
+            print(
+                f"warning: COFid generation failed for candidate {candidate.id!r} "
+                f"({candidate_cofid_outcome.error}); the CIF is written without a COFid comment.",
+                file=sys.stderr,
+            )
         cif_path = None
         export = None
         if args.write_cif:
@@ -720,6 +734,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
                 "status": "ok",
                 "candidate_id": candidate.id,
                 "generated_cofid": candidate_cofid,
+                **({"cofid_error": candidate_cofid_outcome.error} if candidate_cofid_outcome.error is not None else {}),
                 "score": candidate.score,
                 "flags": list(candidate.flags),
                 "graph_summary": candidate.metadata["graph_summary"],
@@ -743,6 +758,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
     report = {
         **({"requested_cofid": requested_cofid} if requested_cofid is not None else {}),
         "generated_cofid": generated_cofid,
+        **({"cofid_error": generated_cofid_outcome.error} if generated_cofid_outcome.error is not None else {}),
         "template_id": args.template_id,
         "topology_id": args.topology,
         "stacking_requested": list(args.stacking),
@@ -810,7 +826,8 @@ def _resolve_single_pair_motif_kind(
     resolver: MonomerRoleResolver,
     template_id: str,
     num_conformers: int,
-) -> tuple[str, tuple[str, ...]]:
+) -> tuple[str, tuple[str, ...], dict[str, object]]:
+    autodetection: dict[str, object] = {}
     if explicit_kind is not None:
         kind = explicit_kind
     else:
@@ -823,6 +840,17 @@ def _resolve_single_pair_motif_kind(
             num_conformers=num_conformers,
         )
         kind = record.motif_kind
+        # Persist the detection outcome (including per-kind failure causes) so
+        # an absent candidate kind is explainable from summary.json alone.
+        autodetection = {
+            "detected_motif_kinds": list(record.metadata.get("detected_motif_kinds", ())),
+            "detected_connectivities": dict(record.metadata.get("detected_connectivities", {})),
+            "autodetect_failure_causes": dict(record.metadata.get("autodetect_failure_causes", {})),
+            # Autodetection probes are clamped to the cheap two-conformer
+            # budget (monomer_library.AUTODETECT_MAX_CONFORMERS); the actual
+            # monomer build re-embeds at the full budget.
+            "probe_num_conformers": max(1, min(2, num_conformers)),
+        }
     warnings = resolver.forced_kind_warnings(
         smiles,
         assigned_kind=kind,
@@ -830,7 +858,7 @@ def _resolve_single_pair_motif_kind(
         template_id=template_id,
         num_conformers=num_conformers,
     )
-    return kind, warnings
+    return kind, warnings, autodetection
 
 
 def _monomer_geometry_summary(monomer) -> dict[str, object]:
@@ -935,6 +963,7 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     print("geometry_repair_failed_records:", summary.geometry_repair_failed_records_path or "-")
     print("cifs_written:", summary.cifs_written)
     print("manifest:", summary.manifest_path)
+    print("monomer_records:", summary.monomer_records_path or "-")
     failed_repairs = int(summary.geometry_repair_counts.get("failed", 0))
     if failed_repairs > 0:
         print(
@@ -1133,6 +1162,12 @@ def _summary_to_json(summary) -> dict[str, object]:
         "successful_pairs": summary.successful_pairs,
         "attempted_structures": summary.attempted_structures,
         "successful_structures": summary.successful_structures,
+        # Explicit split (construction success is not a validated yield);
+        # successful_structures/cifs_written remain as legacy aliases.
+        "constructed_structures": summary.constructed_structures,
+        "exported_structures": summary.exported_structures,
+        "screened_structures": summary.screened_structures,
+        "unvalidated_structures": summary.unvalidated_structures,
         "cifs_written": summary.cifs_written,
         "built_monomers": summary.built_monomers,
         "failed_monomers": summary.failed_monomers,
@@ -1140,10 +1175,12 @@ def _summary_to_json(summary) -> dict[str, object]:
         "record_failures": dict(summary.record_failures),
         "mode_counts": dict(summary.mode_counts),
         "topology_counts": dict(summary.topology_counts),
+        "validation_counts": dict(summary.validation_counts),
         "geometry_repair_counts": dict(summary.geometry_repair_counts),
         "geometry_repair_revalidation_counts": dict(summary.geometry_repair_revalidation_counts),
         "geometry_repair_failed_records_path": summary.geometry_repair_failed_records_path,
         "manifest_path": summary.manifest_path,
+        "monomer_records_path": summary.monomer_records_path,
     }
 
 

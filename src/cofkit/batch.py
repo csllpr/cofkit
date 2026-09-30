@@ -19,7 +19,7 @@ from .chem.rdkit import (
     build_rdkit_monomer,
     monomer_geometry_degradation_warnings,
 )
-from .cofid import try_generate_cofid
+from .cofid import generate_cofid_with_cause
 from .cif import CIFWriter
 from .embedding import EmbeddingConfig, EmbeddingResult, PeriodicEmbedder
 from .engine import COFEngineConfig, COFProject
@@ -860,6 +860,11 @@ class BatchStructureGenerator:
             for record_id, result in built.items()
             if result.error is not None
         }
+        # Durable per-monomer ledger: detection metadata (autodetect per-kind
+        # failure causes, overlap warnings) and build outcomes are recorded
+        # here so they are not confined to stderr.
+        monomer_records_path = output_root / "monomers.jsonl"
+        self._write_monomer_records(monomer_records_path, all_records, built)
         valid = {
             key: tuple(result.record for result in (built[record.id] for record in records) if result.ok)
             for key, records in libraries.items()
@@ -959,6 +964,7 @@ class BatchStructureGenerator:
                 else None
             ),
             manifest_path=str(manifest_path),
+            monomer_records_path=str(monomer_records_path),
             top_results=tuple(top_results),
         )
         staging_dir = output_root / "cifs" / ".staging"
@@ -971,6 +977,30 @@ class BatchStructureGenerator:
             geometry_repair_failures_path.unlink(missing_ok=True)
         self._write_summary_report(output_root / "summary.md", summary)
         return summary
+
+    def _write_monomer_records(
+        self,
+        path: Path,
+        records: tuple[BatchMonomerRecord, ...],
+        built: Mapping[str, BuiltBatchMonomer],
+    ) -> None:
+        """Write the durable per-monomer ledger (one JSON object per record)."""
+        with path.open("w", encoding="utf-8") as handle:
+            for record in records:
+                result = built.get(record.id)
+                row = {
+                    "id": record.id,
+                    "name": record.name,
+                    "smiles": record.smiles,
+                    "motif_kind": record.motif_kind,
+                    "expected_connectivity": record.expected_connectivity,
+                    "source_path": record.source_path,
+                    "source_line": record.source_line,
+                    "metadata": self._json_safe(dict(record.metadata)),
+                    "build_status": "ok" if result is not None and result.ok else "failed",
+                    "build_error": result.error if result is not None else None,
+                }
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
 
     def _supports_process_pair_pool(self) -> bool:
         return self.smiles_monomer_builder is build_rdkit_monomer
@@ -4507,6 +4537,7 @@ class BatchStructureGenerator:
         reactant_roles: tuple[str, str],
         template_id: str,
         cofid: str | None,
+        cofid_error: str | None = None,
         hard_hard_invalid_reasons: tuple[str, ...] = (),
         hard_hard_invalid_metrics: Mapping[str, object] | None = None,
         reactant_node_shapes: Mapping[str, str] | None = None,
@@ -4555,6 +4586,10 @@ class BatchStructureGenerator:
                     else {}
                 ),
                 **({"cofid": cofid} if cofid is not None else {}),
+                # COFid generation is best-effort; when it fails the retained
+                # "TypeName: message" cause is recorded instead of the token
+                # silently disappearing from the record.
+                **({"cofid_error": cofid_error} if cofid is None and cofid_error is not None else {}),
                 **(
                     {
                         "post_build_conversions": dict(
@@ -5024,7 +5059,8 @@ class BatchStructureGenerator:
             )
             finalized_candidates.append(candidate)
             hard_hard_invalid_reasons, hard_hard_invalid_metrics = self._hard_hard_invalid_reasons(candidate)
-            cofid = try_generate_cofid(candidate, (first, second))
+            cofid_outcome = generate_cofid_with_cause(candidate, (first, second))
+            cofid = cofid_outcome.cofid
             export_index = 0
             provisional_summary = self._candidate_to_summary(
                 pair_id=pair_id,
@@ -5045,6 +5081,7 @@ class BatchStructureGenerator:
                 reactant_roles=pair.role_ids,
                 template_id=pair.template.id,
                 cofid=cofid,
+                cofid_error=cofid_outcome.error,
                 shape_warnings=evaluation.shape_warnings,
                 monomer_geometry_warnings=monomer_geometry_warnings,
                 hard_hard_invalid_reasons=hard_hard_invalid_reasons,
@@ -5863,16 +5900,24 @@ class BatchStructureGenerator:
             f"- Input directory: `{summary.input_dir}`",
             f"- Output directory: `{summary.output_dir}`",
             f"- Manifest: `{summary.manifest_path}`",
+            f"- Monomer records: `{summary.monomer_records_path}`",
             f"- Built monomers: {summary.built_monomers}",
             f"- Failed monomer builds: {summary.failed_monomers}",
             f"- Failed records: {len(summary.record_failures)}",
             f"- Attempted pairs: {summary.attempted_pairs}",
             f"- Successful pairs: {summary.successful_pairs}",
             f"- Attempted structures: {summary.attempted_structures}",
+            # Construction success is not a validated yield: the constructed /
+            # exported / screened / unvalidated split below is the honest
+            # accounting (legacy key `Successful structures` kept above).
             f"- Successful structures: {summary.successful_structures}",
+            f"- Constructed structures (status `ok`; construction success, not a validation verdict): {summary.constructed_structures}",
             f"- CIFs written: {summary.cifs_written}",
+            f"- Screened structures (validation record attached): {summary.screened_structures}",
+            f"- Unvalidated structures (required checks unmeasured): {summary.unvalidated_structures}",
             f"- Mode counts (structures): {dict(summary.mode_counts)}",
             f"- Topology counts: {dict(summary.topology_counts)}",
+            f"- Validation classification counts: {dict(summary.validation_counts)}",
             f"- Geometry repair counts: {dict(summary.geometry_repair_counts)}",
             f"- Geometry repair revalidation counts: {dict(summary.geometry_repair_revalidation_counts)}",
             "",
