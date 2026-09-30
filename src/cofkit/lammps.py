@@ -73,6 +73,13 @@ _SUPPORTED_CHARGE_MODELS = ("none", "eqeq")
 # derived: Lennard-Jones equilibrium distance r_min = 2^(1/6) * sigma; converts
 # the UFF-tabulated r_min values into the sigma LAMMPS pair_coeff rows expect.
 _UFF_RMIN_TO_SIGMA_FACTOR = 2.0 ** (1.0 / 6.0)
+# cited: the reference UFF periodic angle term is E = ka / n^2 *
+# (1 - cos(n*theta0) * cos(n*theta)) (Rappe et al., J. Am. Chem. Soc. 1992,
+# 114, 10024-10035; also RDKit Code/ForceField/UFF/AngleBend.cpp), while LAMMPS
+# angle_style cosine/periodic evaluates E = (2*C / n^2) *
+# (1 - B * (-1)^n * cos(n*theta)) (https://docs.lammps.org/angle_cosine_periodic.html).
+# Equating the two amplitudes for the emitted C coefficient gives C = ka / 2.
+_UFF_PERIODIC_ANGLE_LAMMPS_C_SCALE = 0.5
 _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic", "spin_none"}
 _MIN_MODIFY_NORM_OPTIONS = {"two", "inf", "max"}
 _MIN_MODIFY_FIRE_INTEGRATOR_OPTIONS = {"eulerimplicit", "verlet", "leapfrog", "eulerexplicit"}
@@ -2870,13 +2877,14 @@ def _compute_uff_angle_coefficients(
     if angle_family in {"linear", "trigonal-planar", "square-planar", "octahedral"} or (
         angle_family == "tetrahedral" and int(theta0) == 90
     ):
+        periodic_coefficient = _UFF_PERIODIC_ANGLE_LAMMPS_C_SCALE * ka
         if angle_family == "linear":
-            return ("cosine/periodic", float(ka), 1, 1)
+            return ("cosine/periodic", float(periodic_coefficient), 1, 1)
         if angle_family == "tetrahedral":
-            return ("cosine/periodic", float(ka), -1, 2)
+            return ("cosine/periodic", float(periodic_coefficient), -1, 2)
         if angle_family == "trigonal-planar":
-            return ("cosine/periodic", float(ka), -1, 3)
-        return ("cosine/periodic", float(ka), 1, 4)
+            return ("cosine/periodic", float(periodic_coefficient), -1, 3)
+        return ("cosine/periodic", float(periodic_coefficient), 1, 4)
 
     sin_theta0 = math.sin(math.radians(theta0))
     if abs(sin_theta0) <= 1.0e-12:

@@ -53,6 +53,106 @@ print "COFKIT_PAIR_ENERGY ${{energy}}"
     assert float(values[0]) == pytest.approx(-1, abs=1e-10)
 
 
+def test_uff_periodic_angle_energy_matches_reference(lmp, tmp_path):
+    import math
+
+    from cofkit.lammps import (
+        _CifAngleRecord,
+        _compute_uff_angle_coefficients,
+        _load_uff_parameters,
+    )
+
+    parameters = _load_uff_parameters()
+    r_ab = 1.40
+    r_bc = 1.45
+    theta_degrees = 100.0
+    for center_type, flank_type in (("C_2", "C_R"), ("Bi3+3", "F_")):
+        coefficients = _compute_uff_angle_coefficients(
+            angle=_CifAngleRecord(
+                angle_id=1,
+                atom_id_1=1,
+                atom_id_2=2,
+                atom_id_3=3,
+                equilibrium_degrees=parameters[center_type].theta0,
+            ),
+            atom_type_by_atom_id={1: flank_type, 2: center_type, 3: flank_type},
+            parameters=parameters,
+            bond_reference={(1, 2): (0.0, r_ab), (2, 3): (0.0, r_bc)},
+        )
+        style, c_coeff, b_coeff, n_coeff = coefficients
+        assert style == "cosine/periodic"
+        theta = math.radians(theta_degrees)
+        x3 = r_bc * math.cos(theta)
+        y3 = r_bc * math.sin(theta)
+        data_file = tmp_path / f"angle_{center_type.replace('+', 'p')}.data"
+        data_file.write_text(f"""cofkit UFF periodic angle check
+
+3 atoms
+1 angles
+
+1 atom types
+1 angle types
+
+-15.0 15.0 xlo xhi
+-15.0 15.0 ylo yhi
+-15.0 15.0 zlo zhi
+
+Masses
+
+1 12.011
+
+Angle Coeffs
+
+1 {c_coeff:.16g} {b_coeff} {n_coeff}
+
+Atoms # molecular
+
+1 1 1 {r_ab:.16g} 0.0 0.0
+2 1 1 0.0 0.0 0.0
+3 1 1 {x3:.16g} {y3:.16g} 0.0
+
+Angles
+
+1 1 1 2 3
+""")
+        script = tmp_path / f"angle_{center_type.replace('+', 'p')}.in"
+        script.write_text(f"""units real
+atom_style molecular
+boundary f f f
+pair_style none
+angle_style cosine/periodic
+read_data {data_file}
+run 0
+variable energy equal eangle
+print "COFKIT_ANGLE_ENERGY ${{energy}}"
+""")
+        result = subprocess.run(
+            [lmp, "-in", str(script)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        values = re.findall(
+            r"^COFKIT_ANGLE_ENERGY ([-+\deE.]+)$", result.stdout, re.MULTILINE
+        )
+        assert len(values) == 1
+        # Independent reference expression: E = ka / n^2 *
+        # (1 - cos(n*theta0) * cos(n*theta)) with ka from the UFF paper
+        # (Rappe et al., JACS 1992, 114, 10024-10035, eq. 10).
+        theta0 = math.radians(parameters[center_type].theta0)
+        cos_theta0 = math.cos(theta0)
+        r_ac = math.sqrt(r_ab**2 + r_bc**2 - 2.0 * r_ab * r_bc * cos_theta0)
+        beta = 664.12 / (r_ab * r_bc)
+        ka = beta * (parameters[flank_type].z1**2 / (r_ac**5.0)) * r_ab * r_bc
+        ka *= 3.0 * r_ab * r_bc * (1.0 - cos_theta0 * cos_theta0) - r_ac * r_ac * cos_theta0
+        expected = (ka / n_coeff**2) * (
+            1.0 - math.cos(n_coeff * theta0) * math.cos(math.radians(n_coeff * theta_degrees))
+        )
+        assert float(values[0]) == pytest.approx(expected, rel=1e-8, abs=1e-10)
+
+
 def test_optimizer_adapter_convergence(lmp, tmp_path):
     from cofkit.lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
 

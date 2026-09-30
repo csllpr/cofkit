@@ -79,6 +79,7 @@ Default routing preference for forcefields:
 
 - for `lammps-optimize`, `graspa-widom`, `graspa-isotherm`, `graspa-mixture`, and `hybrid-mdmc`, prefer DREIDING force fields unless the user explicitly requests `UFF` or asks to reproduce legacy `UFF` outputs
 - describe `UFF` as experimentally supported rather than the recommended production path
+- note when comparing UFF LAMMPS outputs across versions: UFF periodic-angle coefficients were corrected to the reference `ka / n^2` amplitude (previously emitted at twice that amplitude), so UFF angle energies and UFF-influenced optimized geometries from older releases are not directly comparable and should be recomputed; DREIDING outputs are unaffected
 
 ## References
 

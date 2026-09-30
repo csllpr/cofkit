@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import os
 import stat
 import sys
@@ -1642,3 +1643,132 @@ class LammpsTests(unittest.TestCase):
             "a2 a4 . . 1.000000 S\n"
             "a4 a5 . . 1.000000 S\n"
         )
+
+
+class UffPeriodicAngleNormalizationTests(unittest.TestCase):
+    """The emitted cosine/periodic coefficients must reproduce the reference UFF
+    periodic angle term E = ka / n^2 * (1 - cos(n*theta0) * cos(n*theta)) when
+    LAMMPS evaluates E = (2*C / n^2) * (1 - B * (-1)^n * cos(n*theta)).
+    """
+
+    @staticmethod
+    def _reference_uff_ka(
+        *,
+        center_theta0_degrees: float,
+        left_z1: float,
+        right_z1: float,
+        r_ab: float,
+        r_bc: float,
+    ) -> float:
+        # Independent transcription of the UFF angle force constant, eq. 10 of
+        # Rappe et al., J. Am. Chem. Soc. 1992, 114, 10024-10035.
+        cos_theta0 = math.cos(math.radians(center_theta0_degrees))
+        r_ac = math.sqrt(r_ab * r_ab + r_bc * r_bc - 2.0 * r_ab * r_bc * cos_theta0)
+        beta = 664.12 / (r_ab * r_bc)
+        ka = beta * (left_z1 * right_z1 / (r_ac**5.0)) * r_ab * r_bc
+        return ka * (3.0 * r_ab * r_bc * (1.0 - cos_theta0 * cos_theta0) - r_ac * r_ac * cos_theta0)
+
+    def _emitted_coefficients(self, *, center_type: str, flank_type: str, r_ab: float = 1.40, r_bc: float = 1.45):
+        parameters = lammps_module._load_uff_parameters()
+        angle = lammps_module._CifAngleRecord(
+            angle_id=1,
+            atom_id_1=1,
+            atom_id_2=2,
+            atom_id_3=3,
+            equilibrium_degrees=parameters[center_type].theta0,
+        )
+        coefficients = lammps_module._compute_uff_angle_coefficients(
+            angle=angle,
+            atom_type_by_atom_id={1: flank_type, 2: center_type, 3: flank_type},
+            parameters=parameters,
+            bond_reference={(1, 2): (0.0, r_ab), (2, 3): (0.0, r_bc)},
+        )
+        ka = self._reference_uff_ka(
+            center_theta0_degrees=parameters[center_type].theta0,
+            left_z1=parameters[flank_type].z1,
+            right_z1=parameters[flank_type].z1,
+            r_ab=r_ab,
+            r_bc=r_bc,
+        )
+        return coefficients, ka, parameters[center_type].theta0
+
+    def _assert_periodic_family_matches_reference(
+        self,
+        *,
+        center_type: str,
+        flank_type: str,
+        expected_b: int,
+        expected_n: int,
+    ) -> None:
+        coefficients, ka, theta0 = self._emitted_coefficients(center_type=center_type, flank_type=flank_type)
+        self.assertEqual(coefficients[0], "cosine/periodic")
+        _, c_coeff, b_coeff, n_coeff = coefficients
+        self.assertEqual((b_coeff, n_coeff), (expected_b, expected_n))
+        # Regression pin: the coefficient used to be emitted as ka, which LAMMPS
+        # scales by 2 / n^2 and therefore doubles the reference amplitude.
+        self.assertAlmostEqual(
+            c_coeff,
+            lammps_module._UFF_PERIODIC_ANGLE_LAMMPS_C_SCALE * ka,
+            places=12,
+        )
+        cos_n_theta0 = math.cos(math.radians(n_coeff * theta0))
+        for theta_degrees in (10.0, 37.5, 65.0, 90.0, 118.3, 145.0, 179.0):
+            cos_n_theta = math.cos(math.radians(n_coeff * theta_degrees))
+            sin_n_theta = math.sin(math.radians(n_coeff * theta_degrees))
+            lammps_energy = (2.0 * c_coeff / n_coeff**2) * (1.0 - b_coeff * (-1.0) ** n_coeff * cos_n_theta)
+            reference_energy = (ka / n_coeff**2) * (1.0 - cos_n_theta0 * cos_n_theta)
+            self.assertTrue(
+                math.isclose(lammps_energy, reference_energy, rel_tol=1e-12, abs_tol=1e-12),
+                f"energy mismatch at theta={theta_degrees}: {lammps_energy} != {reference_energy}",
+            )
+            lammps_derivative = (
+                (2.0 * c_coeff / n_coeff**2) * b_coeff * (-1.0) ** n_coeff * n_coeff * sin_n_theta
+            )
+            reference_derivative = (ka / n_coeff**2) * cos_n_theta0 * n_coeff * sin_n_theta
+            self.assertTrue(
+                math.isclose(lammps_derivative, reference_derivative, rel_tol=1e-12, abs_tol=1e-12),
+                f"derivative mismatch at theta={theta_degrees}: {lammps_derivative} != {reference_derivative}",
+            )
+
+    def test_uff_periodic_angle_linear_matches_reference(self):
+        self._assert_periodic_family_matches_reference(
+            center_type="C_1", flank_type="C_R", expected_b=1, expected_n=1
+        )
+
+    def test_uff_periodic_angle_trigonal_planar_matches_reference(self):
+        self._assert_periodic_family_matches_reference(
+            center_type="C_2", flank_type="C_R", expected_b=-1, expected_n=3
+        )
+
+    def test_uff_periodic_angle_square_planar_matches_reference(self):
+        self._assert_periodic_family_matches_reference(
+            center_type="Pd4+2", flank_type="Cl", expected_b=1, expected_n=4
+        )
+
+    def test_uff_periodic_angle_octahedral_matches_reference(self):
+        self._assert_periodic_family_matches_reference(
+            center_type="Fe6+2", flank_type="N_3", expected_b=1, expected_n=4
+        )
+
+    def test_uff_periodic_angle_tetrahedral_n2_matches_reference(self):
+        # Special tetrahedral theta0 == 90 deg family (e.g. Bi3+3) emitted as
+        # cosine/periodic with n=2; it must follow the same ka / n^2 amplitude.
+        self._assert_periodic_family_matches_reference(
+            center_type="Bi3+3", flank_type="F_", expected_b=-1, expected_n=2
+        )
+
+    def test_uff_tetrahedral_fourier_branch_is_unscaled(self):
+        # The ordinary tetrahedral Fourier branch must stay byte-identical: it is
+        # not affected by the periodic-branch normalization fix.
+        coefficients, ka, theta0 = self._emitted_coefficients(center_type="C_3", flank_type="C_3")
+        self.assertEqual(coefficients[0], "fourier")
+        _, fourier_ka, c0, c1, c2 = coefficients
+        self.assertAlmostEqual(fourier_ka, ka, places=12)
+        sin_theta0 = math.sin(math.radians(theta0))
+        cos_theta0 = math.cos(math.radians(theta0))
+        expected_c2 = 1.0 / (4.0 * sin_theta0 * sin_theta0)
+        expected_c1 = -4.0 * expected_c2 * cos_theta0
+        expected_c0 = expected_c2 * (2.0 * cos_theta0 * cos_theta0 + 1.0)
+        self.assertAlmostEqual(c2, expected_c2, places=12)
+        self.assertAlmostEqual(c1, expected_c1, places=12)
+        self.assertAlmostEqual(c0, expected_c0, places=12)
