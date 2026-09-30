@@ -1,3 +1,18 @@
+"""Chemistry-facing topology compatibility metadata.
+
+This module computes the ``zero_linker_*`` and ``two_monomer_*`` metadata
+blocks stored on topology definitions and the bundled topology index
+(``data/topologies/index.json``). "Zero linker" means a two-monomer
+node-node pairing with no linker monomer (a zero-length-linker net): the
+scan decides periodic-graph bipartiteness and the feasible node-node /
+node-linker pairing modes.
+
+None of this metadata is an execution gate. Actual build eligibility is
+decided by the builder dispatch in ``topology_builders.py`` / ``batch.py``,
+which never reads these keys; they are informational annotations for
+consumers of the topology index (see ``ZeroLinkerScanResult``).
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -38,6 +53,34 @@ class _PeriodicNodeGraph:
 
 @dataclass(frozen=True)
 class ZeroLinkerScanResult:
+    """Chemistry-facing compatibility metadata for one topology.
+
+    Field semantics (all serialized by ``to_metadata`` with a
+    ``zero_linker_`` / ``two_monomer_`` prefix):
+
+    - ``compatible`` / ``bipartite``: periodic node-graph bipartiteness, i.e.
+      whether an alternating two-role node-node ("zero linker") assignment
+      exists. ``None`` means the scan was unavailable for this definition
+      (see ``scan_method`` == ``"unavailable"`` and ``reason``), not that the
+      topology is incompatible.
+    - ``role_count_lower_bound``: 2 when bipartite, 3 otherwise; ``None``
+      when the scan was unavailable.
+    - ``builder_supported``: informational curated hint only — NOT an
+      execution gate (impact-review claim T4-14). No builder or batch code
+      reads it; whether cofkit can actually build a topology from monomers is
+      decided by the dispatch in ``topology_builders.py`` / ``batch.py``.
+      Consumers of the topology index must treat this as an annotation, not
+      a guarantee that a builder exists.
+    - ``two_monomer_*``: feasible two-monomer pairing modes
+      (``"N+N"`` node-node, ``"N+2"`` node-linker) with human-readable
+      reasons per channel; modes are chemical-consistency statements about
+      the periodic graph, not builder-support claims.
+    - ``scan_method`` / ``scan_version``: provenance of the scan
+      (``expanded-p1-periodic-bipartite-scan``,
+      ``quotient-graph-parity-scan``,
+      ``gemmi-space-group-expanded-p1-scan``, or ``unavailable``).
+    """
+
     compatible: bool | None
     bipartite: bool | None
     role_count_lower_bound: int | None

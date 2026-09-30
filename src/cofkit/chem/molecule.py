@@ -6,7 +6,12 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Molecule:
-    """A minimal dependency-free representation of a molecule."""
+    """A minimal dependency-free representation of a molecule.
+
+    ``from_xyz`` parses symbols and positions only; ``bonds`` always stays
+    empty unless the caller fills it in, so downstream bond-aware consumers
+    must not assume an XYZ-loaded molecule carries connectivity.
+    """
 
     symbols: tuple[str, ...]
     positions: tuple[tuple[float, float, float], ...]

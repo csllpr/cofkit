@@ -67,9 +67,24 @@ BUILD_SIDE_BOND_TOLERANCE_FACTOR = 1.3
 
 class MotifDetector:
     """Discovers reactive motifs on a MonomerSpec based on geometry heuristics.
-    
-    In a full implementation this would use RDKit/SMARTS.
-    Here we implement a robust geometric fallback.
+
+    This is a lightweight, dependency-free fallback detector, not the
+    practical ingestion path: the CLI, batch, and library routes detect
+    motifs through the RDKit/SMARTS handlers in ``cofkit.chem.rdkit``. Known
+    limits (impact-review claim T4-12):
+
+    - Built-in handlers cover only ``"amine"`` and ``"aldehyde"``; every
+      other motif kind raises ``ValueError("unsupported motif kind")`` unless
+      a custom handler is registered via ``register``.
+    - Bonding is perceived purely from interatomic distances
+      (``COVALENT_RADII_BY_SYMBOL`` sums scaled by
+      ``BUILD_SIDE_BOND_TOLERANCE_FACTOR``): no bond orders, no aromaticity,
+      no periodic images, and no hydrogen suppression beyond the explicit
+      neighbor counting in the handlers.
+    - The returned ``MonomerSpec`` carries ``molecule.bonds`` verbatim, and
+      ``Molecule.from_xyz`` never populates bonds, so detector-built specs
+      from XYZ input have an empty bond graph. Downstream atomistic
+      realization and bond-aware consumers cannot use such specs directly.
     """
 
     def __init__(

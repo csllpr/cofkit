@@ -72,17 +72,51 @@ class BridgeGeometryPriors:
 
 @dataclass(frozen=True)
 class ReactionLinkageProfile:
+    """Extension metadata for one reaction template.
+
+    Extension authors must not assume a field is enforced just because it
+    exists. The fields split into two groups:
+
+    Enforced (read by the build / realization / reporting pipeline):
+    ``template_id``, ``bridge_target_distance``, ``binary_bridge_roles``,
+    ``event_realizer``, ``workflow_family``, ``topology_assignment_mode``,
+    ``ring_participant_motif_kind``, ``ring_event_coordination``,
+    ``bridge_geometry_priors``.
+
+    Informational (recorded on the profile but never read by cofkit itself;
+    documented per field below): ``geometry_profile_id``,
+    ``validation_profile_id``, ``library_layout``,
+    ``require_distinct_participant_copies``.
+    """
+
     template_id: str
     bridge_target_distance: float
     binary_bridge_roles: tuple[BinaryBridgeRole, ...] = ()
     event_realizer: str | None = None
     workflow_family: str = "binary_bridge"
     topology_assignment_mode: str = "topology_guided"
+    # Informational — not enforced: cross-reference naming the linkage-geometry
+    # profile this template conceptually belongs to. The geometry code keys off
+    # template_id and bridge_geometry_priors instead; nothing reads this field.
     geometry_profile_id: str | None = None
+    # Informational — not enforced: cross-reference naming the validation
+    # profile this template conceptually belongs to. Validation keys off the
+    # profile's bridge_target_distance (and per-template realized-bond windows
+    # in CoarseValidationThresholds), never this field.
     validation_profile_id: str | None = None
+    # Informational — not enforced: descriptive note about the monomer-library
+    # layout this template expects. Batch library discovery is driven by the
+    # per-role library_prefix and "*_count_N" filenames, never this field.
     library_layout: str = "role_count_files"
     ring_participant_motif_kind: str | None = None
     ring_event_coordination: int | None = None
+    # Informational — NOT enforced: a descriptive annotation that the ring
+    # chemistry conceptually needs distinct precursor copies per event. No
+    # code path reads this flag, so setting it must not be mistaken for a
+    # guard: distinctness is enforced independently by construction (each
+    # ring event is realized from distinct placed precursor copies) and
+    # screened by the ring-geometry validation channel (distinct periodic
+    # precursor copies), not by this field.
     require_distinct_participant_copies: bool = False
     bridge_geometry_priors: BridgeGeometryPriors | None = None
 
@@ -217,6 +251,10 @@ def bridge_target_distance(
     if profile is not None:
         return profile.bridge_target_distance
     if isinstance(template, ReactionTemplate) and template.topology_role == "ring":
+        # Heuristic — pending calibration: fallback ring-bond target
+        # (angstrom) for ring-role templates without a linkage profile; both
+        # built-in ring templates carry explicit profile targets, so this
+        # only fires for unprofiled extensions.
         return 1.45
     return default_bridge_distance
 

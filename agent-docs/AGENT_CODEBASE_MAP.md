@@ -61,6 +61,14 @@ Then go straight to the module that matches the task.
     geometry priors (`BridgeGeometryPriors`) that own both the
     realization-time imine/azine bridge constructor and the embedding-time
     motif-origin retraction (`linkage_geometry.derived_origin_retraction_fraction`).
+  - `ReactionLinkageProfile` fields are split enforced vs informational (A22):
+    `geometry_profile_id`, `validation_profile_id`, `library_layout`, and
+    `require_distinct_participant_copies` are annotations with no consumer —
+    in particular the distinct-participant flag is not an enforcement gate
+    (ring distinctness is enforced by construction and the ring-geometry
+    validation channel). Field-level contract:
+    [ADDING_LINKAGES_AND_MONOMERS.md](ADDING_LINKAGES_AND_MONOMERS.md)
+    section 3a; pinned by `tests/test_reactions.py`.
   - This is the first file to touch for a new linkage.
 - [src/cofkit/chem/motif_registry.py](../src/cofkit/chem/motif_registry.py)
   - Motif-kind metadata.
@@ -87,8 +95,13 @@ Then go straight to the module that matches the task.
   - Conformer-construction provenance (A18): `MonomerSpec.metadata` records
   - New motif kinds normally need a match handler here.
 - [src/cofkit/chem/detector.py](../src/cofkit/chem/detector.py)
-  - Lightweight non-RDKit fallback detector.
-  - Only some motif kinds are implemented here.
+  - Lightweight non-RDKit fallback detector; not on the CLI/batch/library
+    path (those use the RDKit handlers in `chem/rdkit.py`).
+  - Only `amine` and `aldehyde` handlers are built in; bonding is
+    distance-perceived (no bond orders / aromaticity / periodic images), and
+    `Molecule.from_xyz` never fills `bonds`, so detector-built specs from XYZ
+    carry an empty bond graph that atomistic realization cannot consume
+    (limits documented in the `MotifDetector` docstring, A22).
 - [src/cofkit/reaction_realization.py](../src/cofkit/reaction_realization.py)
   - Atomistic bond/deletion realization for CIF export.
   - A new linkage is not really complete without this.
@@ -124,6 +137,11 @@ Then go straight to the module that matches the task.
   - Generic indexed-topology layout reconstruction.
 - [src/cofkit/topology_analysis.py](../src/cofkit/topology_analysis.py)
   - Chemistry-facing `two_monomer_*` metadata and lower-level graph diagnostics.
+  - The `zero_linker_*` metadata block is informational (A22): a
+    `zero_linker_compatible` of `null` means the scan was unavailable (not
+    incompatibility), and `zero_linker_builder_supported` is a curated hint
+    with no consumer — builder eligibility is decided by the
+    `topology_builders.py` / `batch.py` dispatch, which never reads it.
 - [src/cofkit/topology_symmetry.py](../src/cofkit/topology_symmetry.py)
   - Generic symmetry expansion for topology analysis.
 

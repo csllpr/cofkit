@@ -87,6 +87,20 @@ H -1.8  1.2  0.0
         self.assertEqual(spec.atom_symbols[7], "O")
         self.assertEqual(spec.bonds, ())
 
+    def test_builtin_detector_only_supports_amine_and_aldehyde(self):
+        # Documented limit (T4-12): the geometric fallback detector ships
+        # handlers for amine/aldehyde only; other registry-known kinds raise.
+        mol = Molecule(symbols=("N",), positions=((0.0, 0.0, 0.0),))
+        for kind in ("nitrile", "catechol", "boronic_acid", "hydrazine"):
+            with self.assertRaises(ValueError):
+                MotifDetector.builtin().detect(mol, "m", kind)
+
+    def test_xyz_input_never_carries_bonds(self):
+        # Documented limit: Molecule.from_xyz does not parse connectivity, so
+        # detector-built specs from XYZ input carry an empty bond graph.
+        mol = Molecule.from_xyz("1\nHe\nHe 0.0 0.0 0.0\n")
+        self.assertEqual(mol.bonds, ())
+
     def test_generic_detect_api_uses_registered_handler(self):
         xyz = """14
 Aniline
