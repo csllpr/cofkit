@@ -37,7 +37,7 @@ class BridgeEventMetrics:
     total_residual: float
     # Which motif plane priors contributed to the planarity/normal terms:
     # "both", "first", "second", or "none". Motifs whose monomer conformer is
-    # non-planar, collinear, or degenerate carry a zero frame normal (no
+    # non-planar, collinear, or degenerate carry a zero physical plane normal (no
     # plane prior), and their plane-dependent terms are skipped rather than
     # evaluated against a fabricated plane (impact-review claim T1-8).
     plane_prior_coverage: str = "both"
@@ -138,9 +138,9 @@ class CandidateScorer:
                 target = self._target_distance(template)
                 distance_residual = fabs(separation - target)
 
-                normal1 = matmul_vec(pose1.rotation_matrix, motif1.frame.normal)
-                normal2 = matmul_vec(pose2.rotation_matrix, motif2.frame.normal)
-                # A zero frame normal is the honest "no plane prior" marker
+                normal1 = matmul_vec(pose1.rotation_matrix, motif1.plane_normal)
+                normal2 = matmul_vec(pose2.rotation_matrix, motif2.plane_normal)
+                # A zero physical normal is the honest "no plane prior" marker
                 # (non-planar/collinear/degenerate monomer conformer); the
                 # plane-dependent terms are skipped for that motif instead of
                 # being measured against a fabricated plane.
@@ -171,7 +171,7 @@ class CandidateScorer:
                     planarity_residual += fabs(dot(unit_vector, normalize(normal1)))
                 if has_plane2:
                     planarity_residual += fabs(dot(unit_vector, normalize(normal2)))
-                # This is only a torsion-style surrogate from motif-frame normals. It rewards
+                # This is only a torsion-style surrogate from physical motif plane priors. It rewards
                 # consistent local bridge planes for planar/restricted templates without claiming
                 # any atomistic dihedral relaxation or force-field meaning. It is evaluated only
                 # when both motifs carry a plane prior.

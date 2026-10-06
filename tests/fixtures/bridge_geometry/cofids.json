@@ -1,0 +1,30 @@
+[
+  {
+    "case": "35",
+    "cofid": "3:aldehyde:O=Cc1c(O)c(C=O)c(O)c(C=O)c1O.2:hydrazine:NN&&hcb&&azine"
+  },
+  {
+    "case": "551",
+    "cofid": "3:aldehyde:COc1c(C=O)c(OC)c(C=O)c(OC)c1C=O.2:amine:Nc1ccc(-c2ccc(N)c([N+](=O)O)c2)cc1[N+](=O)O&&hcb&&imine"
+  },
+  {
+    "case": "670",
+    "cofid": "3:aldehyde:O=Cc1c(O)c(C=O)c(O)c(C=O)c1O.2:amine:Nc1ccc2cc3ccc(N)cc3nc2c1&&hcb&&imine"
+  },
+  {
+    "case": "453",
+    "cofid": "3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.2:aldehyde:CCCCN1C(=O)C(=C2C(=O)N(CCCC)c3cc(C=O)sc32)c2sc(C=O)cc21&&hcb&&imine"
+  },
+  {
+    "case": "150",
+    "cofid": "3:amine:Nc1ccc(-c2cc(-c3ccc(N)cc3)cc(-c3ccc(N)cc3)c2)cc1.2:aldehyde:O=Cc1cc(OCCOc2cccc3cccnc23)c(C=O)cc1OCCOc1cccc2cccnc12&&hcb&&imine"
+  },
+  {
+    "case": "673",
+    "cofid": "3:aldehyde:O=Cc1cc(C=O)cc(C=O)c1.2:hydrazide:C[N+](C)(C)CCCCCCOc1cc(C(=O)NN)c(O)cc1C(=O)NN&&hcb&&hydrazone"
+  },
+  {
+    "case": "680",
+    "cofid": "3:aldehyde:O=Cc1ccc(-c2ccc(-c3nc(-c4ccc(-c5ccc(C=O)cc5)cc4)nc(-c4ccc(-c5ccc(C=O)cc5)cc4)n3)cc2)cc1.2:activated_methylene:N#CCc1ccc(-c2ccc(CC#N)cn2)nc1&&hcb&&vinylene"
+  }
+]

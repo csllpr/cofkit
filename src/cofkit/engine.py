@@ -11,6 +11,7 @@ from .product_graph import PeriodicProductGraph
 from .post_build_conversions import annotate_post_build_conversions
 from .reactions import ReactionLibrary
 from .scoring import CandidateScorer
+from .seed_placement import SeedPlacementConfig
 from .search import AssignmentOutcome, AssignmentSolver
 from .single_node_topologies_3d import (
     list_supported_3d_single_node_topology_ids,
@@ -47,6 +48,7 @@ class COFEngineConfig:
     # 4-connecting monomers. Explicit target_topologies are planned anyway and
     # report the conflict as a warning.
     shape_aware_topology_filter: bool = True
+    seed_placement_config: SeedPlacementConfig = field(default_factory=SeedPlacementConfig)
 
 
 class COFEngine:
@@ -217,6 +219,7 @@ class COFEngine:
                 embedding_config=self.embedder.config,
                 engine_config=self.config,
                 optimizer_config=self.optimizer.config,
+                seed_placement_config=self.config.seed_placement_config,
             ),
             reaction_library=self.reaction_library,
         )
@@ -352,6 +355,13 @@ class COFEngine:
             flags=tuple(flags),
             metadata=metadata,
         )
+        from .seed_placement import refine_seed_placement
+
+        candidate = refine_seed_placement(candidate, monomer_specs, config=self.config.seed_placement_config)
+        candidate = replace(candidate, metadata={
+            **candidate.metadata,
+            "score_metadata": self.scorer.scoring_metadata(outcome, candidate.state, monomer_specs, template_map),
+        })
         return annotate_post_build_conversions(
             candidate,
             monomer_specs,

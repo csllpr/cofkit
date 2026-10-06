@@ -25,6 +25,16 @@ class ReactiveMotif:
     def accepts(self, template_id: str) -> bool:
         return not self.allowed_reaction_templates or template_id in self.allowed_reaction_templates
 
+    @property
+    def plane_normal(self) -> tuple[float, float, float]:
+        """Physical plane prior, separate from the numerical orientation frame.
+
+        Older/custom motifs retain their frame-based prior. RDKit motifs
+        explicitly record None when their conformer claims no molecular plane.
+        """
+        normal = self.metadata.get("plane_normal", self.frame.normal)
+        return (0.0, 0.0, 0.0) if normal is None else tuple(normal)
+
 
 @dataclass(frozen=True)
 class MonomerSpec:

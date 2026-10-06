@@ -320,6 +320,18 @@ def matmul_vec(m: Mat3, v: Vec3) -> Vec3:
     )
 
 
+def rotation_about_axis(axis: Vec3, angle_radians: float) -> Mat3:
+    """Proper rotation from Rodrigues' formula about a nonzero axis."""
+    x, y, z = normalize(axis)
+    c, s = cos(angle_radians), sin(angle_radians)
+    t = 1.0 - c
+    return (
+        (c+x*x*t, x*y*t-z*s, x*z*t+y*s),
+        (y*x*t+z*s, c+y*y*t, y*z*t-x*s),
+        (z*x*t-y*s, z*y*t+x*s, c+z*z*t),
+    )
+
+
 def frame_axes(frame: "Frame") -> Mat3:
     primary = normalize(frame.primary)
     normal_seed = sub(frame.normal, scale(primary, dot(frame.normal, primary)))

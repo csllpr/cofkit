@@ -254,9 +254,9 @@ class ContinuousOptimizer:
             target = self.scorer._target_distance(template)
             distance_error = norm(delta) - target
 
-            normal1 = matmul_vec(pose1.rotation_matrix, motif1.frame.normal)
-            normal2 = matmul_vec(pose2.rotation_matrix, motif2.frame.normal)
-            # Zero frame normals are the honest "no plane prior" marker
+            normal1 = matmul_vec(pose1.rotation_matrix, motif1.plane_normal)
+            normal2 = matmul_vec(pose2.rotation_matrix, motif2.plane_normal)
+            # Zero physical normals are the honest "no plane prior" marker
             # (non-planar/collinear/degenerate monomer conformer): steer the
             # planarity correction along whichever plane priors exist, and
             # skip it entirely when neither motif carries one rather than
@@ -368,11 +368,10 @@ class ContinuousOptimizer:
                     current_normal = matmul_vec(pose.rotation_matrix, motif.frame.normal)
                     target_normal = self._orthogonal_component(current_normal, target_primary)
                 if norm(target_normal) < 1e-8:
-                    # Neither motif carries a plane prior (zero frame normal):
-                    # align the primary axis and keep the current roll about
-                    # the bridge axis instead of steering toward a fabricated
-                    # plane (impact-review claim T1-8). frame_axes supplies a
-                    # purely numerical perpendicular for plane-less motifs.
+                    # Neither motif supplies a numerical orientation normal:
+                    # align the primary axis and preserve the current roll.
+                    # frame_axes completes a numerical frame; scoring and
+                    # translation terms use the separate physical priors.
                     current_roll_axis = matmul_vec(pose.rotation_matrix, frame_axes(motif.frame)[2])
                     target_normal = self._orthogonal_component(current_roll_axis, target_primary)
                 if norm(target_normal) < 1e-8:

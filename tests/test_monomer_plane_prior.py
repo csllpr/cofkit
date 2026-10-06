@@ -5,7 +5,8 @@ orientation the RDKit embedding happened to produce
 (``chem/rdkit.py::_plane_normal`` returned ``(0, 0, 1)`` for fewer than three
 motif anchors). The plane is now fitted from the conformer's own heavy-atom
 covariance; genuinely non-planar, collinear, and degenerate conformers carry
-no plane prior (zero motif frame normals, ``plane_normal=None`` metadata)
+no plane prior (``ReactiveMotif.plane_normal`` is zero, while the numerical
+orientation frame remains usable; ``plane_normal=None`` metadata)
 instead of borrowing physical meaning from a world axis, and the scoring /
 optimizer consumers skip the plane-dependent terms for such motifs.
 
@@ -229,6 +230,50 @@ class MolecularPlaneFitTests(unittest.TestCase):
 class MonomerPlanePriorTests(unittest.TestCase):
     """The plane prior is molecular geometry, never the embedding's world z."""
 
+    def test_pendant_torsion_does_not_reorient_connection_scaffold(self):
+        original_embed = rdkit_module._embed_conformers
+
+        def build(tail_angle):
+            def embed(molecule, **kwargs):
+                result = original_embed(molecule, **kwargs)
+                # CCC-O-aryl: rotate the pendant component around its O-aryl
+                # bond, preserving all bond lengths and the connection core.
+                moving = {0}
+                queue = [0]
+                for atom_id in queue:
+                    for neighbor in molecule.GetAtomWithIdx(atom_id).GetNeighbors():
+                        other = neighbor.GetIdx()
+                        if {atom_id, other} == {3, 4} or other in moving:
+                            continue
+                        moving.add(other)
+                        queue.append(other)
+                for conf_id in result.conformer_ids:
+                    conformer = molecule.GetConformer(conf_id)
+                    pivot = tuple(conformer.GetAtomPosition(3))
+                    axis = sub(tuple(conformer.GetAtomPosition(4)), pivot)
+                    rotation = _rotation_about_axis(axis, tail_angle)
+                    for atom_id in moving:
+                        point = tuple(conformer.GetAtomPosition(atom_id))
+                        conformer.SetAtomPosition(atom_id, add(pivot, matmul_vec(rotation, sub(point, pivot))))
+                return result
+
+            def skip_optimization(_molecule, conformer_ids, **_kwargs):
+                return rdkit_module._ConformerSelectionResult(conformer_ids[0], None, "none", "skipped")
+
+            with patch.object(rdkit_module, "_embed_conformers", side_effect=embed), patch.object(rdkit_module, "_optimize_conformers", side_effect=skip_optimization):
+                return build_rdkit_monomer("tail", "tail", "CCCOc1cc(C=O)cc(C=O)c1", "aldehyde", num_conformers=1)
+
+        reference, turned = build(0.0), build(math.pi / 2)
+        for a, b in zip(reference.motifs, turned.motifs):
+            self.assertEqual(a.metadata["orientation_basis"], "connection-scaffold")
+            _assert_vec_close(self, a.frame.primary, b.frame.primary)
+            _assert_vec_close(self, a.frame.normal, b.frame.normal)
+        _assert_vec_close(
+            self,
+            sub(reference.motifs[0].frame.origin, reference.motifs[1].frame.origin),
+            sub(turned.motifs[0].frame.origin, turned.motifs[1].frame.origin),
+        )
+
     def test_planar_ditopic_monomer_gets_molecular_plane(self):
         monomer = build_rdkit_monomer("ppd", "ppd", "Nc1ccc(N)cc1", "amine", num_conformers=2)
         self.assertEqual(monomer.metadata["plane_status"], "planar")
@@ -262,14 +307,16 @@ class MonomerPlanePriorTests(unittest.TestCase):
         self.assertEqual(monomer.metadata["plane_status"], "nonplanar")
         self.assertIsNone(monomer.metadata["plane_normal"])
         for motif in monomer.motifs:
-            self.assertEqual(motif.frame.normal, (0.0, 0.0, 0.0))
+            self.assertEqual(motif.plane_normal, (0.0, 0.0, 0.0))
+            self.assertEqual(motif.frame.normal, (0.0, 0.0, 1.0))
 
     def test_collinear_ditopic_monomer_is_uncertain(self):
         monomer = build_rdkit_monomer("dca", "dca", "N#CC#CC#N", "nitrile", num_conformers=2)
         self.assertEqual(monomer.metadata["plane_status"], "collinear")
         self.assertIsNone(monomer.metadata["plane_normal"])
         for motif in monomer.motifs:
-            self.assertEqual(motif.frame.normal, (0.0, 0.0, 0.0))
+            self.assertEqual(motif.plane_normal, (0.0, 0.0, 0.0))
+            self.assertEqual(motif.frame.normal, (0.0, 0.0, 1.0))
 
     def test_planar_ditopic_geometry_invariant_under_rigid_rotation(self):
         reference = _build_with_rigid_transform("ppd_ref", "Nc1ccc(N)cc1", "amine", _IDENTITY, (0.0, 0.0, 0.0))

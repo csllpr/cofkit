@@ -74,6 +74,7 @@ from .indexed_topology_layouts import ExpandedIndexedNodeSite, ExpandedIndexedTo
 from .linkage_geometry import effective_motif_origin
 from .lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
 from .scoring import CandidateScorer
+from .seed_placement import SeedPlacementConfig
 from .search import AssignmentOutcome, AssignmentSolver
 from .single_node_topologies import (
     ExpandedSingleNodeEdge,
@@ -173,6 +174,7 @@ class BatchGenerationConfig:
     # ("bridge_distance_exceeds_cif_export_limit").
     hard_hard_max_bridge_distance: float = 2.5
     separate_cif_outputs_by_validation: bool = True
+    seed_placement_config: SeedPlacementConfig = field(default_factory=SeedPlacementConfig)
     repair_geometry: bool = False
     repair_geometry_lmp_path: str | None = None
     repair_geometry_timeout_seconds: float = 300.0
@@ -4130,6 +4132,13 @@ class BatchStructureGenerator:
                 "score_metadata": score_metadata,
             },
         )
+        from .seed_placement import refine_seed_placement
+
+        candidate = refine_seed_placement(candidate, monomer_specs, config=self.config.seed_placement_config)
+        candidate = replace(candidate, metadata={
+            **candidate.metadata,
+            "score_metadata": self.scorer.scoring_metadata(outcome, candidate.state, monomer_specs, templates),
+        })
         return annotate_post_build_conversions(
             candidate,
             monomer_specs,
@@ -4693,6 +4702,7 @@ class BatchStructureGenerator:
                 "embedding": dict(candidate.metadata["embedding"]),
                 "optimization": dict(candidate.metadata["optimization"]),
                 "score_metadata": dict(candidate.metadata["score_metadata"]),
+                **({"seed_placement": dict(candidate.metadata["seed_placement"])} if "seed_placement" in candidate.metadata else {}),
                 "pair_mode": pair_mode,
                 "topology_rank": topology_rank,
                 "topology_count": topology_count,

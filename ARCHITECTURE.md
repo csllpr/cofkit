@@ -47,6 +47,8 @@
   - simple periodic cell and monomer-pose initialization from topology hints and motif/reaction geometry, including lower-symmetry `hcb` cells when asymmetric trigonal monomers cannot satisfy a symmetric hexagonal metric
 - `cofkit.soft_relax`
   - experimental in-process soft-repulsion clash-repair pass on the staged CIF before validation bucketing (opt-in via `--soft-relax` / `BatchGenerationConfig.soft_relax`); strain relief, not physical relaxation
+- `cofkit.seed_placement`
+  - bounded atomistic contact screening of unstacked 2D imine/azine/hydrazone/vinylene node/linker seeds, with rigid rolls and lateral span alternatives; reuses validation criteria, protects each realized bridge, and records construction diagnostics without claiming physical relaxation
 - `cofkit.optimizer`
   - dependency-free continuous refinement of initial cell scale and rigid monomer poses
 - `cofkit.scoring`
@@ -84,7 +86,8 @@
 4. product graph construction
 5. initial embedding
 6. continuous optimization
-7. scoring
+7. bounded seed-placement contact screening for supported 2D node/linker assemblies
+8. scoring
 
 ## Batch flow
 

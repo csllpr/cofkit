@@ -8,6 +8,30 @@ from .model import MonomerSpec
 
 
 @dataclass(frozen=True)
+class SeedPlacementMove:
+    """Selected construction change; factor is total scale from the input seed."""
+
+    kind: str
+    instances: tuple[str, ...] = ()
+    angle_degrees: float | None = None
+    factor: float | None = None
+
+
+@dataclass(frozen=True)
+class SeedPlacementDiagnostics:
+    method: str = "rigid_seed_placement"
+    physical_relaxation: bool = False
+    evaluations: int = 0
+    moves: tuple[SeedPlacementMove, ...] = ()
+    initial_heavy_clashes: int | None = None
+    initial_excluded_overlaps: int | None = None
+    final_heavy_clashes: int | None = None
+    final_excluded_overlaps: int | None = None
+    resolved: bool = False
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class BatchMonomerRecord:
     id: str
     name: str

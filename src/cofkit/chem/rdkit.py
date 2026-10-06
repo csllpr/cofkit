@@ -372,7 +372,7 @@ class RDKitMotifBuilder:
                 # define the connection plane), "planar" (heavy-atom best-fit
                 # plane within tolerance), or the uncertain statuses
                 # "nonplanar" / "collinear" / "degenerate", for which
-                # plane_normal is None and motif frame normals are zero —
+                # plane_normal is None and motif plane priors are absent —
                 # consumers must skip plane-dependent terms rather than fall
                 # back to a fabricated plane (impact-review claim T1-8).
                 "plane_status": plane_fit.status,
@@ -915,11 +915,11 @@ def _build_geometry(
     # when one exists; otherwise the covariance least-variance axis keeps the
     # coordinates deterministic and molecule-derived without claiming a plane.
     # Only a truly degenerate point set falls back to a world axis.
-    z_axis = plane_fit.canonical_axis if plane_fit.canonical_axis is not None else (0.0, 0.0, 1.0)
-    motif_normal = (0.0, 0.0, 1.0) if plane_fit.normal is not None else (0.0, 0.0, 0.0)
+    orientation_fit = _connection_scaffold_plane(detected, molecule, conformer) if len(detected) == 2 else plane_fit
+    z_axis = orientation_fit.canonical_axis if orientation_fit.canonical_axis is not None else (0.0, 0.0, 1.0)
     provisional_primary = _project_onto_plane(sub(detected[0].origin, detected[0].anchor), z_axis)
     if _is_near_zero(provisional_primary):
-        provisional_primary = plane_fit.principal_axis if plane_fit.principal_axis is not None else (1.0, 0.0, 0.0)
+        provisional_primary = orientation_fit.principal_axis if orientation_fit.principal_axis is not None else (1.0, 0.0, 0.0)
     x_axis = normalize(provisional_primary)
     y_axis = normalize(cross(z_axis, x_axis))
 
@@ -932,6 +932,10 @@ def _build_geometry(
         )
 
     atom_positions = tuple(transform(point) for point in points)
+    local_plane_normal = (
+        (dot(plane_fit.normal, x_axis), dot(plane_fit.normal, y_axis), dot(plane_fit.normal, z_axis))
+        if plane_fit.normal is not None else None
+    )
     motif_rows: list[tuple[float, ReactiveMotif]] = []
     for detected_motif in detected:
         origin = transform(detected_motif.origin)
@@ -939,7 +943,10 @@ def _build_geometry(
         primary = _project_onto_plane(sub(origin, anchor), (0.0, 0.0, 1.0))
         if _is_near_zero(primary):
             primary = (1.0, 0.0, 0.0)
-        frame = Frame(origin=origin, primary=normalize(primary), normal=motif_normal)
+        # The scaffold frame determines placement even when flexible side
+        # groups invalidate a whole-molecule plane prior. Scoring reads the
+        # separate plane_normal metadata, never this numerical roll axis.
+        frame = Frame(origin=origin, primary=normalize(primary), normal=(0.0, 0.0, 1.0))
         angle = atan2(origin[1], origin[0])
         motif_rows.append(
             (
@@ -954,6 +961,8 @@ def _build_geometry(
                         **detected_motif.metadata,
                         "reactive_atom_id": detected_motif.reactive_atom_id,
                         "anchor_atom_id": detected_motif.anchor_atom_id,
+                        "plane_normal": local_plane_normal,
+                        "orientation_basis": "connection-scaffold" if len(detected) == 2 else "molecular-plane",
                     },
                 ),
             )
@@ -974,6 +983,49 @@ def _build_geometry(
         for index, (_, motif) in enumerate(sorted(motif_rows, key=lambda item: item[0]), start=1)
     )
     return atom_positions, motifs, plane_fit
+
+
+def _connection_scaffold_plane(detected, molecule, conformer) -> _MonomerPlaneFit:
+    """Orient a ditopic monomer by its connecting scaffold, excluding tails.
+
+    Include every shortest heavy-atom path between the reactive endpoints
+    and complete rings intersecting those paths. Equal-length paths are all
+    retained so ring orientation does not depend on an atom-index tie-break.
+    This is a numerical frame, not a claim that the entire monomer is planar.
+    """
+    first, second = (item.reactive_atom_id for item in detected)
+    adjacency = {
+        atom.GetIdx(): tuple(n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() > 1)
+        for atom in molecule.GetAtoms() if atom.GetAtomicNum() > 1
+    }
+
+    def distances(start):
+        result = {start: 0}
+        frontier = [start]
+        for current in frontier:
+            for neighbor in adjacency[current]:
+                if neighbor not in result:
+                    result[neighbor] = result[current] + 1
+                    frontier.append(neighbor)
+        return result
+
+    from_first, from_second = distances(first), distances(second)
+    if second not in from_first:
+        return _plane_normal(detected, molecule, conformer)
+    path_length = from_first[second]
+    scaffold = {i for i in adjacency if from_first.get(i, float("inf")) + from_second.get(i, float("inf")) == path_length}
+    rings = molecule.GetRingInfo().AtomRings()
+    while True:
+        previous_size = len(scaffold)
+        for ring in rings:
+            if len(scaffold.intersection(ring)) >= 2:
+                scaffold.update(ring)
+        if len(scaffold) == previous_size:
+            break
+    # Reactive motif atoms include carbonyl/nitrile partners that define
+    # local attachment geometry; unrelated pendant substituents stay out.
+    scaffold.update(i for item in detected for i in item.atom_ids if molecule.GetAtomWithIdx(i).GetAtomicNum() > 1)
+    return _fit_molecular_plane(tuple(_conformer_point(conformer, i) for i in sorted(scaffold)))
 
 
 def _interpret_primary_amine_match(molecule, conformer, match: tuple[int, ...], definition: MotifKindDefinition) -> _DetectedMotif:

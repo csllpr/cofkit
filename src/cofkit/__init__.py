@@ -10,6 +10,8 @@ from .batch_models import (
     BuiltBatchMonomer,
     ConformerConstructionSettings,
     MonomerConformerProvenance,
+    SeedPlacementDiagnostics,
+    SeedPlacementMove,
 )
 from .build_workflows import (
     BuildWorkflowDefinition,
@@ -191,6 +193,7 @@ from .product_graph import PeriodicProductGraph
 from .reaction_realization import ReactionEventRealizationRegistry, ReactionRealizer
 from .reactions import ReactionLibrary
 from .scoring import BridgeEventMetrics, BridgeGeometryReport, CandidateScorer
+from .seed_placement import SeedPlacementConfig
 from .search import AssignmentOutcome, AssignmentSolver
 from .topologies import (
     BuiltinTopologyFallback,
@@ -250,6 +253,9 @@ from .zeopp import (
 )
 
 __all__ = [
+    "SeedPlacementConfig",
+    "SeedPlacementDiagnostics",
+    "SeedPlacementMove",
     "__version__",
     "AssemblyState",
     "AssignmentOutcome",
