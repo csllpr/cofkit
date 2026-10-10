@@ -36,6 +36,7 @@ from .forcefields import (
     resolve_forcefield_metadata,
     supported_forcefield_families,
 )
+from .vdw import DEFAULT_VDW_CLASH_RATIO, vdw_radius
 
 try:
     import pandas as pd
@@ -84,6 +85,7 @@ _MIN_MODIFY_LINE_OPTIONS = {"backtrack", "quadratic", "forcezero", "spin_cubic",
 _MIN_MODIFY_NORM_OPTIONS = {"two", "inf", "max"}
 _MIN_MODIFY_FIRE_INTEGRATOR_OPTIONS = {"eulerimplicit", "verlet", "leapfrog", "eulerexplicit"}
 _PRE_MINIMIZATION_MODE_OPTIONS = {"none", "md", "soft"}
+_COULOMB_METHOD_OPTIONS = {"ewald", "dsf"}
 # DREIDING hydrogen-bond convention (Mayo et al., J. Phys. Chem. 1990, 94,
 # 8897-8909, Table V): 12-10 donor-acceptor term with Rhb = 2.75 A and a
 # cos^4(theta_DHA) angular factor. Dhb = 7.0 kcal/mol with Gasteiger-like
@@ -188,6 +190,20 @@ class LammpsOptimizationSettings:
     # Heuristic — pending calibration: LAMMPS kspace relative accuracy;
     # tighter than the LAMMPS default (1e-4) for charged frameworks.
     ewald_precision: float = 1.0e-6
+    # Periodic Coulomb treatment for charged optimizations: "dsf"
+    # (lj/cut/coul/dsf, the damped shifted force of Fennell & Gezelter,
+    # J. Chem. Phys. 2006, 124, 234104) or "ewald" (lj/cut/coul/long +
+    # kspace ewald). DSF is the default because its energy and force both go
+    # to zero at the cutoff. Ewald's real-space term is truncated, not
+    # shifted, there, and its k-space sum is re-truncated whenever the cell
+    # changes, so the energy jumps as the cell moves and fix box/relax line
+    # searches stall: with Ewald no charged 2D framework of the first
+    # benchmark batch reached a stable, stress-free cell. MD and hybrid
+    # MD/MC keep Ewald.
+    coulomb_method: str = "dsf"
+    # Heuristic — pending calibration: DSF damping parameter (1/angstrom);
+    # 0.2 is the value Fennell & Gezelter use with cutoffs near 12 angstrom.
+    dsf_damping: float = 0.2
     # Heuristic — pending calibration: harmonic tether (kcal/mol/A^2) holding
     # atoms near their input positions during stage-1 minimization; light
     # enough that genuine clashes can still relax away.
@@ -209,14 +225,29 @@ class LammpsOptimizationSettings:
     # for fix nve/limit during pre-relaxation; the value the LAMMPS
     # documentation uses in its nve/limit examples.
     pre_minimization_displacement_limit: float = 0.10
-    # Heuristic — pending calibration: cutoff (angstrom) of pair_style soft
-    # used in the clash-relaxation ramp below.
-    soft_pre_minimization_cutoff: float = 8.0
+    # The soft pre-minimization is a clash repair, so pair_style soft acts
+    # only on clashing pairs. Derived: each type pair i-j gets the cutoff
+    # contact_ratio * (r_vdw_i + r_vdw_j) (Bondi radii, cofkit.vdw), the
+    # validator's clash criterion. Graph-excluded 1-2/1-3/1-4 pairs are
+    # dropped for the ramp, as the validator excludes them, and the ramp is
+    # skipped when no pair is inside its cutoff.
+    soft_pre_minimization_contact_ratio: float = DEFAULT_VDW_CLASH_RATIO
+    # Optional uniform pair_style soft cutoff (angstrom) replacing the
+    # per-pair contact cutoffs. A cutoff beyond contact distance pushes
+    # every nonbonded pair inside it apart — an outward pressure on a
+    # clash-free framework that stretches bonds and straightens angles.
+    soft_pre_minimization_cutoff: float | None = None
     # Heuristic — pending calibration: soft-potential prefactors (kcal/mol)
     # applied in successive minimizations, ramping repulsion from gentle to
     # near-full strength so overlapping atoms separate gradually.
     soft_pre_minimization_coefficients: tuple[float, ...] = (1.0, 5.0, 20.0, 50.0)
     soft_pre_minimization_min_style: str = "cg"
+    # Heuristic — pending calibration: stop criteria for each soft-ramp
+    # minimization. They are the ramp's own (not the main stages'): the
+    # ramp only separates clashing atoms, and the restrained stage-1
+    # minimization that follows does the real relaxation.
+    soft_pre_minimization_energy_tolerance: float = 0.0
+    soft_pre_minimization_force_tolerance: float = 1.0e-2
     # Heuristic — pending calibration: iteration/evaluation budgets per
     # soft-ramp minimization stage.
     soft_pre_minimization_max_iterations: int = 2000
@@ -231,7 +262,12 @@ class LammpsOptimizationSettings:
     force_tolerance: float = 1.0e-4
     # Heuristic — pending calibration: trajectory frame cadence (steps).
     dump_interval: int = 100
-    pressure_tolerance: float = 1.0  # atm; numerical acceptance, not model accuracy
+    # Heuristic — pending calibration: residual-stress acceptance (atm) for
+    # a relaxed cell; numerical acceptance, not model accuracy. Against a
+    # soft (~1 GPa, ~1e4 atm) interlayer shear or compression modulus, 10 atm
+    # leaves a strain of ~1e-3, below cell_stability_tolerance on a stacked
+    # two-layer cell.
+    pressure_tolerance: float = 10.0
     # Heuristic — pending calibration: minimizer iteration/evaluation budgets
     # for the main stages.
     max_iterations: int = 200000
@@ -253,8 +289,9 @@ class LammpsOptimizationSettings:
     box_relax_mode: str = "auto"
     # Relax the cell against zero external pressure (its stress-free state).
     box_relax_target_pressure: float = 0.0
-    # Cited: LAMMPS fix box/relax default — maximum fractional box-dimension
-    # change per minimization iteration.
+    # Heuristic — pending calibration: maximum fractional volume change per
+    # minimization iteration. Ten times the LAMMPS fix box/relax default
+    # (vmax 0.0001), so large stacking-distance changes are reachable.
     box_relax_vmax: float = 0.001
     box_relax_nreset: int | None = None
     box_relax_min_style: str = "cg"
@@ -265,6 +302,18 @@ class LammpsOptimizationSettings:
     box_relax_force_tolerance: float | None = 1.0e-3
     box_relax_max_iterations: int | None = None
     box_relax_max_evaluations: int | None = None
+    # Heuristic — pending calibration: maximum cell-relaxation cycles. A
+    # single fix box/relax minimization stalls ("linesearch alpha is zero")
+    # long before a weakly bound layered solid reaches its relaxed cell,
+    # because the cell energy is measured against a fixed reference box. So
+    # each cycle re-applies fix box/relax with a fresh reference and follows
+    # it with a fixed-cell minimization; cycles stop once the cell is stable.
+    cell_relaxation_max_cycles: int = 8
+    # Heuristic — pending calibration: a cycle counts as stable when no
+    # LAMMPS box parameter (lx, ly, lz, xy, xz, yz) changes by more than this
+    # many angstrom. On a ~7 A two-layer c axis, 0.01 A is about 0.1 degree
+    # of tilt.
+    cell_stability_tolerance: float = 0.01
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -509,6 +558,8 @@ class _PreparedLammpsSystem:
     net_charge: float | None
     warnings: tuple[str, ...]
     hbond_pair_coeff_lines: tuple[str, ...] = ()
+    # Element symbol per LAMMPS atom type id.
+    atom_type_elements: Mapping[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -543,6 +594,9 @@ class _LammpsMinimizationStage:
     max_evaluations: int
     position_restraint_force_constant: float
     relax_cell: bool = False
+    # Cell-relaxation cycle this stage belongs to (None for the fixed-cell
+    # stages that precede cell relaxation).
+    cell_cycle: int | None = None
 
 
 @dataclass(frozen=True)
@@ -577,6 +631,12 @@ def resolve_lammps_binary(lmp_path: str | Path | None = None) -> Path:
     return path.resolve()
 
 
+# Heuristic — pending calibration: wall-clock guard for one optimization.
+# Single-threaded cell-relaxation cycles on ~250-atom frameworks take up to
+# ~10 minutes, so this leaves headroom for larger cells.
+DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS = 3600.0
+
+
 def optimize_cif_with_lammps(
     cif_path: str | Path,
     *,
@@ -584,7 +644,7 @@ def optimize_cif_with_lammps(
     lmp_path: str | Path | None = None,
     eqeq_path: str | Path | None = None,
     settings: LammpsOptimizationSettings | None = None,
-    timeout_seconds: float = 300.0,
+    timeout_seconds: float = DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS,
     eqeq_settings: EqeqChargeSettings | None = None,
     eqeq_timeout_seconds: float | None = 300.0,
 ) -> LammpsOptimizationResult:
@@ -683,6 +743,7 @@ def optimize_cif_with_lammps(
         timeout_seconds=timeout_seconds,
         omp_threads=effective_settings.omp_threads,
         enable_omp=effective_settings.enable_omp,
+        default_omp_threads=_DEFAULT_OPTIMIZATION_OMP_THREADS,
     )
     final_frame = _parse_lammps_dump_last_frame(
         dump_path,
@@ -714,7 +775,7 @@ def optimize_cif_with_lammps(
             warning_comment=(
                 None
                 if unconverged_warning is None
-                else "cofkit warning: optimization did not meet the force acceptance criteria; "
+                else "cofkit warning: optimization did not meet the acceptance criteria; "
                 "treat this structure as unconverged (see lammps_report.json and convergence.json)"
             ),
         ),
@@ -724,6 +785,13 @@ def optimize_cif_with_lammps(
     parameter_sources = dict(prepared.parameter_sources)
     if eqeq_result is not None:
         parameter_sources["charge_assignment"] = "EQeq charges assigned from the input CIF before LAMMPS export"
+    if prepared.has_charges and not _has_nonperiodic_boundary(optimization_model.boundary):
+        parameter_sources["coulomb_method"] = (
+            f"Damped shifted force Coulomb (lj/cut/coul/dsf, alpha {effective_settings.dsf_damping:g} 1/angstrom, "
+            "Fennell & Gezelter, J. Chem. Phys. 2006, 124, 234104)"
+            if effective_settings.coulomb_method == "dsf"
+            else f"Ewald summation (lj/cut/coul/long + kspace ewald, accuracy {effective_settings.ewald_precision:g})"
+        )
     all_warnings = tuple(warnings) + tuple(optimization_model.warnings) + tuple(prepared.warnings) + tuple(execution_warnings)
     resolved_charge_model = (
         "eqeq" if eqeq_result is not None else ("input_cif" if prepared.has_charges else "none")
@@ -1019,6 +1087,7 @@ def _md_settings_to_optimization_settings(settings: LammpsMdSettings) -> LammpsO
         pair_cutoff=settings.pair_cutoff,
         coulomb_cutoff=settings.coulomb_cutoff,
         ewald_precision=settings.ewald_precision,
+        coulomb_method="ewald",
         timestep=settings.timestep,
         pre_minimization_steps=0,
         two_stage_protocol=False,
@@ -1048,6 +1117,10 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError("coulomb_cutoff must be positive.")
     if settings.ewald_precision <= 0.0:
         raise ValueError("ewald_precision must be positive.")
+    if settings.coulomb_method not in _COULOMB_METHOD_OPTIONS:
+        raise ValueError("coulomb_method must be one of: " + ", ".join(sorted(_COULOMB_METHOD_OPTIONS)))
+    if settings.dsf_damping <= 0.0:
+        raise ValueError("dsf_damping must be positive.")
     if settings.position_restraint_force_constant < 0.0:
         raise ValueError("position_restraint_force_constant must be non-negative.")
     if settings.pre_minimization_mode not in _PRE_MINIMIZATION_MODE_OPTIONS:
@@ -1082,8 +1155,14 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError(
             "pre_minimization_displacement_limit must be positive when pre_minimization_steps is enabled."
         )
-    if settings.soft_pre_minimization_cutoff <= 0.0:
-        raise ValueError("soft_pre_minimization_cutoff must be positive.")
+    if settings.soft_pre_minimization_contact_ratio <= 0.0:
+        raise ValueError("soft_pre_minimization_contact_ratio must be positive.")
+    if settings.soft_pre_minimization_cutoff is not None and settings.soft_pre_minimization_cutoff <= 0.0:
+        raise ValueError("soft_pre_minimization_cutoff must be positive when provided.")
+    if settings.soft_pre_minimization_energy_tolerance < 0.0:
+        raise ValueError("soft_pre_minimization_energy_tolerance must be non-negative.")
+    if settings.soft_pre_minimization_force_tolerance < 0.0:
+        raise ValueError("soft_pre_minimization_force_tolerance must be non-negative.")
     if not settings.soft_pre_minimization_coefficients:
         raise ValueError("soft_pre_minimization_coefficients must contain at least one coefficient.")
     if any(coefficient <= 0.0 for coefficient in settings.soft_pre_minimization_coefficients):
@@ -1151,6 +1230,10 @@ def _validate_settings(settings: LammpsOptimizationSettings) -> None:
         raise ValueError("box_relax_max_iterations must be positive when provided.")
     if settings.box_relax_max_evaluations is not None and settings.box_relax_max_evaluations <= 0:
         raise ValueError("box_relax_max_evaluations must be positive when provided.")
+    if settings.cell_relaxation_max_cycles <= 0:
+        raise ValueError("cell_relaxation_max_cycles must be positive.")
+    if settings.cell_stability_tolerance <= 0.0:
+        raise ValueError("cell_stability_tolerance must be positive.")
     if settings.relax_cell and _is_box_relax_incompatible_min_style(settings.box_relax_min_style):
         raise ValueError(
             "box_relax_min_style is incompatible with LAMMPS fix box/relax. "
@@ -1199,7 +1282,9 @@ def _prepare_lammps_system(
     if forcefield == "uff":
         return _prepare_uff_lammps_system(parsed)
     if forcefield == "dreiding":
-        return _prepare_dreiding_lammps_system(parsed, dreiding_hbond=settings.dreiding_hbond)
+        return _prepare_dreiding_lammps_system(
+            parsed, dreiding_hbond=settings.dreiding_hbond, coulomb_method=_coulomb_method(settings)
+        )
     raise LammpsConfigurationError(f"Unsupported forcefield backend requested: {settings.forcefield!r}")
 
 
@@ -1371,6 +1456,9 @@ def _prepare_uff_lammps_system(parsed: _ParsedExplicitBondCif) -> _PreparedLammp
         has_image_flags=has_image_flags,
         has_charges=has_all_charges,
         atom_type_symbols={index: label for index, label in enumerate(ordered_type_labels, start=1)},
+        atom_type_elements={
+            index: representative_symbols[label] for index, label in enumerate(ordered_type_labels, start=1)
+        },
         n_bond_types=len(bond_coeff_rows),
         n_angle_types=len(angle_coeff_rows),
         n_dihedral_types=len(dihedral_coeff_rows),
@@ -1392,6 +1480,7 @@ def _prepare_dreiding_lammps_system(
     parsed: _ParsedExplicitBondCif,
     *,
     dreiding_hbond: bool = True,
+    coulomb_method: str = "ewald",
 ) -> _PreparedLammpsSystem:
     _require_dreiding_support()
     if any(bond.bond_order is None for bond in parsed.bonds):
@@ -1543,7 +1632,7 @@ def _prepare_dreiding_lammps_system(
     if hbond_pair_coeff_lines:
         data_text = _insert_pairij_substyle_labels(
             data_text,
-            substyle=_lj_pair_substyle(has_charges=has_all_charges),
+            substyle=_lj_pair_substyle(has_charges=has_all_charges, coulomb_method=coulomb_method),
         )
 
     warnings: list[str] = []
@@ -1576,6 +1665,9 @@ def _prepare_dreiding_lammps_system(
         has_image_flags=has_image_flags,
         has_charges=has_all_charges,
         atom_type_symbols={index: label for index, label in enumerate(ordered_type_labels, start=1)},
+        atom_type_elements={
+            index: representative_symbols[label] for index, label in enumerate(ordered_type_labels, start=1)
+        },
         n_bond_types=len(bond_coeff_rows),
         n_angle_types=len(angle_coeff_rows),
         n_dihedral_types=len(dihedral_coeff_rows),
@@ -3913,18 +4005,27 @@ def _build_minimization_stages(
         )
     if settings.relax_cell:
         last_stage = stages[-1]
-        stages.append(
-            _LammpsMinimizationStage(
-                label="box_relax",
-                min_style=settings.box_relax_min_style,
-                energy_tolerance=(settings.box_relax_energy_tolerance if settings.box_relax_energy_tolerance is not None else last_stage.energy_tolerance),
-                force_tolerance=(settings.box_relax_force_tolerance if settings.box_relax_force_tolerance is not None else last_stage.force_tolerance),
-                max_iterations=settings.box_relax_max_iterations or last_stage.max_iterations,
-                max_evaluations=settings.box_relax_max_evaluations or last_stage.max_evaluations,
-                position_restraint_force_constant=last_stage.position_restraint_force_constant,
-                relax_cell=True,
+        # Each cycle: fix box/relax with a fresh reference cell, then a
+        # fixed-cell minimization with the last fixed-cell stage's criteria.
+        # The rendered script leaves the cycles once the cell is stable, so
+        # the fixed-cell stage of the last executed cycle is the final stage.
+        for cycle in range(1, settings.cell_relaxation_max_cycles + 1):
+            stages.append(
+                _LammpsMinimizationStage(
+                    label=f"box_relax_{cycle}",
+                    min_style=settings.box_relax_min_style,
+                    energy_tolerance=(settings.box_relax_energy_tolerance if settings.box_relax_energy_tolerance is not None else last_stage.energy_tolerance),
+                    force_tolerance=(settings.box_relax_force_tolerance if settings.box_relax_force_tolerance is not None else last_stage.force_tolerance),
+                    max_iterations=settings.box_relax_max_iterations or last_stage.max_iterations,
+                    max_evaluations=settings.box_relax_max_evaluations or last_stage.max_evaluations,
+                    position_restraint_force_constant=last_stage.position_restraint_force_constant,
+                    relax_cell=True,
+                    cell_cycle=cycle,
+                )
             )
-        )
+            stages.append(
+                replace(last_stage, label=f"fixed_cell_{cycle}", cell_cycle=cycle)
+            )
     return stages
 
 
@@ -3991,12 +4092,27 @@ def _has_nonperiodic_boundary(boundary: str) -> bool:
     return any(token.lower() == "f" for token in boundary.split())
 
 
-def _lj_pair_substyle(*, has_charges: bool, boundary: str = "p p p") -> str:
+def _lj_pair_substyle(*, has_charges: bool, boundary: str = "p p p", coulomb_method: str = "ewald") -> str:
     if has_charges:
         if _has_nonperiodic_boundary(boundary):
             return "lj/cut/coul/cut"
+        if coulomb_method == "dsf":
+            return "lj/cut/coul/dsf"
         return "lj/cut/coul/long"
     return "lj/cut"
+
+
+def _coulomb_method(settings: LammpsOptimizationSettings | LammpsMdSettings) -> str:
+    # MD and hybrid MD/MC always use Ewald; only optimizations choose.
+    return getattr(settings, "coulomb_method", "ewald")
+
+
+def _uses_kspace(settings, prepared: _PreparedLammpsSystem, boundary: str) -> bool:
+    return (
+        prepared.has_charges
+        and not _has_nonperiodic_boundary(boundary)
+        and _coulomb_method(settings) == "ewald"
+    )
 
 
 def _lj_pair_style_args(
@@ -4006,6 +4122,8 @@ def _lj_pair_style_args(
 ) -> str:
     if substyle in {"lj/cut/coul/long", "lj/cut/coul/cut"}:
         return f"{settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
+    if substyle == "lj/cut/coul/dsf":
+        return f"{settings.dsf_damping:.6f} {settings.pair_cutoff:.6f} {settings.coulomb_cutoff:.6f}"
     return f"{settings.pair_cutoff:.6f}"
 
 
@@ -4015,7 +4133,9 @@ def _render_pair_style_line(
     *,
     boundary: str,
 ) -> str:
-    substyle = _lj_pair_substyle(has_charges=prepared.has_charges, boundary=boundary)
+    substyle = _lj_pair_substyle(
+        has_charges=prepared.has_charges, boundary=boundary, coulomb_method=_coulomb_method(settings)
+    )
     args = _lj_pair_style_args(settings, substyle=substyle)
     if prepared.hbond_pair_coeff_lines:
         return f"pair_style hybrid/overlay {substyle} {args} {_dreiding_hbond_pair_style_fragment()}"
@@ -4051,6 +4171,102 @@ def _render_pairij_coeff_lines(prepared: _PreparedLammpsSystem) -> list[str]:
     return pair_coeff_lines
 
 
+# LAMMPS box parameters of a restricted triclinic cell; the cell-stability
+# check compares all six before and after each fix box/relax minimization.
+_LAMMPS_BOX_PARAMETERS = ("lx", "ly", "lz", "xy", "xz", "yz")
+_CELL_STABLE_VARIABLE = "cofkit_cell_stable"
+_CELL_RELAXATION_DONE_LABEL = "cofkit_cell_relaxation_done"
+_SOFT_RAMP_DONE_LABEL = "cofkit_soft_ramp_done"
+
+
+def _render_cell_stable_variable_line(settings: LammpsOptimizationSettings) -> str:
+    """Equal-style flag: 1 when no box parameter moved more than the tolerance since the snapshot."""
+    tolerance = f"{settings.cell_stability_tolerance:.8g}"
+    terms = [f"(abs({name}-v_cofkit_cell0_{name})<={tolerance})" for name in _LAMMPS_BOX_PARAMETERS]
+    return f"variable {_CELL_STABLE_VARIABLE} equal " + "&&".join(terms)
+
+
+def _render_cell_snapshot_lines() -> list[str]:
+    # $(...) is evaluated when the line runs, so each cycle stores the cell
+    # it starts from.
+    return [f"variable cofkit_cell0_{name} equal $({name}:%.17g)" for name in _LAMMPS_BOX_PARAMETERS]
+
+
+def _soft_pre_minimization_cutoffs(
+    settings: LammpsOptimizationSettings,
+    prepared: _PreparedLammpsSystem,
+) -> dict[tuple[int, int], float]:
+    """pair_style soft cutoff per LAMMPS type pair (i <= j)."""
+    type_ids = sorted(prepared.atom_type_symbols)
+    cutoffs: dict[tuple[int, int], float] = {}
+    for position, left in enumerate(type_ids):
+        for right in type_ids[position:]:
+            if settings.soft_pre_minimization_cutoff is not None:
+                cutoffs[(left, right)] = settings.soft_pre_minimization_cutoff
+                continue
+            try:
+                left_element = prepared.atom_type_elements[left]
+                right_element = prepared.atom_type_elements[right]
+            except KeyError as exc:
+                raise LammpsInputError(
+                    "LAMMPS soft pre-minimization needs the element of every atom type."
+                ) from exc
+            cutoffs[(left, right)] = settings.soft_pre_minimization_contact_ratio * (
+                vdw_radius(left_element) + vdw_radius(right_element)
+            )
+    return cutoffs
+
+
+def _render_soft_pre_minimization_lines(
+    settings: LammpsOptimizationSettings,
+    prepared: _PreparedLammpsSystem,
+    *,
+    periodic_electrostatics: bool,
+) -> list[str]:
+    """Soft-repulsion clash ramp; the caller restores the force field afterwards.
+
+    With the default per-pair contact cutoffs, graph-excluded 1-2/1-3/1-4
+    pairs are dropped (special_bonds 0 0 0), so the soft energy is nonzero
+    exactly when some other pair is inside its clash distance. A run 0
+    measures it and the ramp is skipped when it is zero.
+    """
+    cutoffs = _soft_pre_minimization_cutoffs(settings, prepared)
+    contact_cutoffs = settings.soft_pre_minimization_cutoff is None
+    lines: list[str] = []
+    if periodic_electrostatics:
+        lines.append("kspace_style none")
+    if contact_cutoffs:
+        lines.append("special_bonds lj/coul 0.0 0.0 0.0")
+    lines.append(f"pair_style soft {max(cutoffs.values()):.6f}")
+
+    def coefficient_lines(prefactor: float) -> list[str]:
+        if not contact_cutoffs:
+            return [f"pair_coeff * * {prefactor:.8g}"]
+        return [
+            f"pair_coeff {left} {right} {prefactor:.8g} {cutoff:.6f}"
+            for (left, right), cutoff in cutoffs.items()
+        ]
+
+    coefficients = settings.soft_pre_minimization_coefficients
+    lines.extend(coefficient_lines(coefficients[0]))
+    lines.append("run 0")
+    lines.append('print "COFKIT_SOFT_CONTACT_ENERGY $(evdwl:%.17g)"')
+    lines.append(f'if "$(evdwl) <= 0.0" then "jump SELF {_SOFT_RAMP_DONE_LABEL}"')
+    lines.append(f"min_style {settings.soft_pre_minimization_min_style}")
+    for index, coefficient in enumerate(coefficients):
+        if index:
+            lines.extend(coefficient_lines(coefficient))
+        lines.append(
+            f"minimize {settings.soft_pre_minimization_energy_tolerance:.8g} "
+            f"{settings.soft_pre_minimization_force_tolerance:.8g} "
+            f"{settings.soft_pre_minimization_max_iterations} "
+            f"{settings.soft_pre_minimization_max_evaluations}"
+        )
+        lines.append(f'print "COFKIT_SOFT_RAMP {coefficient:.8g} $(evdwl:%.17g)"')
+    lines.append(f"label {_SOFT_RAMP_DONE_LABEL}")
+    return lines
+
+
 def _render_lammps_input_script(
     *,
     data_path: Path,
@@ -4064,7 +4280,7 @@ def _render_lammps_input_script(
     dump_file = dump_path.name
     thermo_terms = ["step", "pe", "ebond"]
     minimization_stages = _build_minimization_stages(settings)
-    periodic_electrostatics = prepared.has_charges and not _has_nonperiodic_boundary(boundary)
+    periodic_electrostatics = _uses_kspace(settings, prepared, boundary)
     pair_style_line = _render_pair_style_line(settings, prepared, boundary=boundary)
     special_bonds_line = _render_special_bonds_line(prepared)
     lines = [
@@ -4151,23 +4367,18 @@ def _render_lammps_input_script(
             lines.append(f"fix cofkit_hold all spring/self {initial_restraint_force_constant:.6f}")
             lines.append("fix_modify cofkit_hold energy yes")
             active_restraint_force_constant = initial_restraint_force_constant
-        if periodic_electrostatics:
-            lines.append("kspace_style none")
-        lines.append(f"pair_style soft {settings.soft_pre_minimization_cutoff:.6f}")
-        lines.append(f"min_style {settings.soft_pre_minimization_min_style}")
-        for coefficient in settings.soft_pre_minimization_coefficients:
-            lines.append(f"pair_coeff * * {coefficient:.8g}")
-            lines.append(
-                f"minimize {settings.energy_tolerance:.8g} {settings.force_tolerance:.8g} "
-                f"{settings.soft_pre_minimization_max_iterations} "
-                f"{settings.soft_pre_minimization_max_evaluations}"
-            )
+        lines.extend(_render_soft_pre_minimization_lines(settings, prepared, periodic_electrostatics=periodic_electrostatics))
+        lines.append(special_bonds_line)
         lines.append(pair_style_line)
         lines.append("pair_modify shift yes")
         lines.extend(_render_pairij_coeff_lines(prepared))
         if periodic_electrostatics:
             lines.append("kspace_style ewald " + f"{settings.ewald_precision:.8g}")
+    if settings.relax_cell:
+        lines.append(_render_cell_stable_variable_line(settings))
     for stage in minimization_stages:
+        if stage.relax_cell:
+            lines.extend(_render_cell_snapshot_lines())
         lines.append(f'print "COFKIT_STAGE {stage.label}"')
         lines.append(f"# {stage.label}")
         if active_restraint_force_constant is not None and (
@@ -4192,6 +4403,20 @@ def _render_lammps_input_script(
         lines.append(f'print "COFKIT_MINIMUM {stage.label} $(fnorm:%.17g) $(fmax:%.17g) $(c_cofkit_virial[1]:%.17g) $(c_cofkit_virial[2]:%.17g) $(c_cofkit_virial[3]:%.17g) $(c_cofkit_virial[4]:%.17g) $(c_cofkit_virial[5]:%.17g) $(c_cofkit_virial[6]:%.17g)"')
         if stage.relax_cell:
             lines.append("unfix cofkit_boxrelax")
+        if stage.cell_cycle is not None and not stage.relax_cell:
+            lines.append(
+                f'print "COFKIT_CELL_CYCLE {stage.cell_cycle} '
+                + " ".join(f"$(v_cofkit_cell0_{name}:%.17g)" for name in _LAMMPS_BOX_PARAMETERS)
+                + " "
+                + " ".join(f"$({name}:%.17g)" for name in _LAMMPS_BOX_PARAMETERS)
+                + '"'
+            )
+            if stage.cell_cycle < settings.cell_relaxation_max_cycles:
+                lines.append(
+                    f'if "$(v_{_CELL_STABLE_VARIABLE}) == 1" then "jump SELF {_CELL_RELAXATION_DONE_LABEL}"'
+                )
+    if settings.relax_cell:
+        lines.append(f"label {_CELL_RELAXATION_DONE_LABEL}")
     lines.append(f"write_dump all custom {dump_file} id x y z ix iy iz modify sort id append yes")
     lines.append("undump cofkit_dump")
     if active_restraint_force_constant is not None:
@@ -4310,13 +4535,11 @@ def _run_lammps(
     timeout_seconds: float,
     omp_threads: int | None = None,
     enable_omp: bool = True,
+    default_omp_threads: int | None = None,
 ) -> tuple[str, ...]:
     environment = os.environ.copy()
     if enable_omp:
-        configured = omp_threads
-        if configured is None:
-            raw = str(environment.get("OMP_NUM_THREADS", "")).strip()
-            configured = int(raw) if raw.isdigit() and int(raw) > 0 else _default_lammps_omp_num_threads()
+        configured = _resolve_lammps_omp_threads(omp_threads, default_omp_threads=default_omp_threads)
         environment["OMP_NUM_THREADS"] = str(configured)
     command = [str(binary)]
     if enable_omp:
@@ -4365,54 +4588,155 @@ def _run_lammps(
     return tuple(warnings)
 
 
-def _check_minimization_convergence(log_path, settings, parsed) -> dict[str, object]:
-    """Require stage diagnostics and final force/stress acceptance in real units."""
-    text = log_path.read_text(errors="replace") if log_path.is_file() else ""
-    records = []
-    for stage in _build_minimization_stages(settings):
-        segments = re.findall(rf"^COFKIT_STAGE {stage.label}\s*$([\s\S]*?)(?=^COFKIT_STAGE |\Z)", text, re.MULTILINE)
-        record = {"stage": stage.label, "converged": False}
-        if len(segments) != 1:
-            record["reason"] = "missing_or_duplicate_stage"
-            records.append(record)
-            continue
-        segment = segments[0]
-        reason = re.search(r"Stopping criterion\s*=\s*([^\n]+)", segment)
-        rows = re.findall(rf"^COFKIT_MINIMUM {stage.label} (.+)$", segment, re.MULTILINE)
-        record["stopping_criterion"] = reason.group(1).strip() if reason else None
+def _minimization_stage_record(text: str, stage: _LammpsMinimizationStage) -> dict[str, object]:
+    """Termination and force diagnostics of one stage, judged on its own criteria."""
+    record: dict[str, object] = {"stage": stage.label, "converged": False}
+    if stage.cell_cycle is not None:
+        record["cell_cycle"] = stage.cell_cycle
+    segments = re.findall(rf"^COFKIT_STAGE {stage.label}\s*$([\s\S]*?)(?=^COFKIT_STAGE |\Z)", text, re.MULTILINE)
+    if len(segments) != 1:
+        record["reason"] = "missing_or_duplicate_stage"
+        return record
+    segment = segments[0]
+    reason = re.search(r"Stopping criterion\s*=\s*([^\n]+)", segment)
+    rows = re.findall(rf"^COFKIT_MINIMUM {stage.label} (.+)$", segment, re.MULTILINE)
+    record["stopping_criterion"] = reason.group(1).strip() if reason else None
+    try:
+        values = [float(v) for v in rows[0].split()] if len(rows) == 1 else []
+    except ValueError:
+        values = []
+    if len(values) != 8 or not all(math.isfinite(v) for v in values):
+        record["reason"] = "missing_or_nonfinite_metrics"
+        return record
+    fnorm, fmax, *stress = values
+    record.update(force_norm_kcal_mol_angstrom=fnorm, force_max_kcal_mol_angstrom=fmax,
+                  virial_stress_atm=stress, force_tolerance=stage.force_tolerance)
+    normal = reason is not None and reason.group(1).strip().lower() in {"force tolerance", "energy tolerance"}
+    force_ok = fnorm >= 0 and fmax >= 0 and fnorm <= stage.force_tolerance
+    record["converged"] = normal and force_ok
+    record["reason"] = "accepted" if record["converged"] else "termination_or_force_check_failed"
+    return record
+
+
+def _parse_cell_cycles(text: str) -> list[dict[str, object]] | None:
+    """COFKIT_CELL_CYCLE rows in cycle order; None when malformed or non-contiguous.
+
+    Each row carries the box at the start and at the end of the cycle; the
+    stability decision is recomputed here from those numbers.
+    """
+    cycles: list[dict[str, object]] = []
+    n_parameters = len(_LAMMPS_BOX_PARAMETERS)
+    for match in re.finditer(r"^COFKIT_CELL_CYCLE (\d+) (.+)$", text, re.MULTILINE):
         try:
-            values = [float(v) for v in rows[0].split()] if len(rows) == 1 else []
+            values = [float(value) for value in match.group(2).split()]
         except ValueError:
-            values = []
-        if len(values) != 8 or not all(math.isfinite(v) for v in values):
-            record["reason"] = "missing_or_nonfinite_metrics"
-            records.append(record)
-            continue
-        fnorm, fmax, *stress = values
-        record.update(force_norm_kcal_mol_angstrom=fnorm, force_max_kcal_mol_angstrom=fmax,
-                      virial_stress_atm=stress, force_tolerance=stage.force_tolerance)
-        normal = reason is not None and reason.group(1).strip().lower() in {"force tolerance", "energy tolerance"}
-        force_ok = fnorm >= 0 and fmax >= 0 and fnorm <= stage.force_tolerance
-        stress_ok = True
-        if stage.relax_cell:
-            mode = _box_relax_mode_for_structure(settings, parsed)
-            if mode == "iso":
-                deviations = [sum(stress[:3]) / 3 - settings.box_relax_target_pressure]
+            return None
+        if len(values) != 2 * n_parameters or not all(math.isfinite(v) for v in values):
+            return None
+        start, end = values[:n_parameters], values[n_parameters:]
+        cycles.append({
+            "cycle": int(match.group(1)),
+            "box_angstrom": dict(zip(_LAMMPS_BOX_PARAMETERS, end)),
+            "max_box_change_angstrom": max(abs(after - before) for before, after in zip(start, end)),
+        })
+    if [cycle["cycle"] for cycle in cycles] != list(range(1, len(cycles) + 1)):
+        return None
+    return cycles
+
+
+def _residual_stress_deviations(settings, parsed, stress: Sequence[float]) -> list[float]:
+    """Stress components that fix box/relax drives toward the target pressure."""
+    mode = _box_relax_mode_for_structure(settings, parsed)
+    if mode == "iso":
+        return [sum(stress[:3]) / 3 - settings.box_relax_target_pressure]
+    deviations = [p - settings.box_relax_target_pressure for p in stress[:3]]
+    if mode == "tri":
+        deviations.extend(stress[3:])
+    return deviations
+
+
+def _parse_soft_pre_minimization(text: str) -> dict[str, object]:
+    contact = re.findall(r"^COFKIT_SOFT_CONTACT_ENERGY (\S+)$", text, re.MULTILINE)
+    ramp = re.findall(r"^COFKIT_SOFT_RAMP (\S+) (\S+)$", text, re.MULTILINE)
+    summary: dict[str, object] = {
+        "initial_contact_energy_kcal_mol": float(contact[0]) if len(contact) == 1 else None,
+        "ramp_ran": bool(ramp),
+        "ramp": [
+            {"prefactor_kcal_mol": float(prefactor), "soft_energy_kcal_mol": float(energy)}
+            for prefactor, energy in ramp
+        ],
+    }
+    summary["residual_contact_energy_kcal_mol"] = (
+        float(ramp[-1][1]) if ramp else summary["initial_contact_energy_kcal_mol"]
+    )
+    return summary
+
+
+def _check_minimization_convergence(log_path, settings, parsed) -> dict[str, object]:
+    """Require stage diagnostics and final force acceptance in real units.
+
+    Without cell relaxation the final fixed-cell stage must stop normally
+    within its force tolerance. With cell relaxation the final stage is the
+    fixed-cell minimization of the last executed cycle, and the cell must
+    also be stable (the last cycle changed no box parameter by more than
+    cell_stability_tolerance) with its residual stress within
+    pressure_tolerance. The fix box/relax stages are recorded but not
+    required to terminate normally: a stalled line search there is expected
+    and is what the cycles work around.
+    """
+    text = log_path.read_text(errors="replace") if log_path.is_file() else ""
+    cycles = _parse_cell_cycles(text) if settings.relax_cell else []
+    executed_cycles = max(len(cycles or ()), 1)
+    records = [
+        _minimization_stage_record(text, stage)
+        for stage in _build_minimization_stages(settings)
+        if stage.cell_cycle is None or stage.cell_cycle <= executed_cycles
+    ]
+    final = records[-1] if records else {}
+    criteria: dict[str, bool] = {
+        "final_stage_termination_and_force": final.get("converged") is True,
+    }
+    result: dict[str, object] = {
+        "execution_status": "completed",
+        "acceptance": (
+            "final fixed-cell stage termination and global force norm"
+            + (", cell stability across the last cell-relaxation cycle, and residual stress" if settings.relax_cell else "")
+        ),
+        "final_stage": final.get("stage"),
+    }
+    if settings.relax_cell:
+        cell: dict[str, object] = {
+            "max_cycles": settings.cell_relaxation_max_cycles,
+            "stability_tolerance_angstrom": settings.cell_stability_tolerance,
+            "pressure_tolerance_atm": settings.pressure_tolerance,
+        }
+        if not cycles:
+            cell["reason"] = "missing_cell_metrics"
+            criteria["cell_stable"] = False
+            criteria["residual_stress"] = False
+        else:
+            last_change = float(cycles[-1]["max_box_change_angstrom"])
+            cell.update(cycles_run=len(cycles), cycles=cycles)
+            criteria["cell_stable"] = last_change <= settings.cell_stability_tolerance
+            stress = final.get("virial_stress_atm")
+            if isinstance(stress, list):
+                deviations = _residual_stress_deviations(settings, parsed, stress)
+                cell["max_residual_stress_atm"] = max(map(abs, deviations))
+                criteria["residual_stress"] = cell["max_residual_stress_atm"] <= settings.pressure_tolerance
             else:
-                deviations = [p - settings.box_relax_target_pressure for p in stress[:3]]
-                if mode == "tri":
-                    deviations.extend(stress[3:])
-            stress_ok = max(map(abs, deviations)) <= settings.pressure_tolerance
-            record["pressure_tolerance_atm"] = settings.pressure_tolerance
-        record["converged"] = normal and force_ok and stress_ok
-        record["reason"] = "accepted" if record["converged"] else "termination_or_force_or_stress_check_failed"
-        records.append(record)
-    return {"execution_status": "completed", "converged": bool(records and records[-1]["converged"]),
-            "acceptance": "final-stage termination, global force norm, and relaxed stress components",
-            "stages": records}
+                criteria["residual_stress"] = False
+        result["cell_relaxation"] = cell
+    if settings.pre_minimization_mode == "soft":
+        result["soft_pre_minimization"] = _parse_soft_pre_minimization(text)
+    result["criteria"] = criteria
+    result["converged"] = bool(records) and all(criteria.values())
+    result["stages"] = records
+    return result
 
 
-_CONVERGENCE_UNREADABLE_REASONS = frozenset({"missing_or_duplicate_stage", "missing_or_nonfinite_metrics"})
+_CONVERGENCE_UNREADABLE_REASONS = frozenset(
+    {"missing_or_duplicate_stage", "missing_or_nonfinite_metrics", "missing_cell_metrics"}
+)
 
 
 def _convergence_diagnostics_available(convergence: Mapping[str, object]) -> bool:
@@ -4423,41 +4747,56 @@ def _convergence_diagnostics_available(convergence: Mapping[str, object]) -> boo
     hard-failure behavior instead of the unconverged-warning downgrade.
     """
     stages = convergence.get("stages") or ()
-    return bool(stages) and all(
-        record.get("reason") not in _CONVERGENCE_UNREADABLE_REASONS
-        for record in stages
+    cell = convergence.get("cell_relaxation") or {}
+    return (
+        bool(stages)
+        and all(record.get("reason") not in _CONVERGENCE_UNREADABLE_REASONS for record in stages)
+        and cell.get("reason") not in _CONVERGENCE_UNREADABLE_REASONS
     )
 
 
 def _unconverged_optimization_warning(convergence: Mapping[str, object]) -> str:
     stages = convergence.get("stages") or ()
     final = stages[-1] if stages else {}
+    criteria = convergence.get("criteria") or {}
+    cell = convergence.get("cell_relaxation") or {}
     details: list[str] = []
-    criterion = final.get("stopping_criterion")
-    if criterion:
-        details.append(f"stopped on {criterion!r}")
-    force_norm = final.get("force_norm_kcal_mol_angstrom")
-    force_tolerance = final.get("force_tolerance")
-    if (
-        isinstance(force_norm, (int, float))
-        and isinstance(force_tolerance, (int, float))
-        and force_norm > force_tolerance
-    ):
+    if not criteria.get("final_stage_termination_and_force", False):
+        criterion = final.get("stopping_criterion")
+        if criterion:
+            details.append(f"final stage {final.get('stage')} stopped on {criterion!r}")
+        force_norm = final.get("force_norm_kcal_mol_angstrom")
+        force_tolerance = final.get("force_tolerance")
+        if (
+            isinstance(force_norm, (int, float))
+            and isinstance(force_tolerance, (int, float))
+            and force_norm > force_tolerance
+        ):
+            details.append(
+                f"final force norm {force_norm:.6g} kcal/mol/angstrom exceeds "
+                f"tolerance {force_tolerance:.6g}"
+            )
+    if criteria.get("cell_stable") is False and cell.get("cycles"):
+        last = cell["cycles"][-1]
         details.append(
-            f"final force norm {force_norm:.6g} kcal/mol/angstrom exceeds "
-            f"tolerance {force_tolerance:.6g}"
+            f"cell still changing after {cell.get('cycles_run')} of {cell.get('max_cycles')} cell-relaxation "
+            f"cycles (last change {last['max_box_change_angstrom']:.4g} angstrom > "
+            f"{cell.get('stability_tolerance_angstrom'):.4g})"
         )
-    failed_stages = [
-        str(record.get("stage"))
-        for record in stages
-        if not record.get("converged")
-    ]
-    if failed_stages:
-        details.append(f"unaccepted stage(s): {', '.join(failed_stages)}")
+    if criteria.get("residual_stress") is False and "max_residual_stress_atm" in cell:
+        details.append(
+            f"residual stress {cell['max_residual_stress_atm']:.4g} atm exceeds "
+            f"{cell.get('pressure_tolerance_atm'):.4g} atm"
+        )
     detail_text = f" ({'; '.join(details)})" if details else ""
+    force_note = (
+        "Energy-based termination is not force convergence; "
+        if not criteria.get("final_stage_termination_and_force", False)
+        else ""
+    )
     return (
-        f"LAMMPS completed but the optimization did not meet the force acceptance criteria{detail_text}. "
-        "Energy-based termination is not force convergence; the optimized CIF and report were still "
+        f"LAMMPS completed but the optimization did not meet the acceptance criteria{detail_text}. "
+        f"{force_note}The optimized CIF and report were still "
         "written, but this structure must be treated as unconverged "
         "(converged=false in lammps_report.json and convergence.json)."
     )
@@ -4466,6 +4805,22 @@ def _unconverged_optimization_warning(convergence: Mapping[str, object]) -> str:
 def _default_lammps_omp_num_threads() -> int:
     cpu_count = os.cpu_count() or 1
     return max(1, cpu_count // 2)
+
+
+# OpenMP force sums are not bitwise reproducible across thread counts or
+# runs, and a multi-stage minimization amplifies the differences into
+# different final structures, so optimization runs single-threaded unless
+# the caller (omp_threads) or the environment (OMP_NUM_THREADS) asks for more.
+_DEFAULT_OPTIMIZATION_OMP_THREADS = 1
+
+
+def _resolve_lammps_omp_threads(omp_threads: int | None, *, default_omp_threads: int | None = None) -> int:
+    if omp_threads is not None:
+        return omp_threads
+    raw = str(os.environ.get("OMP_NUM_THREADS", "")).strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return default_omp_threads if default_omp_threads is not None else _default_lammps_omp_num_threads()
 
 
 def _render_style_line(keyword: str, styles: Sequence[str], *, force_hybrid: bool = False) -> str:

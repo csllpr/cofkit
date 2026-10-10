@@ -475,15 +475,23 @@ class LammpsTests(unittest.TestCase):
         self.assertTrue(result.settings.relax_cell)
         self.assertEqual(result.settings.max_iterations, 200000)
         self.assertEqual(result.settings.max_evaluations, 2000000)
-        self.assertIn("pair_style lj/cut/coul/long 12.000000 12.000000", script_text)
-        self.assertIn("kspace_style ewald 1e-06", script_text)
+        # Charged optimizations default to damped-shifted-force Coulomb.
+        self.assertEqual(result.settings.coulomb_method, "dsf")
+        self.assertIn("pair_style lj/cut/coul/dsf 0.200000 12.000000 12.000000", script_text)
+        self.assertNotIn("kspace_style", script_text)
         self.assertIn("# pre_minimization", script_text)
         self.assertIn("run 10000", script_text)
         self.assertIn("# stage2", script_text)
-        self.assertIn("# box_relax", script_text)
+        self.assertIn("# box_relax_1", script_text)
+        self.assertIn("# fixed_cell_1", script_text)
         self.assertEqual(script_text.count("fix cofkit_hold all spring/self"), 1)
-        self.assertEqual(script_text.count("minimize "), 3)
-        self.assertIn("fix cofkit_boxrelax all box/relax aniso 0 vmax 0.001", script_text)
+        max_cycles = LammpsOptimizationSettings().cell_relaxation_max_cycles
+        self.assertEqual(script_text.count("minimize "), 2 + 2 * max_cycles)
+        self.assertEqual(script_text.count("fix cofkit_boxrelax all box/relax aniso 0 vmax 0.001"), max_cycles)
+        self.assertEqual(script_text.count("jump SELF cofkit_cell_relaxation_done"), max_cycles - 1)
+        self.assertTrue(script_text.rstrip().split("label cofkit_cell_relaxation_done", 1)[1].startswith("\nwrite_dump"))
+        self.assertTrue(result.convergence["converged"])
+        self.assertEqual(result.convergence["final_stage"], f"fixed_cell_{max_cycles}")
 
     def test_lammps_uses_bundled_pinned_uff_parameter_file(self):
         bundled_path = lammps_module._bundled_uff_parameter_file()
@@ -618,12 +626,74 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("min_style sd", script_text)
             self.assertIn("pair_coeff * * 2", script_text)
             self.assertIn("pair_coeff * * 10", script_text)
-            self.assertIn("minimize 0 0.0001 12 120", script_text)
+            # The ramp has its own stop criteria, not the main stages'.
+            self.assertEqual(script_text.count("minimize 0 0.01 12 120"), 2)
+            # A uniform cutoff is an explicit override: graph exclusions are
+            # left as they are.
+            self.assertEqual(script_text.count("special_bonds "), 2)
             self.assertIn("pair_style lj/cut 12.000000", script_text)
             self.assertIn("pair_coeff 1 1", script_text)
             self.assertNotIn("velocity all create", script_text)
             self.assertNotIn("fix cofkit_prerun_nve", script_text)
             self.assertEqual(result.settings.pre_minimization_mode, "soft")
+
+    def test_soft_pre_minimization_defaults_to_clash_contact_cutoffs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "example.cif"
+            cif_path.write_text(self._example_cif_text(), encoding="utf-8")
+            settings = LammpsOptimizationSettings(
+                forcefield="uff",
+                charge_model="none",
+                pre_minimization_mode="soft",
+                relax_cell=False,
+            )
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "soft_contact_out",
+                    settings=settings,
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            soft = script_text.split("# pre_minimization_soft", 1)[1].split("label cofkit_soft_ramp_done", 1)[0]
+            # Graph-excluded 1-2/1-3/1-4 pairs leave the ramp, as they leave
+            # the validator's clash scan.
+            self.assertIn("special_bonds lj/coul 0.0 0.0 0.0", soft)
+            n_types = len(result.atom_type_symbols)
+            coefficient_rows = [line.split() for line in soft.splitlines() if line.startswith("pair_coeff ")]
+            self.assertEqual(len(coefficient_rows), 4 * n_types * (n_types + 1) // 2)
+            self.assertTrue(all(len(row) == 5 for row in coefficient_rows))
+            # Cutoff = 0.75 * (r_vdw_i + r_vdw_j), Bondi radii: C 1.70, O 1.52.
+            self.assertEqual(
+                {float(row[4]) for row in coefficient_rows},
+                {round(0.75 * 3.40, 6), round(0.75 * 3.22, 6), round(0.75 * 3.04, 6)},
+            )
+            self.assertEqual(
+                [float(row[3]) for row in coefficient_rows[:: n_types * (n_types + 1) // 2]],
+                [1.0, 5.0, 20.0, 50.0],
+            )
+            self.assertIn("pair_style soft 2.550000", soft)
+            # The ramp is skipped when no pair is inside its clash cutoff.
+            run_0 = soft.index("run 0\n")
+            self.assertLess(run_0, soft.index('if "$(evdwl) <= 0.0" then "jump SELF cofkit_soft_ramp_done"'))
+            self.assertEqual(soft.count("minimize 0 0.01 2000 20000"), 4)
+            restore = script_text.split("label cofkit_soft_ramp_done", 1)[1]
+            self.assertTrue(restore.startswith("\nspecial_bonds lj 0.0 0.0 1.0\npair_style lj/cut 12.000000"))
+
+    def test_soft_pre_minimization_summary_reports_skip_and_ramp(self):
+        skipped = lammps_module._parse_soft_pre_minimization("COFKIT_SOFT_CONTACT_ENERGY 0\n")
+        self.assertFalse(skipped["ramp_ran"])
+        self.assertEqual(skipped["residual_contact_energy_kcal_mol"], 0.0)
+        ramped = lammps_module._parse_soft_pre_minimization(
+            "COFKIT_SOFT_CONTACT_ENERGY 12.5\nCOFKIT_SOFT_RAMP 1 3.25\nCOFKIT_SOFT_RAMP 5 0\n"
+        )
+        self.assertTrue(ramped["ramp_ran"])
+        self.assertEqual(ramped["initial_contact_energy_kcal_mol"], 12.5)
+        self.assertEqual([step["prefactor_kcal_mol"] for step in ramped["ramp"]], [1.0, 5.0])
+        self.assertEqual(ramped["residual_contact_energy_kcal_mol"], 0.0)
 
     def test_lammps_script_supports_final_box_relax_stage(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -641,6 +711,8 @@ class LammpsTests(unittest.TestCase):
                 box_relax_vmax=0.002,
                 box_relax_nreset=25,
                 box_relax_min_style="cg",
+                cell_relaxation_max_cycles=3,
+                cell_stability_tolerance=0.02,
             )
 
             with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
@@ -651,11 +723,33 @@ class LammpsTests(unittest.TestCase):
                 )
 
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
-            self.assertIn("# box_relax", script_text)
-            self.assertIn("fix cofkit_boxrelax all box/relax aniso 0 vmax 0.002 nreset 25", script_text)
-            self.assertIn("min_style cg", script_text)
-            self.assertIn("unfix cofkit_boxrelax", script_text)
-            self.assertEqual(script_text.count("minimize "), 3)
+            # Three cycles of (fix box/relax, fixed-cell minimization), each
+            # starting from a fresh cell snapshot; the first two may leave
+            # early through the stability check.
+            self.assertEqual(
+                script_text.count("fix cofkit_boxrelax all box/relax aniso 0 vmax 0.002 nreset 25"), 3
+            )
+            self.assertEqual(script_text.count("unfix cofkit_boxrelax"), 3)
+            self.assertEqual(script_text.count("minimize "), 2 + 2 * 3)
+            for cycle in (1, 2, 3):
+                self.assertIn(f'print "COFKIT_STAGE box_relax_{cycle}"', script_text)
+                self.assertIn(f'print "COFKIT_STAGE fixed_cell_{cycle}"', script_text)
+                self.assertIn(f'print "COFKIT_CELL_CYCLE {cycle} ', script_text)
+            self.assertEqual(script_text.count("variable cofkit_cell0_lx equal $(lx:%.17g)"), 3)
+            self.assertIn(
+                "variable cofkit_cell_stable equal (abs(lx-v_cofkit_cell0_lx)<=0.02)&&", script_text
+            )
+            self.assertEqual(
+                script_text.count('if "$(v_cofkit_cell_stable) == 1" then "jump SELF cofkit_cell_relaxation_done"'),
+                2,
+            )
+            self.assertEqual(script_text.count("label cofkit_cell_relaxation_done"), 1)
+            fixed_cell = script_text.split('print "COFKIT_STAGE fixed_cell_1"', 1)[1].split("COFKIT_CELL_CYCLE", 1)[0]
+            self.assertNotIn("box/relax", fixed_cell)
+            self.assertIn("minimize 0 0.0001 ", fixed_cell)
+            self.assertTrue(result.convergence["converged"])
+            self.assertEqual(result.convergence["final_stage"], "fixed_cell_3")
+            self.assertEqual(result.convergence["cell_relaxation"]["cycles_run"], 3)
 
     def test_relax_cell_rejects_fire_box_relax_minimizer(self):
         with self.assertRaises(ValueError):
@@ -685,7 +779,7 @@ class LammpsTests(unittest.TestCase):
 
             self.assertEqual(resolved, fake_binary.resolve())
 
-    def test_lammps_defaults_omp_num_threads_to_half_core_count(self):
+    def test_lammps_optimization_defaults_to_one_omp_thread(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
@@ -693,8 +787,11 @@ class LammpsTests(unittest.TestCase):
             cif_path.write_text(self._example_cif_text(), encoding="utf-8")
             output_dir = temp_path / "omp_default_out"
 
+            # OpenMP sums are not reproducible across thread counts, so an
+            # optimization ignores the half-core-count default used for MD.
             with patch.object(lammps_module.os, "cpu_count", return_value=10):
                 with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}, clear=False):
+                    os.environ.pop("OMP_NUM_THREADS", None)
                     result = optimize_cif_with_lammps(
                         cif_path,
                         output_dir=output_dir,
@@ -702,7 +799,9 @@ class LammpsTests(unittest.TestCase):
                     )
 
             stdout_text = Path(result.stdout_log_path).read_text(encoding="utf-8")
-            self.assertIn("OMP_NUM_THREADS=5", stdout_text)
+            self.assertIn("OMP_NUM_THREADS=1\n", stdout_text)
+            execution = json.loads((Path(result.output_dir) / "execution.json").read_text(encoding="utf-8"))
+            self.assertIn("-pk omp 1 ", " ".join(map(str, execution["command"])) + " ")
 
     def test_lammps_preserves_explicit_omp_num_threads(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -846,7 +945,9 @@ class LammpsTests(unittest.TestCase):
                 result = optimize_cif_with_lammps(
                     cif_path,
                     output_dir=temp_path / "hbond_charged_out",
-                    settings=LammpsOptimizationSettings(forcefield="dreiding", charge_model="none"),
+                    settings=LammpsOptimizationSettings(
+                        forcefield="dreiding", charge_model="none", coulomb_method="ewald"
+                    ),
                 )
 
             script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
@@ -856,6 +957,43 @@ class LammpsTests(unittest.TestCase):
             )
             self.assertIn("pair_coeff 2 2 hbond/dreiding/lj 3 i 7 2.75", script_text)
             self.assertIn("Dhb=7", result.parameter_sources["hydrogen_bonding"])
+
+    def test_dsf_coulomb_replaces_ewald_for_charged_optimizations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
+            cif_path = temp_path / "methylamine_charged.cif"
+            cif_path.write_text(self._hbond_cif_text(charged=True), encoding="utf-8")
+
+            with patch.dict(os.environ, {COFKIT_LMP_ENV_VAR: str(fake_binary)}):
+                result = optimize_cif_with_lammps(
+                    cif_path,
+                    output_dir=temp_path / "hbond_dsf_out",
+                    settings=LammpsOptimizationSettings(
+                        forcefield="dreiding",
+                        charge_model="none",
+                        coulomb_method="dsf",
+                        dsf_damping=0.25,
+                    ),
+                )
+
+            script_text = Path(result.lammps_input_script_path).read_text(encoding="utf-8")
+            data_text = Path(result.lammps_data_path).read_text(encoding="utf-8")
+            self.assertIn(
+                "pair_style hybrid/overlay lj/cut/coul/dsf 0.250000 12.000000 12.000000 "
+                "hbond/dreiding/lj 4 9.000000 11.000000 90.000000",
+                script_text,
+            )
+            # The data file labels its LJ rows with the same substyle.
+            self.assertIn(" lj/cut/coul/dsf ", data_text)
+            self.assertNotIn("coul/long", script_text + data_text)
+            self.assertNotIn("kspace_style", script_text)
+            self.assertNotIn(" elong", script_text)
+            self.assertIn("Damped shifted force", result.parameter_sources["coulomb_method"])
+
+    def test_md_settings_keep_ewald_electrostatics(self):
+        converted = lammps_module._md_settings_to_optimization_settings(LammpsMdSettings())
+        self.assertEqual(converted.coulomb_method, "ewald")
 
     def test_dreiding_hbond_opt_out_restores_plain_export(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -965,6 +1103,7 @@ class LammpsTests(unittest.TestCase):
                         charge_model="eqeq",
                         pair_cutoff=10.0,
                         coulomb_cutoff=11.0,
+                        coulomb_method="ewald",
                         ewald_precision=1.0e-5,
                         pre_minimization_steps=0,
                         relax_cell=False,
@@ -1357,6 +1496,8 @@ class LammpsTests(unittest.TestCase):
             "        if line.startswith('print \"COFKIT_STAGE '):\n"
             "            label = line.split()[2].rstrip('\"')\n"
             "            records.extend([f'COFKIT_STAGE {label}', 'Stopping criterion = force tolerance', f'COFKIT_MINIMUM {label} 0 0 0 0 0 0 0 0'])\n"
+            "        if line.startswith('print \"COFKIT_CELL_CYCLE '):\n"
+            "            records.append(f'COFKIT_CELL_CYCLE {line.split()[2]} ' + ' '.join(['10', '10', '10', '0', '0', '0'] * 2))\n"
             "    log_path.write_text('\\n'.join(records) + '\\nWARNING: fake warning from test binary\\n', encoding='utf-8')\n"
             "sys.stdout.write(f\"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', '')}\\n\")\n"
             "sys.stderr.write('WARNING: fake warning from test binary\\n')\n"

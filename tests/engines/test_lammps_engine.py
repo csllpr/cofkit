@@ -315,3 +315,136 @@ def test_lammps_geometry_repair_reports_final_coordinate_measurements(lmp, tmp_p
     assert post["metrics"]["n_measured_bridge_bonds"] > 0
     assert "max_bridge_distance_residual" in post["metrics"]
     assert post["coverage"]["bridge_geometry"] == "measured"
+
+
+def _fixture_text(name):
+    return (Path(__file__).resolve().parents[1] / "fixtures" / name).read_text()
+
+
+def test_soft_pre_minimization_skips_clash_free_input(lmp, tmp_path):
+    from cofkit.lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
+
+    cif = tmp_path / "input.cif"
+    cif.write_text(_fixture_text("engine_molecule.cif"))
+    result = optimize_cif_with_lammps(
+        cif,
+        lmp_path=lmp,
+        settings=LammpsOptimizationSettings(
+            enable_omp=False,
+            charge_model="none",
+            pre_minimization_mode="soft",
+            relax_cell=False,
+        ),
+    )
+    soft = result.convergence["soft_pre_minimization"]
+    assert soft["initial_contact_energy_kcal_mol"] == 0
+    assert soft["ramp_ran"] is False
+    assert result.convergence["converged"]
+
+
+def test_soft_pre_minimization_separates_clashing_molecules(lmp, tmp_path):
+    from cofkit.lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
+
+    # Two methylamine copies whose carbons sit 0.84 angstrom apart: far
+    # inside the 2.55 angstrom C...C clash cutoff.
+    text = _fixture_text("engine_methylamine.cif")
+    atoms, bonds = text.split("\nloop_\n_geom_bond_atom_site_label_1", 1)
+    copies = []
+    for line in atoms.splitlines():
+        parts = line.split()
+        if len(parts) == 6 and parts[1] in {"C", "N", "H"}:
+            parts[0] = parts[0] + "b"
+            parts[4] = f"{float(parts[4]) + 0.07:.6f}"
+            copies.append(" ".join(parts))
+    bond_rows = [line for line in bonds.splitlines() if line.endswith(" S")]
+    copy_bonds = [
+        " ".join([row.split()[0] + "b", row.split()[1] + "b", *row.split()[2:]]) for row in bond_rows
+    ]
+    cif = tmp_path / "clash.cif"
+    cif.write_text(
+        atoms + "\n" + "\n".join(copies) + "\n\nloop_\n_geom_bond_atom_site_label_1" + bonds + "\n".join(copy_bonds) + "\n"
+    )
+    result = optimize_cif_with_lammps(
+        cif,
+        lmp_path=lmp,
+        settings=LammpsOptimizationSettings(
+            enable_omp=False,
+            charge_model="none",
+            pre_minimization_mode="soft",
+            relax_cell=False,
+            min_style="cg",
+        ),
+    )
+    soft = result.convergence["soft_pre_minimization"]
+    assert soft["ramp_ran"] is True
+    assert soft["initial_contact_energy_kcal_mol"] > 0
+    assert soft["residual_contact_energy_kcal_mol"] < 1e-2 * soft["initial_contact_energy_kcal_mol"]
+    assert result.convergence["converged"]
+
+
+def test_cell_relaxation_cycles_run_in_real_lammps(lmp, tmp_path):
+    from cofkit.lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
+
+    cif = tmp_path / "input.cif"
+    cif.write_text(_fixture_text("engine_methylamine.cif"))
+    result = optimize_cif_with_lammps(
+        cif,
+        lmp_path=lmp,
+        settings=LammpsOptimizationSettings(
+            enable_omp=False,
+            charge_model="none",
+            pre_minimization_steps=0,
+            cell_relaxation_max_cycles=2,
+        ),
+    )
+    cell = result.convergence["cell_relaxation"]
+    assert 1 <= cell["cycles_run"] <= 2
+    labels = [stage["stage"] for stage in result.convergence["stages"]]
+    assert labels[-1] == f"fixed_cell_{cell['cycles_run']}"
+    assert labels.count("box_relax_1") == 1
+    # A cell that was stable after one cycle must have left the loop.
+    if cell["cycles"][0]["max_box_change_angstrom"] <= cell["stability_tolerance_angstrom"]:
+        assert cell["cycles_run"] == 1
+
+
+def test_dsf_coulomb_runs_charged_optimization(lmp, tmp_path):
+    import math
+
+    from cofkit.lammps import (
+        LammpsOptimizationSettings,
+        _convergence_diagnostics_available,
+        optimize_cif_with_lammps,
+    )
+
+    text = _fixture_text("engine_methylamine.cif").replace(
+        "_atom_site_occupancy\n", "_atom_site_occupancy\n_atom_site_charge\n"
+    )
+    charges = {"c1": -0.2, "n1": -0.5, "h1": 0.2, "h2": 0.2, "h3": 0.1, "h4": 0.1, "h5": 0.1}
+    lines = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 6 and parts[0] in charges and parts[5] == "1.00":
+            line = f"{line} {charges[parts[0]]:.6f}"
+        lines.append(line)
+    cif = tmp_path / "charged.cif"
+    cif.write_text("\n".join(lines) + "\n")
+    result = optimize_cif_with_lammps(
+        cif,
+        lmp_path=lmp,
+        settings=LammpsOptimizationSettings(
+            enable_omp=False,
+            charge_model="none",
+            pre_minimization_steps=0,
+            relax_cell=False,
+        ),
+    )
+    script_text = Path(result.lammps_input_script_path).read_text()
+    assert "lj/cut/coul/dsf" in script_text
+    assert "kspace_style" not in script_text
+    # An isolated charged molecule has flat modes that stall both Coulomb
+    # methods; this checks that the DSF export runs and reports finite,
+    # readable diagnostics.
+    assert _convergence_diagnostics_available(result.convergence)
+    assert all(
+        math.isfinite(stage["force_norm_kcal_mol_angstrom"]) for stage in result.convergence["stages"]
+    )

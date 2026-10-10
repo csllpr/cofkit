@@ -6,7 +6,12 @@ from typing import Mapping
 
 from .cofid import COFidMonomer, ParsedCOFid, parse_cofid
 from .decompose import CifDecompositionResult, decompose_cif_to_cofid
-from .lammps import LammpsOptimizationSettings, LammpsOptimizationResult, optimize_cif_with_lammps
+from .lammps import (
+    DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS,
+    LammpsOptimizationResult,
+    LammpsOptimizationSettings,
+    optimize_cif_with_lammps,
+)
 
 
 @dataclass(frozen=True)
@@ -89,7 +94,7 @@ def validate_lammps_optimized_cif_against_cofid(
     output_dir: str | Path | None = None,
     lmp_path: str | Path | None = None,
     eqeq_path: str | Path | None = None,
-    timeout_seconds: float = 300.0,
+    timeout_seconds: float = DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS,
     eqeq_timeout_seconds: float | None = 300.0,
 ) -> COFidValidationResult:
     expected = parse_cofid(cofid)
