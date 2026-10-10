@@ -13,7 +13,7 @@ from .lammps import (
     LammpsInputError,
     LammpsParseError,
 )
-from .lammps import LammpsOptimizationSettings
+from .lammps import DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS, LammpsOptimizationSettings
 from .validate import (
     COFidValidationResult,
     validate_cif_against_cofid,
@@ -77,8 +77,8 @@ def _add_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--timeout-seconds",
         type=float,
-        default=300.0,
-        help="Per-run timeout for the LAMMPS subprocess. Default: 300.",
+        default=DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS,
+        help=f"Per-run timeout for the LAMMPS subprocess. Default: {DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS:g}.",
     )
     parser.add_argument(
         "--eqeq-timeout-seconds",

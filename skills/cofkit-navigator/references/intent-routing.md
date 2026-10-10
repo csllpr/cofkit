@@ -213,7 +213,7 @@ cofkit validate optimize \
 
 Useful variants:
 
-- add `--settings-json settings.json` with a JSON object of `LammpsOptimizationSettings` overrides; for example `{"relax_cell": false}` disables the final box/relax stage (no dedicated flag exists on this command)
+- add `--settings-json settings.json` with a JSON object of `LammpsOptimizationSettings` overrides; for example `{"relax_cell": false}` disables cell relaxation (no dedicated flag exists on this command)
 
 Requirements:
 
@@ -293,7 +293,9 @@ Useful variants:
 
 - add `--pre-minimization-steps ...` plus the other `--pre-minimization-*` flags for a short restrained prerun before minimization
 - add `--two-stage` plus `--stage2-*` for a weaker or unrestrained second minimization stage
-- add `--relax-cell` plus `--box-relax-*` for a final box/relax stage
+- cell relaxation is on by default (cycles of `fix box/relax` plus a fixed-cell minimization until the cell is stable); tune `--cell-relaxation-max-cycles`, `--cell-stability-tolerance`, and `--box-relax-*`, or pass `--no-relax-cell`
+- add `--pre-minimization-mode soft` to repair clashes before minimization (skipped automatically when nothing clashes)
+- charged runs use `--coulomb-method dsf` by default; pass `--coulomb-method ewald` to reproduce Ewald-based results
 - tune `--energy-tolerance`, `--force-tolerance`, `--max-iterations`, `--max-evaluations`, `--min-style`, `--timestep`, and `--min-modify-*` as needed
 - add `--lmp-path ...` if `COFKIT_LMP_PATH` is not configured
 

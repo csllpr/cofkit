@@ -33,6 +33,7 @@ from .hybrid_mdmc import (
 )
 from .guest_restart import GuestRestartError
 from .lammps import (
+    DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS,
     LammpsConfigurationError,
     LammpsError,
     LammpsExecutionError,
@@ -289,6 +290,22 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         help="LAMMPS Ewald precision when the export includes periodic charges. Default: 1e-6.",
     )
     parser.add_argument(
+        "--coulomb-method",
+        choices=("ewald", "dsf"),
+        default=LammpsOptimizationSettings().coulomb_method,
+        help=(
+            "Periodic Coulomb treatment for charged runs: ewald (lj/cut/coul/long + kspace ewald) or dsf "
+            "(damped shifted force, continuous at the cutoff, so cell relaxation does not stall on "
+            f"energy jumps). Default: {LammpsOptimizationSettings().coulomb_method}."
+        ),
+    )
+    parser.add_argument(
+        "--dsf-damping",
+        type=float,
+        default=LammpsOptimizationSettings().dsf_damping,
+        help=f"DSF damping parameter in 1/angstrom. Default: {LammpsOptimizationSettings().dsf_damping:g}.",
+    )
+    parser.add_argument(
         "--position-restraint-force-constant",
         type=float,
         default=LammpsOptimizationSettings().position_restraint_force_constant,
@@ -337,10 +354,43 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         help="Per-step displacement cap in angstrom for the default prerun nve/limit stage. Default: 0.10.",
     )
     parser.add_argument(
+        "--soft-pre-minimization-contact-ratio",
+        type=float,
+        default=LammpsOptimizationSettings().soft_pre_minimization_contact_ratio,
+        help=(
+            "Soft clash-repair cutoff for each atom-type pair, as a fraction of the summed Bondi vdW radii "
+            "(the validator's clash criterion). Graph-excluded 1-2/1-3/1-4 pairs are ignored and the ramp "
+            "is skipped when no pair is inside its cutoff. "
+            f"Default: {LammpsOptimizationSettings().soft_pre_minimization_contact_ratio:g}."
+        ),
+    )
+    parser.add_argument(
         "--soft-pre-minimization-cutoff",
         type=float,
         default=LammpsOptimizationSettings().soft_pre_minimization_cutoff,
-        help="Cutoff in angstrom for pre-minimization pair_style soft. Default: 8.0.",
+        help=(
+            "Optional uniform pair_style soft cutoff in angstrom replacing the per-pair contact cutoffs. "
+            "A cutoff beyond contact distance pushes every nonbonded pair inside it apart and distorts "
+            "clash-free frameworks; use only for deliberate experiments."
+        ),
+    )
+    parser.add_argument(
+        "--soft-pre-minimization-energy-tolerance",
+        type=float,
+        default=LammpsOptimizationSettings().soft_pre_minimization_energy_tolerance,
+        help=(
+            "Energy tolerance of each soft-ramp minimization. "
+            f"Default: {LammpsOptimizationSettings().soft_pre_minimization_energy_tolerance:g}."
+        ),
+    )
+    parser.add_argument(
+        "--soft-pre-minimization-force-tolerance",
+        type=float,
+        default=LammpsOptimizationSettings().soft_pre_minimization_force_tolerance,
+        help=(
+            "Force tolerance (kcal/mol/A) of each soft-ramp minimization. "
+            f"Default: {LammpsOptimizationSettings().soft_pre_minimization_force_tolerance:g}."
+        ),
     )
     parser.add_argument(
         "--soft-pre-minimization-coefficients",
@@ -493,8 +543,8 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         action=argparse.BooleanOptionalAction,
         default=LammpsOptimizationSettings().relax_cell,
         help=(
-            "Enable or disable a final box/relax minimization stage using a box-relax-compatible minimizer. "
-            "Default: enabled."
+            "Enable or disable cell relaxation: repeated cycles of fix box/relax followed by a fixed-cell "
+            "minimization, until the cell is stable. Default: enabled."
         ),
     )
     parser.add_argument(
@@ -536,7 +586,25 @@ def _add_lammps_optimize_parser(subparsers) -> None:
         "--box-relax-force-tolerance",
         type=float,
         default=LammpsOptimizationSettings().box_relax_force_tolerance,
-        help="Final box-relax force tolerance, looser than the fixed-cell stages. Default: 1e-3.",
+        help="Force tolerance of each fix box/relax stage, looser than the fixed-cell stages. Default: 1e-3.",
+    )
+    parser.add_argument(
+        "--cell-relaxation-max-cycles",
+        type=int,
+        default=LammpsOptimizationSettings().cell_relaxation_max_cycles,
+        help=(
+            "Maximum cell-relaxation cycles (fix box/relax, then fixed-cell minimization). "
+            f"Default: {LammpsOptimizationSettings().cell_relaxation_max_cycles}."
+        ),
+    )
+    parser.add_argument(
+        "--cell-stability-tolerance",
+        type=float,
+        default=LammpsOptimizationSettings().cell_stability_tolerance,
+        help=(
+            "A cycle is stable when no LAMMPS box parameter (lx, ly, lz, xy, xz, yz) changes by more than this "
+            f"many angstrom. Default: {LammpsOptimizationSettings().cell_stability_tolerance:g}."
+        ),
     )
     parser.add_argument(
         "--box-relax-max-iterations",
@@ -553,8 +621,8 @@ def _add_lammps_optimize_parser(subparsers) -> None:
     parser.add_argument(
         "--timeout-seconds",
         type=float,
-        default=300.0,
-        help="Per-run timeout for the LAMMPS subprocess. Default: 300.",
+        default=DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS,
+        help=f"Per-run timeout for the LAMMPS subprocess. Default: {DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS:g}.",
     )
     parser.add_argument(
         "--eqeq-timeout-seconds",
@@ -578,6 +646,8 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         pair_cutoff=args.pair_cutoff,
         coulomb_cutoff=args.coulomb_cutoff,
         ewald_precision=args.ewald_precision,
+        coulomb_method=args.coulomb_method,
+        dsf_damping=args.dsf_damping,
         position_restraint_force_constant=args.position_restraint_force_constant,
         pre_minimization_mode=args.pre_minimization_mode,
         pre_minimization_steps=args.pre_minimization_steps,
@@ -585,7 +655,10 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         pre_minimization_damping=args.pre_minimization_damping,
         pre_minimization_seed=args.pre_minimization_seed,
         pre_minimization_displacement_limit=args.pre_minimization_displacement_limit,
+        soft_pre_minimization_contact_ratio=args.soft_pre_minimization_contact_ratio,
         soft_pre_minimization_cutoff=args.soft_pre_minimization_cutoff,
+        soft_pre_minimization_energy_tolerance=args.soft_pre_minimization_energy_tolerance,
+        soft_pre_minimization_force_tolerance=args.soft_pre_minimization_force_tolerance,
         soft_pre_minimization_coefficients=tuple(args.soft_pre_minimization_coefficients),
         soft_pre_minimization_min_style=args.soft_pre_minimization_min_style,
         soft_pre_minimization_max_iterations=args.soft_pre_minimization_max_iterations,
@@ -621,6 +694,8 @@ def _run_lammps_optimize(args: argparse.Namespace) -> None:
         box_relax_force_tolerance=args.box_relax_force_tolerance,
         box_relax_max_iterations=args.box_relax_max_iterations,
         box_relax_max_evaluations=args.box_relax_max_evaluations,
+        cell_relaxation_max_cycles=args.cell_relaxation_max_cycles,
+        cell_stability_tolerance=args.cell_stability_tolerance,
     )
     eqeq_settings = EqeqChargeSettings(
         lambda_value=args.eqeq_lambda,
