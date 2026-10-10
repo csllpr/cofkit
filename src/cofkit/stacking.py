@@ -4,7 +4,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from math import acos, degrees
+from math import acos, ceil, degrees, floor, sqrt
 from typing import Mapping
 
 from .geometry import (
@@ -13,30 +13,38 @@ from .geometry import (
     Vec3,
     add,
     classify_2d_cell,
+    cross,
     dot,
     layer_normal_axis,
     matmul_vec,
     measure_layer_z_span,
     norm,
     scale,
+    sub,
 )
 from .model import AssemblyState, Candidate, Pose, ReactionEvent
 from .topologies import get_topology_hint
-from .vdw import DEFAULT_NONBONDED_SEARCH_RADIUS, min_periodic_pair_contact
+from .vdw import BONDI_VDW_RADII, DEFAULT_NONBONDED_SEARCH_RADIUS, min_periodic_pair_contact, vdw_radius
 
 
 _STACKING_LAYER_SUFFIXES: tuple[str, str] = ("L0", "L1")
 
-# Heuristic — pending calibration: default nuclear-plane *clearance* (the
-# surface-to-surface gap between the extreme nuclear planes of adjacent
-# layers), NOT a mean-plane interlayer spacing; the shipped c axis derives as
-# c2c = clearance + layer_z_span (see the LayerRegistry docstring).
+# Heuristic — pending calibration: default interlayer *clearance*, the
+# closest C...C approach between adjacent layers (π-stacking-like gap); other
+# element pairs scale it by their Bondi vdW sum.  It is NOT a mean-plane
+# interlayer spacing: the shipped c axis is the contact-limited c2c described
+# in the LayerRegistry docstring, bounded below by the clearance and above by
+# clearance + layer_z_span.
 # π-stacking-like gap, global for all 2D COFs (no chemistry input reaches the
 # stacking stage). Unified 2026-09-28 per owner decision from the undocumented
 # 3.4/3.5/3.6 Å per-registry triple: no rationale ever existed for
 # differentiating by registry, and a single honest number is preferable to
 # three pseudo-precise ones.
 DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM = 3.5
+
+# The clearance is defined for a C...C contact; an interlayer pair of other
+# elements must stay at clearance * (r_vdw_i + r_vdw_j) / this sum.
+_CLEARANCE_REFERENCE_VDW_SUM_ANGSTROM = 2.0 * BONDI_VDW_RADII["C"]
 
 # Base-cell c tilts at or below this angle (degrees) are numerical noise: the
 # stacked cell is still reported as built along the base c direction.
@@ -57,14 +65,27 @@ class LayerRegistry:
 
     Semantics
     ---------
-    ``interlayer_distance`` here is a **nuclear-plane clearance**: the gap
-    between the extreme nuclear planes of adjacent layers.  It is *not* the
-    mean-plane repeat published in the literature.  The centre-to-centre
-    distance between adjacent layers is::
+    ``interlayer_distance`` here is a **contact clearance**: the closest
+    allowed C...C approach between adjacent layers, scaled for other element
+    pairs by their Bondi vdW sum (``clearance * (r_i + r_j) / (2 * r_C)``).
+    It is *not* the mean-plane repeat published in the literature.  The
+    centre-to-centre distance between adjacent layers (``spacing_rule:
+    contact_limited``) is the smallest ``c2c`` in::
+
+        [interlayer_clearance, interlayer_clearance + layer_z_span]
+
+    at which every interlayer atom pair of the realized layers, under every
+    in-plane lattice image and both periodic c galleries, respects that
+    scaled clearance.  The upper bound is the slab rule (one layer must clear
+    the other's full thickness), so the contact-limited spacing never exceeds
+    it; layers whose twisted rings nest under the next layer's identical
+    rings stack closer.  For flat layers, or atoms stacked directly along the
+    normal, the two coincide.  When no layer atoms are available the slab
+    rule itself is used (``spacing_rule: clearance_plus_span``)::
 
         c2c = interlayer_clearance + layer_z_span
 
-    and the full c axis of the bilayer cell is::
+    The full c axis of the bilayer cell is::
 
         c = 2 * c2c
 
@@ -248,10 +269,34 @@ def _apply_layer_registry(
                 file=sys.stderr,
             )
 
-    center_to_center_distance = registry.interlayer_distance + layer_z_span
+    clearance_bound_center_to_center_distance = registry.interlayer_distance + layer_z_span
+    # The contact search assumes the in-plane vectors are perpendicular to the
+    # stacking axis, which holds for the layer normal; the degenerate c_hat
+    # fallback keeps the slab rule.
+    base_layer_atoms = (
+        _base_layer_atoms(candidate, monomer_specs, realization)
+        if span_axis_label == "layer_normal"
+        else []
+    )
+    contact_limited_distance = _contact_limited_center_to_center(
+        base_layer_atoms,
+        base_cell,
+        span_axis,
+        _fractional_shift_in_plane(base_cell, registry.lateral_shift),
+        clearance=registry.interlayer_distance,
+        upper=clearance_bound_center_to_center_distance,
+    )
+    if contact_limited_distance is None:
+        spacing_rule = "clearance_plus_span"
+        center_to_center_distance = clearance_bound_center_to_center_distance
+    else:
+        spacing_rule = "contact_limited"
+        center_to_center_distance = contact_limited_distance
 
-    # W4.2 self-check: c2c must exceed layer_z_span
-    if center_to_center_distance <= layer_z_span:
+    # W4.2 self-check: under the slab rule c2c must exceed layer_z_span.  A
+    # contact-limited c2c may legitimately sit below the span (nested rings);
+    # the atomistic interlayer-contact check below covers that case.
+    if spacing_rule == "clearance_plus_span" and center_to_center_distance <= layer_z_span:
         stacking_warnings.append(
             f"c2c ({center_to_center_distance:.3f}) ≤ layer_z_span ({layer_z_span:.3f}); layers may interpenetrate"
         )
@@ -384,6 +429,8 @@ def _apply_layer_registry(
     embedding["stacking"] = _stacking_metadata(
         registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting,
         c_axis_basis=span_axis_label, base_c_tilt_degrees=base_c_tilt_degrees,
+        spacing_rule=spacing_rule,
+        clearance_bound_center_to_center_distance=clearance_bound_center_to_center_distance,
     )
 
     score_metadata = dict(_mapping(candidate.metadata.get("score_metadata")))
@@ -491,6 +538,8 @@ def _apply_layer_registry(
         **_stacking_metadata(
             registry, layer_z_span, span_report, center_to_center_distance, cell_kind, cell_setting,
             c_axis_basis=span_axis_label, base_c_tilt_degrees=base_c_tilt_degrees,
+            spacing_rule=spacing_rule,
+            clearance_bound_center_to_center_distance=clearance_bound_center_to_center_distance,
         ),
         "layer_z_span": layer_z_span,
         "center_to_center_distance": center_to_center_distance,
@@ -737,39 +786,22 @@ def _measure_interlayer_contact(
         suffix = instance_id[-2:]
         if suffix not in layer_atoms:
             continue
-        base_instance_id = instance_id[: -len(suffix)]
-        atoms: list[tuple[str, str, Vec3]] | None = None
-        if realization is not None:
-            realized_atoms = getattr(realization, "atoms_by_instance", {}).get(base_instance_id)
-            if realized_atoms:
-                prefix = f"{base_instance_id}_"
-                atoms = [
-                    (
-                        f"{instance_id}_{atom.label[len(prefix):]}"
-                        if atom.label.startswith(prefix)
-                        else f"{instance_id}_{atom.label}",
-                        atom.symbol,
-                        atom.local_position,
-                    )
-                    for atom in realized_atoms
-                ]
-        if atoms is None:
-            monomer_id = stacked_instance_to_monomer.get(instance_id)
-            monomer = monomer_specs.get(monomer_id) if monomer_id else None
-            if monomer is None or not getattr(monomer, "atom_symbols", ()):
-                continue
-            atoms = [
-                (f"{instance_id}_{symbol}{atom_index + 1}", symbol, position)
-                for atom_index, (symbol, position) in enumerate(
-                    zip(monomer.atom_symbols, monomer.atom_positions)
-                )
-            ]
+        instance_atoms = _instance_world_atoms(
+            instance_id,
+            instance_id[: -len(suffix)],
+            pose,
+            stacked_instance_to_monomer.get(instance_id),
+            monomer_specs,
+            realization,
+        )
+        if instance_atoms is None:
+            continue
+        atoms, source = instance_atoms
+        if source == "precursor":
             n_precursor += len(atoms)
         else:
             n_product += len(atoms)
-        for label, symbol, local_position in atoms:
-            world = add(matmul_vec(pose.rotation_matrix, local_position), pose.translation)
-            layer_atoms[suffix].append((label, symbol, world))
+        layer_atoms[suffix].extend(atoms)
 
     atoms_l0 = layer_atoms[_STACKING_LAYER_SUFFIXES[0]]
     atoms_l1 = layer_atoms[_STACKING_LAYER_SUFFIXES[1]]
@@ -802,6 +834,170 @@ def _measure_interlayer_contact(
     return info
 
 
+def _instance_world_atoms(
+    label_instance_id: str,
+    base_instance_id: str,
+    pose: Pose,
+    monomer_id: str | None,
+    monomer_specs: Mapping[str, object],
+    realization: object | None,
+) -> tuple[list[tuple[str, str, Vec3]], str] | None:
+    """World-frame ``(label, symbol, position)`` atoms of one monomer instance.
+
+    Realized product atoms (keyed by the unstacked *base_instance_id*) are
+    preferred; precursor coordinates are the per-instance fallback.  Returns
+    the atoms with their source (``"product"`` / ``"precursor"``), or None
+    when the instance has no atoms.  Shared by the contact-limited spacing
+    and the W4.2 interlayer-contact self-check so both measure the same atoms.
+    """
+    atoms: list[tuple[str, str, Vec3]] | None = None
+    source = "product"
+    if realization is not None:
+        realized_atoms = getattr(realization, "atoms_by_instance", {}).get(base_instance_id)
+        if realized_atoms:
+            prefix = f"{base_instance_id}_"
+            atoms = [
+                (
+                    f"{label_instance_id}_{atom.label[len(prefix):]}"
+                    if atom.label.startswith(prefix)
+                    else f"{label_instance_id}_{atom.label}",
+                    atom.symbol,
+                    atom.local_position,
+                )
+                for atom in realized_atoms
+            ]
+    if atoms is None:
+        monomer = monomer_specs.get(monomer_id) if monomer_id else None
+        if monomer is None or not getattr(monomer, "atom_symbols", ()):
+            return None
+        atoms = [
+            (f"{label_instance_id}_{symbol}{atom_index + 1}", symbol, position)
+            for atom_index, (symbol, position) in enumerate(
+                zip(monomer.atom_symbols, monomer.atom_positions)
+            )
+        ]
+        source = "precursor"
+    return (
+        [
+            (label, symbol, add(matmul_vec(pose.rotation_matrix, local_position), pose.translation))
+            for label, symbol, local_position in atoms
+        ],
+        source,
+    )
+
+
+def _base_layer_atoms(
+    candidate: Candidate,
+    monomer_specs: Mapping[str, object] | None,
+    realization: object | None,
+) -> list[tuple[str, Vec3]]:
+    """``(symbol, world position)`` atoms of the unstacked base layer."""
+    if monomer_specs is None:
+        return []
+    instance_to_monomer = _string_mapping(candidate.metadata.get("instance_to_monomer"))
+    layer: list[tuple[str, Vec3]] = []
+    for instance_id, pose in candidate.state.monomer_poses.items():
+        instance_atoms = _instance_world_atoms(
+            instance_id, instance_id, pose, instance_to_monomer.get(instance_id), monomer_specs, realization
+        )
+        if instance_atoms is not None:
+            layer.extend((symbol, position) for _label, symbol, position in instance_atoms[0])
+    return layer
+
+
+def _contact_limited_center_to_center(
+    atoms: list[tuple[str, Vec3]],
+    base_cell: tuple[Vec3, Vec3, Vec3],
+    axis: Vec3,
+    lateral_shift: Vec3,
+    *,
+    clearance: float,
+    upper: float,
+) -> float | None:
+    """Smallest layer spacing at which no interlayer pair violates the clearance.
+
+    The stacked bilayer places layer 1 at ``layer 0 + lateral_shift + d * axis``
+    and repeats with period ``2 * d`` along *axis*, so along the normal every
+    copy sits ``k * d`` away: odd ``k`` is the other layer (with the lateral
+    shift), even ``k`` the same layer.  A pair at in-plane separation ``s``
+    and normal offset ``z`` is closer than its scaled clearance
+    ``r = clearance * (r_vdw_i + r_vdw_j) / (2 * r_vdw_C)`` exactly when
+    ``|z ± k * d| < sqrt(r^2 - s^2)``.  This collects those forbidden open
+    intervals of ``d`` over every pair, every in-plane image, both signs, and
+    every ``k`` whose copy can still reach within a clearance at
+    ``d >= clearance`` (thick layers reach past the nearest copy), then
+    returns the smallest allowed ``d`` in ``[clearance, upper]``.  Returns
+    None when there are no atoms (callers fall back to the slab rule).
+    """
+    if not atoms:
+        return None
+    a_vec, b_vec = base_cell[0], base_cell[1]
+    normal = scale(axis, 1.0 / norm(axis))
+    volume = dot(cross(a_vec, b_vec), normal)
+    if abs(volume) < 1e-12:
+        return None
+
+    # The caller passes the layer normal n = normalize(a x b), so a and b lie
+    # in the layer plane and p = u*a + v*b + h*n with h = p . n.
+    def decompose(vector: Vec3) -> tuple[float, float, float]:
+        return (
+            dot(cross(vector, b_vec), normal) / volume,
+            dot(cross(a_vec, vector), normal) / volume,
+            dot(vector, normal),
+        )
+
+    a_plane = sub(a_vec, scale(normal, dot(a_vec, normal)))
+    b_plane = sub(b_vec, scale(normal, dot(b_vec, normal)))
+    area = norm(cross(a_plane, b_plane))
+    width_a = area / norm(b_plane)
+    width_b = area / norm(a_plane)
+
+    reference_sum = _CLEARANCE_REFERENCE_VDW_SUM_ANGSTROM
+    radii = {symbol: vdw_radius(symbol) for symbol in {symbol for symbol, _ in atoms}}
+    entries = []
+    for symbol, position in atoms:
+        frac_a, frac_b, height = decompose(position)
+        entries.append((frac_a - floor(frac_a), frac_b - floor(frac_b), height, radii[symbol]))
+    shift_a, shift_b, shift_height = decompose(lateral_shift)
+    r_max = clearance * 2.0 * max(radii.values()) / reference_sum
+
+    forbidden: list[tuple[float, float]] = []
+
+    def collect(frac_shift_a: float, frac_shift_b: float, height_shift: float, divisor: float) -> None:
+        for frac_a_i, frac_b_i, height_i, radius_i in entries:
+            for frac_a_j, frac_b_j, height_j, radius_j in entries:
+                limit = clearance * (radius_i + radius_j) / reference_sum
+                delta_a = frac_a_j + frac_shift_a - frac_a_i
+                delta_b = frac_b_j + frac_shift_b - frac_b_i
+                normal_offset = height_j + height_shift - height_i
+                for image_a in range(ceil(-delta_a - r_max / width_a), floor(-delta_a + r_max / width_a) + 1):
+                    for image_b in range(ceil(-delta_b - r_max / width_b), floor(-delta_b + r_max / width_b) + 1):
+                        in_plane = add(scale(a_plane, delta_a + image_a), scale(b_plane, delta_b + image_b))
+                        in_plane_sq = dot(in_plane, in_plane)
+                        if in_plane_sq >= limit * limit:
+                            continue
+                        half_width = sqrt(limit * limit - in_plane_sq)
+                        for sign in (1.0, -1.0):
+                            # distance^2 = in_plane^2 + (normal_offset + sign * divisor * d)^2
+                            centre = -sign * normal_offset / divisor
+                            forbidden.append((centre - half_width / divisor, centre + half_width / divisor))
+
+    heights = [height for _, _, height, _ in entries]
+    reach = max(heights) - min(heights) + abs(shift_height) + r_max
+    for multiple in range(1, ceil(reach / clearance) + 1):
+        if multiple % 2:
+            collect(shift_a, shift_b, shift_height, float(multiple))
+        else:
+            collect(0.0, 0.0, 0.0, float(multiple))
+
+    spacing = clearance
+    for start, end in sorted(interval for interval in forbidden if interval[1] > clearance):
+        if start >= spacing:
+            break
+        spacing = max(spacing, end)
+    return min(spacing, upper)
+
+
 def _fractional_shift_in_plane(
     cell: tuple[Vec3, Vec3, Vec3],
     shift: tuple[float, float],
@@ -819,6 +1015,8 @@ def _stacking_metadata(
     *,
     c_axis_basis: str,
     base_c_tilt_degrees: float | None,
+    spacing_rule: str = "clearance_plus_span",
+    clearance_bound_center_to_center_distance: float | None = None,
 ) -> dict[str, object]:
     """Build the canonical stacking metadata dict (W3.1)."""
     span_mode = getattr(span_report, "mode", "")
@@ -852,9 +1050,21 @@ def _stacking_metadata(
         "layer_z_span_mode": span_mode,
         "layer_z_span_axis": span_axis,
         "center_to_center_distance": center_to_center_distance,
+        "spacing_rule": spacing_rule,
+        "clearance_bound_center_to_center_distance": (
+            clearance_bound_center_to_center_distance
+            if clearance_bound_center_to_center_distance is not None
+            else float(registry.interlayer_distance) + layer_z_span
+        ),
         "derivation": (
-            "c2c = interlayer_clearance + layer_z_span; "
-            f"c = layer_count * c2c along the {axis_phrase}"
+            (
+                "c2c = smallest spacing in [interlayer_clearance, interlayer_clearance + layer_z_span] "
+                "at which every interlayer atom pair is at least "
+                "interlayer_clearance * (r_vdw_i + r_vdw_j) / (2 * r_vdw_C) apart (Bondi radii); "
+                if spacing_rule == "contact_limited"
+                else "c2c = interlayer_clearance + layer_z_span; "
+            )
+            + f"c = layer_count * c2c along the {axis_phrase}"
         ),
         "layer_count": 2,
         # c-axis provenance: which axis the stacked c was built along, and

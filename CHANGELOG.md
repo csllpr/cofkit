@@ -4,6 +4,12 @@ All notable changes to `cofkit` are recorded here.
 
 Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-10-09` is version `2026.10.9`.
 
+## Unreleased
+
+### Changed
+
+- stacked 2D bilayers now use a contact-limited interlayer spacing instead of the slab rule `c2c = interlayer_clearance + layer_z_span`: `c2c` is the smallest spacing in `[interlayer_clearance, interlayer_clearance + layer_z_span]` at which every interlayer atom pair of the realized layers (all in-plane lattice images, both periodic c galleries, and farther copies that thick layers can reach) is at least `interlayer_clearance * (r_vdw_i + r_vdw_j) / (2 * r_vdw_C)` apart (Bondi radii; 3.5 Å for C...C, 2.99 Å for C...H, 2.47 Å for H...H at the default clearance). The slab rule required each layer to clear the other's full thickness, so layers with twisted aryl rings were exported far apart even in AA registry, where the identically twisted rings nest: the stacked c/2 of the imine benchmark frameworks was 5.5-8.0 Å (COF-366 7.97, TAPB-PDA 7.05, TFB/EDA 6.50, TAB/BPDA 5.75, TFB/benzidine 5.49) and is now 3.5-6.0 Å (6.04, 5.11, 4.72, 3.87, 3.86), with no stacking-clash flags. At those slab spacings the interlayer attraction is too weak to drive a 0-bar `box/relax`, which commonly stalled ("linesearch alpha is zero") with the layers still apart; from the new seeds the default `calculate lammps-optimize` route relaxes TFB/benzidine and TAB/BPDA to c/2 of 3.62/3.67 Å (previously 5.38/5.73 Å) and the others much closer (TAPB-PDA 4.16, TFB/EDA 4.43, COF-366 5.53 Å; previously 7.12, 6.60, 8.12 Å). The spacing never exceeds the slab rule and equals it for flat layers or atoms stacked along the normal; without realized layer atoms, or with the degenerate c_hat axis fallback, the slab rule is kept. Stacking metadata records `spacing_rule` (`contact_limited` / `clearance_plus_span`) and `clearance_bound_center_to_center_distance`, the derivation string states the rule, and the CIF stacking-geometry comment carries `spacing_rule=`. Recompute note: stacked 2D exports change cell c and layer offsets; 3D and single-layer exports are unchanged
+
 ## 2026.9.12
 
 ### Added

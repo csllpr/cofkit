@@ -680,19 +680,32 @@ class BatchStructureGeneratorTests(unittest.TestCase):
                 self.assertGreater(stacking["layer_z_span"], 3.0)
                 self.assertEqual(stacking["layer_z_span_mode"], "atomistic_product")
                 self.assertEqual(stacking["layer_z_span_axis"], "layer_normal")
-                # c2c = interlayer_clearance + layer_z_span, and the stacked
-                # cell is built along the layer normal with c = 2*c2c.
+                # Contact-limited c2c: never wider than the slab rule
+                # (clearance + span), never below the clearance, and the
+                # stacked cell is built along the layer normal with c = 2*c2c.
+                self.assertEqual(stacking["spacing_rule"], "contact_limited")
                 self.assertAlmostEqual(
-                    stacking["center_to_center_distance"],
+                    stacking["clearance_bound_center_to_center_distance"],
                     stacking["interlayer_clearance"] + stacking["layer_z_span"],
                     places=9,
                 )
+                self.assertLessEqual(
+                    stacking["center_to_center_distance"],
+                    stacking["clearance_bound_center_to_center_distance"] + 1e-9,
+                )
+                self.assertGreaterEqual(
+                    stacking["center_to_center_distance"], stacking["interlayer_clearance"] - 1e-9
+                )
                 self.assertEqual(stacking["layer_count"], 2)
                 self.assertEqual(stacking["c_axis_basis"], "layer_normal")
-                # Atomistic interlayer contact self-check ran and found no
-                # contact below the cutoff (None is a lower bound, not a
-                # missing value); the shipped AA export measured 2.02 A.
-                self.assertIsNone(stacking["min_interlayer_contact"])
+                # Atomistic interlayer contact self-check ran; any contact it
+                # finds respects the scaled clearance (the lowest, H...H, is
+                # clearance * 2.40 / 3.40); the shipped AA export measured 2.02 A.
+                if stacking["min_interlayer_contact"] is not None:
+                    self.assertGreaterEqual(
+                        stacking["min_interlayer_contact"],
+                        stacking["interlayer_clearance"] * 2.40 / 3.40 - 1e-6,
+                    )
                 self.assertEqual(stacking["min_interlayer_contact_mode"], "atomistic_product")
                 self.assertNotIn("stacking_clash", summary.flags)
                 self.assertIsNotNone(summary.cif_path)
@@ -715,10 +728,13 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             self.assertEqual(set(summaries_by_registry), {"AA", "AB", "slipped"})
             for registry, summary in summaries_by_registry.items():
                 contact = self._min_interlayer_contact_from_cif(Path(summary.cif_path))
+                # Independent re-measurement over all atoms: nothing below the
+                # scaled H...H clearance (3.5 * 2.40 / 3.40 = 2.47 A); the
+                # interpenetrated export this guards against measured 2.02 A.
                 self.assertGreaterEqual(
                     contact,
-                    2.5,
-                    f"{registry} min interlayer contact {contact:.3f} A regressed below 2.5 A",
+                    3.5 * 2.40 / 3.40 - 1e-3,
+                    f"{registry} min interlayer contact {contact:.3f} A regressed below the scaled H...H clearance",
                 )
 
             # W7 test 3 (60-degree half): the hexagonal AB shift maps a vertex
@@ -2193,11 +2209,26 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             layer_z_span = float(summary.metadata["stacking"]["layer_z_span"])
             self.assertGreater(layer_z_span, 0.0)
             self.assertEqual(summary.metadata["stacking"]["layer_z_span_axis"], "layer_normal")
+            stacking = summary.metadata["stacking"]
+            # Contact-limited spacing: c = 2 * c2c, never wider than the slab
+            # rule (span + clearance), and every interlayer contact respects
+            # the scaled clearance (lowest: H...H, clearance * 2.40 / 3.40).
+            self.assertEqual(stacking["spacing_rule"], "contact_limited")
             self.assertAlmostEqual(
                 candidate.state.cell[2][2],
-                2.0 * (layer_z_span + summary.metadata["stacking"]["interlayer_clearance"]),
+                2.0 * stacking["center_to_center_distance"],
                 places=5,
             )
+            self.assertLessEqual(
+                stacking["center_to_center_distance"],
+                layer_z_span + stacking["interlayer_clearance"] + 1e-9,
+            )
+            self.assertNotIn("stacking_clash", candidate.flags)
+            if stacking["min_interlayer_contact"] is not None:
+                self.assertGreaterEqual(
+                    stacking["min_interlayer_contact"],
+                    stacking["interlayer_clearance"] * 2.40 / 3.40 - 1e-6,
+                )
             self.assertIsNotNone(summary.cif_path)
             cif_text = Path(summary.cif_path).read_text(encoding="utf-8")
 

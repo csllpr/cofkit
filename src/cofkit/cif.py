@@ -595,6 +595,9 @@ class CIFWriter:
         c2c = stacking.get("center_to_center_distance")
         if c2c is not None:
             parts.append(f"c2c={c2c:.4g}")
+        spacing_rule = stacking.get("spacing_rule")
+        if spacing_rule:
+            parts.append(f"spacing_rule={spacing_rule}")
         
         layer_count = stacking.get("layer_count", 2)
         parts.append(f"c={layer_count}*c2c")
