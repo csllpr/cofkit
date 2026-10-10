@@ -12,6 +12,7 @@ intentionally changes).
 
 import contextlib
 import io
+import math
 from math import cos, radians, sin
 
 import pytest
@@ -233,10 +234,16 @@ def test_stacking_self_check_flags_interpenetrated_bilayer():
 
     meta = stacked.metadata["stacking"]
     assert "stacking_clash" in stacked.flags
-    assert meta["min_interlayer_contact"] == pytest.approx(0.8)
+    # With an unphysical 0.8 A clearance the contact-limited rule interleaves
+    # the 3 A rods: c2c = 1.9 A is the first spacing at which every copy k*c2c
+    # keeps the clearance (|k*d - 3| >= 0.8 for every k >= 1), so the closest
+    # cross-layer contact is |1.9 - 3| = 1.1 A, still flagged as a clash.
+    assert meta["spacing_rule"] == "contact_limited"
+    assert meta["center_to_center_distance"] == pytest.approx(1.9)
+    assert meta["min_interlayer_contact"] == pytest.approx(1.1)
     assert meta["min_interlayer_contact_mode"] == "precursor_coordinates"
     assert meta["min_interlayer_contact_involves_hydrogen"] is False
-    assert meta["min_interlayer_contact_vdw_ratio"] == pytest.approx(0.8 / 3.4)
+    assert meta["min_interlayer_contact_vdw_ratio"] == pytest.approx(1.1 / 3.4)
     assert tuple(meta["min_interlayer_contact_image"]) in {(0, 0, 0), (0, 0, -1)}
     assert meta["min_interlayer_contact_atoms"][0].startswith("i0L")
     assert "stacking clash" in stderr.getvalue()
@@ -288,7 +295,11 @@ def test_stacking_contact_records_hydrogen_involvement_without_clash():
     )
 
     meta = stacked.metadata["stacking"]
-    assert meta["min_interlayer_contact"] == pytest.approx(3.4)
+    # The top H of one layer meets the bottom C of the next at the C...H
+    # scaled clearance 3.4 * (1.20 + 1.70) / 3.40 = 2.9 A (c2c = 2.7 + 2.9),
+    # closer than the 3.4 A slab rule would place it.
+    assert meta["center_to_center_distance"] == pytest.approx(5.6)
+    assert meta["min_interlayer_contact"] == pytest.approx(2.9)
     assert meta["min_interlayer_contact_involves_hydrogen"] is True
     assert "stacking_clash" not in stacked.flags
 
@@ -308,7 +319,8 @@ def test_stacking_contact_hydrogen_involving_clash_uses_ratio_criterion():
     )
 
     meta = stacked.metadata["stacking"]
-    assert meta["min_interlayer_contact"] == pytest.approx(2.0)
+    # C...H scaled clearance 2.0 * 2.9 / 3.4 = 1.706 A: ratio 0.59 < 0.75.
+    assert meta["min_interlayer_contact"] == pytest.approx(2.0 * 2.9 / 3.4)
     assert meta["min_interlayer_contact_involves_hydrogen"] is True
     assert "stacking_clash" in stacked.flags
 
@@ -643,3 +655,89 @@ def test_stacked_export_comment_reports_c_axis_orthogonalization_from_real_metad
         line for line in export.text.splitlines() if line.startswith("# stacking-geometry:")
     )
     assert "c_rebuilt_along_layer_normal(base_c_tilt=1deg)" in comment
+
+
+# ---------------------------------------------------------------------------
+# Contact-limited spacing: twisted rings nest instead of clearing full slabs
+# ---------------------------------------------------------------------------
+
+
+def _tilted_pair_monomer():
+    # Two carbons 2 A apart in-plane and 2 A apart along the normal, like the
+    # edge of a ring twisted 45 degrees out of the layer plane.
+    return _rod_monomer(monomer_id="mt", positions=((0.0, 0.0, 0.0), (2.0, 0.0, 2.0)))
+
+
+def test_contact_limited_spacing_nests_tilted_layers_below_the_slab_rule():
+    monomer = _tilted_pair_monomer()
+    candidate = _stackable_candidate(monomer, cell=((20.0, 0.0, 0.0), (0.0, 20.0, 0.0), (0.0, 0.0, 8.0)))
+
+    (stacked,) = enumerate_candidate_stackings(candidate, registry_ids=("AA",), monomer_specs={"mt": monomer})
+
+    meta = stacked.metadata["stacking"]
+    clearance = DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM
+    # The upper atom of one layer and the lower atom of the next are 2 A apart
+    # in-plane, so they reach the clearance at c2c = 2 + sqrt(3.5^2 - 2^2),
+    # below the slab rule's clearance + span = 5.5 A.
+    expected = 2.0 + math.sqrt(clearance**2 - 4.0)
+    assert meta["spacing_rule"] == "contact_limited"
+    assert meta["layer_z_span"] == pytest.approx(2.0)
+    assert meta["clearance_bound_center_to_center_distance"] == pytest.approx(clearance + 2.0)
+    assert meta["center_to_center_distance"] == pytest.approx(expected)
+    assert norm(stacked.state.cell[2]) == pytest.approx(2.0 * expected)
+    assert meta["min_interlayer_contact"] == pytest.approx(clearance)
+    assert "stacking_clash" not in stacked.flags
+    assert "interlayer_clearance * (r_vdw_i + r_vdw_j)" in meta["derivation"]
+
+
+def test_contact_limited_spacing_equals_slab_rule_for_atoms_stacked_along_the_normal():
+    monomer = _rod_monomer()
+    candidate = _stackable_candidate(monomer)
+
+    (stacked,) = enumerate_candidate_stackings(candidate, registry_ids=("AA",), monomer_specs={"m1": monomer})
+
+    meta = stacked.metadata["stacking"]
+    assert meta["spacing_rule"] == "contact_limited"
+    assert meta["center_to_center_distance"] == pytest.approx(meta["clearance_bound_center_to_center_distance"])
+    assert meta["center_to_center_distance"] == pytest.approx(DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM + 3.0)
+
+
+def test_contact_limited_spacing_is_never_below_the_clearance_for_flat_layers():
+    monomer = _rod_monomer(monomer_id="mf", positions=((0.0, 0.0, 0.0), (1.4, 0.0, 0.0)))
+    candidate = _stackable_candidate(monomer)
+
+    (stacked,) = enumerate_candidate_stackings(candidate, registry_ids=("AA",), monomer_specs={"mf": monomer})
+
+    meta = stacked.metadata["stacking"]
+    assert meta["layer_z_span"] == pytest.approx(0.0)
+    assert meta["center_to_center_distance"] == pytest.approx(DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM)
+
+
+def test_contact_limited_spacing_respects_lateral_registry_shift():
+    # Slipped by half a cell, the tilted pair's copies no longer sit over each
+    # other: with a 20 A cell no lateral image comes within a clearance, so
+    # the spacing drops to the clearance floor.
+    monomer = _tilted_pair_monomer()
+    candidate = _stackable_candidate(monomer, cell=((20.0, 0.0, 0.0), (0.0, 20.0, 0.0), (0.0, 0.0, 8.0)))
+
+    stacked = _apply_layer_registry(
+        candidate,
+        LayerRegistry(id="slipped", lateral_shift=(0.5, 0.0)),
+        monomer_specs={"mt": monomer},
+    )
+
+    meta = stacked.metadata["stacking"]
+    assert meta["spacing_rule"] == "contact_limited"
+    assert meta["center_to_center_distance"] == pytest.approx(DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM)
+    assert meta["clearance_bound_center_to_center_distance"] == pytest.approx(DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM + 2.0)
+
+
+def test_spacing_falls_back_to_slab_rule_without_layer_atoms():
+    base = _bridge_candidate("cand", [0.1])
+    stacked = _expand(base)
+
+    meta = stacked.metadata["stacking"]
+    assert meta["spacing_rule"] == "clearance_plus_span"
+    assert meta["center_to_center_distance"] == pytest.approx(DEFAULT_INTERLAYER_CLEARANCE_ANGSTROM + 3.5)
+    assert meta["derivation"].startswith("c2c = interlayer_clearance + layer_z_span")
+
