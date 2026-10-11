@@ -31,6 +31,11 @@ jobs:
         env:
           COFKIT_TEST_LMP: lmp
           COFKIT_REQUIRE_LAMMPS: "1"
+          # The tests run single-process LAMMPS. Keep MPICH's UCX layer on
+          # loopback, shared-memory and TCP transports: some hosted runners
+          # expose an RDMA device without SRQ support, and probing it aborts
+          # MPI_Init ("ibv_create_srq() failed: Operation not supported").
+          UCX_TLS: self,sm,tcp
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/mpich:${LD_LIBRARY_PATH:-}"
           uv run --no-sync pytest tests/engines -q
