@@ -16,6 +16,10 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 - the default LAMMPS optimization timeout is now 3600 s (`DEFAULT_LAMMPS_OPTIMIZATION_TIMEOUT_SECONDS`, used by `calculate lammps-optimize`, `validate optimize`, and the Python wrappers; was 300 s): single-threaded cell-relaxation cycles on ~250-atom frameworks take up to ~10 minutes. The build `--repair-geometry` timeout stays at 300 s
 - the `box_relax_vmax` provenance comment no longer claims 0.001 is the LAMMPS default (LAMMPS defaults to 0.0001); the value is unchanged
 
+### Fixed
+
+- the built-in `kgm` topology fallback (`topology_repository._BUILTIN_FALLBACKS`) now describes the kagome net as uninodal 4-connected (`node_coordination=(4,)`), matching RCSR and the bundled `2d/kgm.cgd`; it previously claimed a mixed 3/6-connected net (that is `kgd`), so a repository running on fallbacks alone proposed `kgm` for 3+6 monomer pairs and listed it as two node definitions. Bundled-data runs were unaffected. A regression test now checks every fallback against the bundled index, and the 3/6 test fixture formerly named `kgm` is renamed `kgd`
+
 ## 2026.9.12
 
 ### Added

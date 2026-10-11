@@ -34,7 +34,7 @@ EDGE 1.0 0.0 0.333333 0.666667
 END
 
 CRYSTAL
-NAME kgm
+NAME kgd
 GROUP p6mm
 CELL 1.0 1.0 120.0
 NODE tri 3 0.0 0.0
@@ -102,7 +102,7 @@ class TopologyRepositoryTests(unittest.TestCase):
 
         entries = importer.build_index(self.bundle_2d, dimensionality="2D")
 
-        self.assertEqual([entry.id for entry in entries], ["hcb", "kgm"])
+        self.assertEqual([entry.id for entry in entries], ["hcb", "kgd"])
         hcb = entries[0]
         self.assertEqual(hcb.n_node_definitions, 2)
         self.assertEqual(hcb.n_edge_definitions, 3)
@@ -137,14 +137,14 @@ END
         )
 
         index_entries = repository.list_index(dimensionality="2D", node_connectivities=(3, 6))
-        self.assertEqual([entry.id for entry in index_entries], ["kgm"])
+        self.assertEqual([entry.id for entry in index_entries], ["kgd"])
         self.assertTrue(index_entries[0].source_archive.endswith(".zip"))
         self.assertEqual(index_entries[0].n_edge_definitions, 6)
 
-        kgm = repository.load("kgm")
-        self.assertEqual(kgm.name, "kgm")
-        self.assertEqual([node.connectivity for node in kgm.node_definitions], [3, 6])
-        self.assertEqual(len(kgm.edge_definitions), 6)
+        kgd = repository.load("kgd")
+        self.assertEqual(kgd.name, "kgd")
+        self.assertEqual([node.connectivity for node in kgd.node_definitions], [3, 6])
+        self.assertEqual(len(kgd.edge_definitions), 6)
 
         dia = repository.get_index_entry("dia")
         self.assertEqual(dia.dimensionality, "3D")
@@ -170,12 +170,30 @@ END
         )
 
         plans = planner.propose((tri, hexa), tuple(), "2D")
-        self.assertEqual(plans[0].topology.id, "kgm")
+        self.assertEqual(plans[0].topology.id, "kgd")
         self.assertEqual(plans[0].topology.metadata["n_edge_definitions"], 6)
 
         fallback_planner = NetPlanner(topology_repository=TopologyRepository())
         fallback = fallback_planner._infer_repository_topologies((tri, tri), "2D")
         self.assertEqual([hint.id for hint in fallback], ["hcb"])
+
+        # kgm is the 4-connected kagome net; the 3/6-connected net is kgd.
+        self.assertEqual(fallback_planner._infer_repository_topologies((tri, hexa), "2D"), ())
+        fallback_repository = TopologyRepository()
+        self.assertEqual([entry.id for entry in fallback_repository.list_index("2D", (4,))], ["kgm"])
+        self.assertEqual(fallback_repository.get_index_entry("kgm").n_node_definitions, 1)
+
+    def test_builtin_fallbacks_match_bundled_topology_connectivities(self):
+        from cofkit.topology_repository import _BUILTIN_FALLBACKS
+
+        bundled = TopologyRepository.from_workspace_data(include_builtin_fallbacks=False)
+        for topology_id, fallback in _BUILTIN_FALLBACKS.items():
+            with self.subTest(topology_id=topology_id):
+                entry = bundled.get_index_entry(topology_id)
+                self.assertEqual(fallback.hint.dimensionality, entry.dimensionality)
+                # Fallbacks may repeat a connectivity per paired monomer
+                # (hcb (3, 3)); the distinct values must match the net.
+                self.assertEqual(set(fallback.hint.node_coordination), set(entry.node_connectivities))
 
     def test_default_repository_prefers_workspace_imported_data(self):
         topologies_module._DEFAULT_REPOSITORY = None

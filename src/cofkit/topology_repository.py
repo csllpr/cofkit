@@ -31,8 +31,8 @@ _BUILTIN_FALLBACKS: dict[str, BuiltinTopologyFallback] = {
         description="2D square lattice for paired 4-connected monomers",
     ),
     "kgm": BuiltinTopologyFallback(
-        hint=TopologyHint(id="kgm", dimensionality="2D", node_coordination=(3, 6)),
-        description="2D kagome-like mixed 3/6-connected net",
+        hint=TopologyHint(id="kgm", dimensionality="2D", node_coordination=(4,)),
+        description="2D kagome net with a single 4-connected (rectangular) node",
     ),
 }
 
