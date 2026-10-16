@@ -13,11 +13,6 @@ CC(C)(C)c1cc(C#Cc2cc(C=O)c(O)c(C(C)(C)C)c2)cc(C=O)c1O
 CC(C)(C)c1cc(C#Cc2ccccc2C#Cc2cc(C=O)c(O)c(C(C)(C)C)c2)cc(C=O)c1O
 O=Cc1cccc(C=O)c1O
 O=Cc1ccc(O)c(C=O)c1O
-CC1=C(C(=CC(=C1O)C=O)C=O)O
-C1=C(C(=CC(=C1C=O)O)C=O)O
-C1=C(C=C(C=O)C(=C1C=O)O)O
-C1=CC(=C(C=C1C2=CC(=C(C=C2)O)C=O)C=O)O
-C1=C(C=C(C(=C1)C=O)O)C2=CC=C(C=O)C(=C2)O
-CC(C)(C)C1=CC(=CC(=C1O)C=O)C#CC2=CC(=CC=C2)C#CC3=CC(=C(C(=C3)C=O)O)C(C)(C)C
 O=Cc1cc(C=O)c(O)c(C=O)c1
-C1=C(C=O)C(=C(C=C1C=O)C=O)O
+O=Cc1ccc(C=O)c(O)c1O
+O=Cc1cc(C=O)c(O)c(O)c1O

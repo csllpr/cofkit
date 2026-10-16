@@ -27,5 +27,3 @@ O=Cc1cccc(-c2cc(C=O)cc(C=O)c2)c1
 O=Cc1cccc(Oc2nc(Oc3cccc(C=O)c3)nc(Oc3cccc(C=O)c3)n2)c1
 O=Cc1ccc(N2c3ccc(C=O)cc3Sc3cc(C=O)ccc32)cc1
 O=Cc1ccc(/C=C/c2cc(/C=C/c3ccc(C=O)cc3)cc(/C=C/c3ccc(C=O)cc3)c2)cc1
-C1=C(C=C(C=C1C=O)C=O)C=O
-COC1=C(C=O)C(=C(C=O)C(=C1C=O)OC)OC

@@ -1,5 +1,5 @@
 smiles
-C1=C(C=CC(=C1)C(=O)NN)C(=O)NN
-C1=C(C(=CC(=C1C(=O)NN)O)C(=O)NN)O
-CCSCCCOC1=CC(=C(C=C1C(=O)NN)OCCCSCC)C(=O)NN
-C=CCOC1=C(C=C(C(=C1)C(=O)NN)OCC=C)C(=O)NN
+NNC(=O)c1ccc(C(=O)NN)cc1
+NNC(=O)c1cc(O)c(C(=O)NN)cc1O
+CCSCCCOc1cc(C(=O)NN)c(OCCCSCC)cc1C(=O)NN
+C=CCOc1cc(C(=O)NN)c(OCC=C)cc1C(=O)NN

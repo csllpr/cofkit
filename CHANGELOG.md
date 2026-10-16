@@ -28,6 +28,10 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ## 2026.10.9
 
+### Added
+
+- multi-role monomer registration in `cofkit build default-library`: when SMILES-based role autodetection is ambiguous but the source file's `*_count_N.txt` name declares a motif kind that is among the detected candidates, the monomer is now registered under the declared role instead of being dropped into `failures.jsonl`; such entries are marked `role_resolution: "filename_fallback"` in `registry.jsonl` and counted in the generated README (`MonomerRoleResolver.resolve_detected_motif_kind` gained a `preferred_kind` parameter, surfaced through `infer_record` / `BatchStructureGenerator.infer_monomer_record` as `preferred_motif_kind`); monomers that detect as nothing, or whose declared kind is not among the detected candidates, still fail as before
+
 ### Fixed
 
 - Repair imine/azine bridge-placement and ditopic-frame regressions attributed to `24e29486`, `7f893c3a`, and `2a55978a`. Ditopic numerical frames now follow the connecting scaffold while physical molecular plane priors remain separate and uncertain priors remain absent. Supported 2D imine, azine, hydrazone, and vinylene node/linker builds screen realized periodic contacts before stacking and try bounded rigid linker rolls and lateral expansion; every realized bridge is protected against increased length residual. The 120-degree geometry priors and derived retraction are retained. Construction adjustments and unresolved/failure warnings are recorded under `metadata.seed_placement`, with budgets owned by `SeedPlacementConfig` and diagnostics in `batch_models`. This is seed construction, not physical relaxation. Seven independent COFid regression cases cover the thirteen benchmark labels.

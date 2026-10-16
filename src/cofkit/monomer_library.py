@@ -154,6 +154,7 @@ class MonomerRoleResolver:
         candidates: Mapping[str, MonomerSpec],
         *,
         failure_causes: Mapping[str, str] | None = None,
+        preferred_kind: str | None = None,
     ) -> tuple[str, MonomerSpec]:
         if not candidates:
             allowed_text = tuple(self.motif_builder.supported_motif_kinds())
@@ -171,6 +172,8 @@ class MonomerRoleResolver:
             if any(specific_kind in remaining for specific_kind in specific_kinds):
                 remaining.pop(generic_kind, None)
         if len(remaining) != 1:
+            if preferred_kind is not None and preferred_kind in remaining:
+                return preferred_kind, remaining[preferred_kind]
             details = tuple(
                 f"{motif_kind}:{len(monomer.motifs)}"
                 for motif_kind, monomer in sorted(remaining.items())
@@ -192,6 +195,7 @@ class MonomerRoleResolver:
         source_line: int = 0,
         allowed_motif_kinds: Iterable[str] | None = None,
         library_stem: str = "",
+        preferred_motif_kind: str | None = None,
         num_conformers: int = AUTODETECT_MAX_CONFORMERS,
         random_seed: int = DEFAULT_RDKIT_RANDOM_SEED,
     ) -> BatchMonomerRecord:
@@ -201,12 +205,24 @@ class MonomerRoleResolver:
             num_conformers=num_conformers,
             random_seed=random_seed,
         )
-        motif_kind, monomer = self.resolve_detected_motif_kind(
-            candidates,
-            failure_causes=autodetect_failure_causes,
-        )
+        role_resolution = "auto_detected"
+        try:
+            motif_kind, monomer = self.resolve_detected_motif_kind(
+                candidates,
+                failure_causes=autodetect_failure_causes,
+            )
+        except ValueError:
+            if preferred_motif_kind is None:
+                raise
+            motif_kind, monomer = self.resolve_detected_motif_kind(
+                candidates,
+                failure_causes=autodetect_failure_causes,
+                preferred_kind=preferred_motif_kind,
+            )
+            role_resolution = "filename_fallback"
         metadata: dict[str, object] = {
             "auto_detected": True,
+            "role_resolution": role_resolution,
             "detected_motif_kinds": tuple(sorted(candidates)),
             "detected_connectivities": {
                 kind: len(candidate.motifs)

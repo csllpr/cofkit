@@ -27,7 +27,7 @@ Prefer the installed `cofkit` CLI for human-facing requests. If you are working 
 - `cofkit calculate graspa-isotherm`: run the current staged `EQeq -> gRASPA/RASPA2` single-component adsorption workflow on one CIF and parse one or more pressure-point loading summaries for one packaged or guest-bundle component.
 - `cofkit calculate graspa-mixture`: run the current staged `EQeq -> gRASPA/RASPA2` multi-component adsorption workflow on one CIF and parse component loadings plus pairwise selectivities for packaged or guest-bundle components.
 - `cofkit calculate hybrid-mdmc`: run cyclic LAMMPS MD plus gRASPA/RASPA2 GCMC on one explicit-bond CIF. Default `--exchange-mode framework` passes only framework snapshots; opt-in gRASPA `--exchange-mode guest-restart` carries final GCMC guest snapshots into the following LAMMPS MD segment and writes post-MD guest coordinates back to the next gRASPA MC segment.
-- `cofkit build default-library`: rebuild the detector-scanned grouped example library from `examples/batch_test_monomers`.
+- `cofkit build default-library`: rebuild the detector-scanned grouped example library from `examples/batch_test_monomers`. Multi-role monomers whose autodetection is ambiguous are registered under the role declared by their source `*_count_N.txt` filename (marked `role_resolution: "filename_fallback"` in `registry.jsonl`); only monomers that detect as nothing, or whose declared role was not detected, go to `failures.jsonl`.
 - `BatchStructureGenerator`: use this when code already has `MonomerSpec` objects or when you need library/template discovery from Python.
 - `COFEngine`: use this when the user already knows the target topology and wants the direct project-style API.
 

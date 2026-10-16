@@ -417,6 +417,7 @@ class BatchStructureGenerator:
         source_line: int = 0,
         allowed_motif_kinds: Iterable[str] | None = None,
         library_stem: str = "",
+        preferred_motif_kind: str | None = None,
     ) -> BatchMonomerRecord:
         return self._library_loader.role_resolver.infer_record(
             smiles,
@@ -426,6 +427,7 @@ class BatchStructureGenerator:
             source_line=source_line,
             allowed_motif_kinds=allowed_motif_kinds,
             library_stem=library_stem,
+            preferred_motif_kind=preferred_motif_kind,
             num_conformers=self._autodetect_num_conformers(),
             random_seed=self.config.rdkit_random_seed,
         )

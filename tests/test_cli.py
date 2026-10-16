@@ -132,6 +132,56 @@ class DefaultLibraryOutputGuardTests(unittest.TestCase):
 
             self.assertTrue((output_dir / "registry.jsonl").is_file())
 
+    def test_multi_role_monomer_registers_via_filename_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            (input_dir / "amines_count_2.txt").write_text(
+                "smiles\nN#Cc1cc(N)c(C#N)cc1N\n",
+                encoding="utf-8",
+            )
+            output_dir = root / "output"
+
+            self._run(input_dir, output_dir)
+
+            library = (output_dir / "amines_count_2.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(library, ["smiles", "N#Cc1cc(N)c(C#N)cc1N"])
+            registry = [
+                json.loads(line)
+                for line in (output_dir / "registry.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(registry), 1)
+            self.assertEqual(registry[0]["detected_motif_kind"], "amine")
+            self.assertEqual(registry[0]["role_resolution"], "filename_fallback")
+            failures = (output_dir / "failures.jsonl").read_text(encoding="utf-8").strip()
+            self.assertEqual(failures, "")
+            readme = (output_dir / "README.md").read_text(encoding="utf-8")
+            self.assertIn("registered via filename fallback (multi-role monomers): 1", readme)
+
+    def test_undetectable_monomer_still_fails_despite_filename(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            (input_dir / "amines_count_2.txt").write_text(
+                "smiles\nNC(=S)Nc1ccc(NC(N)=S)cc1\n",
+                encoding="utf-8",
+            )
+            output_dir = root / "output"
+
+            self._run(input_dir, output_dir)
+
+            self.assertFalse((output_dir / "amines_count_2.txt").exists())
+            failures = [
+                json.loads(line)
+                for line in (output_dir / "failures.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["status"], "failed")
+
     def test_missing_input_dir_fails_with_clear_message(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

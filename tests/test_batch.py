@@ -59,6 +59,7 @@ HEXA_AMINE = "Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N"
 HEXA_ALDEHYDE = "O=Cc1ccc(-c2cc3c(cc2-c2ccc(C=O)cc2)C2c4cc(-c5ccc(C=O)cc5)c(-c5ccc(C=O)cc5)cc4C3c3cc(-c4ccc(C=O)cc4)c(-c4ccc(C=O)cc4)cc32)cc1"
 TP = "O=Cc1c(O)c(C=O)c(O)c(C=O)c1O"
 PHENYLENEDIACETONITRILE = "N#CCc1ccc(CC#N)cc1"
+DICYANO_DIAMINE = "N#Cc1cc(N)c(C#N)cc1N"
 COF42_HYDRAZIDE = "CCOc1cc(C(=O)NN)cc(C(=O)NN)c1OCC"
 
 
@@ -350,6 +351,43 @@ class BatchStructureGeneratorTests(unittest.TestCase):
         self.assertEqual(record.motif_kind, "aldehyde")
         causes = record.metadata["autodetect_failure_causes"]
         self.assertEqual(causes["keto_aldehyde"], "RuntimeError: injected internal failure")
+
+    def test_infer_monomer_record_multi_role_monomer_is_ambiguous_without_preference(self):
+        with self.assertRaisesRegex(ValueError, "ambiguous motif kinds"):
+            self.generator.infer_monomer_record(
+                DICYANO_DIAMINE,
+                record_id="generic_0001",
+            )
+
+    def test_infer_monomer_record_preferred_kind_resolves_multi_role_monomer(self):
+        record = self.generator.infer_monomer_record(
+            DICYANO_DIAMINE,
+            record_id="generic_0001",
+            preferred_motif_kind="amine",
+        )
+
+        self.assertEqual(record.motif_kind, "amine")
+        self.assertEqual(record.expected_connectivity, 2)
+        self.assertEqual(record.metadata["role_resolution"], "filename_fallback")
+        self.assertEqual(record.metadata["detected_motif_kinds"], ("amine", "nitrile"))
+
+    def test_infer_monomer_record_preferred_kind_not_detected_still_fails(self):
+        with self.assertRaisesRegex(ValueError, "ambiguous motif kinds"):
+            self.generator.infer_monomer_record(
+                DICYANO_DIAMINE,
+                record_id="generic_0001",
+                preferred_motif_kind="aldehyde",
+            )
+
+    def test_infer_monomer_record_unambiguous_monomer_ignores_preference(self):
+        record = self.generator.infer_monomer_record(
+            PPD,
+            record_id="generic_0001",
+            preferred_motif_kind="amine",
+        )
+
+        self.assertEqual(record.motif_kind, "amine")
+        self.assertEqual(record.metadata["role_resolution"], "auto_detected")
 
     def test_load_smiles_library_attaches_overlap_warnings(self):
         with tempfile.TemporaryDirectory() as temp_dir:

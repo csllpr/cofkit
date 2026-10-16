@@ -1333,6 +1333,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
                         source_path=str(path),
                         source_line=line_number,
                         library_stem=path.stem,
+                        preferred_motif_kind=declared_motif_kind,
                     )
                 except Exception as exc:
                     failed_records.append({**base_row, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
@@ -1347,6 +1348,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
                     "detected_connectivity": record.expected_connectivity,
                     "detected_motif_kinds": list(record.metadata.get("detected_motif_kinds", ())),
                     "detected_connectivities": dict(record.metadata.get("detected_connectivities", {})),
+                    "role_resolution": record.metadata.get("role_resolution", "auto_detected"),
                     "library_key": library_key,
                     "source_role_match": declared_motif_kind == record.motif_kind if declared_motif_kind is not None else None,
                     "source_connectivity_match": declared_connectivity == record.expected_connectivity if declared_connectivity is not None else None,
@@ -1378,6 +1380,11 @@ def _run_default_library(args: argparse.Namespace) -> None:
         for entry in registered_records
         if entry["source_role_match"] is False or entry["source_connectivity_match"] is False
     )
+    fallback_count = sum(
+        1
+        for entry in registered_records
+        if entry["role_resolution"] == "filename_fallback"
+    )
     summary_lines = [
         "# Default Monomers Library",
         "",
@@ -1387,6 +1394,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
         f"- registered monomers: {len(registered_records)}",
         f"- failed or ambiguous detections: {len(failed_records)}",
         f"- source-label mismatches among registered monomers: {mismatch_count}",
+        f"- registered via filename fallback (multi-role monomers): {fallback_count}",
         "",
         "## Registered Libraries",
         "",
@@ -1411,6 +1419,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
     print("output_dir:", output_dir)
     print("registered_monomers:", len(registered_records))
     print("failed_monomers:", len(failed_records))
+    print("filename_fallback_registrations:", fallback_count)
     print("libraries:", dict(sorted(library_counts.items())))
 
 

@@ -1,0 +1,3 @@
+smiles
+O=Cc1ccc(C=O)c(O)c1O
+O=Cc1cc(C=O)c(O)c(O)c1O

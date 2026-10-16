@@ -44,8 +44,5 @@ Nc1c(F)c(F)c(-c2cc(-c3c(F)c(F)c(N)c(F)c3F)cc(-c3c(F)c(F)c(N)c(F)c3F)c2)c(F)c1F
 Nc1ccc(Nc2nc(Nc3ccc(N)cc3)nc(Nc3ccc(N)cc3)n2)cc1
 CN(c1ccc(N)cc1)c1nc(N(C)c2ccc(N)cc2)nc(N(C)c2ccc(N)cc2)n1
 Nc1cccc(-c2nc(-c3cccc(N)c3)nc(-c3cccc(N)c3)n2)c1
-C1=C(C=CC(=C1)N)C2=NC(=NC(=N2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N
-C1(=NC(=NC(=N1)N)N)N
-C1=C(C=C(C=C1N)N)N
-C1=C(C=NC(=C1)N)C2=CC(=CC(=C2)C3=CN=C(C=C3)N)C4=CC=C(N)N=C4
-C1=C(C=CC(=C1)N)C2=CC=C(C=C2)N(C3=CC=C(C=C3)C4=CC=C(C=C4)N)C5=CC=C(C=C5)C6=CC=C(C=C6)N
+Nc1nc(N)nc(N)n1
+Nc1ccc(-c2cc(-c3ccc(N)nc3)cc(-c3ccc(N)nc3)c2)cn1
