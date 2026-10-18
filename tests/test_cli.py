@@ -81,12 +81,13 @@ class DefaultLibraryOutputGuardTests(unittest.TestCase):
         )
         return input_dir
 
-    def _run(self, input_dir: Path, output_dir: Path, *, force: bool = False) -> None:
+    def _run(self, input_dir: Path, output_dir: Path, *, force: bool = False, include_monofunctional: bool = False) -> None:
         args = SimpleNamespace(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
             num_conformers=1,
             force=force,
+            include_monofunctional=include_monofunctional,
         )
         with contextlib.redirect_stdout(io.StringIO()):
             cli_build._run_default_library(args)
@@ -190,11 +191,58 @@ class DefaultLibraryOutputGuardTests(unittest.TestCase):
                 output_dir=str(root / "output"),
                 num_conformers=1,
                 force=False,
+                include_monofunctional=False,
             )
             with self.assertRaises(SystemExit) as ctx:
                 cli_build._run_default_library(args)
 
             self.assertIn("input directory does not exist", str(ctx.exception))
+
+    def _make_monofunctional_input_dir(self, root: Path) -> Path:
+        input_dir = root / "input"
+        input_dir.mkdir()
+        (input_dir / "amines_count_1.txt").write_text(
+            "smiles\nNc1ccccc1\n",
+            encoding="utf-8",
+        )
+        return input_dir
+
+    def test_monofunctional_monomer_omitted_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = self._make_monofunctional_input_dir(root)
+            output_dir = root / "output"
+
+            self._run(input_dir, output_dir)
+
+            self.assertFalse((output_dir / "amines_count_1.txt").exists())
+            failures = [
+                json.loads(line)
+                for line in (output_dir / "failures.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["status"], "skipped")
+            self.assertEqual(failures[0]["detected_motif_kind"], "amine")
+            self.assertEqual(failures[0]["detected_connectivity"], 1)
+            self.assertIn("--include-monofunctional", failures[0]["reason"])
+            readme = (output_dir / "README.md").read_text(encoding="utf-8")
+            self.assertIn("omitted monofunctional (connectivity-1) monomers: 1", readme)
+
+    def test_monofunctional_monomer_registered_with_include_flag(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_dir = self._make_monofunctional_input_dir(root)
+            output_dir = root / "output"
+
+            self._run(input_dir, output_dir, include_monofunctional=True)
+
+            library = (output_dir / "amines_count_1.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(library, ["smiles", "Nc1ccccc1"])
+            failures = (output_dir / "failures.jsonl").read_text(encoding="utf-8").strip()
+            self.assertEqual(failures, "")
+            readme = (output_dir / "README.md").read_text(encoding="utf-8")
+            self.assertIn("omitted monofunctional (connectivity-1) monomers: 0", readme)
 
 
 class CliTests(unittest.TestCase):

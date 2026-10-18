@@ -184,6 +184,8 @@ The generated library under `examples/default_monomers_library` contains grouped
 
 Roles are auto-detected from each SMILES, with the source filename as the tie-breaker: a multi-role monomer whose detection is ambiguous (for example an amine that also carries nitrile groups) is registered under the role declared by its source file's `*_count_N.txt` name, provided the declared kind is among the detected candidates. These registrations are marked `role_resolution: "filename_fallback"` in `registry.jsonl` and counted in the generated README. Monomers that detect as nothing — or whose declared role is not among the detected candidates — still land in `failures.jsonl`.
 
+Single-reactive (connectivity-1) monomers are omitted by default: they terminate chains instead of bridging framework nodes, so no `*_count_1.txt` libraries are written. Omitted monomers are recorded in `failures.jsonl` with status `skipped` and counted in the README. Pass `--include-monofunctional` to register them into `*_count_1.txt` files.
+
 The command resets its output directory before writing. As a safety guard, it refuses to delete a non-empty directory that was not created by a previous run of this command (previous runs leave a `.cofkit-default-library` marker file); pass `--force` to replace such a directory anyway.
 
 ## Outputs

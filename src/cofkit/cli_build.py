@@ -1260,6 +1260,13 @@ def _add_default_library_parser(subparsers) -> None:
     # default-library only scans/detects monomers, so 2 conformers suffice.
     parser.add_argument("--num-conformers", type=int, default=2)
     parser.add_argument(
+        "--include-monofunctional",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Register single-reactive (connectivity-1) monomers into *_count_1.txt libraries. "
+        "Omitted by default because they terminate chains instead of bridging framework nodes.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Allow replacing a non-empty output directory that was not created by this command.",
@@ -1302,6 +1309,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
     generator = BatchStructureGenerator(BatchGenerationConfig(rdkit_num_conformers=args.num_conformers))
     registered_records: list[dict[str, object]] = []
     failed_records: list[dict[str, object]] = []
+    omitted_records: list[dict[str, object]] = []
     grouped_smiles: dict[str, list[str]] = {}
     grouped_entries: dict[str, list[dict[str, object]]] = {}
 
@@ -1339,6 +1347,21 @@ def _run_default_library(args: argparse.Namespace) -> None:
                     failed_records.append({**base_row, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
                     continue
 
+                if record.expected_connectivity < 2 and not args.include_monofunctional:
+                    omitted_records.append(
+                        {
+                            **base_row,
+                            "status": "skipped",
+                            "reason": (
+                                "monofunctional monomer (connectivity 1) omitted by default; "
+                                "pass --include-monofunctional to register *_count_1 libraries"
+                            ),
+                            "detected_motif_kind": record.motif_kind,
+                            "detected_connectivity": record.expected_connectivity,
+                        }
+                    )
+                    continue
+
                 library_key = f"{generator._library_prefix_for_motif_kind(record.motif_kind)}_count_{record.expected_connectivity}"
                 grouped_smiles.setdefault(library_key, []).append(record.smiles)
                 entry = {
@@ -1372,7 +1395,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
             )
 
     _jsonl_write(output_dir / "registry.jsonl", registry_rows)
-    _jsonl_write(output_dir / "failures.jsonl", failed_records)
+    _jsonl_write(output_dir / "failures.jsonl", [*failed_records, *omitted_records])
 
     library_counts = Counter(entry["library_key"] for entry in registered_records)
     mismatch_count = sum(
@@ -1395,6 +1418,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
         f"- failed or ambiguous detections: {len(failed_records)}",
         f"- source-label mismatches among registered monomers: {mismatch_count}",
         f"- registered via filename fallback (multi-role monomers): {fallback_count}",
+        f"- omitted monofunctional (connectivity-1) monomers: {len(omitted_records)}",
         "",
         "## Registered Libraries",
         "",
@@ -1407,7 +1431,9 @@ def _run_default_library(args: argparse.Namespace) -> None:
             "## Metadata Files",
             "",
             "- `registry.jsonl`: registered monomers with detector metadata and source provenance",
-            "- `failures.jsonl`: failed or ambiguous autodetections",
+            "- `failures.jsonl`: failed or ambiguous autodetections, plus monofunctional "
+            "(connectivity-1) monomers omitted by default (status `skipped`; register them "
+            "with `--include-monofunctional`)",
         )
     )
     (output_dir / "README.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
@@ -1419,6 +1445,7 @@ def _run_default_library(args: argparse.Namespace) -> None:
     print("output_dir:", output_dir)
     print("registered_monomers:", len(registered_records))
     print("failed_monomers:", len(failed_records))
+    print("omitted_monofunctional_monomers:", len(omitted_records))
     print("filename_fallback_registrations:", fallback_count)
     print("libraries:", dict(sorted(library_counts.items())))
 

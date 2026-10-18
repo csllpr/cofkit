@@ -4,6 +4,16 @@ All notable changes to `cofkit` are recorded here.
 
 Release versions use calendar versioning in `YYYY.M.D` form. The current release on `2026-10-11` is version `2026.10.11`.
 
+## Unreleased
+
+### Added
+
+- multi-role monomer registration in `cofkit build default-library`: when SMILES-based role autodetection is ambiguous but the source file's `*_count_N.txt` name declares a motif kind that is among the detected candidates, the monomer is now registered under the declared role instead of being dropped into `failures.jsonl`; such entries are marked `role_resolution: "filename_fallback"` in `registry.jsonl` and counted in the generated README (`MonomerRoleResolver.resolve_detected_motif_kind` gained a `preferred_kind` parameter, surfaced through `infer_record` / `BatchStructureGenerator.infer_monomer_record` as `preferred_motif_kind`); monomers that detect as nothing, or whose declared kind is not among the detected candidates, still fail as before
+
+### Changed
+
+- `cofkit build default-library` no longer registers single-reactive (connectivity-1) monomers by default: they terminate chains instead of bridging framework nodes, so no `*_count_1.txt` libraries are written; omitted monomers are recorded in `failures.jsonl` with status `skipped` and counted in the generated README, and the new `--include-monofunctional` flag restores the previous behavior
+
 ## 2026.10.11
 
 ### Changed
@@ -27,10 +37,6 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 - shape-aware topology compatibility for 4-connecting monomers: monomers are now classified by molecular-graph symmetry into C4/Td-like or D2h-like node-shape families (`cofkit.node_shape`), while supported nets use canonical node-shape labels (`sql` square, `kgm` rectangular, `dia` tetrahedral); batch topology selection and `NetPlanner` compatibility now reject confident shape mismatches with explicit reasons (e.g. a rectangular tetratopic + linker pair is offered `kgm` instead of `sql`), while `unknown` classifications on either side keep the previous connectivity-count-only behavior; decorated `bex` `4+4` generation is now gated on a rectangular classification when shapes are known, and pair summaries record per-reactant node-shape labels (`reactant_node_shapes` on `BatchPairSummary`, `monomer_node_shapes` in candidate `topology_selection` metadata); the filter can be disabled with `BatchGenerationConfig(shape_aware_topology_filter=False)`
 
 ## 2026.10.9
-
-### Added
-
-- multi-role monomer registration in `cofkit build default-library`: when SMILES-based role autodetection is ambiguous but the source file's `*_count_N.txt` name declares a motif kind that is among the detected candidates, the monomer is now registered under the declared role instead of being dropped into `failures.jsonl`; such entries are marked `role_resolution: "filename_fallback"` in `registry.jsonl` and counted in the generated README (`MonomerRoleResolver.resolve_detected_motif_kind` gained a `preferred_kind` parameter, surfaced through `infer_record` / `BatchStructureGenerator.infer_monomer_record` as `preferred_motif_kind`); monomers that detect as nothing, or whose declared kind is not among the detected candidates, still fail as before
 
 ### Fixed
 
