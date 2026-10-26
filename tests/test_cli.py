@@ -60,7 +60,14 @@ class DefaultRepoPathTests(unittest.TestCase):
             (root / "pyproject.toml").write_text("[project]\nname = 'fixture'\n")
             with patch.object(cli_build, "__file__", str(root / "src" / "cofkit" / "cli_build.py")):
                 resolved = cli_build._default_repo_path("out", "single_pair_generation")
-            self.assertEqual(resolved, str(root / "out" / "single_pair_generation"))
+            # _default_repo_path() resolves the package location, and on macOS
+            # temporary directories are reached through the /var ->
+            # /private/var symlink. Compare resolved paths so the platform's
+            # TMPDIR spelling does not decide the result.
+            self.assertEqual(
+                Path(resolved).resolve(),
+                (root / "out" / "single_pair_generation").resolve(),
+            )
 
     def test_installed_package_falls_back_to_cwd_relative(self):
         fake_installed_file = "/venv/lib/python3.11/site-packages/cofkit/cli_build.py"
