@@ -170,7 +170,7 @@ cofkit build batch-all-binary-bridges \
   --max-workers 8
 ```
 
-With the shipped default library snapshot, this currently discovers `hydrazone_bridge`, `imine_bridge`, and `keto_enamine_bridge`. Other registered templates need their expected role libraries, such as `hydrazines`, `boronic_acids`, `catechols`, or `activated_methylenes`.
+With the shipped 1,324-monomer default library snapshot, this discovers all six binary-bridge templates: `azine_bridge`, `boronate_ester_bridge`, `hydrazone_bridge`, `imine_bridge`, `keto_enamine_bridge`, and `vinylene_bridge`.
 
 ## Default Library
 
@@ -180,7 +180,7 @@ Regenerate the detector-scanned example library:
 cofkit build default-library
 ```
 
-The generated library under `examples/default_monomers_library` contains grouped `*_count_N.txt` files, `registry.jsonl`, and `failures.jsonl`.
+The generated library under `examples/default_monomers_library` contains grouped `*_count_N.txt` files, `registry.jsonl`, and `failures.jsonl`. The curated raw source in `examples/batch_test_monomers` and the generated output both contain 1,324 monomers; the shipped snapshot has zero registration failures, omitted monofunctional records, or source-label mismatches.
 
 Roles are auto-detected from each SMILES, with the source filename as the tie-breaker: a multi-role monomer whose detection is ambiguous (for example an amine that also carries nitrile groups) is registered under the role declared by its source file's `*_count_N.txt` name, provided the declared kind is among the detected candidates. These registrations are marked `role_resolution: "filename_fallback"` in `registry.jsonl` and counted in the generated README. Monomers that detect as nothing — or whose declared role is not among the detected candidates — still land in `failures.jsonl`.
 

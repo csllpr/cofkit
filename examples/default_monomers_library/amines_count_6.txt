@@ -1,6 +1,13 @@
 smiles
-Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N
-Nc1cc2c(cc1N)C1c3cc(N)c(N)cc3C2c2cc(N)c(N)cc21
+C1=CC(=CC=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)C4=NC(=NC(=N4)N)N)C5=CC=C(C=C5)C6=NC(=NC(=N6)N)N)C7=NC(=NC(=N7)N)N
+C1=CC(=CC=C1N)ON2P(N=P(N(P2OC3=CC=C(C=C3)N)OC4=CC=C(C=C4)N)(OC5=CC=C(C=C5)N)OC6=CC=C(C=C6)N)OC7=CC=C(C=C7)N
 Nc1ccc(-c2cc3c(cc2-c2ccc(N)cc2)C2c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4C3c3cc(-c4ccc(N)cc4)c(-c4ccc(N)cc4)cc32)cc1
-Nc1ccc(-c2cc3c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4c3cc2-c2ccc(N)cc2)cc1
 CC(C)c1cc(-c2cc3c(cc2-c2cc(C(C)C)c(N)c(C(C)C)c2)C2c4cc(-c5cc(C(C)C)c(N)c(C(C)C)c5)c(-c5cc(C(C)C)c(N)c(C(C)C)c5)cc4C3c3cc(-c4cc(C(C)C)c(N)c(C(C)C)c4)c(-c4cc(C(C)C)c(N)c(C(C)C)c4)cc32)cc(C(C)C)c1N
+Nc1cc2c(cc1N)C1c3cc(N)c(N)cc3C2c2cc(N)c(N)cc21
+C1(=C(C(=C(C(=C1N)N)N)N)N)N
+Nc1cc2c3cc(N)c(N)cc3c3cc(N)c(N)cc3c2cc1N
+NC1=CC=C(C2=CC=C(C3=C(C4=CC=C(C5=CC=C(N)C=C5)C=C4)C(C6=CC=C(C7=CC=C(N)C=C7)C=C6)=C(C8=CC=C(C9=CC=C(N)C=C9)C=C8)C(C%10=CC=C(C%11=CC=C(N)C=C%11)C=C%10)=C3C%12=CC=C(C%13=CC=C(N)C=C%13)C=C%12)C=C2)C=C1
+NC1=CC=C(C2=C(C(C3=CC=C(N)C=C3)=C(C(C4=CC=C(N)C=C4)=C2C5=CC=C(C=C5)N)C6=CC=C(C=C6)N)C7=CC=C(C=C7)N)C=C1
+Nc1ccc(-c2cc3c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4c4cc(-c5ccc(N)cc5)c(-c5ccc(N)cc5)cc4c3cc2-c2ccc(N)cc2)cc1
+CC1=C(C(=C(C(=C1C2=CC(=CC(=C2)C3=CC=C(C=C3)N)C4=CC=C(C=C4)N)C)C5=CC(=CC(=C5)C6=CC=C(C=C6)N)C7=CC=C(C=C7)N)C)C8=CC(=CC(=C8)C9=CC=C(C=C9)N)C1=CC=C(C=C1)N
+C1=C(C(=CC2=C1N=C3C4=NC5=C(C=C(C(=C5)N)N)N=C4C6=NC7=C(C=C(C(=C7)N)N)N=C6C3=N2)N)N

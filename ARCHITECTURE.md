@@ -155,7 +155,7 @@ The current batch autodetect surface is aligned to the practical RDKit motif reg
 - `keto_aldehyde`
 - `activated_methylene`
 
-The generated example library under [`examples/default_monomers_library`](examples/default_monomers_library) is produced from the detector output and serves as a stable explicit-library snapshot of the current role-detection behavior.
+The generated example library under [`examples/default_monomers_library`](examples/default_monomers_library) is produced by running the detector over the curated 1,324-record source in [`examples/batch_test_monomers`](examples/batch_test_monomers) and serves as a stable explicit-library snapshot of the current role-detection behavior. Raw and processed canonical-SMILES sets are identical; the snapshot supports all six binary-bridge templates.
 
 ## Design principles
 

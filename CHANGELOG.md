@@ -12,7 +12,12 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Changed
 
+- the shipped default monomer library is replaced by the curated v2 snapshot: `examples/batch_test_monomers` now supplies 1,324 neutral, selenium-free, chemically reviewed raw monomers and `examples/default_monomers_library` contains the same 1,324 records after real detector registration (up from 440), with zero failures, omitted monofunctional records, source-role mismatches, or duplicate canonical SMILES. The v2 curation removes the corrected amidine/activated-methylene registrations plus shared-hydroxyl keto-aldehyde overcounts, charged, experimental, unresolved-secondary-role, invalid-scaffold, and selenium-containing entries. The expanded snapshot exposes all six binary-bridge templates (`azine_bridge`, `boronate_ester_bridge`, `hydrazone_bridge`, `imine_bridge`, `keto_enamine_bridge`, and `vinylene_bridge`) instead of only hydrazone/imine/keto-enamine
 - `cofkit build default-library` no longer registers single-reactive (connectivity-1) monomers by default: they terminate chains instead of bridging framework nodes, so no `*_count_1.txt` libraries are written; omitted monomers are recorded in `failures.jsonl` with status `skipped` and counted in the generated README, and the new `--include-monofunctional` flag restores the previous behavior
+
+### Fixed
+
+- RDKit monomer registration no longer treats acyclic amidine/amidoxime `NH2-C(=N/O)` groups as ordinary primary amines, while retaining valid amines elsewhere in the same precursor and the supported heteroaromatic and terminal-hydrazino environments. Activated-methylene detection now rejects halomethyl, hydroxymethyl, unsupported N-substituted, unactivated heteroaryl, meta-only conjugated, and pyrrolic/porphyrin donors; six-membered aza/cyano activation requires an ortho/para path, while direct withdrawing groups, electron-poor multi-aza rings, boron-chelated dipyrrins, and strongly activated aza ethers remain supported. Default-library registration, batch autodetection, and precursor validation use these corrected counts
 
 ## 2026.10.11
 

@@ -259,6 +259,12 @@ class RDKitMonomerTests(unittest.TestCase):
         self.assertEqual(detect_rdkit_motif_count("NC(S)Nc1ccc(NC(N)S)cc1", "amine"), 0)
         self.assertEqual(detect_rdkit_motif_count("NS(=O)(=O)c1ccccc1", "amine"), 0)
 
+    def test_primary_amine_detection_rejects_acyclic_amidines_and_amidoximes(self):
+        self.assertEqual(detect_rdkit_motif_count("N=C(N)c1ccc(C(=N)N)cc1", "amine"), 0)
+        self.assertEqual(detect_rdkit_motif_count("N=C(N)c1ccc(CN)cc1", "amine"), 1)
+        self.assertEqual(detect_rdkit_motif_count("C1=CC(=CC=C1/C(=N/O)/N)/C(=N/O)/N", "amine"), 0)
+        self.assertEqual(detect_rdkit_motif_count("Nc1nc(N)nc(N)n1", "amine"), 3)
+
     def test_amine_detection_accepts_only_guanidinium_bound_terminal_hydrazino_sites(self):
         self.assertEqual(detect_rdkit_motif_count("NN=C(NN)NN", "amine"), 3)
         self.assertEqual(detect_rdkit_motif_count("NN", "amine"), 0)
@@ -494,6 +500,42 @@ class RDKitMonomerTests(unittest.TestCase):
                 "activated_methylene",
             ),
             0,
+        )
+
+    def test_activated_methylene_detection_rejects_unsupported_donor_environments(self):
+        cases = {
+            "C1=CC(=NC(=C1)C2=CC=CC(=N2)CBr)CBr": 0,
+            "C1=CN=C(C=C1CO)C2=NC=CC(=C2)CO": 0,
+            "C#CCN(CC1=CC=CC=N1)CC2=CC=CC=N2": 0,
+            "NCc1ccc(CN)o1": 0,
+            "Cc1cccs1": 0,
+            "CC1=C(C=CC(=C1)C#N)C2=C(C=C(C=C2)C#N)C": 0,
+            "CC1=CC(=C(C(=C1)C#N)C)C#N": 1,
+            "CC1=CC(=NC=C1)C2=NC=CC(=C2)CBr": 1,
+            "CC1=C(SC(=C1C#N)NC(=O)CCl)C#N": 1,
+            "Cc1cc(-c2nc(-c3cc(C)c(N)c(C)c3)nc(-c3cc(C)c(N)c(C)c3)n2)cc(C)c1N": 0,
+            "CC1=NC(=C(C2=CC=C(C=C2)C3=CC(=CC(=C3)C4=CC=C(C=C4)C(=C5C=CC(=N5)C)C6=CC=C(N6)C)C7=CC=C(C=C7)C(=C8C=CC(=N8)C)C9=CC=C(N9)C)C2=CC=C(N2)C)C=C1": 0,
+        }
+        for smiles, expected in cases.items():
+            with self.subTest(smiles=smiles):
+                self.assertEqual(detect_rdkit_motif_count(smiles, "activated_methylene"), expected)
+
+    def test_activated_methylene_detection_preserves_strong_specialized_donors(self):
+        self.assertEqual(
+            detect_rdkit_motif_count("N#CC[n+]1ccc(-c2cc[n+](CC#N)cc2)cc1", "activated_methylene"),
+            2,
+        )
+        self.assertEqual(
+            detect_rdkit_motif_count("CN(C)C1=NC(=NC(=N1)N)COC2=CC=CC(=C2)N", "activated_methylene"),
+            1,
+        )
+        self.assertEqual(
+            detect_rdkit_motif_count("[B-]1(N2C(=C(C(=C2C=C3[N+]1=C(C(=C3C)Br)C)C)Br)C)(F)F", "activated_methylene"),
+            3,
+        )
+        self.assertEqual(
+            detect_rdkit_motif_count("C1C=C(N=C1C2=NC=C(C2)C#N)C#N", "activated_methylene"),
+            2,
         )
 
     def test_rdkit_hcb_case_keeps_bipartite_periodic_images_and_atomistic_export(self):

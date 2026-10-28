@@ -1364,10 +1364,36 @@ def _interpret_activated_methylene_match(molecule, conformer, match: tuple[int, 
     hydrogen_atom_ids = _attached_hydrogen_ids(molecule, reactive_atom_id)
     if len(hydrogen_atom_ids) < 2:
         return None
+    heavy_neighbors = tuple(
+        neighbor
+        for neighbor in molecule.GetAtomWithIdx(reactive_atom_id).GetNeighbors()
+        if neighbor.GetAtomicNum() != 1
+    )
+    if any(neighbor.GetAtomicNum() not in {6, 7, 8} for neighbor in heavy_neighbors):
+        return None
+    if any(
+        neighbor.GetAtomicNum() == 8 and _attached_hydrogen_ids(molecule, neighbor.GetIdx())
+        for neighbor in heavy_neighbors
+    ):
+        return None
+    has_direct_activation = any(
+        _has_direct_withdrawing_bond(neighbor, reactive_atom_id)
+        for neighbor in heavy_neighbors
+    )
+    has_strong_aza_activation = any(
+        _has_strong_aza_anchor(neighbor, reactive_atom_id)
+        for neighbor in heavy_neighbors
+    )
+    if any(neighbor.GetAtomicNum() == 7 for neighbor in heavy_neighbors) and not has_direct_activation:
+        return None
+    if any(neighbor.GetAtomicNum() == 8 for neighbor in heavy_neighbors) and not (
+        has_direct_activation or has_strong_aza_activation
+    ):
+        return None
     activating_neighbor_ids = tuple(
         neighbor.GetIdx()
-        for neighbor in molecule.GetAtomWithIdx(reactive_atom_id).GetNeighbors()
-        if neighbor.GetAtomicNum() != 1 and _is_electron_withdrawing_anchor(neighbor, reactive_atom_id)
+        for neighbor in heavy_neighbors
+        if _is_electron_withdrawing_anchor(neighbor, reactive_atom_id)
     )
     if not activating_neighbor_ids:
         return None
@@ -1612,40 +1638,103 @@ def _assign_unique_keto_aldehyde_hydroxyls(molecule, detected: tuple[_DetectedMo
     return tuple(resolved)
 
 
-def _is_electron_withdrawing_anchor(atom, excluded_neighbor_id: int) -> bool:
+def _has_strong_aza_anchor(atom, excluded_neighbor_id: int) -> bool:
+    if atom.GetAtomicNum() != 6 or not atom.GetIsAromatic():
+        return False
+    aromatic_nitrogen_neighbors = sum(
+        1
+        for neighbor in atom.GetNeighbors()
+        if neighbor.GetIdx() != excluded_neighbor_id and neighbor.GetAtomicNum() == 7 and neighbor.GetIsAromatic()
+    )
+    return aromatic_nitrogen_neighbors >= 2
+
+
+def _has_direct_withdrawing_bond(atom, excluded_neighbor_id: int) -> bool:
     if atom.GetAtomicNum() != 6:
         return False
-    if atom.GetIsAromatic():
-        aromatic_nitrogen_neighbors = sum(
-            1
-            for neighbor in atom.GetNeighbors()
-            if neighbor.GetIdx() != excluded_neighbor_id and neighbor.GetAtomicNum() == 7 and neighbor.GetIsAromatic()
-        )
-        if aromatic_nitrogen_neighbors >= 2:
-            return True
-        if _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id):
-            return True
     for bond in atom.GetBonds():
         other = bond.GetOtherAtom(atom)
         if other.GetIdx() == excluded_neighbor_id:
             continue
         bond_order = float(bond.GetBondTypeAsDouble())
+        if other.GetAtomicNum() == 7 and bond_order == 2.0 and bond.IsInRing():
+            molecule = atom.GetOwningMol()
+            Chem.GetSymmSSSR(molecule)
+            containing_rings = [
+                set(ring)
+                for ring in molecule.GetRingInfo().AtomRings()
+                if atom.GetIdx() in ring and other.GetIdx() in ring
+            ]
+            has_cyano_substituent = any(
+                neighbor.GetAtomicNum() == 6
+                and any(
+                    float(neighbor_bond.GetBondTypeAsDouble()) >= 3.0
+                    and neighbor_bond.GetOtherAtom(neighbor).GetAtomicNum() == 7
+                    for neighbor_bond in neighbor.GetBonds()
+                )
+                for ring in containing_rings
+                for atom_id in ring
+                for neighbor in molecule.GetAtomWithIdx(atom_id).GetNeighbors()
+                if neighbor.GetIdx() not in ring
+            )
+            if not has_cyano_substituent and not any(
+                _is_electron_poor_aza_ring(molecule, ring)
+                for ring in containing_rings
+            ):
+                continue
         if bond_order >= 2.0 and other.GetAtomicNum() in (7, 8, 16):
-            return True
-        if bond_order >= 3.0 and other.GetAtomicNum() == 7:
             return True
     return False
 
 
-def _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id: int) -> bool:
-    """Recognize methyl donors activated through an aromatic ring.
+def _is_electron_withdrawing_anchor(atom, excluded_neighbor_id: int) -> bool:
+    if atom.GetAtomicNum() != 6:
+        return False
+    if _has_strong_aza_anchor(atom, excluded_neighbor_id):
+        return True
+    if _has_direct_withdrawing_bond(atom, excluded_neighbor_id):
+        return True
+    return atom.GetIsAromatic() and _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id)
 
-    Vinylene COFs commonly use methylated aza-heterocycles,
-    cyano-substituted aromatic donors, or phenyl methyl groups conjugated to
-    an aza-heterocycle.  The withdrawing atom need not be a direct neighbor
-    of the methyl-bearing ring carbon, but it must belong to the same aromatic
-    ring or to a directly attached five- or six-membered aromatic heterocycle.
-    """
+
+def _ring_distance(molecule, ring: set[int], start: int, end: int) -> int | None:
+    visited = {start}
+    frontier = {start}
+    distance = 0
+    while frontier:
+        if end in frontier:
+            return distance
+        distance += 1
+        frontier = {
+            neighbor.GetIdx()
+            for atom_id in frontier
+            for neighbor in molecule.GetAtomWithIdx(atom_id).GetNeighbors()
+            if neighbor.GetIdx() in ring and neighbor.GetIdx() not in visited
+        }
+        visited.update(frontier)
+    return None
+
+
+def _is_electron_poor_aza_ring(molecule, ring: set[int]) -> bool:
+    ring_nitrogens = [
+        molecule.GetAtomWithIdx(atom_id)
+        for atom_id in ring
+        if molecule.GetAtomWithIdx(atom_id).GetAtomicNum() == 7
+    ]
+    if any(
+        neighbor.GetAtomicNum() == 5
+        for nitrogen in ring_nitrogens
+        for neighbor in nitrogen.GetNeighbors()
+    ):
+        return True
+    aromatic_nitrogens = [nitrogen for nitrogen in ring_nitrogens if nitrogen.GetIsAromatic()]
+    if len(ring) == 6:
+        return bool(aromatic_nitrogens)
+    return len(ring) == 5 and len(aromatic_nitrogens) >= 2
+
+
+def _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id: int) -> bool:
+    """Recognize donors with an ortho/para or electron-poor aza-ring path."""
 
     molecule = atom.GetOwningMol()
     Chem.GetSymmSSSR(molecule)
@@ -1656,13 +1745,16 @@ def _aromatic_ring_has_conjugated_activation(atom, excluded_neighbor_id: int) ->
             continue
         if not all(molecule.GetAtomWithIdx(candidate).GetIsAromatic() for candidate in ring):
             continue
-        if any(
-            molecule.GetAtomWithIdx(candidate).GetAtomicNum() in {7, 8, 16}
-            for candidate in ring
-        ):
+        if len(ring) == 5 and _is_electron_poor_aza_ring(molecule, ring):
             return True
         for candidate in ring:
+            distance = _ring_distance(molecule, ring, atom_idx, candidate)
+            conjugated = len(ring) == 5 or distance in {1, 3}
+            if not conjugated:
+                continue
             ring_atom = molecule.GetAtomWithIdx(candidate)
+            if len(ring) == 6 and ring_atom.GetAtomicNum() == 7 and ring_atom.GetIsAromatic():
+                return True
             for substituent in ring_atom.GetNeighbors():
                 substituent_idx = int(substituent.GetIdx())
                 if substituent_idx in ring or substituent_idx == excluded_neighbor_id:
@@ -1690,7 +1782,7 @@ def _belongs_to_aromatic_heterocycle(
     *,
     excluded_ring: set[int],
 ) -> bool:
-    """Return whether an aromatic atom belongs to an attached heterocycle."""
+    """Return whether an aromatic atom belongs to an electron-poor aza ring."""
 
     for raw_ring in molecule.GetRingInfo().AtomRings():
         ring = {int(candidate) for candidate in raw_ring}
@@ -1698,10 +1790,7 @@ def _belongs_to_aromatic_heterocycle(
             continue
         if not all(molecule.GetAtomWithIdx(candidate).GetIsAromatic() for candidate in ring):
             continue
-        if any(
-            molecule.GetAtomWithIdx(candidate).GetAtomicNum() in {7, 8, 16}
-            for candidate in ring
-        ):
+        if _is_electron_poor_aza_ring(molecule, ring):
             return True
     return False
 

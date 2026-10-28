@@ -1,0 +1,7 @@
+smiles
+C1=CC(=CC=C1C2=CC(=C(C=C2)C=O)O)C(=C(C3=CC=C(C=C3)C4=CC(=C(C=C4)C=O)O)C5=CC=C(C=C5)C6=CC(=C(C=C6)C=O)O)C7=CC=C(C=C7)C8=CC(=C(C=C8)C=O)O
+O=Cc1cc(-c2ccc(C(c3ccc(-c4ccc(O)c(C=O)c4)cc3)(c3ccc(-c4ccc(O)c(C=O)c4)cc3)c3ccc(-c4ccc(O)c(C=O)c4)cc3)cc2)ccc1O
+C1=CC(=C(C=C1C2=CC(=C3C=CC4=C(C=C(C5=C4C3=C2C=C5)C6=CC(=C(C=C6)C=O)O)C7=CC(=C(C=C7)C=O)O)C8=CC(=C(C=C8)C=O)O)O)C=O
+C1=CC(=C(C=C1C(=C(C2=CC(=C(C=C2)O)C=O)C3=CC(=C(C=C3)O)C=O)C4=CC(=C(C=C4)O)C=O)C=O)O
+C1=CC(=C(C=C1C2=CC(=C3C=CC4=C(C=C(C5=C4C3=C2C=C5)C6=CC(=C(C=C6)O)C=O)C7=CC(=C(C=C7)O)C=O)C8=CC(=C(C=C8)O)C=O)C=O)O
+O=Cc1cc(C(c2ccc(O)c(C=O)c2)(c2ccc(O)c(C=O)c2)c2ccc(O)c(C=O)c2)ccc1O

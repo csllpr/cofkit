@@ -56,17 +56,18 @@ def _builtin_motif_kind_definitions() -> tuple[MotifKindDefinition, ...]:
             id_prefix="ami",
             cif_symbol="N",
             allowed_reaction_templates=("imine_bridge", "keto_enamine_bridge"),
-            # Amide, thioamide, sulfonamide, and thiosulfonamide nitrogens are
-            # resonance-deactivated and are not primary-amine builders.  Keep
-            # this exclusion graph-local so ordinary anilines and alkylamines
-            # remain eligible regardless of the rest of the precursor.
-            # Besides conventional C-bound primary amines, beta-ketoenamine
-            # COFs can use terminal hydrazino nitrogens on a guanidinium-like
-            # C(N)3 center.  The second branch is deliberately limited to
-            # that three-nitrogen carbon environment, so hydrazides and free
-            # hydrazine do not become generic amine building sites.
+            # Amide, thioamide, sulfonamide, thiosulfonamide, and acyclic
+            # amidine/amidoxime nitrogens are not ordinary primary-amine
+            # builders. Keep these exclusions graph-local so ordinary anilines,
+            # alkylamines, and heteroaromatic amines elsewhere in the precursor
+            # remain eligible. Besides conventional C-bound primary amines,
+            # beta-ketoenamine COFs can use terminal hydrazino nitrogens on a
+            # guanidinium-like C(N)3 center. The second branch is deliberately
+            # limited to that environment, so hydrazides and free hydrazine do
+            # not become generic amine building sites.
             rdkit_smarts=(
-                "[NX3;H2;!$(N[C](~[O,S]));!$(NS(=[O,S]))]-"
+                "[NX3;H2;!$(N[C](~[O,S]));!$(NS(=[O,S]));"
+                "!$(N-[CX3;!R]=[N,O])]-"
                 "[$([#6]),$([N]~[C;$(C(~N)(~N)~N)])]"
             ),
         ),

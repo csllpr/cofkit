@@ -1,5 +1,10 @@
 smiles
 O=Cc1c(O)c(C=O)c(O)c(C=O)c1O
-CC(C)(C)c1cc(C#Cc2cc(C#Cc3cc(C=O)c(O)c(C(C)(C)C)c3)cc(C#Cc3cc(C=O)c(O)c(C(C)(C)C)c3)c2)cc(C=O)c1O
+C1=CC(=CC=C1C2=CC(=C(C=C2)C=O)O)C3=NC(=NC(=N3)C4=CC=C(C=C4)C5=CC(=C(C=C5)C=O)O)C6=CC=C(C=C6)C7=CC(=C(C=C7)C=O)O
 O=Cc1ccc(C#Cc2cc(C#Cc3ccc(C=O)c(O)c3)cc(C#Cc3ccc(C=O)c(O)c3)c2)cc1O
+O=CC=1C=C(C=CC1O)C2=CC(=CC(=C2)C=3C=CC(O)=C(C=O)C3)C=4C=CC(O)=C(C=O)C4
 O=Cc1ccc(-c2cc(-c3ccc(C=O)c(O)c3)cc(-c3ccc(C=O)c(O)c3)c2)cc1O
+CC(C)(C)C1=CC(=CC(=C1O)C=O)C2=CC(=CC(=C2)C3=CC(=C(C(=C3)C(C)(C)C)O)C=O)C4=CC(=C(C(=C4)C(C)(C)C)O)C=O
+CC(C)(C)c1cc(C#Cc2cc(C#Cc3cc(C=O)c(O)c(C(C)(C)C)c3)cc(C#Cc3cc(C=O)c(O)c(C(C)(C)C)c3)c2)cc(C=O)c1O
+CC(C)(C)C1=CC(=CC(=C1O)C=O)C#CC2=CC=C(C=C2)C3=CC(=CC(=C3)C4=CC=C(C=C4)C#CC5=CC(=C(C(=C5)C(C)(C)C)O)C=O)C6=CC=C(C=C6)C#CC7=CC(=C(C(=C7)C(C)(C)C)O)C=O
+C1=CC(=CC=C1C#CC2=CC(=C(C=C2)O)C=O)C3=CC(=CC(=C3)C4=CC=C(C=C4)C#CC5=CC(=C(C=C5)O)C=O)C6=CC=C(C=C6)C#CC7=CC(=C(C=C7)O)C=O

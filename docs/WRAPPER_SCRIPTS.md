@@ -48,7 +48,7 @@ No public benzothiazole-conversion wrapper is currently shipped. The sulfur-enab
 python3 examples/build_default_monomers_library.py
 ```
 
-That script scans [`../examples/batch_test_monomers`](../examples/batch_test_monomers), writes regrouped role/count libraries under [`../examples/default_monomers_library`](../examples/default_monomers_library), and records detector provenance in `registry.jsonl` plus failures/ambiguities in `failures.jsonl`.
+That script scans the 1,324-record curated source under [`../examples/batch_test_monomers`](../examples/batch_test_monomers), writes the same 1,324 monomers into regrouped role/count libraries under [`../examples/default_monomers_library`](../examples/default_monomers_library), and records detector provenance in `registry.jsonl` plus failures/ambiguities in `failures.jsonl`.
 
 ## Experimental smoke examples
 
@@ -66,7 +66,7 @@ python3 examples/run_available_binary_bridge_batches.py \
   --output-dir out/available_binary_bridge_batches
 ```
 
-The shipped [`../examples/default_monomers_library`](../examples/default_monomers_library) snapshot currently exposes `hydrazone_bridge`, `imine_bridge`, and `keto_enamine_bridge` batches. `boronate_ester_bridge` and `vinylene_bridge` remain covered by the direct single-pair smoke examples above.
+The shipped [`../examples/default_monomers_library`](../examples/default_monomers_library) snapshot exposes all six binary-bridge batches: `azine_bridge`, `boronate_ester_bridge`, `hydrazone_bridge`, `imine_bridge`, `keto_enamine_bridge`, and `vinylene_bridge`.
 
 ## Output classification wrapper
 
