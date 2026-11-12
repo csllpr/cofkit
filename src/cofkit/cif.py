@@ -11,6 +11,7 @@ from .chem.motif_registry import motif_pseudo_atom_symbol
 from .cofid import cofid_comment_line
 from .geometry import Vec3, add, cross, distance, dot, matmul_vec, norm, scale
 from .model import Candidate, MonomerSpec, Pose
+from .periodic_geometry import format_p1_shift, p1_shift, rebase_bond_shift
 from .reaction_realization import RealizedBond, ReactionRealizationResult, ReactionRealizer
 
 
@@ -343,13 +344,13 @@ class CIFWriter:
             pose = candidate.state.monomer_poses[instance_id]
             for atom_id, label in atom_labels.items():
                 world = add(self._world_position(pose, atom_positions[atom_id]), atomistic_shift)
-                fractional_by_label[label] = self._wrap_fractional(self._cartesian_to_fractional(cell, world))
+                fractional_by_label[label] = self._cartesian_to_fractional(cell, world)
             for atom_id_1, atom_id_2, bond_order in monomer.bonds:
                 if atom_id_1 not in atom_labels or atom_id_2 not in atom_labels:
                     continue
                 label_1 = atom_labels[atom_id_1]
                 label_2 = atom_labels[atom_id_2]
-                relative_shift, distance = self._minimum_image_bond_geometry(
+                relative_shift, distance = self._bond_geometry(
                     cell,
                     fractional_by_label[label_1],
                     fractional_by_label[label_2],
@@ -373,10 +374,15 @@ class CIFWriter:
                     if fractional_1 is None or fractional_2 is None:
                         bonds.append(bond)
                         continue
-                    relative_shift, distance = self._minimum_image_bond_geometry(
+                    original_shift = tuple(
+                        second - first
+                        for first, second in zip(p1_shift(bond.symmetry_1), p1_shift(bond.symmetry_2))
+                    )
+                    relative_shift, distance = self._bond_geometry(
                         cell,
                         fractional_1,
                         fractional_2,
+                        original_shift,
                     )
                     bonds.append(
                         replace(
@@ -440,10 +446,11 @@ class CIFWriter:
 
     def _dedupe_bonds(self, bonds: list[RealizedBond]) -> list[RealizedBond]:
         unique: list[RealizedBond] = []
-        index_by_key: dict[tuple[str, str, str, str], int] = {}
+        index_by_key: dict[tuple[str, str, tuple[int, int, int]], int] = {}
         for bond in bonds:
-            key = (bond.label_1, bond.label_2, bond.symmetry_1, bond.symmetry_2)
-            reverse_key = (bond.label_2, bond.label_1, bond.symmetry_2, bond.symmetry_1)
+            shift = tuple(b - a for a, b in zip(p1_shift(bond.symmetry_1), p1_shift(bond.symmetry_2)))
+            key = (bond.label_1, bond.label_2, shift)
+            reverse_key = (bond.label_2, bond.label_1, tuple(-value for value in shift))
             existing_index = index_by_key.get(key)
             if existing_index is None:
                 existing_index = index_by_key.get(reverse_key)
@@ -485,36 +492,21 @@ class CIFWriter:
         return tuple(value - floor(value) for value in frac)  # type: ignore[return-value]
 
     def _format_p1_symmetry_shift(self, shift: tuple[int, int, int]) -> str:
-        if shift == (0, 0, 0):
-            return "."
-        if any(component < -4 or component > 4 for component in shift):
-            raise ValueError(f"periodic image shift {shift!r} exceeds CIF P1 formatter range")
-        return "1_" + "".join(str(component + 5) for component in shift)
+        return format_p1_shift(shift)
 
-    def _minimum_image_bond_geometry(
+    def _bond_geometry(
         self,
         cell: tuple[Vec3, Vec3, Vec3],
         left_fractional: Vec3,
         right_fractional: Vec3,
+        shift: tuple[int, int, int] = (0, 0, 0),
     ) -> tuple[tuple[int, int, int], float]:
-        best_shift = (0, 0, 0)
-        best_distance = float("inf")
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    shift = (dx, dy, dz)
-                    vector = (
-                        (right_fractional[0] + dx) - left_fractional[0],
-                        (right_fractional[1] + dy) - left_fractional[1],
-                        (right_fractional[2] + dz) - left_fractional[2],
-                    )
-                    distance = norm(self._fractional_vector_to_cartesian(cell, vector))
-                    if distance + 1e-9 < best_distance:
-                        best_distance = distance
-                        best_shift = shift
-                    elif abs(distance - best_distance) <= 1e-9 and shift == (0, 0, 0):
-                        best_shift = shift
-        return best_shift, best_distance
+        """Measure the specified edge, retaining its image through wrapping."""
+        vector = tuple(right + gain - left for left, right, gain in zip(left_fractional, right_fractional, shift))
+        return (
+            rebase_bond_shift(shift, left_fractional, right_fractional),
+            norm(self._fractional_vector_to_cartesian(cell, vector)),
+        )
 
     def _fractional_vector_to_cartesian(self, cell: tuple[Vec3, Vec3, Vec3], vector: Vec3) -> Vec3:
         a_vec, b_vec, c_vec = cell

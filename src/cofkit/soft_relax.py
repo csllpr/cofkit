@@ -42,7 +42,6 @@ Limitations of this prototype:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import product
 import math
 from pathlib import Path
 
@@ -50,7 +49,7 @@ import gemmi
 
 from ._dreiding_reference import DREIDING_FRAMEWORK_TYPE_BY_ELEMENT, DREIDING_PARAMETERS
 from .cif_checks import cif_value_str
-from .periodic_geometry import images_within, p1_shift
+from .periodic_geometry import format_p1_shift, images_within, p1_shift, rebase_bond_shift
 from .validation import CoarseValidationThresholds, _instance_id
 
 # Heuristic — pending calibration: floor (A) on the gemmi neighbor-search
@@ -501,30 +500,6 @@ def _min_heavy_distance_and_clashes(
     return minimum, directed_clashes // 2
 
 
-def _format_p1_shift(shift: tuple[int, int, int]) -> str:
-    if shift == (0, 0, 0):
-        return "."
-    return "1_" + "".join(str(component + 5) for component in shift)
-
-
-def _minimum_image_shift(
-    cell: gemmi.UnitCell, frac_a, frac_b
-) -> tuple[tuple[int, int, int], float]:
-    """Shift s minimizing |orth(frac_b + s - frac_a)| over +-1 images."""
-    best_shift = (0, 0, 0)
-    best_distance = float("inf")
-    pa = cell.orthogonalize(gemmi.Fractional(*frac_a))
-    for dx, dy, dz in product((-1, 0, 1), repeat=3):
-        pb = cell.orthogonalize(
-            gemmi.Fractional(frac_b[0] + dx, frac_b[1] + dy, frac_b[2] + dz)
-        )
-        distance = pa.dist(pb)
-        if distance + 1e-9 < best_distance:
-            best_distance = distance
-            best_shift = (dx, dy, dz)
-    return best_shift, best_distance
-
-
 def _rewrite_cif_coordinates(
     input_path: Path,
     output_path: Path,
@@ -551,12 +526,19 @@ def _rewrite_cif_coordinates(
             if "_atom_site_fract_x" in tags and "_atom_site_label" in tags:
                 mode = "atoms"
                 atom_columns = tags
-            elif "_geom_bond_atom_site_label_1" in tags and "_geom_bond_site_symmetry_2" in tags:
+            elif "_geom_bond_atom_site_label_1" in tags:
                 mode = "bonds"
-                bond_columns = tags
+                # Missing image columns imply identity bonds. Materialize
+                # them so wrapping can still represent the same edges.
+                bond_columns = list(tags)
+                for tag in ("_geom_bond_site_symmetry_1", "_geom_bond_site_symmetry_2"):
+                    if tag not in bond_columns:
+                        bond_columns.append(tag)
             else:
                 mode = ""
             out_lines.extend(lines[i:j])
+            if mode == "bonds":
+                out_lines.extend(tag + "\n" for tag in bond_columns[len(tags):])
             i = j
             continue
         if mode and (not stripped or stripped.startswith(("#", "_", "loop_", "data_", "save_"))):
@@ -573,22 +555,23 @@ def _rewrite_cif_coordinates(
                 line = " ".join(tokens) + "\n"
         elif mode == "bonds":
             tokens = stripped.split()
+            tokens.extend("." for _ in range(len(bond_columns) - len(tokens)))
             label_a = cif_value_str(tokens[bond_columns.index("_geom_bond_atom_site_label_1")])
             label_b = cif_value_str(tokens[bond_columns.index("_geom_bond_atom_site_label_2")])
             frac_a = new_by_label.get(label_a)
             frac_b = new_by_label.get(label_b)
             if frac_a is not None and frac_b is not None:
-                # Coordinates were wrapped for output, so re-derive the bond
-                # image shift from the wrapped positions (same convention as
-                # CIFWriter._minimum_image_bond_geometry).
-                wa = tuple(f - math.floor(f) for f in frac_a)
-                wb = tuple(f - math.floor(f) for f in frac_b)
-                shift, distance = _minimum_image_shift(cell, wa, wb)
+                first_image = p1_shift(cif_value_str(tokens[bond_columns.index("_geom_bond_site_symmetry_1")]))
+                second_image = p1_shift(cif_value_str(tokens[bond_columns.index("_geom_bond_site_symmetry_2")]))
+                original_shift = tuple(b - a for a, b in zip(first_image, second_image))
+                shift = rebase_bond_shift(original_shift, frac_a, frac_b)
+                vector = gemmi.Fractional(*(b + g - a for a, b, g in zip(frac_a, frac_b, original_shift)))
+                distance = cell.orthogonalize(vector).length()
                 tokens[bond_columns.index("_geom_bond_site_symmetry_1")] = "."
-                tokens[bond_columns.index("_geom_bond_site_symmetry_2")] = _format_p1_shift(shift)
+                tokens[bond_columns.index("_geom_bond_site_symmetry_2")] = format_p1_shift(shift)
                 if "_geom_bond_distance" in bond_columns:
                     tokens[bond_columns.index("_geom_bond_distance")] = f"{distance:.3f}"
-                line = " ".join(tokens) + "\n"
+            line = " ".join(tokens) + "\n"
         out_lines.append(line)
         i += 1
     output_path.write_text("".join(out_lines))

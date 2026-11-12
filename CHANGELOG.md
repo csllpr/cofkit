@@ -8,6 +8,7 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Added
 
+- shared typed `CIFExportOutcome` reporting for binary and ring builds: each result/manifest row carries `cif_export` (`written`, `blocked`, `failed`, `not_requested`, `limit_reached`, or `not_attempted`), reasons, error, and a diagnostic-artifact marker. Run reports add `export_counts` and `diagnostic_cifs`; counts include every manifest record, independently of retained top results. Legacy `status`, `successful_structures`, and `cifs_written` fields remain compatible and export/validation verdicts stay separate
 - multi-role monomer registration in `cofkit build default-library`: when SMILES-based role autodetection is ambiguous but the source file's `*_count_N.txt` name declares a motif kind that is among the detected candidates, the monomer is now registered under the declared role instead of being dropped into `failures.jsonl`; such entries are marked `role_resolution: "filename_fallback"` in `registry.jsonl` and counted in the generated README (`MonomerRoleResolver.resolve_detected_motif_kind` gained a `preferred_kind` parameter, surfaced through `infer_record` / `BatchStructureGenerator.infer_monomer_record` as `preferred_motif_kind`); monomers that detect as nothing, or whose declared kind is not among the detected candidates, still fail as before
 
 ### Changed
@@ -17,6 +18,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- atomistic CIF export and soft-relax coordinate rewriting preserve intended periodic edges instead of choosing nearest images. Wrapping rebases the existing translation algebraically, retains parallel-image and self-image bonds, and measures the specified bond even when a different image is nearer. Binary reaction bonds use the difference of both participant images; reverse-oriented bond overrides deduplicate by relative image. Unrepresentable P1 translation codes raise a clear error instead of producing malformed CIFs
+- ring-forming candidate export failures are isolated with `TypeName: message`, staged output cleanup, and continued processing. Rejected ring geometry remains exportable as a diagnostic CIF with a warning comment and typed outcome; warnings correctly distinguish written files, disabled exports, and failed writes
 - RDKit monomer registration no longer treats acyclic amidine/amidoxime `NH2-C(=N/O)` groups as ordinary primary amines, while retaining valid amines elsewhere in the same precursor and the supported heteroaromatic and terminal-hydrazino environments. Activated-methylene detection now rejects halomethyl, hydroxymethyl, unsupported N-substituted, unactivated heteroaryl, meta-only conjugated, and pyrrolic/porphyrin donors; six-membered aza/cyano activation requires an ortho/para path, while direct withdrawing groups, electron-poor multi-aza rings, boron-chelated dipyrrins, and strongly activated aza ethers remain supported. Default-library registration, batch autodetection, and precursor validation use these corrected counts
 
 ## 2026.10.11

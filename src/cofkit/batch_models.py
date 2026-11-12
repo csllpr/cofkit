@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping as ABCMapping, Sequence as ABCSequence
-from dataclasses import dataclass, field
-from typing import Mapping
+from dataclasses import asdict, dataclass, field
+from typing import Iterable, Literal, Mapping
 
 from .model import MonomerSpec
 
@@ -139,6 +139,58 @@ class BuiltBatchMonomer:
 
 
 @dataclass(frozen=True)
+class CIFExportOutcome:
+    """Artifact delivery, independent of construction and validation verdicts."""
+
+    status: Literal["written", "blocked", "failed", "not_requested", "limit_reached", "not_attempted"] = "not_attempted"
+    reasons: tuple[str, ...] = ()
+    error: str | None = None
+    diagnostic: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+    @classmethod
+    def written(cls, *, classification: str | None = None, reasons: Iterable[str] = ()) -> CIFExportOutcome:
+        diagnostic = classification in {"hard_invalid", "hard_hard_invalid", "rejected"}
+        return cls(status="written", diagnostic=diagnostic, reasons=tuple(reasons) if diagnostic else ())
+
+    @classmethod
+    def withheld(
+        cls, *, requested: bool, output_available: bool,
+        blocked_reasons: tuple[str, ...] = (), limit_reached: bool = False,
+    ) -> CIFExportOutcome | None:
+        """Return a withholding reason, or None when export may be attempted."""
+        if not requested:
+            return cls(status="not_requested")
+        if not output_available:
+            return cls(reasons=("output_directory_unavailable",))
+        if blocked_reasons:
+            return cls(status="blocked", reasons=blocked_reasons)
+        if limit_reached:
+            return cls(status="limit_reached", reasons=("export_limit_reached",))
+        return None
+
+    @classmethod
+    def completed(
+        cls, *, cif_path: str | None, error: str | None = None,
+        classification: str | None = None, reasons: Iterable[str] = (),
+    ) -> CIFExportOutcome:
+        if error is None and cif_path is None and classification == "hard_hard_invalid":
+            return cls(status="blocked", reasons=tuple(reasons) or ("hard_hard_invalid",))
+        if error is not None or cif_path is None:
+            return cls(status="failed", error=error or "RuntimeError: CIF export produced no artifact")
+        return cls.written(classification=classification, reasons=reasons)
+
+
+def cif_export_counts(outcomes: Iterable[CIFExportOutcome]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for outcome in outcomes:
+        counts[outcome.status] = counts.get(outcome.status, 0) + 1
+    return counts
+
+
+@dataclass(frozen=True)
 class BatchPairSummary:
     structure_id: str
     pair_id: str
@@ -153,6 +205,7 @@ class BatchPairSummary:
     flags: tuple[str, ...] = ()
     cif_path: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
+    cif_export: CIFExportOutcome = field(default_factory=CIFExportOutcome)
 
     @property
     def reactant_roles(self) -> tuple[str, ...]:
@@ -306,6 +359,9 @@ class BatchRunSummary:
     # provenance existed.
     conformer_settings: ConformerConstructionSettings | None = None
     top_results: tuple[BatchPairSummary, ...] = ()
+    # Aggregated over every manifest record, independently of top_results.
+    export_counts: Mapping[str, int] = field(default_factory=dict)
+    diagnostic_cifs: int = 0
 
     @property
     def constructed_structures(self) -> int:

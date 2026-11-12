@@ -262,7 +262,7 @@ class CIFWriterTests(unittest.TestCase):
         self.assertIn("m1_N2 N 0.100000 0.000000 0.500000 1.00", result.text)
         self.assertIn("m1_C1 m1_N2 . 1_655 1.500000 S", result.text)
 
-    def test_atomistic_export_uses_minimum_image_symmetry_for_periodic_fragment_reaction_bond(self):
+    def test_atomistic_export_preserves_images_for_periodic_fragment_reaction_bond(self):
         carbon = MonomerSpec(
             id="carbon",
             name="single carbon",

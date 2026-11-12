@@ -207,6 +207,37 @@ Structures classified as `hard_hard_invalid` are recorded in the manifest, but C
 
 ## CIF Export Modes
 
+Every single-pair, ring-forming, and batch manifest result also carries a
+`cif_export` object. Read this separately from construction `status` and the
+validation report:
+
+| `cif_export.status` | Meaning |
+| --- | --- |
+| `written` | The reported CIF was delivered; inspect validation separately. |
+| `blocked` | A requested export was prevented by the existing severe geometry gate; `reasons` explains why. |
+| `failed` | Export failed; `error` retains `TypeName: message`. |
+| `not_requested` | CIF export was disabled. |
+| `limit_reached` | The requested export exceeded the CIF quota. |
+| `not_attempted` | No candidate was available for export, or no output directory was supplied. |
+
+Run reports include `export_counts` and `diagnostic_cifs`. Batch counts cover
+every manifest row, including failures, even when `top_results` is truncated;
+they are not counts of attempted structures. The legacy `successful_structures`
+field retains its construction-status meaning and does not imply export or
+validation success. `exported_structures` is an alias of `cifs_written`.
+
+Rejected ring geometries remain available for inspection with
+`cif_export.diagnostic: true`, their rejection reasons, and a warning comment in
+the CIF. An individual ring export failure is recorded without stopping the
+remaining candidates. Disabled exports do not write diagnostic files.
+
+Atomistic CIF export and soft relaxation preserve the specified periodic
+bond images when coordinates wrap, including parallel edges and bonds to
+self images. Bond distances describe the intended edge even when another
+periodic image is nearer. This preserves connectivity rather than repairing
+stretched bonds, and does not certify source-framework equivalence or physical
+stability.
+
 Every exported CIF declares its export mode in machine-readable header comment lines:
 
 - `# export_mode: atomistic | mixed | coarse` — `atomistic` when every monomer instance provides atom coordinates, `coarse` when none does (monomer centers and motif origins are exported as pseudo-sites labeled `<instance>_CTR` / `<instance>_M<n>`), and `mixed` when only some instances are atomistic

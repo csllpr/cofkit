@@ -27,6 +27,7 @@
   - registry-backed atomistic bond/deletion realization for the currently implemented binary-bridge products
 - `cofkit.batch_models`
   - neutral batch-facing dataclasses and compatibility aliases for pair and run summaries
+  - shared `CIFExportOutcome` separates artifact delivery from legacy construction status and validation; binary and ring CLI reports serialize the same status/reasons/error/diagnostic contract. Batch outcome counts include every manifest record, not only retained top results
 - `cofkit.build_workflows`
   - workflow-family registry that isolates binary-bridge and ring-forming builders from the reserved composite-topology workflow
 - `cofkit.monomer_library`
@@ -55,6 +56,9 @@
   - first-pass candidate ranking from event coverage, topology priors, bridge geometry, and unreacted penalties
 - `cofkit.cif`
   - legal P1 CIF export with atomistic output when monomer coordinates exist and coarse fallback pseudo-sites otherwise
+  - intended intra-monomer and realized reaction edges retain their translations through coordinate wrapping; bond lengths never choose a different periodic partner
+- `cofkit.periodic_geometry`
+  - shared P1 shift parsing/formatting and algebraic bond rebasing (`g' = g + floor(f_j) - floor(f_i)`), used by CIF export and soft-relax coordinate writing; also owns image enumeration and cell face widths
 - `cofkit.decompose_cif`
   - dependency-light CIF atom and explicit-bond extraction for decomposition workflows, using `gemmi` rather than ASE for the primary path
 - `cofkit.decompose`

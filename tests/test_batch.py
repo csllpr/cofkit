@@ -3084,6 +3084,11 @@ class BatchFailureIsolationTests(unittest.TestCase):
         self.assertEqual(summary.successful_pairs, 3)
         self.assertEqual(summary.successful_structures, 3)
         self.assertEqual(summary.cifs_written, 3)
+        failed_export_status = "failed" if status == "export-failed" else "not_attempted"
+        self.assertEqual(failed_rows[0]["cif_export"]["status"], failed_export_status)
+        self.assertEqual(summary.export_counts, {failed_export_status: 1, "written": 3})
+        if failed_export_status == "failed":
+            self.assertEqual(failed_rows[0]["cif_export"]["error"], error_text)
         failed_id = failed_rows[0]["structure_id"]
         self.assertEqual(summary.record_failures.get(failed_id), error_text)
         # No partial staging output may survive as an apparent export.

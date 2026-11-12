@@ -42,3 +42,27 @@ def p1_shift(token: str) -> tuple[int, int, int]:
     if not token.startswith("1_") or len(token) != 5 or not token[2:].isdigit():
         raise ValueError(f"Expected P1 bond-image translation, got {token!r}.")
     return tuple(int(v) - 5 for v in token[2:])
+
+
+def format_p1_shift(shift: tuple[int, int, int]) -> str:
+    """Encode a translation without silently emitting an invalid CIF code."""
+    if shift == (0, 0, 0):
+        return "."
+    # Derived: each CIF translation digit encodes shift + 5 in one digit.
+    digits = tuple(component + 5 for component in shift)
+    if any(not isinstance(digit, int) or not 0 <= digit <= 9 for digit in digits):
+        raise ValueError(f"periodic image shift {shift!r} exceeds CIF P1 formatter range")
+    return "1_" + "".join(str(digit) for digit in digits)
+
+
+def rebase_bond_shift(shift, first_fractional, second_fractional) -> tuple[int, int, int]:
+    """Preserve an edge when its unwrapped endpoint coordinates are wrapped.
+
+    Derived: f'_i = f_i - floor(f_i), so the vector f_j + g - f_i
+    becomes f'_j + [g + floor(f_j) - floor(f_i)] - f'_i.
+    This is a change of atom representatives, never a nearest-image search.
+    """
+    return tuple(
+        gain + math.floor(second) - math.floor(first)
+        for gain, first, second in zip(shift, first_fractional, second_fractional)
+    )

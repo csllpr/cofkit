@@ -32,6 +32,7 @@ from .linkage_geometry import (
     required_bridge_span,
 )
 from .model import Candidate, MonomerSpec, MotifRef, Pose, ReactionEvent
+from .periodic_geometry import format_p1_shift
 from .reactions import (
     AZINE_NN_TARGET_DISTANCE,
     bridge_geometry_priors,
@@ -785,7 +786,7 @@ class ReactionRealizer:
                         label_2=carbon_label,
                         distance=self._distance(sulfur_world, carbon_world),
                         symmetry_1=".",
-                        symmetry_2=self._symmetry_code(aldehyde_ref.periodic_image),
+                        symmetry_2=self._relative_symmetry_code(amine_ref, aldehyde_ref),
                     ),
                     RealizedBond(
                         label_1=sulfur_label,
@@ -2403,7 +2404,7 @@ class ReactionRealizer:
                     label_2=self.atom_label(amine_ref.monomer_instance_id, amine_spec.atom_symbols[nitrogen_atom_id], nitrogen_atom_id),
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
-                    symmetry_2=self._symmetry_code(amine_ref.periodic_image),
+                    symmetry_2=self._relative_symmetry_code(aldehyde_ref, amine_ref),
                     bond_order=2.0,
                 ),
             ),
@@ -2464,7 +2465,7 @@ class ReactionRealizer:
                     ),
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
-                    symmetry_2=self._symmetry_code(hydrazide_ref.periodic_image),
+                    symmetry_2=self._relative_symmetry_code(aldehyde_ref, hydrazide_ref),
                     bond_order=2.0,
                 ),
             ),
@@ -2525,7 +2526,7 @@ class ReactionRealizer:
                     ),
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
-                    symmetry_2=self._symmetry_code(hydrazine_ref.periodic_image),
+                    symmetry_2=self._relative_symmetry_code(aldehyde_ref, hydrazine_ref),
                     bond_order=2.0,
                 ),
             ),
@@ -2626,7 +2627,7 @@ class ReactionRealizer:
                         ),
                         distance=self._distance(carbon_world, nitrogen_world),
                         symmetry_1=".",
-                        symmetry_2=self._symmetry_code(amine_ref.periodic_image),
+                        symmetry_2=self._relative_symmetry_code(keto_aldehyde_ref, amine_ref),
                         bond_order=1.0,
                     ),
                     RealizedBond(
@@ -2718,7 +2719,7 @@ class ReactionRealizer:
                     ),
                     distance=self._distance(carbon_world, nitrogen_world),
                     symmetry_1=".",
-                    symmetry_2=self._symmetry_code(amine_ref.periodic_image),
+                    symmetry_2=self._relative_symmetry_code(keto_aldehyde_ref, amine_ref),
                     bond_order=1.0,
                 ),
                 RealizedBond(
@@ -2862,7 +2863,7 @@ class ReactionRealizer:
                 label_2=self.atom_label(catechol_ref.monomer_instance_id, catechol_spec.atom_symbols[oxygen_atom_id], oxygen_atom_id),
                 distance=self._distance(boron_world, oxygen_world),
                 symmetry_1=".",
-                symmetry_2=self._symmetry_code(catechol_ref.periodic_image),
+                symmetry_2=self._relative_symmetry_code(boronic_ref, catechol_ref),
             )
             for oxygen_atom_id, oxygen_world in zip(catechol_oxygen_atom_ids, catechol_oxygen_worlds)
         )
@@ -2954,7 +2955,7 @@ class ReactionRealizer:
                     ),
                     distance=self._distance(aldehyde_carbon_world, activated_carbon_world),
                     symmetry_1=".",
-                    symmetry_2=self._symmetry_code(activated_ref.periodic_image),
+                    symmetry_2=self._relative_symmetry_code(aldehyde_ref, activated_ref),
                     bond_order=2.0,
                 ),
             ),
@@ -3599,9 +3600,11 @@ class ReactionRealizer:
         return frozenset(visited)
 
     def _symmetry_code(self, image: tuple[int, int, int]) -> str:
-        if image == (0, 0, 0):
-            return "."
-        return f"1_{image[0] + 5}{image[1] + 5}{image[2] + 5}"
+        return format_p1_shift(image)
+
+    def _relative_symmetry_code(self, first: MotifRef, second: MotifRef) -> str:
+        """A common translation of all event participants leaves its edge unchanged."""
+        return self._symmetry_code(tuple(b - a for a, b in zip(first.periodic_image, second.periodic_image)))
 
     def _cleanup_reaction_hydrogens(
         self,

@@ -1885,28 +1885,19 @@ class DecomposeRoundTripTests(unittest.TestCase):
                     )
 
                     if case_name == "sql_4_4_imine":
-                        if sys.platform == "darwin" and result.ok:
-                            # macOS/arm64: the same platform-dependent seed
-                            # placement changes the exported sql geometry
-                            # enough that legacy decomposition recovers a COFid
-                            # instead of rejecting it on the rank mismatch this
-                            # case pins. Linux CI keeps the assertion below.
-                            self.skipTest(
-                                "macOS/arm64 geometry variance: sql_4_4_imine "
-                                "decomposes successfully here instead of "
-                                "reporting a periodic-rank mismatch"
-                            )
-                        self.assertFalse(result.ok)
-                        self.assertIn("periodic rank 3", result.reason)
+                        # Nearest-image export used to replace intended sql
+                        # edges and create a spurious rank-3 graph on Linux.
+                        # Retaining the assembly's translations must preserve
+                        # its actual rank, independently of seed geometry.
+                        self.assertTrue(result.ok, result.reason)
                         self.assertEqual(
                             result.metadata["topology_validation"]["expected_periodic_rank"],
                             2,
                         )
                         self.assertEqual(
                             result.metadata["topology_validation"]["observed_periodic_rank"],
-                            3,
+                            2,
                         )
-                        continue
                     self.assertTrue(result.ok, result.reason)
                     self.assertEqual(result.cofid, summary.metadata["cofid"])
                     observed_connectivity_pairs.add(

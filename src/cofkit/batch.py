@@ -16,6 +16,7 @@ from .batch_models import (
     BatchPairSummary,
     BatchRunSummary,
     BuiltBatchMonomer,
+    CIFExportOutcome,
     ConformerConstructionSettings,
     MonomerConformerProvenance,
 )
@@ -707,7 +708,13 @@ class BatchStructureGenerator:
             validation_metadata = None
             export_error = None
             export_blocked = bool(summary.metadata.get("hard_hard_invalid_reasons"))
-            if effective_write_cif and out_dir is not None and not export_blocked:
+            withheld = CIFExportOutcome.withheld(
+                requested=effective_write_cif,
+                output_available=out_dir is not None,
+                blocked_reasons=tuple(summary.metadata.get("hard_hard_invalid_reasons", ())),
+                limit_reached=not self._should_write_cif(write_cif, max(0, cif_export_index - 1)),
+            )
+            if withheld is None:
                 amine = self.build_monomer(amine_record)
                 aldehyde = self.build_monomer(aldehyde_record)
                 assert amine.monomer is not None
@@ -749,6 +756,11 @@ class BatchStructureGenerator:
                         "validation": validation_metadata,
                     },
                 )
+            summary = replace(summary, cif_export=withheld or CIFExportOutcome.completed(
+                cif_path=cif_path, error=export_error,
+                classification=(validation_metadata or {}).get("classification"),
+                reasons=(validation_metadata or {}).get("reasons", ()),
+            ))
             return summary, best_candidate
 
         return summaries[0], None
@@ -836,7 +848,13 @@ class BatchStructureGenerator:
             validation_metadata = None
             export_error = None
             export_blocked = bool(summary.metadata.get("hard_hard_invalid_reasons"))
-            if effective_write_cif and out_dir is not None and not export_blocked:
+            withheld = CIFExportOutcome.withheld(
+                requested=effective_write_cif,
+                output_available=out_dir is not None,
+                blocked_reasons=tuple(summary.metadata.get("hard_hard_invalid_reasons", ())),
+                limit_reached=not self._should_write_cif(write_cif, max(0, cif_export_index - 1)),
+            )
+            if withheld is None:
                 cif_path, validation_metadata, export_error = self._export_candidate_cif_guarded(
                     out_dir=out_dir,
                     structure_id=summary.structure_id,
@@ -874,6 +892,11 @@ class BatchStructureGenerator:
                         "validation": validation_metadata,
                     },
                 )
+            summary = replace(summary, cif_export=withheld or CIFExportOutcome.completed(
+                cif_path=cif_path, error=export_error,
+                classification=(validation_metadata or {}).get("classification"),
+                reasons=(validation_metadata or {}).get("reasons", ()),
+            ))
             return summary, best_candidate
 
         return summaries[0], None
@@ -973,6 +996,8 @@ class BatchStructureGenerator:
         geometry_repair_revalidation_counts: dict[str, int] = {}
         top_results: list[BatchPairSummary] = []
         record_failures: dict[str, str] = {}
+        export_counts: dict[str, int] = {}
+        diagnostic_cifs = 0
         parallelize_pairs = (
             self.config.max_workers > 1
             and len(pair_tasks) > 1
@@ -984,6 +1009,10 @@ class BatchStructureGenerator:
             if parallelize_pairs:
                 pair_results = self._collect_parallel_pair_results(pair_tasks)
                 for summaries, pair_attempted_structures in pair_results:
+                    for record in summaries:
+                        outcome = record.cif_export
+                        export_counts[outcome.status] = export_counts.get(outcome.status, 0) + 1
+                        diagnostic_cifs += int(outcome.status == "written" and outcome.diagnostic)
                     successful_pairs += self._record_batch_pair_results(
                         manifest=manifest,
                         summaries=summaries,
@@ -1005,6 +1034,10 @@ class BatchStructureGenerator:
                         pair_task,
                         cif_export_start_index=cifs_written,
                     )
+                    for record in summaries:
+                        outcome = record.cif_export
+                        export_counts[outcome.status] = export_counts.get(outcome.status, 0) + 1
+                        diagnostic_cifs += int(outcome.status == "written" and outcome.diagnostic)
                     successful_pairs += self._record_batch_pair_results(
                         manifest=manifest,
                         summaries=summaries,
@@ -1056,6 +1089,8 @@ class BatchStructureGenerator:
                 cofkit_version=__version__,
             ),
             top_results=tuple(top_results),
+            export_counts=export_counts,
+            diagnostic_cifs=diagnostic_cifs,
         )
         staging_dir = output_root / "cifs" / ".staging"
         if staging_dir.is_dir():
@@ -5245,12 +5280,13 @@ class BatchStructureGenerator:
             cif_path = None
             validation_metadata = None
             export_error = None
-            if (
-                effective_write_cif
-                and out_dir is not None
-                and not hard_hard_invalid_reasons
-                and self._should_write_cif(write_cif, cif_export_start_index + local_cifs_written)
-            ):
+            withheld = CIFExportOutcome.withheld(
+                requested=effective_write_cif,
+                output_available=out_dir is not None,
+                blocked_reasons=hard_hard_invalid_reasons,
+                limit_reached=not self._should_write_cif(write_cif, cif_export_start_index + local_cifs_written),
+            )
+            if withheld is None:
                 export_index = cif_export_start_index + local_cifs_written + 1
                 provisional_summary = replace(
                     provisional_summary,
@@ -5313,6 +5349,11 @@ class BatchStructureGenerator:
                         "stacking_expansion_errors": dict(stacking_expansion_errors),
                     },
                 )
+            summary = replace(summary, cif_export=withheld or CIFExportOutcome.completed(
+                cif_path=cif_path, error=export_error,
+                classification=(validation_metadata or {}).get("classification"),
+                reasons=(validation_metadata or {}).get("reasons", ()),
+            ))
             summaries.append(summary)
         return tuple(summaries), tuple(finalized_candidates), attempted_structures
 
@@ -6045,6 +6086,7 @@ class BatchStructureGenerator:
             "score": summary.score,
             "flags": summary.flags,
             "cif_path": summary.cif_path,
+            "cif_export": summary.cif_export.to_dict(),
             "metadata": summary.metadata,
         }
 
@@ -6068,6 +6110,8 @@ class BatchStructureGenerator:
             f"- Successful structures: {summary.successful_structures}",
             f"- Constructed structures (status `ok`; construction success, not a validation verdict): {summary.constructed_structures}",
             f"- CIFs written: {summary.cifs_written}",
+            f"- CIF export outcomes (all manifest records): {dict(summary.export_counts)}",
+            f"- Diagnostic CIFs written: {summary.diagnostic_cifs}",
             f"- Screened structures (validation record attached): {summary.screened_structures}",
             f"- Unvalidated structures (required checks unmeasured): {summary.unvalidated_structures}",
             f"- Mode counts (structures): {dict(summary.mode_counts)}",

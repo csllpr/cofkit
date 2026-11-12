@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import sys
+import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
+from .batch_models import CIFExportOutcome, cif_export_counts
 from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
 from .chem.rdkit import (
     DEFAULT_RDKIT_RANDOM_SEED,
@@ -558,6 +560,9 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         # Explicit split: construction success is not a validated yield.
         "constructed_structures": sum(1 for summary in summaries if summary.status == "ok"),
         "cifs_written": sum(1 for summary in summaries if summary.cif_path is not None),
+        "exported_structures": sum(1 for summary in summaries if summary.cif_path is not None),
+        "export_counts": cif_export_counts(summary.cif_export for summary in summaries),
+        "diagnostic_cifs": sum(1 for summary in summaries if summary.cif_export.diagnostic),
         "shape_warnings": list(shape_warnings),
         "results": [_summary_to_single_pair_result(summary) for summary in summaries],
     }
@@ -570,7 +575,10 @@ def _run_single_pair(args: argparse.Namespace) -> None:
     print("first_monomer:", args.first_id, first_kind, len(first.motifs))
     print("second_monomer:", args.second_id, second_kind, len(second.motifs))
     print("attempted_structures:", attempted_structures)
-    print("successful_structures:", report["successful_structures"])
+    print("successful_structures:", report["successful_structures"], "(legacy construction count; not an export or validation verdict)")
+    print("constructed_structures:", report["constructed_structures"])
+    print("export_counts:", report["export_counts"])
+    print("diagnostic_cifs:", report["diagnostic_cifs"])
     print("cifs_written:", report["cifs_written"])
     print("summary:", output_dir / "summary.json")
     for summary in summaries:
@@ -716,6 +724,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     result_rows: list[dict[str, object]] = []
+    export_outcomes: list[CIFExportOutcome] = []
     for candidate in candidates:
         candidate_cofid_outcome = generate_cofid_with_cause(candidate, {monomer.id: monomer})
         candidate_cofid = candidate_cofid_outcome.cofid
@@ -724,29 +733,58 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
             # report row instead of letting the token silently disappear.
             print(
                 f"warning: COFid generation failed for candidate {candidate.id!r} "
-                f"({candidate_cofid_outcome.error}); the CIF is written without a COFid comment.",
+                f"({candidate_cofid_outcome.error}); any exported CIF will omit the COFid comment.",
                 file=sys.stderr,
             )
         cif_path = None
         export = None
+        export_error = None
+        outcome = CIFExportOutcome.withheld(requested=args.write_cif, output_available=True)
+        ring_validation = candidate.metadata["ring_validation"]
+        rejected = (
+            "ring_geometry_rejected" in candidate.flags
+            or "ring_attachment_rejected" in candidate.flags
+            or ring_validation.get("classification") == "rejected"
+        )
         if args.write_cif:
-            cif_path = output_dir / f"{candidate.id}.cif"
+            destination = output_dir / f"{candidate.id}.cif"
             stacking = candidate.metadata.get("stacking")
             comment_suffix = (
                 str(stacking.get("comment_suffix"))
                 if isinstance(stacking, dict) and stacking.get("comment_suffix") is not None
                 else None
             )
-            export = CIFWriter().write_candidate(
-                cif_path,
-                candidate,
-                {monomer.id: monomer},
-                cofid=candidate_cofid,
-                cofid_comment_suffix=comment_suffix,
+            try:
+                # Stage each candidate independently; a failed writer must not
+                # leave a partial CIF or remove a previous completed artifact.
+                with tempfile.TemporaryDirectory(prefix=".cif-", dir=output_dir) as staging:
+                    staged_path = Path(staging) / destination.name
+                    export = CIFWriter().write_candidate(
+                        staged_path, candidate, {monomer.id: monomer},
+                        cofid=candidate_cofid, cofid_comment_suffix=comment_suffix,
+                    )
+                    if rejected:
+                        lines = staged_path.read_text().splitlines(keepends=True)
+                        lines.insert(1, "# cofkit warning: diagnostic CIF; rejected ring geometry (see summary.json)\n")
+                        staged_path.write_text("".join(lines))
+                    staged_path.replace(destination)
+                cif_path = destination
+            except Exception as exc:
+                export_error = f"{type(exc).__name__}: {exc}"
+                export = None
+                print(f"warning: CIF export failed for {candidate.id!r} ({export_error}); continuing with remaining candidates.", file=sys.stderr)
+            outcome = CIFExportOutcome.completed(
+                cif_path=None if cif_path is None else str(cif_path), error=export_error,
+                classification="rejected" if rejected else ring_validation.get("classification"),
+                reasons=ring_validation.get("reasons") or (),
             )
+        assert outcome is not None
+        export_outcomes.append(outcome)
         result_rows.append(
             {
-                "status": "ok",
+                "status": "export-failed" if export_error is not None else "ok",
+                "cif_export": outcome.to_dict(),
+                **({"error": export_error} if export_error is not None else {}),
                 "candidate_id": candidate.id,
                 "generated_cofid": candidate_cofid,
                 **({"cofid_error": candidate_cofid_outcome.error} if candidate_cofid_outcome.error is not None else {}),
@@ -761,7 +799,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
                 "cif_sites": None if export is None else export.n_sites,
                 "reaction_realization": None if export is None else export.metadata.get("reaction_realization"),
                 "reaction_realization_status": (
-                    "not_requested"
+                    "failed" if export_error is not None else "not_requested"
                     if export is None
                     else "completed"
                     if export.metadata.get("reaction_realization") is not None
@@ -779,7 +817,11 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         "stacking_requested": list(args.stacking),
         "attempted_structures": len(result_rows),
         "successful_structures": sum(1 for row in result_rows if row["status"] == "ok"),
+        "constructed_structures": sum(1 for row in result_rows if row["status"] == "ok"),
         "cifs_written": sum(1 for row in result_rows if row["cif_path"] is not None),
+        "exported_structures": sum(1 for row in result_rows if row["cif_path"] is not None),
+        "export_counts": cif_export_counts(export_outcomes),
+        "diagnostic_cifs": sum(1 for outcome in export_outcomes if outcome.diagnostic),
         "precursor": {
             "id": monomer.id,
             "motif_kind": motif_kind,
@@ -797,6 +839,11 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
     print("precursor:", monomer.id, motif_kind, len(monomer.motifs))
     print("variants:", len(candidates))
     print("generated_cofid:", generated_cofid or "-")
+    print("successful_structures:", report["successful_structures"], "(legacy construction count; not an export or validation verdict)")
+    print("constructed_structures:", report["constructed_structures"])
+    print("cifs_written:", report["cifs_written"])
+    print("export_counts:", report["export_counts"])
+    print("diagnostic_cifs:", report["diagnostic_cifs"])
     for row in result_rows:
         ring_validation = row["ring_validation"]
         arrangement = ring_validation.get("arrangement_classification") or ring_validation["classification"]
@@ -811,22 +858,28 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         )
         reasons = tuple(str(reason) for reason in ring_validation.get("reasons") or ())
         detail = "; ".join(reasons) or "no reasons recorded"
+        delivery = (
+            "a diagnostic CIF was written" if row["cif_export"]["diagnostic"]
+            else "the CIF was written" if row["cif_path"] is not None
+            else "CIF export failed" if row["cif_export"]["status"] == "failed"
+            else "CIF export was not requested"
+        )
         if arrangement != "accepted":
             print(
                 f"warning: candidate {row['candidate_id']!r} failed ring arrangement validation "
-                f"({detail}); the CIF was still written",
+                f"({detail}); {delivery}",
                 file=sys.stderr,
             )
         if attachment == "rejected":
             print(
                 f"warning: candidate {row['candidate_id']!r} failed ring attachment validation "
-                f"({detail}); the CIF was still written",
+                f"({detail}); {delivery}",
                 file=sys.stderr,
             )
         elif attachment == "warning":
             print(
                 f"warning: candidate {row['candidate_id']!r} has strained ring attachment geometry "
-                f"({detail}); the CIF was still written",
+                f"({detail}); {delivery}",
                 file=sys.stderr,
             )
     print("summary:", summary_path)
@@ -936,6 +989,7 @@ def _summary_to_single_pair_result(summary) -> dict[str, object]:
         "score": summary.score,
         "flags": list(summary.flags),
         "cif_path": summary.cif_path,
+        "cif_export": summary.cif_export.to_dict(),
         "metadata": summary.metadata,
     }
 
@@ -989,10 +1043,12 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
     print("attempted_pairs:", summary.attempted_pairs)
     print("successful_pairs:", summary.successful_pairs)
     print("attempted_structures:", summary.attempted_structures)
-    print("successful_structures:", summary.successful_structures)
+    print("successful_structures:", summary.successful_structures, "(legacy construction count; not an export or validation verdict)")
     # Explicit split: construction success is not a validated yield.
     print("constructed_structures:", summary.constructed_structures, "(status ok; construction success, not a validation verdict)")
     print("exported_structures:", summary.exported_structures)
+    print("export_counts:", dict(summary.export_counts))
+    print("diagnostic_cifs:", summary.diagnostic_cifs)
     print("screened_structures:", summary.screened_structures, "(validation record attached)")
     print("unvalidated_structures:", summary.unvalidated_structures, "(required checks unmeasured)")
     print("validation_counts:", dict(summary.validation_counts))
@@ -1222,6 +1278,8 @@ def _summary_to_json(summary) -> dict[str, object]:
         # successful_structures/cifs_written remain as legacy aliases.
         "constructed_structures": summary.constructed_structures,
         "exported_structures": summary.exported_structures,
+        "export_counts": dict(summary.export_counts),
+        "diagnostic_cifs": summary.diagnostic_cifs,
         "screened_structures": summary.screened_structures,
         "unvalidated_structures": summary.unvalidated_structures,
         "cifs_written": summary.cifs_written,
