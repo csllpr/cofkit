@@ -140,6 +140,64 @@ class CovarianceEigenpairs:
     center: Vec3
 
 
+@dataclass(frozen=True)
+class RigidFit:
+    rotation: Mat3
+    translation: Vec3
+    rms: float
+
+
+def fit_rigid_transform(reference: tuple[Vec3, ...], probe: tuple[Vec3, ...], *, initial_rotation: Mat3 | None = None) -> RigidFit:
+    """Fit a proper rigid transform; never deform or reflect a monomer.
+
+    Uses RDKit's quaternion alignment (mandatory runtime dependency). The
+    returned RMS is derived as sqrt(sum_squared_displacements / n_points).
+    With an initial rotation, point/line fits retain its unconstrained roll.
+    No force field, conformer optimization or physical relaxation is implied.
+    """
+    from math import isfinite
+    from sys import float_info
+    from rdkit.Numerics import rdAlignment
+
+    if not reference or len(reference) != len(probe):
+        raise ValueError("rigid alignment needs equal nonempty point sets")
+    if not all(isfinite(value) for points in (reference, probe) for point in points for value in point):
+        raise ValueError("rigid alignment points must be finite")
+    ssd, transform = rdAlignment.GetAlignmentTransform(reference, probe)
+    rotation = tuple(tuple(float(transform[i, j]) for j in range(3)) for i in range(3))
+    translation = tuple(float(transform[i, 3]) for i in range(3))
+    if initial_rotation is not None:
+        pairs = covariance_eigenpairs(probe)
+        # Derived: covariance accumulation has O(n * machine_epsilon)
+        # roundoff. A point/line probe cannot determine molecular roll.
+        collinear = pairs is None or pairs.eigenvalues[1] <= max(0.0, pairs.eigenvalues[2]) * len(probe) * float_info.epsilon
+        if collinear:
+            if pairs is None or pairs.eigenvalues[2] <= 0:
+                rotation = initial_rotation
+            else:
+                local_axis = pairs.eigenvectors[2]
+                before = matmul_vec(initial_rotation, local_axis)
+                after = matmul_vec(rotation, local_axis)
+                turn = cross(before, after)
+                cosine = max(-1.0, min(1.0, dot(before, after)))
+                # Derived: sqrt(epsilon) is the angular resolution of acos
+                # near +/-1; use a stable gauge at parallel/antiparallel axes.
+                if norm(turn) > sqrt(float_info.epsilon):
+                    correction = rotation_about_axis(turn, acos(cosine))
+                    rotation = matmul(correction, initial_rotation)
+                elif cosine >= 0:
+                    rotation = initial_rotation
+                else:
+                    basis = min(((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)), key=lambda v: abs(dot(v, local_axis)))
+                    axis = matmul_vec(initial_rotation, cross(local_axis, basis))
+                    rotation = matmul(rotation_about_axis(axis, acos(-1.0)), initial_rotation)
+            translation = sub(centroid(reference), matmul_vec(rotation, centroid(probe)))
+            ssd = sum(norm(sub(target, add(matmul_vec(rotation, point), translation))) ** 2 for target, point in zip(reference, probe))
+    if not isfinite(ssd) or not all(isfinite(value) for row in rotation for value in row) or not all(isfinite(v) for v in translation):
+        raise ValueError("rigid alignment produced a non-finite transform")
+    return RigidFit(rotation, translation, sqrt(max(0.0, float(ssd)) / len(reference)))
+
+
 def covariance_eigenpairs(points: tuple[Vec3, ...]) -> CovarianceEigenpairs | None:
     """Eigendecompose the mean covariance of *points* via Jacobi rotations.
 

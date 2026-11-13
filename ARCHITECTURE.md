@@ -5,6 +5,7 @@
 - `cofkit.geometry`
   - vector helpers
   - local motif frames
+  - shared proper rigid alignment for source attachment poses and ring refinement; optional initial rotation fixes otherwise-undetermined molecular roll for collinear point sets (RDKit quaternion alignment, an existing runtime dependency)
 - `cofkit.model`
   - domain dataclasses for motifs, monomers, reaction templates, reaction events, assembly state, and candidates
 - `cofkit.attachment`
@@ -57,7 +58,9 @@
 - `cofkit.seed_placement`
   - bounded atomistic contact screening of unstacked 2D imine/azine/hydrazone/vinylene node/linker seeds, with rigid rolls and lateral span alternatives; reuses validation criteria, protects each realized bridge, and records construction diagnostics without claiming physical relaxation
 - `cofkit.optimizer`
-  - dependency-free continuous refinement of initial cell scale and rigid monomer poses
+  - dependency-free continuous refinement of rigid monomer poses and independent active lattice vectors from the existing bridge targets/directions; 2D preserves c padding, 3D refines a/b/c. Affine cell steps have principal-stretch bounds and rank guards; affine/coupled proposals must improve the existing score without worsening any individual linkage-distance residual, and all site/image assignments remain fixed
+- `cofkit.ring_geometry`
+  - owns ring profiles, arrangement/attachment measurements and conservative rigid pose refinement; reactive points and exocyclic anchors guide rotations/translations, with no tradeoff that worsens measured ring maxima or exocyclic residuals. This is seed construction, not physical relaxation
 - `cofkit.scoring`
   - first-pass candidate ranking from event coverage, topology priors, bridge geometry, and unreacted penalties
 - `cofkit.cif`

@@ -596,8 +596,7 @@ def _candidate_cell_classification(candidate: Candidate) -> tuple[str | None, st
     if cell is not None:
         try:
             kind, setting = classify_2d_cell(cell)
-            if kind != "oblique":
-                return kind, setting or None
+            return kind, setting or None
         except (TypeError, ValueError) as exc:
             print(
                 f"warning: stacking: cell classification failed for candidate "

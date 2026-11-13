@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import math
 from typing import Mapping
 
 import gemmi
 import networkx as nx
 from rdkit import Chem
-from rdkit.Numerics import rdAlignment
 
 from .attachment import (
     AttachmentInput,
@@ -18,6 +16,7 @@ from .attachment import (
     load_attachment_recipe,
 )
 from .cofid import canonicalize_smiles, cofid_to_build_request
+from .geometry import fit_rigid_transform
 from .model import (
     AssemblyState,
     Candidate,
@@ -169,17 +168,9 @@ def build_from_attachment(
         probe = [
             spec.atom_positions[mapping[p.atom_index]] for p in instance.seed_positions
         ]
-        ssd, transform = rdAlignment.GetAlignmentTransform(reference, probe)
-        rotation = tuple(
-            tuple(float(transform[i, j]) for j in range(3)) for i in range(3)
-        )
-        translation = tuple(float(transform[i, 3]) for i in range(3))
-        if not all(math.isfinite(x) for row in rotation for x in row) or not all(
-            math.isfinite(x) for x in translation
-        ):
-            raise ValueError("attachment placement produced a non-finite transform")
-        poses[instance.id] = Pose(translation, rotation)
-        fit_errors[instance.id] = math.sqrt(max(0.0, float(ssd)) / len(probe))
+        fit = fit_rigid_transform(tuple(reference), tuple(probe))
+        poses[instance.id] = Pose(fit.translation, fit.rotation)
+        fit_errors[instance.id] = fit.rms
 
     graph = PeriodicProductGraph()
     instances = tuple(

@@ -53,6 +53,41 @@ For 4-connecting monomers, cofkit classifies the connector geometry of the embed
 
 The `first.geometry` and `second.geometry` objects in `summary.json` record the RDKit embedding method, whether a fallback was used, and force-field optimization status. Standard ETKDGv3 remains the primary path. If it fails, cofkit tries bounded random-coordinate ETKDGv3 and ETKDGv2 embeddings. A final 2D coordinate fallback is restricted to planar metal-containing or formally charged precursors, is not force-field minimized, and is labeled explicitly in the summary. Force-field minimization that does not fully converge is not fatal: the build proceeds with the lowest-energy unconverged conformer, the monomer is labeled `unconverged` with diagnostics in the geometry metadata, and the CLI prints a `warning:` line to stderr.
 
+## Geometric Seed Refinement
+
+Binary-bridge construction refines rigid monomer poses and the lattice metric
+against the existing linkage geometry priors. A 2D seed may change its a/b
+lengths and angle within the layer plane, while c padding stays fixed. A 3D
+seed can adjust all three lattice vectors. Cell moves are bounded, molecular
+centers follow the actual cell basis, and reaction sites and periodic image
+assignments do not change. Rank-deficient fits retain the existing scalar/pose
+path. Coupled pose/cell proposals can improve closure even when a rotation alone
+would not improve the seed.
+Affine and coupled proposals must also preserve or improve every individual
+linkage-distance residual; a better angular surrogate cannot justify opening an
+already-closed linkage.
+
+Ring construction refines whole precursor orientations as well as translations
+using the reactive sites and their exocyclic anchors. A move is accepted only
+when ring-arrangement maxima and measured attachment residuals do not worsen;
+missing attachment data remain unmeasured. Unconstrained roll in a collinear fit
+is preserved. Geometry thresholds and CIF export gates are unchanged.
+
+These passes construct starting geometry. They do not alter internal conformer
+torsions, evaluate a force field, relax stress, or establish equilibrium geometry.
+Unresolved placement remains an explicit warning/rejection, rather than a
+chemical impossibility verdict. Attachment-constrained reconstruction retains its
+recorded full cell and uses its separate source-placement path.
+
+Binary `metadata.optimization` records `cell_shape_refinement`,
+`coupled_pose_cell_refinement`, `active_cell_axes`, the initial/final cells and
+`physical_relaxation: false`. Python callers can configure these through
+`OptimizerConfig` (the scale-limit fields keep their legacy names). Ring
+`optimization` records `accepted_rigid_moves`, `arrangement_improved`,
+initial/final attachment deviations and optional-fit warnings; Python callers
+can use `RingGeometryOptimizer(rigid_pose_refinement=False)` for comparison.
+No new CLI tuning flags are introduced.
+
 ## Motif-Overlap Warnings
 
 Some motif kinds share the same base SMARTS. In particular, `aldehyde` and `keto_aldehyde` match the same aldehyde groups; the `keto_aldehyde` handler additionally requires an ortho-hydroxyl or beta-keto route, marking a beta-ketoenamine precursor. When a monomer is assigned the generic kind (explicitly or through template-restricted autodetection) but also matches the specific one, cofkit emits a non-blocking `warning:` line on stderr. For example, forcing triformylphloroglucinol through an imine build:

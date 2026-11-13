@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import acos, atan2, degrees, pi
+import sys
 from typing import Mapping
 
-from .geometry import ANGULAR_RESIDUAL_DOWN_WEIGHT, Vec3, add, cross, dot, matmul_vec, norm, normalize, scale, sub
+from .geometry import ANGULAR_RESIDUAL_DOWN_WEIGHT, Vec3, add, cross, dot, fit_rigid_transform, matmul_vec, norm, normalize, scale, sub
 from .model import AssemblyState, MonomerSpec, Pose, ReactionEvent
 
 # Cited from standard aromatic ring bond lengths: boroxine B-O ~1.38
@@ -446,14 +447,19 @@ def ring_attachment_report(
 
 
 class RingGeometryOptimizer:
-    """Refines shared precursor translations against all incident ring constraints."""
+    """Refine rigid precursor poses against ring and exocyclic constraints.
+
+    Every accepted proposal preserves or improves both measured channels;
+    reactive sites and periodic participant copies are never reassigned.
+    """
 
     # Heuristic — pending calibration: small greedy budget and per-step
     # damping for the translation proposals; the loop breaks early on the
     # first non-improving proposal, so the cap is rarely reached.
-    def __init__(self, max_iterations: int = 6, translation_step: float = 0.5):
+    def __init__(self, max_iterations: int = 6, translation_step: float = 0.5, rigid_pose_refinement: bool = True):
         self.max_iterations = max_iterations
         self.translation_step = translation_step
+        self.rigid_pose_refinement = rigid_pose_refinement
 
     def optimize(
         self,
@@ -464,15 +470,33 @@ class RingGeometryOptimizer:
         initial = ring_geometry_report(events, state, monomer_specs)
         best_state = state
         best = initial
+        initial_attachment = ring_attachment_report(events, state, monomer_specs)
+        attachment = initial_attachment
         accepted = 0
+        accepted_rigid = 0
+        warnings = []
         for _ in range(self.max_iterations):
-            proposal = self._translation_proposal(events, best_state, monomer_specs)
-            report = ring_geometry_report(events, proposal, monomer_specs)
-            if report.total_residual + _RESIDUAL_IMPROVEMENT_EPSILON < best.total_residual:
-                best_state, best = proposal, report
-                accepted += 1
-            else:
+            improved = False
+            for rigid in ((False, True) if self.rigid_pose_refinement else (False,)):
+                try:
+                    proposal = (self._rigid_pose_proposal if rigid else self._translation_proposal)(events, best_state, monomer_specs)
+                    report = ring_geometry_report(events, proposal, monomer_specs)
+                    proposed_attachment = ring_attachment_report(events, proposal, monomer_specs)
+                except Exception as exc:
+                    if not rigid:
+                        raise
+                    warning = f"{type(exc).__name__}: {exc}"
+                    if warning not in warnings:
+                        warnings.append(warning)
+                        print(f"warning: ring rigid-pose refinement skipped ({warning}); retaining the existing placement.", file=sys.stderr)
+                    continue
+                if self._preserves_both_channels(best, attachment, report, proposed_attachment):
+                    best_state, best, attachment = proposal, report, proposed_attachment
+                    improved = True
+                    accepted_rigid += int(rigid)
+            if not improved:
                 break
+            accepted += 1
         return RingOptimizationResult(
             state=best_state,
             metrics={
@@ -481,9 +505,88 @@ class RingGeometryOptimizer:
                 "accepted_iterations": accepted,
                 "initial_residual": initial.total_residual,
                 "final_residual": best.total_residual,
-                "improved": best.total_residual + _RESIDUAL_IMPROVEMENT_EPSILON < initial.total_residual,
+                "improved": accepted > 0,
+                "arrangement_improved": best.total_residual + _RESIDUAL_IMPROVEMENT_EPSILON < initial.total_residual,
+                "rigid_pose_refinement": self.rigid_pose_refinement,
+                "accepted_rigid_moves": accepted_rigid,
+                "initial_attachment_max_deviation_degrees": self._max_attachment_deviation(initial_attachment),
+                "final_attachment_max_deviation_degrees": self._max_attachment_deviation(attachment),
+                "physical_relaxation": False,
+                "warnings": tuple(warnings),
             },
         )
+
+    @staticmethod
+    def _attachment_errors(report):
+        return {
+            (m.event_id, m.participant): (
+                *(abs(angle - RING_ATTACHMENT_IDEAL_ANGLE_DEGREES) for angle in m.ring_angles_degrees),
+                abs(m.exocyclic_distance - m.precursor_distance) / m.precursor_distance,
+            )
+            for m in report.measurements
+        }
+
+    @staticmethod
+    def _max_attachment_deviation(report):
+        return max((abs(angle - RING_ATTACHMENT_IDEAL_ANGLE_DEGREES) for m in report.measurements for angle in m.ring_angles_degrees), default=None)
+
+    def _preserves_both_channels(self, before, before_attachment, after, after_attachment):
+        if after.total_residual > before.total_residual + _RESIDUAL_IMPROVEMENT_EPSILON:
+            return False
+        previous = {m.event_id: m for m in before.event_metrics}
+        for metric in after.event_metrics:
+            old_metric = previous[metric.event_id]
+            if any(getattr(metric, key) > getattr(old_metric, key) + _RESIDUAL_IMPROVEMENT_EPSILON for key in ("radial_max", "planarity_max", "angular_max_degrees")):
+                return False
+        old = self._attachment_errors(before_attachment)
+        new = self._attachment_errors(after_attachment)
+        if old.keys() != new.keys() or after_attachment.n_unmeasured_participants > before_attachment.n_unmeasured_participants:
+            return False
+        if any(n > o + _RESIDUAL_IMPROVEMENT_EPSILON for key in old for o, n in zip(old[key], new[key])):
+            return False
+        return (
+            after.total_residual + _RESIDUAL_IMPROVEMENT_EPSILON < before.total_residual
+            or any(n + _RESIDUAL_IMPROVEMENT_EPSILON < o for key in old for o, n in zip(old[key], new[key]))
+        )
+
+    def _rigid_pose_proposal(self, events, state, monomer_specs):
+        local_points = {iid: [] for iid in state.monomer_poses}
+        target_points = {iid: [] for iid in state.monomer_poses}
+        for event in events:
+            if len(event.participants) != 3 or "ring_center_fractional" not in event.metadata:
+                continue
+            profile = ring_geometry_profile(event.template_id)
+            center = add(fractional_to_cartesian(tuple(event.metadata["ring_center_fractional"]), state.cell), _event_ring_center_offset(event))
+            normal = normalize(tuple(event.metadata.get("ring_normal", (0.0, 0.0, 1.0))))
+            for ref in event.participants:
+                spec = monomer_specs[ref.monomer_id]
+                motif = spec.motif_by_id(ref.motif_id)
+                point = motif_world_position(ref, state, monomer_specs)
+                offset = sub(point, center)
+                radial = sub(offset, scale(normal, dot(offset, normal)))
+                if norm(radial) == 0:
+                    continue
+                direction = normalize(radial)
+                desired = add(center, scale(direction, profile.participant_radius))
+                image = fractional_to_cartesian(tuple(ref.periodic_image), state.cell)
+                local_points[ref.monomer_instance_id].append(motif.frame.origin)
+                target_points[ref.monomer_instance_id].append(sub(desired, image))
+                anchor = motif.metadata.get("anchor_atom_id")
+                if isinstance(anchor, int) and spec.atom_positions:
+                    local_anchor = spec.atom_positions[anchor]
+                    length = norm(sub(local_anchor, motif.frame.origin))
+                    if length > 0:
+                        # Derived: an ideal sp2 exocyclic bond points radially
+                        # away from the ring, at the precursor's own length.
+                        desired_anchor = add(desired, scale(direction, length))
+                        local_points[ref.monomer_instance_id].append(local_anchor)
+                        target_points[ref.monomer_instance_id].append(sub(desired_anchor, image))
+        poses = dict(state.monomer_poses)
+        for iid, probe in local_points.items():
+            if probe:
+                fit = fit_rigid_transform(tuple(target_points[iid]), tuple(probe), initial_rotation=state.monomer_poses[iid].rotation_matrix)
+                poses[iid] = Pose(fit.translation, fit.rotation)
+        return replace(state, monomer_poses=poses)
 
     def _translation_proposal(
         self,
