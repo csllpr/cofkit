@@ -11,6 +11,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Iterable, Mapping
 
+from .attachment import AttachmentInput, load_attachment_recipe
+
 from .batch_models import (
     BatchMonomerRecord,
     BatchPairSummary,
@@ -195,6 +197,7 @@ class BatchGenerationConfig:
     embedding_config: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     engine_config: COFEngineConfig = field(default_factory=COFEngineConfig)
     optimizer_config: OptimizerConfig = field(default_factory=OptimizerConfig)
+    attachment_recipe: AttachmentInput | None = None
 
     def __post_init__(self) -> None:
         if self.target_dimensionality not in ("2D", "3D"):
@@ -4739,6 +4742,7 @@ class BatchStructureGenerator:
                 "embedding": dict(candidate.metadata["embedding"]),
                 "optimization": dict(candidate.metadata["optimization"]),
                 "score_metadata": dict(candidate.metadata["score_metadata"]),
+                **({"attachment": dict(candidate.metadata["attachment"])} if "attachment" in candidate.metadata else {}),
                 **({"seed_placement": dict(candidate.metadata["seed_placement"])} if "seed_placement" in candidate.metadata else {}),
                 "pair_mode": pair_mode,
                 "topology_rank": topology_rank,
@@ -4901,6 +4905,12 @@ class BatchStructureGenerator:
                     structure_id=structure_id,
                     out_dir=out_dir,
                 )
+                if self.config.attachment_recipe is not None:
+                    from .attachment_build import verify_attachment_cif
+                    verification = verify_attachment_cif(self.config.attachment_recipe, cif_path, monomer_specs)
+                    if verification["status"] == "mismatch":
+                        raise ValueError(f"exported CIF violates the attachment reference graph: {verification['reason']}")
+                    validation_metadata = {**dict(validation_metadata or {}), "attachment_verification": verification}
             return cif_path, validation_metadata, None
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
@@ -5098,7 +5108,31 @@ class BatchStructureGenerator:
         )
 
         try:
-            evaluation = self._evaluate_pair_topologies(pair)
+            if self.config.attachment_recipe is not None:
+                from .attachment_build import build_from_attachment
+                from .cofid import cofid_to_build_request
+                try:
+                    recipe = load_attachment_recipe(self.config.attachment_recipe)
+                    request = cofid_to_build_request(recipe.cofid)
+                    if self.config.stacking_ids or self.config.post_build_conversions:
+                        raise ValueError("attachment recipes fix the full cell and chemistry; additional stacking or conversions cannot be applied")
+                    if request.template_id != pair.template.id or request.target_dimensionality != self.config.target_dimensionality:
+                        raise ValueError("attachment recipe disagrees with the requested reaction or dimensionality")
+                    explicit = self.config.topology_ids or self.config.single_node_topology_ids
+                    if explicit and request.topology not in explicit:
+                        raise ValueError("attachment recipe disagrees with the requested topology")
+                    result = build_from_attachment(recipe, (first, second), candidate_id=f"{pair_id}__attachment")
+                    evaluation = _TopologyEvaluation(
+                        self._pair_mode_from_connectivities(len(first.motifs), len(second.motifs)),
+                        (result.candidate,), (request.topology,),
+                    )
+                except Exception as exc:
+                    evaluation = _TopologyEvaluation(
+                        self._pair_mode_from_connectivities(len(first.motifs), len(second.motifs)), (), (),
+                        {"__pair__": f"{type(exc).__name__}: {exc}"},
+                    )
+            else:
+                evaluation = self._evaluate_pair_topologies(pair)
         except ValueError as exc:
             pair_mode = self._pair_mode_from_connectivities(len(first.motifs), len(second.motifs))
             return (

@@ -31,6 +31,40 @@ legacy_result = decompose_cif_to_cofid(
 
 Both engines accept the same `topology`, `linkage`, and `bond_mode` arguments. Omitting `decomposition_mode` uses `event`; pass `legacy` explicitly for the compatibility implementation.
 
+## Attachment Metadata
+
+Event decomposition also recovers optional attachment metadata without changing
+COFid. Use `--attachment-output recipe.json` to write a sidecar for the build
+commands' `--attachment-file`, or read `result.attachment_recipe` in Python.
+The JSON report lives at `metadata.attachment`:
+
+- `available`: one usable recipe, with source atom correspondences;
+- `ambiguous`: attachment interpretations remain unresolved; alternatives are retained;
+- `unavailable`: attachment recovery failed or was not supported; the cause is recorded.
+
+Successful precursor recovery remains successful when additional attachment
+information is unavailable. The legacy engine does not recover these mappings.
+
+Each recipe records the unchanged COFid, full cell, precursor instances, reactive
+sites addressed by canonical precursor heavy-atom indices, integer periodic
+images, complete reaction events, and optional placement hints. Atom mappings
+survive reaction repair and canonicalization before identical precursor instances
+are aggregated. Paired azine links retain their common source-event identity;
+boronate ester and three-participant ring events remain complete units. Boroxine
+residue oxygen is assigned to an explicit retained precursor oxygen.
+
+Hypotheses sharing a COFid do not lose their attachment alternatives. Complete
+atom correspondences to the same input periodic product graph establish
+equivalent reconstructions; unresolved mappings remain explicit. Recipe checksums
+and source-graph digests are provenance, not canonical material identifiers.
+
+Decomposition reports `verification.status: source_mapped`; build checks the
+realized and written periodic heavy graph and reports `verified`, `mismatch`, or
+`not_checked` when no reference was supplied. Provenance records `explicit_cif`
+or `distance_inferred` bonds and `experimental_status: not_asserted`. A recovered
+recipe describes the input structural model; it does not establish experimental
+resolution or physical stability.
+
 ## Pipeline
 
 Event mode normalizes the CIF graph once and then:

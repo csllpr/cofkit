@@ -55,6 +55,9 @@ Then go straight to the module that matches the task.
 
 ## Core chemistry seams
 
+- [src/cofkit/attachment.py](../src/cofkit/attachment.py), [attachment_decompose.py](../src/cofkit/attachment_decompose.py), [attachment_build.py](../src/cofkit/attachment_build.py)
+  - Version-1 attachment metadata is extra structural information, not a COFid format extension. The schema binds canonical heavy-atom indices to full-cell precursor instances and periodic reaction events; source geometry is a seed hint. Event-mode precursor repair retains an ephemeral atom map on `DecomposedMonomer` / `ReconstructedRole` before aggregation. Extraction excludes cut bonds when unwrapping finite fragments (especially higher-connected triazines whose cut endpoints can still belong to the same fragment). Boroxine residue O maps to an explicitly retained precursor O. COFid-only hypothesis grouping retains recipe alternatives; complete maps to the same input product graph justify equivalent mappings, while unavailable/conflicting attachment interpretations remain explicit.
+  - `build_from_attachment` is the common constrained path for `BatchGenerationConfig.attachment_recipe`, `COFProject.attachment_recipe` and ring-builder `attachment_recipe=`. It matches whole precursor graphs, fixes all motifs/images, fits rigid poses, and checks the actual CIF writer output with integer periodic-edge constraints. `verify_attachment_cif` repeats the check after writing/soft relaxation; violations reach per-record export failure handling. No geometry threshold is loosened. Legacy decomposition, new stacking atop a full-cell recipe, bond-order/H/charge/stereo identity and physical relaxation are outside this contract. Tests: `test_attachments.py`, `test_attachment_constraints.py`.
 - [src/cofkit/reactions.py](../src/cofkit/reactions.py)
   - Reaction templates and linkage profiles, including per-template bridge
     geometry priors (`BridgeGeometryPriors`) that own both the

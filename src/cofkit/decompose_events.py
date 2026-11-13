@@ -28,6 +28,7 @@ from typing import Iterable, Mapping, Sequence
 from . import decompose as legacy
 from . import decompose_ledger as ledger
 from .cofid import cofid_to_build_request, parse_cofid, serialize_cofid
+from .attachment import ATTACHMENT_SOURCE_ATOM_INDEX_PROP
 from .decompose_cif import PeriodicCifAtoms, read_periodic_cif_atoms
 from .decompose_ledger import (
     CHARGE_SCOPE_GUEST_LOCALIZED,
@@ -114,7 +115,7 @@ _CONFIDENCE_SCORE = {"low": 1.0, "medium": 2.0, "high": 3.0}
 # canonical (see `_event_search_key`), so the explored subset is invariant
 # under input atom/label permutation.
 _MAX_FAMILY_HYPOTHESES = 256
-_ORIGINAL_ATOM_INDEX_PROP = "cofkit_event_original_atom_idx"
+_ORIGINAL_ATOM_INDEX_PROP = ATTACHMENT_SOURCE_ATOM_INDEX_PROP
 # Heuristic — pending calibration: minimum fraction of fragments per
 # reaction role that must agree on a single dominant species before the
 # remainder may be classified as structural defects rather than legitimate
@@ -198,6 +199,9 @@ class ReconstructedRole:
     connectivity: int
     validation_passed: bool
     metadata: Mapping[str, object] = field(default_factory=dict)
+    canonical_smiles: str = field(default="", repr=False, compare=False)
+    source_atom_map: Mapping[int, int] = field(default_factory=dict, repr=False, compare=False)
+    source_atom_map_error: str | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1877,7 +1881,7 @@ def _reconstruct_and_validate_hypothesis(
         )
         parse_cofid(cofid)
         cofid_to_build_request(cofid)
-        return replace(
+        completed = replace(
             hypothesis,
             topology=selected_topology,
             cofid=cofid,
@@ -1886,6 +1890,20 @@ def _reconstruct_and_validate_hypothesis(
             metadata=hypothesis_metadata,
             score=base_score + _SCORE_RECONSTRUCTION_COMPLETE,
         )
+        # Attachment recovery is additional structural information. A mapping
+        # failure must not turn otherwise valid precursor recovery into a
+        # chemical rejection or escape a batch decomposition loop.
+        try:
+            from .attachment_decompose import extract_attachment_recipe
+            recipe = extract_attachment_recipe(input_path, atoms, build_result, completed)
+            attachment = {
+                "status": "available", "recipe": recipe.to_dict(),
+                "recipe_fingerprint": recipe.fingerprint,
+                "verification": {"status": "source_mapped", "scope": "periodic_heavy_graph", "note": "realized build connectivity is checked when the recipe is consumed"},
+            }
+        except Exception as exc:
+            attachment = {"status": "unavailable", "recipe": None, "error": f"{type(exc).__name__}: {exc}"}
+        return replace(completed, metadata={**dict(completed.metadata), "attachment": attachment})
     except Exception as exc:
         return replace(
             hypothesis,
@@ -2087,6 +2105,9 @@ def _cut_and_reconstruct(
                 reactive_atoms=tuple(sorted(fragment_role_atoms[role])),
                 connectivity=monomer.connectivity,
                 validation_passed=True,
+                canonical_smiles=monomer.canonical_smiles,
+                source_atom_map=monomer.source_atom_map,
+                source_atom_map_error=monomer.source_atom_map_error,
             )
         )
         ledger_fragments.append(
@@ -2914,6 +2935,7 @@ def _select_event_result(
         if hypothesis.complete and hypothesis.cofid is not None
     )
     metadata: dict[str, object] = {
+        "attachment": {"status": "unavailable", "recipe": None, "reason": "no complete event reconstruction"},
         "decomposition_mode": "event",
         "event_pipeline_version": 2,
         "event_detection": detection.to_dict(),
@@ -2946,6 +2968,7 @@ def _select_event_result(
                 (selected.family, selected.cofid),
                 0,
             ),
+            "attachment": _attachment_alternatives(selected, considered),
         })
         if selected.atom_ledger is not None:
             metadata["atom_ledger"] = selected.atom_ledger.to_dict()
@@ -2976,6 +2999,8 @@ def _select_event_result(
             "successful_alternatives": [
                 _alternative_record(hypothesis) for hypothesis in complete
             ],
+            "attachment": {"status": "ambiguous", "recipe": None,
+                           "alternatives": [{"cofid": h.cofid, **_attachment_alternatives(h, considered)} for h in complete]},
         })
         return legacy.CifDecompositionResult(
             status="ambiguous",
@@ -3240,7 +3265,29 @@ def _alternative_record(hypothesis: ReconstructionHypothesis) -> dict[str, objec
         "topology": hypothesis.topology,
         "cofid": hypothesis.cofid,
         "score": hypothesis.score,
+        "attachment_status": hypothesis.metadata.get("attachment", {}).get("status", "unavailable"),
     }
+
+
+def _attachment_alternatives(selected, hypotheses):
+    """COFid equality alone must never discard attachment alternatives.
+
+    Complete source-atom maps on the same input product graph provide an
+    explicit equivalence witness, even when precursor symmetry changes the
+    selected canonical atom mapping. The digest is input-specific provenance,
+    not a canonical structure identifier.
+    """
+    related = [h for h in hypotheses if h.complete and h.family == selected.family and h.cofid == selected.cofid]
+    report = dict(selected.metadata.get("attachment") or {"status": "unavailable", "recipe": None, "reason": "attachment mapping was not computed"})
+    if len(related) <= 1:
+        return report
+    alternatives = [{"hypothesis_id": h.hypothesis_id, **dict(h.metadata.get("attachment") or {"status": "unavailable", "recipe": None})} for h in related]
+    if all(a["status"] == "unavailable" for a in alternatives):
+        return {**report, "status": "unavailable", "recipe": None, "alternatives": alternatives}
+    signatures = {a.get("recipe", {}).get("provenance", {}).get("source_graph_sha256") for a in alternatives if a.get("recipe") is not None}
+    if all(a["status"] == "available" for a in alternatives) and len(signatures) == 1 and None not in signatures:
+        return {**report, "alternatives": alternatives, "equivalence_basis": "complete atom correspondences to the same input periodic product graph"}
+    return {"status": "ambiguous", "recipe": None, "reason": "COFid-equivalent hypotheses do not all have proven attachment correspondences", "alternatives": alternatives}
 
 
 def _best_failed_hypothesis(

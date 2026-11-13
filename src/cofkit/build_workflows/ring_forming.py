@@ -5,6 +5,8 @@ from dataclasses import dataclass, replace
 from math import atan2, cos, sin
 from typing import Mapping
 
+from ..attachment import AttachmentInput
+
 from ..constants import DEFAULT_MONOLAYER_C_ANGSTROM
 from ..geometry import (
     Frame,
@@ -94,6 +96,7 @@ class RingFormingStructureGenerator:
         reaction_library: ReactionLibrary | None = None,
         optimizer: RingGeometryOptimizer | None = None,
     ) -> None:
+        self._config_was_supplied = config is not None
         self.config = config or RingFormationConfig()
         self.reaction_library = reaction_library or ReactionLibrary.builtin()
         self.optimizer = optimizer or RingGeometryOptimizer()
@@ -105,12 +108,14 @@ class RingFormingStructureGenerator:
         *,
         candidate_id: str = "ring-candidate-1",
         topology_id: str | None = None,
+        attachment_recipe: AttachmentInput | None = None,
     ) -> Candidate:
         candidates = self.generate_candidates(
             monomer,
             template_id,
             candidate_id=candidate_id,
             topology_id=topology_id,
+            **({"attachment_recipe": attachment_recipe} if attachment_recipe is not None else {}),
         )
         if len(candidates) != 1:
             raise ValueError(
@@ -126,12 +131,16 @@ class RingFormingStructureGenerator:
         candidate_id: str = "ring-candidate-1",
         topology_id: str | None = None,
         stacking_ids: tuple[str, ...] | None = None,
+        attachment_recipe: AttachmentInput | None = None,
     ) -> tuple[Candidate, ...]:
+        if attachment_recipe is not None and (self.config.stacking_ids if stacking_ids is None else stacking_ids):
+            raise ValueError("attachment recipes already define the full cell; additional stacking is incompatible")
         result = self.build(
             monomer,
             template_id,
             candidate_id=candidate_id,
             topology_id=topology_id,
+            **({"attachment_recipe": attachment_recipe} if attachment_recipe is not None else {}),
         )
         return enumerate_candidate_stackings(
             result.candidate,
@@ -146,7 +155,19 @@ class RingFormingStructureGenerator:
         *,
         candidate_id: str = "ring-candidate-1",
         topology_id: str | None = None,
+        attachment_recipe: AttachmentInput | None = None,
     ) -> RingBuildResult:
+        if attachment_recipe is not None:
+            from ..attachment import load_attachment_recipe
+            from ..attachment_build import build_from_attachment
+            from ..cofid import cofid_to_build_request
+            recipe = load_attachment_recipe(attachment_recipe)
+            request = cofid_to_build_request(recipe.cofid)
+            requested_topology = topology_id or (self.config.topology_id if self._config_was_supplied else request.topology)
+            if request.template_id != template_id or request.topology != requested_topology:
+                raise ValueError("attachment recipe disagrees with the requested ring reaction or topology")
+            result = build_from_attachment(recipe, (monomer,), candidate_id=candidate_id)
+            return RingBuildResult(result.candidate, result.graph, result.outcome)
         template = self.reaction_library.get(template_id)
         profile = self.reaction_library.linkage_profile(template)
         if profile is None or not profile.supports_ring_forming_generation:

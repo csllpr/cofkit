@@ -1,4 +1,9 @@
 from ._version import __version__
+from .attachment import (
+    AttachmentRecipe, AttachmentInstance, AttachmentSite, AttachmentEvent,
+    AttachmentPosition, AttachmentAtom, AttachmentBond, load_attachment_recipe,
+)
+from .attachment_build import AttachmentBuildResult, build_from_attachment, verify_attachment_candidate, verify_attachment_cif
 from .batch import (
     BatchGenerationConfig,
     BatchStructureGenerator,
@@ -254,6 +259,9 @@ from .zeopp import (
 )
 
 __all__ = [
+    "AttachmentRecipe", "AttachmentInstance", "AttachmentSite", "AttachmentEvent",
+    "AttachmentPosition", "AttachmentAtom", "AttachmentBond", "AttachmentBuildResult",
+    "load_attachment_recipe", "build_from_attachment", "verify_attachment_candidate", "verify_attachment_cif",
     "SeedPlacementConfig",
     "SeedPlacementDiagnostics",
     "SeedPlacementMove",

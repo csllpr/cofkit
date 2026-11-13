@@ -13,6 +13,7 @@ from typing import Iterable, Mapping
 
 from .batch import BatchGenerationConfig, BatchStructureGenerator
 from .batch_models import CIFExportOutcome, cif_export_counts
+from .attachment import load_attachment_recipe
 from .build_workflows.ring_forming import RingFormationConfig, RingFormingStructureGenerator
 from .chem.rdkit import (
     DEFAULT_RDKIT_RANDOM_SEED,
@@ -262,6 +263,7 @@ def _configure_generator(args: argparse.Namespace, *, template_id: str | None = 
                 repair_geometry_lmp_path=args.repair_lmp_path,
                 repair_geometry_timeout_seconds=args.repair_timeout_seconds,
                 soft_relax=getattr(args, "soft_relax", False),
+                attachment_recipe=getattr(args, "attachment_recipe", None),
                 repair_geometry_settings=LammpsOptimizationSettings(
                     forcefield="dreiding",
                     charge_model="none",
@@ -281,6 +283,7 @@ def _add_single_pair_parser(subparsers) -> None:
         description="Generate one single-pair COF candidate set from two monomers using an explicit or autodetected binary-bridge template.",
     )
     parser.add_argument("--cofid", default=None, help="COFid string to build from. When supplied, it defines the monomers, topology, and linkage.")
+    parser.add_argument("--attachment-file", default=None, help="Attachment recipe or decomposition JSON. Supplies the COFid and fixes site assignments, cell and precursor copies.")
     parser.add_argument("--template-id", default="imine_bridge", help="Binary bridge template to use.")
     parser.add_argument("--first-smiles", default=None, help="SMILES for the first monomer.")
     parser.add_argument("--second-smiles", default=None, help="SMILES for the second monomer.")
@@ -430,6 +433,7 @@ def _build_single_pair_monomer(
 
 
 def _run_single_pair(args: argparse.Namespace) -> None:
+    args, attachment_recipe = _load_build_attachment(args)
     if args.cofid is not None and (
         args.first_smiles is not None
         or args.second_smiles is not None
@@ -532,6 +536,7 @@ def _run_single_pair(args: argparse.Namespace) -> None:
 
     shape_warnings = _print_shape_warnings(summaries)
     report = {
+        "attachment": {"status": "supplied", "recipe_fingerprint": attachment_recipe.fingerprint} if attachment_recipe is not None else {"status": "unspecified"},
         **({"requested_cofid": requested_cofid} if requested_cofid is not None else {}),
         "template_id": args.template_id,
         "target_dimensionality": args.target_dimensionality,
@@ -567,6 +572,8 @@ def _run_single_pair(args: argparse.Namespace) -> None:
         "results": [_summary_to_single_pair_result(summary) for summary in summaries],
     }
     (output_dir / "summary.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if attachment_recipe is not None:
+        (output_dir / "attachment.json").write_text(json.dumps(attachment_recipe.to_dict(), indent=2, sort_keys=True) + "\n")
 
     print("template_id:", args.template_id)
     if requested_cofid is not None:
@@ -600,6 +607,7 @@ def _add_ring_forming_parser(subparsers) -> None:
         description="Build boroxine- or triazine-linked 2D COFs using virtual 3-connected product nodes.",
     )
     parser.add_argument("--cofid", default=None, help="One-precursor ring-forming COFid to build.")
+    parser.add_argument("--attachment-file", default=None, help="Attachment recipe or decomposition JSON; preserves the full cell and ring participant assignments.")
     parser.add_argument(
         "--template-id",
         choices=("boroxine_trimerization", "triazine_trimerization"),
@@ -609,7 +617,7 @@ def _add_ring_forming_parser(subparsers) -> None:
     parser.add_argument("--monomer-id", default="ring_precursor")
     parser.add_argument("--monomer-name", default=None)
     parser.add_argument("--motif-kind", choices=("boronic_acid", "nitrile"), default=None)
-    parser.add_argument("--topology", default="hcb", help="Three-connected product topology. Default: hcb.")
+    parser.add_argument("--topology", default=None, help="Three-connected product topology. Default: hcb.")
     parser.add_argument("--num-conformers", type=int, default=DEFAULT_CLI_NUM_CONFORMERS)
     parser.add_argument(
         "--shape-aware-conformer",
@@ -658,6 +666,10 @@ def _add_ring_forming_parser(subparsers) -> None:
 
 
 def _run_ring_forming(args: argparse.Namespace) -> None:
+    args, attachment_recipe = _load_build_attachment(args)
+    if args.topology is None and args.cofid is None:
+        args = argparse.Namespace(**vars(args))
+        args.topology = RingFormationConfig().topology_id
     if args.cofid is not None and any(
         value is not None for value in (args.smiles, args.motif_kind)
     ):
@@ -718,7 +730,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
         ),
         reaction_library=library,
     )
-    candidates = generator.generate_candidates(monomer, args.template_id)
+    candidates = generator.generate_candidates(monomer, args.template_id, **({"attachment_recipe": attachment_recipe} if attachment_recipe is not None else {}))
     generated_cofid_outcome = generate_cofid_with_cause(candidates[0], {monomer.id: monomer})
     generated_cofid = generated_cofid_outcome.cofid
     output_dir = Path(args.output_dir)
@@ -767,6 +779,11 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
                         lines = staged_path.read_text().splitlines(keepends=True)
                         lines.insert(1, "# cofkit warning: diagnostic CIF; rejected ring geometry (see summary.json)\n")
                         staged_path.write_text("".join(lines))
+                    if attachment_recipe is not None:
+                        from .attachment_build import verify_attachment_cif
+                        verification = verify_attachment_cif(attachment_recipe, staged_path, (monomer,))
+                        if verification["status"] == "mismatch":
+                            raise ValueError(f"exported ring CIF violates the attachment reference graph: {verification['reason']}")
                     staged_path.replace(destination)
                 cif_path = destination
             except Exception as exc:
@@ -786,6 +803,7 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
                 "cif_export": outcome.to_dict(),
                 **({"error": export_error} if export_error is not None else {}),
                 "candidate_id": candidate.id,
+                "attachment": candidate.metadata.get("attachment", {"status": "unspecified"}),
                 "generated_cofid": candidate_cofid,
                 **({"cofid_error": candidate_cofid_outcome.error} if candidate_cofid_outcome.error is not None else {}),
                 "score": candidate.score,
@@ -834,6 +852,8 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
     }
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if attachment_recipe is not None:
+        (output_dir / "attachment.json").write_text(json.dumps(attachment_recipe.to_dict(), indent=2, sort_keys=True) + "\n")
     print("template_id:", args.template_id)
     print("topology_id:", args.topology)
     print("precursor:", monomer.id, motif_kind, len(monomer.motifs))
@@ -883,6 +903,27 @@ def _run_ring_forming(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
     print("summary:", summary_path)
+
+
+def _load_build_attachment(args):
+    filename = getattr(args, "attachment_file", None)
+    if filename is None:
+        return args, None
+    try:
+        recipe = load_attachment_recipe(filename)
+        if args.cofid is not None and args.cofid != recipe.cofid:
+            raise ValueError("--cofid disagrees with the attachment recipe")
+        requested_topology = getattr(args, "topology", None)
+        if isinstance(requested_topology, str) and requested_topology != cofid_to_build_request(recipe.cofid).topology:
+            raise ValueError("--topology disagrees with the attachment recipe")
+        if getattr(args, "stacking", ()) or getattr(args, "annotate_post_build_conversion", ()):
+            raise ValueError("attachment recipes define the full cell and chemistry; additional stacking or conversions are incompatible")
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"error: {exc}") from exc
+    args = argparse.Namespace(**vars(args))
+    args.cofid = recipe.cofid
+    args.attachment_recipe = recipe
+    return args, recipe
 
 
 def _resolve_single_pair_motif_kind(

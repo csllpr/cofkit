@@ -15,6 +15,8 @@ from math import ceil, floor, gcd, sqrt
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+from .attachment import ATTACHMENT_SOURCE_ATOM_INDEX_PROP, AttachmentRecipe, load_attachment_recipe
+
 from .bond_types import cif_type_to_bond_order, is_aromatic_bond_order
 from .chem.detector import COVALENT_RADII_SINGLE_BOND_ANGSTROM
 from .chem.rdkit import detect_rdkit_motif_count
@@ -43,6 +45,10 @@ class DecomposedMonomer:
     reactive_group: str
     canonical_smiles: str
     amount: int = 1
+    # Ephemeral correspondence retained through precursor repair. Canonical
+    # indices refer to parsing canonical_smiles; source ids come from event mode.
+    source_atom_map: Mapping[int, int] = field(default_factory=dict, repr=False, compare=False)
+    source_atom_map_error: str | None = field(default=None, repr=False, compare=False)
 
     def to_cofid_monomer(self) -> COFidMonomer:
         return COFidMonomer(
@@ -66,6 +72,13 @@ class CifDecompositionResult:
     @property
     def ok(self) -> bool:
         return self.status == "success" and self.cofid is not None
+
+    @property
+    def attachment_recipe(self) -> AttachmentRecipe | None:
+        attachment = self.metadata.get("attachment")
+        if not isinstance(attachment, Mapping) or attachment.get("status") != "available":
+            return None
+        return load_attachment_recipe(attachment)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -3626,10 +3639,28 @@ def _finalize_repaired_fragment(
         ):
             atom.SetFormalCharge(1)
     Chem.SanitizeMol(mol)
+    canonical_smiles = canonicalize_smiles(Chem.MolToSmiles(mol, canonical=True, isomericSmiles=False))
+    source_atom_map = {}
+    source_atom_map_error = None
+    if any(atom.HasProp(ATTACHMENT_SOURCE_ATOM_INDEX_PROP) for atom in mol.GetAtoms()):
+        try:
+            canonical_mol = Chem.MolFromSmiles(canonical_smiles)
+            match = canonical_mol.GetSubstructMatch(mol, useChirality=False)
+            if len(match) != mol.GetNumAtoms():
+                raise ValueError("canonical precursor atom correspondence could not be recovered")
+            source_atom_map = {
+                atom.GetIntProp(ATTACHMENT_SOURCE_ATOM_INDEX_PROP): int(match[atom.GetIdx()])
+                for atom in mol.GetAtoms()
+                if atom.HasProp(ATTACHMENT_SOURCE_ATOM_INDEX_PROP) and atom.GetAtomicNum() != 1
+            }
+        except Exception as exc:
+            source_atom_map_error = f"{type(exc).__name__}: {exc}"
     return DecomposedMonomer(
         connectivity=endpoint_count,
         reactive_group=reactive_group,
-        canonical_smiles=canonicalize_smiles(Chem.MolToSmiles(mol, canonical=True, isomericSmiles=False)),
+        canonical_smiles=canonical_smiles,
+        source_atom_map=source_atom_map,
+        source_atom_map_error=source_atom_map_error,
     )
 
 

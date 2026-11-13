@@ -3029,13 +3029,19 @@ class ReactionRealizer:
             )
             if len(oxygen_atom_ids) != 2:
                 raise ValueError(f"event {event.id!r} requires two hydroxyl oxygen atoms per boronic-acid motif")
-            retained_oxygen_atom_id = min(
-                oxygen_atom_ids,
-                key=lambda atom_id: self._distance(
-                    self._world_atom_position(candidate, ref, spec, atom_id),
-                    target_oxygen,
-                ),
-            )
+            fixed_oxygens = event.metadata.get("attachment_retained_oxygen_ids")
+            if fixed_oxygens is not None:
+                if len(fixed_oxygens) != len(refs) or fixed_oxygens[index] not in oxygen_atom_ids:
+                    raise ValueError("attachment recipe selects an invalid boroxine oxygen")
+                retained_oxygen_atom_id = fixed_oxygens[index]
+            else:
+                retained_oxygen_atom_id = min(
+                    oxygen_atom_ids,
+                    key=lambda atom_id: self._distance(
+                        self._world_atom_position(candidate, ref, spec, atom_id),
+                        target_oxygen,
+                    ),
+                )
             removed_oxygen_atom_id = next(atom_id for atom_id in oxygen_atom_ids if atom_id != retained_oxygen_atom_id)
             retained_oxygen_atom_ids.append(retained_oxygen_atom_id)
             oxygen_worlds.append(target_oxygen)

@@ -188,6 +188,41 @@ Single-reactive (connectivity-1) monomers are omitted by default: they terminate
 
 The command resets its output directory before writing. As a safety guard, it refuses to delete a non-empty directory that was not created by a previous run of this command (previous runs leave a `.cofkit-default-library` marker file); pass `--force` to replace such a directory anyway.
 
+## Preserving Attachment Assignments
+
+COFid records precursor identities, linkage and topology. A particular atomic
+structure may also require attachment metadata specifying which reactive sites
+connect, which precursor copies participate, and their periodic images. This is
+optional structural metadata, independent of the COFid string.
+
+Recover it from a supported P1 structural model:
+
+```bash
+cofkit analyze decompose source.cif --topology kgm \
+  --attachment-output source.attachment.json
+cofkit build single-pair --attachment-file source.attachment.json \
+  --output-dir out/reconstructed
+```
+
+For boroxine or triazine, use `build ring-forming --attachment-file ...` instead.
+The input can be a bare recipe, an available attachment report, or full
+decomposition JSON. It supplies the COFid; an additional `--cofid` must match.
+Unavailable/ambiguous reports cannot silently select an arrangement. Constrained
+builds write `attachment.json` beside their summaries and add an
+`# attachment-recipe-sha256:` checksum comment to exported CIFs. The checksum
+identifies the metadata payload; it is not a canonical material identifier.
+
+Recipes retain the full decorated cell and precursor copy count. Source fragment
+coordinates guide rigid placement; they are not a physical relaxation. Existing
+geometry screening can still warn or block export. Additional `--stacking` and
+post-build conversions conflict with a supplied full-cell recipe and are rejected.
+
+With a source reference graph, realization and exported CIFs are checked for
+element-labeled periodic heavy-atom connectivity under integer image rebasing.
+This verifies the input model's connectivity, not its bond orders, hydrogens,
+charge, stereochemistry, equilibrium geometry, or experimental correctness.
+Without a reference graph the check reports `not_checked`.
+
 ## Outputs
 
 Single-pair runs write:

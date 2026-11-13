@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .decompose import decompose_cif_to_cofid
@@ -121,6 +122,7 @@ def _add_decompose_parser(subparsers) -> None:
         ),
     )
     parser.add_argument("cif_path", help="Input CIF file to decompose.")
+    parser.add_argument("--attachment-output", default=None, help="Write attachment metadata as a JSON sidecar for build --attachment-file. Unavailable or ambiguous results retain their status.")
     parser.add_argument(
         "--topology",
         default=None,
@@ -170,6 +172,19 @@ def _run_decompose(args: argparse.Namespace) -> None:
         bond_mode=args.bond_mode,
         decomposition_mode=args.decomposition_mode,
     )
+    attachment_status = result.metadata.get("attachment", {})
+    if result.ok and attachment_status.get("status") in {"unavailable", "ambiguous"}:
+        detail = attachment_status.get("error") or attachment_status.get("reason") or "see JSON alternatives"
+        print(f"warning: precursor recovery succeeded; attachment metadata is {attachment_status['status']} ({detail})", file=sys.stderr)
+    if getattr(args, "attachment_output", None) is not None:
+        attachment = result.metadata.get("attachment", {"status": "unavailable", "recipe": None, "reason": "this decomposition engine did not recover attachment mappings"})
+        try:
+            path = Path(args.attachment_output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(attachment, indent=2, sort_keys=True) + "\n")
+            print(f"attachment metadata: {path} (status={attachment['status']})", file=sys.stderr)
+        except OSError as exc:
+            print(f"warning: could not write attachment metadata ({type(exc).__name__}: {exc})", file=sys.stderr)
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         if not result.ok:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from .attachment import AttachmentInput, load_attachment_recipe
+
 from .constants import DEFAULT_LATERAL_SPAN_ANGSTROM, DEFAULT_MONOLAYER_C_ANGSTROM
 from .embedding import EmbeddingConfig, PeriodicEmbedder
 from .model import Candidate, CandidateEnsemble, MonomerSpec, ReactionTemplate, order_candidates
@@ -28,6 +30,7 @@ class COFProject:
     stacking_ids: tuple[str, ...] = ()
     post_build_conversions: tuple[str, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
+    attachment_recipe: AttachmentInput | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,21 @@ class COFEngine:
         )
 
     def run(self, project: COFProject) -> CandidateEnsemble:
+        if project.attachment_recipe is not None:
+            from .attachment_build import build_from_attachment
+            from .cofid import cofid_to_build_request
+            recipe = load_attachment_recipe(project.attachment_recipe)
+            request = cofid_to_build_request(recipe.cofid)
+            if project.stacking_ids or project.post_build_conversions:
+                raise ValueError("attachment recipes fix the full cell and chemistry; additional stacking or conversions are incompatible")
+            if request.template_id not in project.allowed_reactions or request.target_dimensionality != project.target_dimensionality:
+                raise ValueError("attachment recipe disagrees with the project reaction or dimensionality")
+            if project.target_topologies and request.topology not in project.target_topologies:
+                raise ValueError("attachment recipe disagrees with the project topology")
+            result = build_from_attachment(recipe, project.monomers)
+            ensemble = CandidateEnsemble()
+            ensemble.add(result.candidate)
+            return ensemble
         templates = self.reaction_library.selected(project.allowed_reactions, project.target_dimensionality)
         if not templates:
             raise ValueError("project selected no reaction templates")

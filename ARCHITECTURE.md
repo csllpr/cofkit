@@ -7,6 +7,12 @@
   - local motif frames
 - `cofkit.model`
   - domain dataclasses for motifs, monomers, reaction templates, reaction events, assembly state, and candidates
+- `cofkit.attachment`
+  - neutral versioned recipe dataclasses, strict JSON loading, recipe checksums and exact periodic heavy-graph comparison with known atom correspondences; COFid remains unchanged
+- `cofkit.attachment_decompose`
+  - captures source-to-canonical-precursor atom maps before fragment aggregation, preserves complete reaction groups and the decorated cell, and records reference connectivity plus explicit/inferred-bond provenance; boroxine residue oxygen is mapped to a fixed retained precursor oxygen
+- `cofkit.attachment_build`
+  - binds whole precursor graphs to recipe atom indices, consumes fixed site/image assignments, fits rigid poses to placement hints, and reuses the product graph and reaction realizers. Connectivity verification is independent of seed geometry. Batch, engine and ring adapters route supplied recipes here; no topology-specific attachment whitelist is used
 - `cofkit.reactions`
   - builtin reaction library plus linkage-profile registry for pair-role ordering, bridge targets, batch-library prefixes, and realization hooks
 - `cofkit.product_graph`

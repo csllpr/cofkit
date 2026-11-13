@@ -2,6 +2,55 @@
 
 The CLI is the preferred human-facing interface. Use the Python API when you need direct programmatic control or want to integrate `cofkit` into another workflow.
 
+## Attachment-Constrained Reconstruction
+
+Attachment recipes are optional structural metadata; COFid syntax is unchanged.
+The default event decomposition retains source-to-precursor site mappings and
+all instances in the decorated cell:
+
+```python
+from cofkit import (
+    CIFWriter, build_from_attachment, decompose_cif_to_cofid,
+    verify_attachment_cif,
+)
+
+result = decompose_cif_to_cofid("source.cif", topology="kgm")
+recipe = result.attachment_recipe
+if recipe is None:
+    raise ValueError(result.metadata.get("attachment"))
+
+reconstruction = build_from_attachment(recipe)
+CIFWriter().write_candidate(
+    "reconstructed.cif", reconstruction.candidate, reconstruction.monomers,
+    cofid=recipe.cofid,
+)
+verification = verify_attachment_cif(recipe, "reconstructed.cif", reconstruction.monomers)
+assert verification["status"] == "verified"
+```
+
+`build_from_attachment` accepts a typed `AttachmentRecipe`, a recipe/report JSON
+object, full decomposition JSON, or its file path. Pass existing SMILES-backed
+atomistic monomers as the second argument to reuse conformers; whole molecular
+graphs bind canonical recipe indices to the monomers' actual atom order. Source
+coordinates guide rigid pose fits. Recipes with no `seed_positions` require an
+`initial_state` using the recipe cell and instance ids.
+
+The same constrained path is available as
+`BatchGenerationConfig(attachment_recipe=recipe)`,
+`COFProject(..., attachment_recipe=recipe)`, and
+`RingFormingStructureGenerator.generate(..., attachment_recipe=recipe)` (also
+`build` and `generate_candidates`). Reaction, dimensionality and explicit
+topology requests must agree. A batch recipe is tied to its COFid: mismatching
+pairs become failed records and remaining pairs continue. Additional stacking or
+conversions are incompatible with a full-cell recipe.
+
+Build verification checks element-labeled periodic heavy-atom connectivity,
+including parallel/self images and integer atom rebasing. It does not check
+bond orders, hydrogen, charge, stereochemistry or physical relaxation. A recipe
+with no reference graph reports `not_checked`. Geometry validation stays separate.
+See [event decomposition](event-decomposition.md#attachment-metadata) for
+availability, alternatives and provenance.
+
 ## COFEngine
 
 Use `COFEngine` when you already know the target topology and want a normal single-pair `CandidateEnsemble`.
