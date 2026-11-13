@@ -332,6 +332,9 @@ These are important before editing:
   - No-ASE CIF extraction and explicit-bond preservation.
 - [tests/test_decompose.py](../tests/test_decompose.py)
   - CIF-to-COFid decomposition and generated hcb round trips across buildable binary-bridge linkages.
+- [tests/test_decompose_reaction_scope.py](../tests/test_decompose_reaction_scope.py)
+  - Pre-cut graph loading preserves supplied enol-imine/keto-enamine and internal heterocyclic bond orders; both detectors recognize native representations. Keto-aldehyde inverse repair changes only selected linkage-bearing carbocycles and preserves remote ketone/quinone/lactam/aldehyde groups. Historical `n_beta_ketoenamine_bond_pairs_normalized` is zero; `beta_ketoenamine_bond_order_policy` records the effective policy. Erroneous explicit orders remain explicit rather than being silently guessed.
+  - `decompose_events._distance_fallback_bond_order_conflicts` compares periodic heavy edges and explicit high-confidence reaction cuts before selecting an otherwise buildable distance fallback. Conflicting linkage-family interpretations report `AMBIGUOUS_BOND_ORDER_EVIDENCE`, preserve the provisional fallback COFid in diagnostics, and select none. Tests cover evidence gates, periodic-edge differences, and the public result boundary.
 - [tests/test_decompose_ledger.py](../tests/test_decompose_ledger.py)
   - Decomposition atom ledger: balance with reaction stoichiometry (imine vs boroxine), guest molecule-vs-atom accounting, charge/stereo scope statuses, and explicit unaccounted-atom reporting.
 - [tests/test_lammps.py](../tests/test_lammps.py)

@@ -52,6 +52,7 @@ except ImportError:  # pragma: no cover - project dependency guard
 
 EVENT_STATUS_COMPLETE = "SUCCESS_COMPLETE"
 EVENT_STATUS_AMBIGUOUS = "AMBIGUOUS_MULTIPLE_DECOMPOSITIONS"
+EVENT_STATUS_BOND_ORDER_AMBIGUOUS = "AMBIGUOUS_BOND_ORDER_EVIDENCE"
 EVENT_STATUS_CHEMICAL = "FAILED_CHEMICAL_VALIDATION"
 EVENT_STATUS_ENDPOINT = "FAILED_ENDPOINT_ACCOUNTING"
 EVENT_STATUS_TOPOLOGY = "FAILED_TOPOLOGY_VALIDATION"
@@ -69,6 +70,13 @@ EVENT_STATUS_INTERNAL_ERROR = "FAILED_INTERNAL_ERROR"
 # This is an explicit unsupported-representation verdict, not a chemical
 # incompatibility verdict.
 EVENT_STATUS_MIXED_FAMILY = "UNSUPPORTED_MIXED_LINKAGE_FAMILY"
+
+_BOND_GRAPH_FALLBACK_POLICY = (
+    "replace an unsuccessful explicit-CIF graph only when the independently "
+    "distance-inferred graph produces exactly one globally validated decomposition "
+    "and does not change high-confidence explicit linkage chemistry on unchanged "
+    "periodic heavy connectivity"
+)
 
 # Coverage status of the bounded hypothesis search, recorded on the result as
 # metadata["search_status"] and under metadata["search_coverage"]:
@@ -347,13 +355,11 @@ def decompose_cif_to_cofid_event(
             hypotheses=hypotheses,
             generation_metadata=generation_metadata,
         )
+        primary_diagnostic_events = _diagnostic_events_for_result(
+            primary_result, hypotheses, detection.events,
+        )
         source_framework_periodicity = _source_framework_periodicity(
-            build_result,
-            _diagnostic_events_for_result(
-                primary_result,
-                hypotheses,
-                detection.events,
-            ),
+            build_result, primary_diagnostic_events,
         )
         primary_result = replace(
             primary_result,
@@ -418,11 +424,7 @@ def decompose_cif_to_cofid_event(
                         "bond_graph_fallback": {
                             "attempted": True,
                             "applied": False,
-                            "policy": (
-                                "replace an unsuccessful explicit-CIF graph only when the "
-                                "independently distance-inferred graph produces exactly one "
-                                "globally validated decomposition"
-                            ),
+                            "policy": _BOND_GRAPH_FALLBACK_POLICY,
                             "primary_bond_source": "explicit_cif",
                             "fallback_bond_source": "distance_inferred",
                             "primary_status": primary_result.status,
@@ -437,13 +439,13 @@ def decompose_cif_to_cofid_event(
                         },
                     },
                 )
+            conflicts = _distance_fallback_bond_order_conflicts(
+                build_result, distance_build, primary_diagnostic_events, distance_result,
+            )
             fallback_report = {
                 "attempted": True,
-                "applied": distance_result.ok,
-                "policy": (
-                    "replace an unsuccessful explicit-CIF graph only when the independently "
-                    "distance-inferred graph produces exactly one globally validated decomposition"
-                ),
+                "applied": distance_result.ok and not conflicts,
+                "policy": _BOND_GRAPH_FALLBACK_POLICY,
                 "primary_bond_source": "explicit_cif",
                 "fallback_bond_source": "distance_inferred",
                 "primary_status": primary_result.status,
@@ -457,6 +459,26 @@ def decompose_cif_to_cofid_event(
                     distance_source_framework_periodicity
                 ),
             }
+            if conflicts:
+                return replace(
+                    primary_result,
+                    status="ambiguous",
+                    cofid=None,
+                    reason=(
+                        "distance-inferred bond orders imply a different linkage family "
+                        "on the same periodic heavy graph; explicit linkage evidence "
+                        "remains unresolved"
+                    ),
+                    metadata={
+                        **dict(primary_result.metadata),
+                        "event_status": EVENT_STATUS_BOND_ORDER_AMBIGUOUS,
+                        "bond_order_evidence_conflicts": conflicts,
+                        "bond_graph_fallback": {
+                            **fallback_report,
+                            "fallback_cofid": distance_result.cofid,
+                        },
+                    },
+                )
             selected_result = distance_result if distance_result.ok else primary_result
             return replace(
                 selected_result,
@@ -481,6 +503,63 @@ def decompose_cif_to_cofid_event(
                 "pipeline_stage": "graph_normalization_or_event_detection",
             },
         )
+
+
+def _distance_fallback_bond_order_conflicts(
+    primary: legacy.BondedMolBuildResult,
+    fallback: legacy.BondedMolBuildResult,
+    primary_events: tuple[LinkageEvent, ...],
+    fallback_result: legacy.CifDecompositionResult,
+) -> list[dict[str, object]]:
+    """A buildable alternative cannot resolve conflicting explicit chemistry.
+
+    When the periodic heavy edges are identical, distance perception supplies
+    a bond-order interpretation of the same graph, not independent evidence
+    of a connectivity repair. Preserve uncertainty if it changes a high-
+    confidence explicit reaction cut into a different linkage family. The
+    ordinary fallback remains available when connectivity actually changes,
+    explicit orders were incomplete, or no conflicting cut was established.
+    """
+    if (
+        not fallback_result.ok
+        or primary.metadata.get("bond_source") != "explicit_cif"
+        or primary.metadata.get("n_missing_cif_bond_orders", 0)
+    ):
+        return []
+
+    def heavy_edges(build):
+        return {
+            (c.atom_idx_1, c.atom_idx_2, c.periodic_image)
+            for c in build.candidates
+            if build.mol.GetAtomWithIdx(c.atom_idx_1).GetAtomicNum() > 1
+            and build.mol.GetAtomWithIdx(c.atom_idx_2).GetAtomicNum() > 1
+        }
+
+    if heavy_edges(primary) != heavy_edges(fallback):
+        return []
+    conflicts = []
+    for event in primary_events:
+        if event.confidence != "high" or event.family == fallback_result.linkage:
+            continue
+        changes = []
+        for idx in event.cut_bonds:
+            bond = primary.mol.GetBondWithIdx(idx)
+            first, second = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            other = fallback.mol.GetBondBetweenAtoms(first, second)
+            if other is not None and bond.GetBondTypeAsDouble() != other.GetBondTypeAsDouble():
+                changes.append({
+                    "atoms": sorted((first, second)),
+                    "explicit_order": bond.GetBondTypeAsDouble(),
+                    "inferred_order": other.GetBondTypeAsDouble(),
+                })
+        if changes:
+            conflicts.append({
+                "event_id": event.event_id,
+                "explicit_family": event.family,
+                "fallback_family": fallback_result.linkage,
+                "changed_cut_bonds": changes,
+            })
+    return conflicts
 
 
 def _should_attempt_distance_fallback(

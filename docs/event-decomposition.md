@@ -67,7 +67,16 @@ resolution or physical stability.
 
 ## Pipeline
 
-Event mode normalizes the CIF graph once and then:
+Both engines detect the supplied enol-imine and keto-enamine bond patterns
+directly. Decomposition does not force a pre-cut `N=C-C(ring)` →
+`N-C=C(ring)` rewrite: that partial change is not a complete tautomerization
+and can create an overvalent ring anchor or alter an internal heterocycle.
+Keto-aldehyde restoration after cutting acts only on the selected
+linkage-bearing carbocycles; remote cyclic ketones, quinones, lactams and
+pendant carbonyls remain part of the precursor scaffold. This does not repair
+arbitrary erroneous explicit bond assignments or expand supported motif kinds.
+
+Event mode constructs the CIF graph once and then:
 
 1. detects structured, immutable `LinkageEvent` objects;
 2. applies only local chemical precedence;
@@ -79,6 +88,17 @@ Event mode normalizes the CIF graph once and then:
 8. selects a result only from complete globally valid hypotheses.
 
 When `bond_mode="auto"` uses an explicit CIF bond table but fails during endpoint, framework-accounting, or chemical validation, event mode may also evaluate an independently distance-inferred graph. The same fallback is allowed for a failed or rank-zero linkage-graph extraction only when at least one event-bearing source component independently has periodic rank 2 or 3. It is not used for ambiguous topology ranking or for a source framework whose own covalent graph has insufficient periodic rank. The fallback also remains disabled when several recovered same-role species are already individually buildable. The alternative replaces the explicit graph only if it produces exactly one globally validated decomposition; otherwise the original result and diagnostics are retained. Reconstructed fragments may also be merged across bond-order/H-placement variants, but only when molecular formula, element-labelled constitutional graph, role, connectivity, and net charge agree and at least one variant exposes the required number of buildable motifs. Constitutional isomers are never merged by this normalization, and a merge is never reported as exact identity: the result's `precursor_identity` block distinguishes `exact` recovery from `element_graph_ambiguous` canonicalization and preserves every input form with its fragment count.
+
+If the periodic heavy edges are unchanged, a distance fallback is only another
+bond-order interpretation of that graph. When it changes high-confidence
+explicit reaction-cut orders into a different linkage family, the result is
+`ambiguous` with `event_status: AMBIGUOUS_BOND_ORDER_EVIDENCE`, rather than a
+selected COFid. `bond_order_evidence_conflicts` records the cuts and orders;
+`bond_graph_fallback.fallback_cofid` retains the provisional candidate for
+review, with `applied: false`. This guard applies to complete explicit bond
+orders. Connectivity-changing repairs and missing-order inference retain the
+existing fallback rules. A buildable alternative alone cannot establish that
+the explicit chemistry was wrong.
 
 Atomic events currently include paired `C=N-N=C` azines, their keto-tautomerized `C-N-N-C` representation, acylhydrazones, paired five-membered `B-O-C-C-O` boronate esters, complete boroxine rings, and two alternating nitrile reconstructions for each triazine ring. N-N context takes precedence over an overlapping beta-ketoenamine interpretation. Vinylene activation ranks candidate orientations; tied orientations branch, and structurally valid zero-score candidates remain low confidence instead of being discarded immediately. Activated-methylene validation includes direct withdrawing groups, ortho/para-conjugated aza/cyano aromatic donors, electron-poor multi-aza five-membered rings, and boron-chelated dipyrrins. It rejects unactivated methylbenzene/biaryl donors as well as halomethyl, hydroxymethyl, unsupported N-substituted, meta-only, and unactivated heteroaryl/pyrrolic environments. Primary-amine precursor validation excludes resonance-deactivated amide, thioamide, sulfonamide, and thiourea nitrogens plus acyclic amidine/amidoxime nitrogens, while accepting terminal hydrazino sites only in a guanidinium-like three-nitrogen carbon environment and retaining valid amines elsewhere in the precursor. Beta-ketoenamine precursor/build validation supports both ortho-hydroxy aldehyde tautomerization and the explicit `CHO-CH2-C(=O)-C` beta-ketoenol route. Canonical beta-ketoenamine events locally suppress only an overlapping vinylene event.
 
@@ -100,6 +120,8 @@ The normal `CifDecompositionResult` shape is preserved. Event-specific informati
 - `hypothesis_generation`: site counts, bounded-enumeration diagnostics, and potential non-overlapping family combinations;
 - `hypotheses`: every evaluated hypothesis, its events, repaired roles, validation status, and failure reasons;
 - `bond_graph_fallback`: when attempted, the explicit-graph and distance-graph outcomes and whether the fully validated fallback was selected;
+- `bond_order_evidence_conflicts`: changed reaction-cut orders and conflicting linkage families when an unchanged periodic heavy graph has unresolved explicit-versus-distance chemistry;
+- `beta_ketoenamine_bond_order_policy`: `detect_without_pre_cut_rewrite` when graph-construction diagnostics are available; the historical `n_beta_ketoenamine_bond_pairs_normalized` counter remains zero;
 - `source_framework_periodicity`: periodic rank, connected-component sizes, and bond counts for the event-bearing source covalent graph, evaluated per component rather than by combining unrelated components;
 - `fragment_identity_normalization`: formula/element-graph equivalent fragment forms and the selected buildable representative;
 - `multispecies_precursor_recovery`: when present, every distinct recovered species, its declared and detected motif count, fragment count, and role-wise reactive-site balance;
@@ -128,7 +150,7 @@ Charge and stereochemistry scope is conservative:
 
 Atom-resolved formal-charge export into atomistic CIF charge columns, and ionic or stereochemical assembly, remain out of scope. The legacy decomposition engine does not compute an atom ledger.
 
-Detailed event statuses include `SUCCESS_COMPLETE`, `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`, `DETECTED_PROBABLE_STRUCTURAL_DEFECT`, `UNSUPPORTED_MULTISPECIES_PRECURSORS`, `UNSUPPORTED_MIXED_LINKAGE_FAMILY`, `FAILED_CHEMICAL_VALIDATION`, `FAILED_ENDPOINT_ACCOUNTING`, `FAILED_TOPOLOGY_VALIDATION`, `FAILED_UNEXPLAINED_FRAMEWORK`, `FAILED_INTERNAL_ERROR`, `UNSUPPORTED_LINKAGE`, and `SUPPRESSED_TRIAZINE_MOTIF`. `FAILED_INTERNAL_ERROR` marks an unexpected internal failure (the original `TypeName: message` cause is preserved in `validation_errors` and an `internal_error` metadata block) and surfaces as result `status="error"`; it is never a chemical verdict. `UNSUPPORTED_MIXED_LINKAGE_FAMILY` marks a framework whose non-overlapping linkage families each reconstruct part of the structure but cannot be serialized under the one-family COFid contract — an explicit unsupported-representation verdict, not a chemical incompatibility verdict.
+Detailed event statuses include `SUCCESS_COMPLETE`, `AMBIGUOUS_MULTIPLE_DECOMPOSITIONS`, `AMBIGUOUS_BOND_ORDER_EVIDENCE`, `DETECTED_PROBABLE_STRUCTURAL_DEFECT`, `UNSUPPORTED_MULTISPECIES_PRECURSORS`, `UNSUPPORTED_MIXED_LINKAGE_FAMILY`, `FAILED_CHEMICAL_VALIDATION`, `FAILED_ENDPOINT_ACCOUNTING`, `FAILED_TOPOLOGY_VALIDATION`, `FAILED_UNEXPLAINED_FRAMEWORK`, `FAILED_INTERNAL_ERROR`, `UNSUPPORTED_LINKAGE`, and `SUPPRESSED_TRIAZINE_MOTIF`. `FAILED_INTERNAL_ERROR` marks an unexpected internal failure (the original `TypeName: message` cause is preserved in `validation_errors` and an `internal_error` metadata block) and surfaces as result `status="error"`; it is never a chemical verdict. `UNSUPPORTED_MIXED_LINKAGE_FAMILY` marks a framework whose non-overlapping linkage families each reconstruct part of the structure but cannot be serialized under the one-family COFid contract — an explicit unsupported-representation verdict, not a chemical incompatibility verdict.
 
 ## Probable structural defects
 

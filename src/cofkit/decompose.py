@@ -1435,7 +1435,10 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
             inferred_order_count += 1
         _apply_bond_order(mol, bond, order)
 
-    normalized_bken_bond_count = _normalize_beta_ketoenamine_bond_orders(mol)
+    # Detect enol-imine and keto-enamine representations as supplied. Changing
+    # just N=C-C(ring) into N-C=C(ring) is not a tautomerization: it can add
+    # valence at the ring anchor without relocating its adjacent pi bonds or
+    # hydrogen. Both detectors already recognize the two representations.
     imine_normalization: dict[str, object] = {}
     if all(candidate.explicit_order is not None for candidate in candidates):
         from .decompose_bond_orders import normalize_imine_bond_orders
@@ -1484,7 +1487,9 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
         metadata={
             **metadata,
             "n_bond_orders_inferred": inferred_order_count,
-            "n_beta_ketoenamine_bond_pairs_normalized": normalized_bken_bond_count,
+            # Retain the historical counter for consumers of decomposition JSON.
+            "n_beta_ketoenamine_bond_pairs_normalized": 0,
+            "beta_ketoenamine_bond_order_policy": "detect_without_pre_cut_rewrite",
             "imine_bond_order_normalization": imine_normalization,
             "input_identity_evidence": input_identity_evidence,
         },
@@ -2990,60 +2995,6 @@ def _apply_bond_order(mol, bond, order: float) -> None:
         bond.GetEndAtom().SetIsAromatic(True)
 
 
-def _normalize_beta_ketoenamine_bond_orders(mol) -> int:
-    """Canonicalize enol-imine-like input to the keto-enamine C-N/C=C form."""
-
-    normalized = 0
-    for cn_bond in tuple(mol.GetBonds()):
-        if float(cn_bond.GetBondTypeAsDouble()) not in {1.0, 2.0}:
-            continue
-        first = cn_bond.GetBeginAtom()
-        second = cn_bond.GetEndAtom()
-        if {first.GetAtomicNum(), second.GetAtomicNum()} != {6, 7}:
-            continue
-        first_instance = first.GetProp("instance_id")
-        second_instance = second.GetProp("instance_id")
-        if first_instance and second_instance and first_instance == second_instance:
-            continue
-        carbon = first if first.GetAtomicNum() == 6 else second
-        nitrogen = first if first.GetAtomicNum() == 7 else second
-        for ring_anchor in carbon.GetNeighbors():
-            if ring_anchor.GetIdx() == nitrogen.GetIdx() or ring_anchor.GetAtomicNum() != 6:
-                continue
-            anchor_bond = mol.GetBondBetweenAtoms(carbon.GetIdx(), ring_anchor.GetIdx())
-            if anchor_bond is None or float(anchor_bond.GetBondTypeAsDouble()) not in {1.0, 2.0}:
-                continue
-            if not ring_anchor.IsInRing():
-                continue
-            if not any(
-                carbonyl.GetIdx() != carbon.GetIdx()
-                and carbonyl.GetAtomicNum() == 6
-                and mol.GetBondBetweenAtoms(ring_anchor.GetIdx(), carbonyl.GetIdx()) is not None
-                and mol.GetBondBetweenAtoms(ring_anchor.GetIdx(), carbonyl.GetIdx()).IsInRing()
-                and carbonyl.IsInRing()
-                and _atom_has_double_bonded_oxygen(
-                    mol,
-                    carbonyl.GetIdx(),
-                    exclude_atom_idx=ring_anchor.GetIdx(),
-                )
-                for carbonyl in ring_anchor.GetNeighbors()
-            ):
-                continue
-            changed = False
-            if abs(float(cn_bond.GetBondTypeAsDouble()) - 1.0) > 1.0e-6:
-                cn_bond.SetIsAromatic(False)
-                cn_bond.SetBondType(Chem.BondType.SINGLE)
-                changed = True
-            if abs(float(anchor_bond.GetBondTypeAsDouble()) - 2.0) > 1.0e-6:
-                anchor_bond.SetIsAromatic(False)
-                anchor_bond.SetBondType(Chem.BondType.DOUBLE)
-                changed = True
-            if changed:
-                normalized += 1
-            break
-    return normalized
-
-
 def _eligible_carbon_nitrogen_double_bonds(mol) -> dict[int, tuple[int, int]]:
     eligible: dict[int, tuple[int, int]] = {}
     for bond in mol.GetBonds():
@@ -3506,6 +3457,7 @@ def _restore_keto_aldehyde_fragment(fragment, *, endpoint_role: str = "keto_alde
             if bond is not None and abs(float(bond.GetBondTypeAsDouble()) - 2.0) <= 1.0e-6:
                 bond.SetIsAromatic(False)
                 bond.SetBondType(Chem.BondType.SINGLE)
+    restored_ring_atoms = set().union(*rings_to_rearomatize) if rings_to_rearomatize else set()
     for bond in tuple(editable.GetBonds()):
         if bond.GetBondType() != Chem.BondType.DOUBLE:
             continue
@@ -3514,7 +3466,10 @@ def _restore_keto_aldehyde_fragment(fragment, *, endpoint_role: str = "keto_alde
         if {first.GetAtomicNum(), second.GetAtomicNum()} != {6, 8}:
             continue
         carbon = first if first.GetAtomicNum() == 6 else second
-        if carbon.GetIsAromatic() or carbon.IsInRing():
+        # Only carbonyls on the selected linkage-bearing carbocycles belong
+        # to this inverse reaction. Remote cyclic ketones, lactams and other
+        # carbonyl substituents are part of the precursor scaffold.
+        if carbon.GetIdx() in restored_ring_atoms:
             bond.SetBondType(Chem.BondType.SINGLE)
     for ring in rings_to_rearomatize:
         ring_atoms = tuple(sorted(ring))
