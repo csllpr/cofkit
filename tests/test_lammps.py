@@ -1164,7 +1164,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("a3 O 0.300000 0.100000 0.100000 1.00 -0.100000", optimized_text)
             self.assertNotIn("mapped charges by atom order", " ".join(result.warnings))
 
-    def test_output_cif_writes_inferred_periodic_bond_symmetry_when_needed(self):
+    def test_output_cif_preserves_explicit_periodic_bond_symmetry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             fake_binary = self._write_fake_lammps_binary(temp_path / "lmp_fake")
@@ -1645,16 +1645,20 @@ class LammpsTests(unittest.TestCase):
             "_geom_bond_site_symmetry_2\n"
             "_geom_bond_distance\n"
             "_ccdc_geom_bond_type\n"
-            "a1 a2 . . 1.000000 S\n"
+            # A period denotes identity, so this across-boundary edge must
+            # explicitly identify the translated atom in the input fixture.
+            "a1 a2 . 1_655 1.000000 S\n"
         )
 
     def _conflicted_ring_cif_text(self) -> str:
+        # A nonzero cycle gain prevents global molecular image flags, while
+        # each individual bond still selects a unique nearest periodic copy.
         return (
             "data_conflicted_ring\n"
             "_audit_creation_method 'cofkit test'\n"
             "_space_group_name_H-M_alt 'P 1'\n"
             "_space_group_IT_number 1\n"
-            "_cell_length_a 10.000000\n"
+            "_cell_length_a 6.000000\n"
             "_cell_length_b 10.000000\n"
             "_cell_length_c 10.000000\n"
             "_cell_angle_alpha 90.000000\n"
@@ -1672,10 +1676,10 @@ class LammpsTests(unittest.TestCase):
             "_atom_site_fract_y\n"
             "_atom_site_fract_z\n"
             "_atom_site_occupancy\n"
-            "a1 C 0.900000 0.100000 0.100000 1.00\n"
-            "a2 C 0.050000 0.100000 0.100000 1.00\n"
-            "a3 C 0.050000 0.250000 0.100000 1.00\n"
-            "a4 C 0.900000 0.250000 0.100000 1.00\n"
+            "a1 C 0.100000 0.100000 0.100000 1.00\n"
+            "a2 C 0.350000 0.150000 0.100000 1.00\n"
+            "a3 C 0.600000 0.100000 0.100000 1.00\n"
+            "a4 C 0.850000 0.150000 0.100000 1.00\n"
             "\n"
             "loop_\n"
             "_geom_bond_atom_site_label_1\n"
@@ -1684,10 +1688,10 @@ class LammpsTests(unittest.TestCase):
             "_geom_bond_site_symmetry_2\n"
             "_geom_bond_distance\n"
             "_ccdc_geom_bond_type\n"
-            "a1 a2 . 1_655 1.500000 S\n"
-            "a2 a3 . . 1.500000 S\n"
-            "a3 a4 . 1_655 1.500000 S\n"
-            "a4 a1 . . 1.500000 S\n"
+            "a1 a2 . . 1.581139 S\n"
+            "a2 a3 . . 1.581139 S\n"
+            "a3 a4 . . 1.581139 S\n"
+            "a4 a1 . 1_655 1.581139 S\n"
         )
 
     def _hbond_cif_text(self, *, charged: bool = False) -> str:

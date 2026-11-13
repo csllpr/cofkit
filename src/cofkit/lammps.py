@@ -37,6 +37,12 @@ from .forcefields import (
     supported_forcefield_families,
 )
 from .vdw import DEFAULT_VDW_CLASH_RATIO, vdw_radius
+from .periodic_geometry import images_within
+
+# Heuristic — pending calibration: coordinate-rounding guard for deciding
+# whether a different periodic copy is as close as the intended bonded copy.
+# This is a representation check, not a chemical bond-length acceptance range.
+_BOND_IMAGE_DISTANCE_TOLERANCE_ANGSTROM = 1e-6
 
 try:
     import pandas as pd
@@ -535,6 +541,7 @@ class _ParsedExplicitBondCif:
     angles: tuple[_CifAngleRecord, ...]
     dihedrals: tuple[_CifDihedralRecord, ...]
     impropers: tuple[_CifImproperRecord, ...]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -670,7 +677,7 @@ def optimize_cif_with_lammps(
         raise LammpsInputError(str(exc)) from exc
     parsed = _parse_explicit_bond_cif(input_path)
     eqeq_result: EqeqChargeResult | None = None
-    warnings: list[str] = []
+    warnings: list[str] = list(parsed.warnings)
     if settings.relax_cell and read_c_axis_semantics_from_cif(input_path) == "vacuum_slab":
         slab_warning = (
             "the input CIF is labeled c-axis-semantics: vacuum_slab (a single 2D layer with vacuum padding "
@@ -874,7 +881,7 @@ def run_lammps_md_on_cif(
         raise LammpsInputError(str(exc)) from exc
     parsed = _parse_explicit_bond_cif(input_path)
     eqeq_result: EqeqChargeResult | None = None
-    warnings: list[str] = []
+    warnings: list[str] = list(parsed.warnings)
     if _normalize_charge_model_name(settings.charge_model) == "eqeq":
         eqeq_result = assign_eqeq_charges_to_cif(
             input_path,
@@ -1246,7 +1253,36 @@ def _build_optimization_model(
     settings: LammpsOptimizationSettings,
 ) -> _OptimizationModel:
     _ = settings
+    _validate_lammps_bond_images(parsed)
     return _OptimizationModel(parsed=parsed, boundary="p p p")
+
+
+def _validate_lammps_bond_images(parsed: _ParsedExplicitBondCif) -> None:
+    """Require the atom-ID topology to identify each intended periodic copy.
+
+    LAMMPS can select a different bonded image in a small cell. An explicit
+    larger supercell is required when a closer or tied copy exists; changing
+    the CIF edge would instead change the scientific model.
+    https://docs.lammps.org/Errors_warnings.html
+    """
+    cell = gemmi.UnitCell(*parsed.cell_parameters)
+    positions = {atom.atom_id: atom.fractional_position for atom in parsed.atoms}
+    tolerance = _BOND_IMAGE_DISTANCE_TOLERANCE_ANGSTROM
+    for bond in parsed.bonds:
+        first, second = positions[bond.atom_id_1], positions[bond.atom_id_2]
+        intended = _sub_shift(bond.shift_2, bond.shift_1)
+        delta = tuple(y - x for x, y in zip(first, second))
+        trial = tuple(-round(value) for value in delta)
+        upper_bound = _bond_distance(first, second, (0, 0, 0), trial, parsed.lammps_basis)
+        cutoff = min(bond.equilibrium_distance, upper_bound) + tolerance
+        for image, distance in images_within(cell, first, second, cutoff):
+            if image != intended and distance <= bond.equilibrium_distance + tolerance:
+                raise LammpsInputError(
+                    f"Periodic bond {bond.label_1}-{bond.label_2} specifies image {intended} "
+                    f"at {bond.equilibrium_distance:.8g} angstrom, but another copy {image} "
+                    f"is at {distance:.8g} angstrom. An explicit larger supercell is required "
+                    "for unambiguous LAMMPS bonded images; the intended edge was not reassigned."
+                )
 
 
 def _normalize_forcefield_name(forcefield: str) -> str:
@@ -3434,6 +3470,8 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
         )
 
     bonds: list[_CifBondRecord] = []
+    edge_indexes = {}
+    duplicate_rows = 0
     for bond_id in range(len(bond_table)):
         row = bond_table[bond_id]
         label_1 = cif_value_str(row[0])
@@ -3462,9 +3500,22 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
             basis=basis,
         )
         bond_order = cif_type_to_bond_order(cif_value_str(bond_type_loop[bond_id])) if len(bond_type_loop) > bond_id else None
+        first_id, second_id = label_to_atom_id[label_1], label_to_atom_id[label_2]
+        gain = _sub_shift(effective_shift_2, effective_shift_1)
+        edge_key = (first_id, second_id, gain) if first_id <= second_id else (second_id, first_id, _neg_shift(gain))
+        if edge_key in edge_indexes:
+            index = edge_indexes[edge_key]
+            previous = bonds[index]
+            if previous.bond_order is not None and bond_order is not None and previous.bond_order != bond_order:
+                raise LammpsInputError(f"Conflicting bond orders for periodic bond {label_1}-{label_2} in {cif_path}.")
+            if previous.bond_order is None and bond_order is not None:
+                bonds[index] = replace(previous, bond_order=bond_order)
+            duplicate_rows += 1
+            continue
+        edge_indexes[edge_key] = len(bonds)
         bonds.append(
             _CifBondRecord(
-                bond_id=bond_id + 1,
+                bond_id=len(bonds) + 1,
                 atom_id_1=label_to_atom_id[label_1],
                 atom_id_2=label_to_atom_id[label_2],
                 label_1=label_1,
@@ -3484,6 +3535,11 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
     angles = _derive_angles(tuple(atoms), tuple(bonds), basis)
     dihedrals = _derive_dihedrals(tuple(atoms), tuple(bonds))
     impropers = _derive_impropers(tuple(atoms), tuple(bonds))
+    warnings = ()
+    if duplicate_rows:
+        warning = f"normalized {duplicate_rows} redundant CIF bond rows representing the same periodic edges"
+        warnings = (warning,)
+        print(f"warning: {warning}", file=sys.stderr)
     return _ParsedExplicitBondCif(
         source_path=cif_path,
         data_name=str(block.name or cif_path.stem),
@@ -3494,6 +3550,7 @@ def _parse_explicit_bond_cif(cif_path: Path) -> _ParsedExplicitBondCif:
         angles=angles,
         dihedrals=dihedrals,
         impropers=impropers,
+        warnings=warnings,
     )
 
 
@@ -3917,56 +3974,17 @@ def _resolve_effective_bond_geometry(
     raw_symmetry_2: str,
     basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
 ) -> tuple[tuple[int, int, int], tuple[int, int, int], float]:
-    if raw_symmetry_1 != "." or raw_symmetry_2 != ".":
-        equilibrium_distance = _bond_distance(
-            left_fractional,
-            right_fractional,
-            raw_shift_1,
-            raw_shift_2,
-            basis,
-        )
-        return raw_shift_1, raw_shift_2, equilibrium_distance
-
-    _shift_1, best_shift_2 = _closest_periodic_shifts(
-        left_fractional=left_fractional,
-        right_fractional=right_fractional,
-        basis=basis,
-    )
-    best_distance = _bond_distance(
+    # IUCr coreCIF: '.' means no symmetry or translation, not an unknown
+    # image. Preserve the stated edge even if another image is closer.
+    # https://www.iucr.org/__data/iucr/cifdic_html/1/cif_core.dic/Igeom_bond_site_symmetry_.html
+    distance = _bond_distance(
         left_fractional,
         right_fractional,
-        (0, 0, 0),
-        best_shift_2,
+        raw_shift_1,
+        raw_shift_2,
         basis,
     )
-    return (0, 0, 0), best_shift_2, best_distance
-
-
-def _closest_periodic_shifts(
-    *,
-    left_fractional: tuple[float, float, float],
-    right_fractional: tuple[float, float, float],
-    basis: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
-) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    best_shift_2 = (0, 0, 0)
-    best_distance = float("inf")
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for dz in (-1, 0, 1):
-                trial_shift_2 = (dx, dy, dz)
-                distance = _bond_distance(
-                    left_fractional,
-                    right_fractional,
-                    (0, 0, 0),
-                    trial_shift_2,
-                    basis,
-                )
-                if distance + 1e-9 < best_distance:
-                    best_distance = distance
-                    best_shift_2 = trial_shift_2
-                elif abs(distance - best_distance) <= 1e-9 and trial_shift_2 == (0, 0, 0):
-                    best_shift_2 = trial_shift_2
-    return (0, 0, 0), best_shift_2
+    return raw_shift_1, raw_shift_2, distance
 
 
 def _default_stage2_restraint_force_constant(settings: LammpsOptimizationSettings) -> float:
@@ -4541,7 +4559,9 @@ def _run_lammps(
     if enable_omp:
         configured = _resolve_lammps_omp_threads(omp_threads, default_omp_threads=default_omp_threads)
         environment["OMP_NUM_THREADS"] = str(configured)
-    command = [str(binary)]
+    # LAMMPS -nonbuf keeps the actual error in the log when MPI aborts before
+    # buffered I/O is flushed (https://docs.lammps.org/Run_options.html).
+    command = [str(binary), "-nonbuf"]
     if enable_omp:
         command.extend(["-sf", "omp", "-pk", "omp", str(configured)])
     command.extend([
@@ -4549,8 +4569,6 @@ def _run_lammps(
         str(input_script_path),
         "-log",
         str(log_path),
-        "-screen",
-        "none",
     ])
     record_execution(input_script_path.parent, command)
     try:
@@ -4575,8 +4593,19 @@ def _run_lammps(
     stdout_log_path.write_text(completed.stdout or "", encoding="utf-8")
     stderr_log_path.write_text(completed.stderr or "", encoding="utf-8")
     if completed.returncode != 0:
+        error = ""
+        for line in (completed.stdout or "").splitlines() + (completed.stderr or "").splitlines():
+            if line.strip().startswith("ERROR"):
+                error = line.strip()
+        if log_path.is_file():
+            with log_path.open(errors="replace") as handle:
+                for line in handle:
+                    if line.strip().startswith("ERROR"):
+                        error = line.strip()
         raise LammpsExecutionError(
             f"LAMMPS command failed with exit code {completed.returncode}: {' '.join(command)}"
+            + (f"\n{error}" if error else "")
+            + f"\nSee {log_path}, {stdout_log_path}, and {stderr_log_path}."
         )
 
     warnings: list[str] = []

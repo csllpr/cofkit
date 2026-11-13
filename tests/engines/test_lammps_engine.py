@@ -178,6 +178,40 @@ def test_optimizer_adapter_convergence(lmp, tmp_path):
     assert result.convergence["stages"][-1]["force_norm_kcal_mol_angstrom"] <= 1e-4
 
 
+def test_optimizer_normalizes_reciprocal_bond_rows_before_real_engine(lmp, tmp_path):
+    from cofkit.lammps import LammpsOptimizationSettings, optimize_cif_with_lammps
+
+    cif = tmp_path / "reciprocal.cif"
+    text = (Path(__file__).resolve().parents[1] / "fixtures" / "engine_molecule.cif").read_text()
+    cif.write_text(text + "a2 a1 . . 1.000000 D\n")
+    result = optimize_cif_with_lammps(
+        cif, lmp_path=lmp,
+        settings=LammpsOptimizationSettings(
+            enable_omp=False, charge_model="none", pre_minimization_steps=0,
+            relax_cell=False, max_iterations=10000, max_evaluations=100000,
+        ),
+    )
+    assert result.convergence["converged"]
+    assert result.n_bonds == 2
+    assert result.n_angles == 1
+    assert any("normalized 1 redundant CIF bond rows" in w for w in result.warnings)
+    assert re.search(r"^2\s+bonds$", Path(result.lammps_data_path).read_text(), re.MULTILINE)
+
+
+def test_native_lammps_failure_retains_the_error_message(lmp, tmp_path):
+    from cofkit.lammps import LammpsExecutionError, _run_lammps
+
+    script = tmp_path / "invalid.in"
+    script.write_text("units real\ncofkit_deliberately_invalid_command\n")
+    with pytest.raises(LammpsExecutionError, match="Unknown command"):
+        _run_lammps(
+            binary=Path(lmp), input_script_path=script,
+            log_path=tmp_path / "lammps.log", stdout_log_path=tmp_path / "stdout.log",
+            stderr_log_path=tmp_path / "stderr.log", timeout_seconds=30, enable_omp=False,
+        )
+    assert "Unknown command" in (tmp_path / "stdout.log").read_text()
+
+
 def test_dreiding_hbond_optimizer_run(lmp, tmp_path):
     import math
 

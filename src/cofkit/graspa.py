@@ -20,7 +20,7 @@ from ._dreiding_reference import (
     DREIDING_REFERENCE_SOURCE,
 )
 from .periodic_geometry import face_widths
-from .cif_checks import read_ordered_structure, validate_charge_assignment
+from .cif_checks import charge_input_geometry_report, read_ordered_structure, validate_charge_assignment
 from .cofid import ensure_cif_has_cofid_comment, read_cofid_comment_from_cif
 from .guest_bundles import GuestBundle, GuestBundleError, load_guest_bundles
 from .guest_forcefields import (
@@ -287,6 +287,7 @@ class EqeqChargeResult:
     eqeq_stdout_log_path: str
     eqeq_stderr_log_path: str
     settings: EqeqChargeSettings
+    input_geometry_validation_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -299,6 +300,7 @@ class EqeqChargeResult:
             "eqeq_stdout_log_path": self.eqeq_stdout_log_path,
             "eqeq_stderr_log_path": self.eqeq_stderr_log_path,
             "settings": self.settings.to_dict(),
+            "input_geometry_validation_path": self.input_geometry_validation_path,
         }
 
 
@@ -992,7 +994,7 @@ def assign_eqeq_charges_to_cif(
     settings = settings or EqeqChargeSettings()
     _validate_eqeq_settings(settings)
     timeout_seconds = _normalize_timeout(timeout_seconds, "timeout_seconds")
-    read_ordered_structure(input_path)
+    _, input_structure = read_ordered_structure(input_path)
     eqeq_binary = resolve_eqeq_binary(eqeq_path)
 
     run_dir = (
@@ -1004,6 +1006,16 @@ def assign_eqeq_charges_to_cif(
 
     eqeq_input_path = run_dir / input_path.name
     shutil.copy2(input_path, eqeq_input_path)
+    geometry_checks = charge_input_geometry_report(input_structure, periodic=settings.method == "ewald")
+    atomic_write_text(run_dir / "input_geometry_validation.json", json.dumps(geometry_checks, indent=2, allow_nan=False))
+    if geometry_checks["status"] != "valid":
+        collision = geometry_checks["first_collision"]
+        raise EqeqExecutionError(
+            f"EQeq input contains coincident atom sites {collision['labels'][0]!r} and "
+            f"{collision['labels'][1]!r} (distance {collision['distance_angstrom']:.8g} angstrom); "
+            "charge equilibration at zero separation is undefined. Resolve the input geometry; "
+            f"no atoms were deleted or moved. See {run_dir / 'input_geometry_validation.json'}."
+        )
     eqeq_stdout_log_path = run_dir / "eqeq.stdout.log"
     eqeq_stderr_log_path = run_dir / "eqeq.stderr.log"
 
@@ -1073,6 +1085,7 @@ def assign_eqeq_charges_to_cif(
         eqeq_stdout_log_path=str(eqeq_stdout_log_path),
         eqeq_stderr_log_path=str(eqeq_stderr_log_path),
         settings=settings,
+        input_geometry_validation_path=str(run_dir / "input_geometry_validation.json"),
     )
 
 

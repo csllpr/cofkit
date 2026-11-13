@@ -70,6 +70,8 @@
   - shared P1 shift parsing/formatting and algebraic bond rebasing (`g' = g + floor(f_j) - floor(f_i)`), used by CIF export and soft-relax coordinate writing; also owns image enumeration and cell face widths
 - `cofkit.decompose_cif`
   - dependency-light CIF atom and explicit-bond extraction for decomposition workflows, using `gemmi` rather than ASE for the primary path
+- `cofkit.cif_checks`
+  - shared ordered-cell/atom and charge-assignment checks; `charge_input_geometry_report` diagnoses coincident sites before EQeq without deleting atoms or changing geometry, using periodic or Cartesian distances according to the requested charge method
 - `cofkit.decompose`
   - CIF decomposition into recovered monomer SMILES and a COFid for the buildable binary-bridge linkages, with optional conservative topology detection from embedded COFid metadata or the recovered periodic linkage graph; this logic is adapted from the deCOFpose project at `https://github.com/r-fedorov/deCOFpose`
   - detects enol-imine/keto-enamine bond representations without a pre-cut tautomer rewrite; inverse keto-aldehyde repair confines carbonyl reduction to the selected linkage-bearing carbocycles, preserving remote scaffold functional groups

@@ -7,6 +7,50 @@ from pathlib import Path
 
 import gemmi
 
+# Heuristic — pending calibration: numerical coincidence guard in angstrom,
+# far below molecular bond/contact distances; this is not a clash threshold.
+COINCIDENT_SITE_TOLERANCE_ANGSTROM = 1e-6
+# Heuristic — pending calibration: spatial bin size controls search cost only.
+_SITE_SEARCH_BIN_WIDTH_ANGSTROM = 1.0
+
+
+def charge_input_geometry_report(small, *, periodic: bool = True) -> dict[str, object]:
+    """Find the first coincident pair without changing geometry or chemistry.
+
+    Periodic electrostatic interactions at zero separation are undefined.
+    Close but distinct atoms are left to geometry validation; nonperiodic EQeq
+    compares Cartesian sites without identifying their periodic copies.
+    """
+    report = {
+        "status": "valid",
+        "atom_count": len(small.sites),
+        "periodic": periodic,
+        "coincident_site_tolerance_angstrom": COINCIDENT_SITE_TOLERANCE_ANGSTROM,
+        "first_collision": None,
+    }
+    search = gemmi.NeighborSearch(small, _SITE_SEARCH_BIN_WIDTH_ANGSTROM).populate(include_h=True)
+    for i, site in enumerate(small.sites):
+        candidates = sorted({
+            mark.atom_idx for mark in search.find_site_neighbors(
+                site, min_dist=0, max_dist=COINCIDENT_SITE_TOLERANCE_ANGSTROM,
+            ) if mark.atom_idx > i
+        })
+        first = small.cell.orthogonalize(site.fract)
+        for j in candidates:
+            other = small.sites[j]
+            second = small.cell.orthogonalize(other.fract)
+            if periodic:
+                second = small.cell.find_nearest_pbc_position(first, second, 0)
+            distance = first.dist(second)
+            if distance <= COINCIDENT_SITE_TOLERANCE_ANGSTROM:
+                report.update(status="invalid", first_collision={
+                    "atom_indices": [i, j], "labels": [site.label, other.label],
+                    "elements": [site.element.name, other.element.name],
+                    "distance_angstrom": distance,
+                })
+                return report
+    return report
+
 
 def cif_value_str(value: object) -> str:
     """Return a CIF loop/pair value as the string it denotes.
@@ -138,7 +182,7 @@ def validate_charge_assignment(
                 # 1 Å bins control search cost; the 0.05 Å search radius is a
                 # loose prefilter for the fractional serialization tolerance
                 # applied below. Avoid a quadratic atom-pair scan.
-                search = gemmi.NeighborSearch(original, 1.0).populate(include_h=True)
+                search = gemmi.NeighborSearch(original, _SITE_SEARCH_BIN_WIDTH_ANGSTROM).populate(include_h=True)
             candidates = _accepted_candidates(
                 sorted(
                     {
