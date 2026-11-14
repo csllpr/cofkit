@@ -1,0 +1,50 @@
+[
+  {
+    "id": "cof-1",
+    "name": "COF-1 precursor model",
+    "cofid": "2:boronic_acid:OB(O)c1ccc(B(O)O)cc1&&hcb&&boroxine",
+    "notes": "Benzene-1,4-diboronic acid; supported hcb layer, matching test_ring_forming.py. Generated seed, not experimental coordinates."
+  },
+  {
+    "id": "ctf-1",
+    "name": "CTF-1 precursor model",
+    "cofid": "2:nitrile:N#Cc1ccc(C#N)cc1&&hcb&&triazine",
+    "notes": "Terephthalonitrile; supported hcb layer, matching test_ring_forming.py. Generated seed."
+  },
+  {
+    "id": "cof-5",
+    "name": "COF-5 precursor model",
+    "cofid": "3:catechol:Oc1cc2c3cc(O)c(O)cc3c3cc(O)c(O)cc3c2cc1O.2:boronic_acid:OB(O)c1ccc(B(O)O)cc1&&hcb&&boest",
+    "notes": "BDBA/HHTP hcb layer from examples/run_experimental_examples.py. Generated seed, without experimental stacking refinement."
+  },
+  {
+    "id": "tppa-1",
+    "name": "TpPa-1 precursor model",
+    "cofid": "3:keto_aldehyde:O=Cc1c(O)c(C=O)c(O)c(C=O)c1O.2:amine:Nc1ccc(N)cc1&&hcb&&bken",
+    "notes": "Tp/Pa-1 recipe from docs/COFid_Specification_v1.2.md and examples/run_experimental_examples.py. Generated seed."
+  },
+  {
+    "id": "cof-42",
+    "name": "COF-42 precursor model",
+    "cofid": "3:aldehyde:O=Cc1cc(C=O)cc(C=O)c1.2:hydrazide:CCOc1cc(C(=O)NN)cc(C(=O)NN)c1OCC&&hcb&&hydrazone",
+    "notes": "Diethoxyterephthalohydrazide/TFB recipe from examples/run_experimental_examples.py. Generated hcb seed."
+  },
+  {
+    "id": "cof-300-single-net",
+    "name": "COF-300 precursor model (single dia net)",
+    "cofid": "4:amine:Nc1ccc(C(c2ccc(N)cc2)(c2ccc(N)cc2)c2ccc(N)cc2)cc1.2:aldehyde:O=Cc1ccc(C=O)cc1&&dia&&imine",
+    "notes": "TAPM/terephthalaldehyde recipe from examples/run_experimental_examples.py. Uses supported dia; does not reproduce experimental dia-c5 interpenetration. Generated 3D seed."
+  },
+  {
+    "id": "tfb-hydrazine-azine",
+    "name": "TFB/hydrazine azine linkage control",
+    "cofid": "3:aldehyde:O=Cc1cc(C=O)cc(C=O)c1.2:hydrazine:NN&&hcb&&azine",
+    "notes": "Minimal azine example from examples/run_experimental_examples.py; an additional linkage control, not an experimental-structure claim."
+  },
+  {
+    "id": "v-cof-1-inspired",
+    "name": "V-COF-1-inspired precursor model",
+    "cofid": "3:activated_methylene:Cc1nc(C)nc(C)n1.2:aldehyde:O=Cc1ccc(C=O)cc1&&hcb&&vinylene",
+    "notes": "TMT/terephthalaldehyde vinylene example from examples/run_experimental_examples.py. Generated hcb seed."
+  }
+]

@@ -41,7 +41,9 @@ Limitations of this prototype:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from itertools import product
 import math
 from pathlib import Path
 
@@ -49,7 +51,7 @@ import gemmi
 
 from ._dreiding_reference import DREIDING_FRAMEWORK_TYPE_BY_ELEMENT, DREIDING_PARAMETERS
 from .cif_checks import cif_value_str
-from .periodic_geometry import format_p1_shift, images_within, p1_shift, rebase_bond_shift
+from .periodic_geometry import face_widths, format_p1_shift, images_within, p1_shift, rebase_bond_shift
 from .validation import CoarseValidationThresholds, _instance_id
 
 # Heuristic — pending calibration: floor (A) on the gemmi neighbor-search
@@ -292,6 +294,67 @@ def _parse_system(block: gemmi.cif.Block, config: SoftRelaxConfig) -> tuple[_Sys
     return system, warnings
 
 
+def _nearby_atom_pairs(system: _System, cutoff: float) -> Iterator[tuple[int, int]]:
+    """Conservative periodic cell-list candidates in the original i,j order.
+
+    Derived: a Cartesian separation <= cutoff has fractional component
+    |delta_k| <= cutoff / face_width_k. Choose fractional bins at least that
+    wide, so only the same and adjacent bins (with periodic wrapping) can
+    contain neighbors. Reciprocal face widths make this true for skew cells
+    too. Exact distances, image ties and exclusions remain downstream.
+    """
+    n = len(system.frac)
+    if not n:
+        return
+    if cutoff <= 0 or not math.isfinite(cutoff):
+        # Preserve the old exact-search behavior for unusual caller settings;
+        # no spatial subdivision is defined for a nonpositive/infinite radius.
+        for i in range(n):
+            for j in range(i, n):
+                yield i, j
+        return
+    # Derived: the exact search subtracts two original fractional endpoints.
+    # Allow one ULP per endpoint before choosing bins, since large unwrapped
+    # image coordinates can lose more precision than a wrapped coordinate or
+    # the cutoff alone. This only broadens candidates, never the exact cutoff.
+    # More than n bins along an axis is unnecessary for this sparse index.
+    counts = []
+    for axis, width in enumerate(face_widths(system.cell)):
+        rounding = 2 * max(math.ulp(f[axis]) for f in system.frac)
+        fractional_cutoff = math.nextafter(cutoff / width + rounding, math.inf)
+        counts.append(max(1, math.floor(min(n, 1 / fractional_cutoff))))
+    # Derived: the three adjacent indices cover every bin on an axis with
+    # <=3 bins. If this holds on all axes, indexing cannot prune any pair;
+    # keep the cheaper ordered loop for small/dense cells.
+    if all(count <= 3 for count in counts):
+        for i in range(n):
+            for j in range(i, n):
+                yield i, j
+        return
+    bins: dict[tuple[int, int, int], list[int]] = {}
+    keys = []
+    for i, fractional in enumerate(system.frac):
+        key = tuple(
+            math.floor((coordinate % 1.0) * count) % count
+            for coordinate, count in zip(fractional, counts)
+        )
+        keys.append(key)
+        bins.setdefault(key, []).append(i)
+    for i, key in enumerate(keys):
+        # Sets collapse repeated bins when an axis has only one or two bins.
+        adjacent = (
+            {(coordinate + offset) % count for offset in (-1, 0, 1)}
+            for coordinate, count in zip(key, counts)
+        )
+        neighbors = {
+            j for neighbor_key in product(*adjacent)
+            for j in bins.get(neighbor_key, ()) if j >= i
+        }
+        # Includes (i,i), so periodic self contacts still reach images_within.
+        for j in sorted(neighbors):
+            yield i, j
+
+
 def _build_pair_list(
     system: _System, config: SoftRelaxConfig
 ) -> list[tuple[int, int, list[float], float]]:
@@ -320,36 +383,34 @@ def _build_pair_list(
         return system.symbols[other] in hetero_elements
 
     pairs: list[tuple[int, int, list[float], float]] = []
-    n = len(system.frac)
-    for i in range(n):
-        for j in range(i, n):
-            r0 = (radii[i] + radii[j]) * config.repulsion_scale
-            if r0 <= 1e-9:
+    for i, j in _nearby_atom_pairs(system, cutoff):
+        r0 = (radii[i] + radii[j]) * config.repulsion_scale
+        if r0 <= 1e-9:
+            continue
+        # images_within yields in lexicographic shift order, not distance
+        # order: select the minimum-distance image first so the clash-floor
+        # and hbond-guard decisions below are evaluated at the nearest
+        # image, not at an arbitrary in-cutoff one.
+        nearest: tuple[float, tuple[int, int, int]] | None = None
+        for shift, distance in images_within(system.cell, system.frac[i], system.frac[j], cutoff):
+            if i == j and shift == (0, 0, 0):
                 continue
-            # images_within yields in lexicographic shift order, not distance
-            # order: select the minimum-distance image first so the clash-floor
-            # and hbond-guard decisions below are evaluated at the nearest
-            # image, not at an arbitrary in-cutoff one.
-            nearest: tuple[float, tuple[int, int, int]] | None = None
-            for shift, distance in images_within(system.cell, system.frac[i], system.frac[j], cutoff):
-                if i == j and shift == (0, 0, 0):
-                    continue
-                if nearest is None or distance < nearest[0]:
-                    nearest = (distance, shift)
-            if nearest is None:
-                continue
-            distance, shift = nearest
-            if (i, j, shift) in system.excluded:
-                continue
-            if (i, j, shift) in system.excluded13 and distance >= config.one_four_clash_floor:
-                continue
-            if (i, j, shift) in system.excluded14 and distance >= config.one_four_clash_floor:
-                continue
-            if hbond_guarded(i, j, distance):
-                continue
-            shift_cart = _frac_to_cart(system.orth, shift)
-            # nearest image only; the margin covers drift during the run
-            pairs.append((i, j, shift_cart, r0))
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, shift)
+        if nearest is None:
+            continue
+        distance, shift = nearest
+        if (i, j, shift) in system.excluded:
+            continue
+        if (i, j, shift) in system.excluded13 and distance >= config.one_four_clash_floor:
+            continue
+        if (i, j, shift) in system.excluded14 and distance >= config.one_four_clash_floor:
+            continue
+        if hbond_guarded(i, j, distance):
+            continue
+        shift_cart = _frac_to_cart(system.orth, shift)
+        # nearest image only; the margin covers drift during the run
+        pairs.append((i, j, shift_cart, r0))
     return pairs
 
 

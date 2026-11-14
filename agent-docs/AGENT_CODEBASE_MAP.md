@@ -191,6 +191,23 @@ Then go straight to the module that matches the task.
   - `RingGeometryOptimizer` fits whole precursor poses to reactive-point/exocyclic-anchor targets, reusing `geometry.fit_rigid_transform`; collinear fits preserve the current roll. All accepted translations/rotations preserve per-event radial/planarity/angular maxima and all measured attachment angle/distance residuals; coverage cannot disappear. `improved` includes attachment-only progress, while `arrangement_improved` explicitly names the arrangement channel. Optional rigid-fit failures warn and remain in metrics. Tests: `test_ring_pose_refinement.py` and `test_ring_forming.py`.
 - [src/cofkit/soft_relax.py](../src/cofkit/soft_relax.py)
   - Experimental in-process clash-repair / strain-relief pass (bond springs + Urey-Bradley 1-3 restraints + ramped soft repulsion) applied to the staged CIF before validation bucketing when `BatchGenerationConfig.soft_relax` / `--soft-relax` is on; not a physical relaxation.
+  - `_nearby_atom_pairs` indexes wrapped fractional coordinates using bin
+    widths bounded by `periodic_geometry.face_widths`. Adjacent periodic bins
+    conservatively cover each cutoff sphere even in oblique cells; candidate
+    padding uses original endpoint ULPs to cover large unwrapped images. Exact
+    `images_within` selection, lexicographic image ties, self images, pair
+    ordering and exclusions remain in `_build_pair_list`. Small/dense cells
+    retain all candidates when every bin would be visited. Rebuild scheduling
+    and interaction parameters are unchanged. Independent oracle:
+    `tests/soft_relax_reference.py`; adversarial and common-COF regression
+    tests: `test_soft_relax_neighbors.py`, `test_soft_relax_cofs.py`.
+    Reproducible comparison runner: `uv run python
+    tests/benchmark_soft_relax_neighbors.py --output-dir
+    out/soft-relax-neighbor-search/comparison` (JSON/CSV results and CIFs).
+    The common-COF fixtures are generated precursor models, not experimental
+    coordinates; COF-300 uses a single dia net. Two intentionally crowded
+    bilayers exercise active clash repair. Benchmark supercells preserve
+    explicit periodic bonds. This is a search-equivalence benchmark.
 - [src/cofkit/scoring.py](../src/cofkit/scoring.py)
   - Bridge-geometry residual metrics (`bridge_geometry_report`) and the `scoring_metadata` packaging consumed by the optimizer, validator, and candidate ranking. The legacy event-count heuristic score was removed. Plane-dependent terms (planarity residual, normal-misalignment surrogate) are evaluated only for motifs whose monomer carries a plane prior (nonzero `ReactiveMotif.plane_normal`); per-event `plane_prior_coverage` (`both` / `first` / `second` / `none`) records the coverage and `normal_alignment` is null when unevaluated.
 - [src/cofkit/vdw.py](../src/cofkit/vdw.py)
