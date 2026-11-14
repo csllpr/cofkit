@@ -6,6 +6,7 @@ import re
 import sys
 import tempfile
 import unittest
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -444,6 +445,48 @@ class BatchStructureGeneratorTests(unittest.TestCase):
             template_ids = self.generator.available_binary_bridge_template_ids(temp_path)
 
         self.assertEqual(template_ids, ("azine_bridge", "hydrazone_bridge", "imine_bridge", "keto_enamine_bridge"))
+
+    def test_autodetected_bad_rows_are_reported_without_aborting_batch(self):
+        generator = BatchStructureGenerator(BatchGenerationConfig(
+            topology_ids=("hcb",), rdkit_num_conformers=1,
+            shape_aware_conformer=False, max_workers=1, write_cif=False,
+        ))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "generic.txt").write_text(
+                f"smiles\nnot-a-smiles\nCC\nNc1ccc(C=O)cc1\n{TFB}\n{PPD}\n",
+                encoding="utf-8",
+            )
+            libraries = generator.load_binary_bridge_test_set_auto(root)
+            failed = libraries["__autodetect_failures__"]
+            self.assertEqual([r.source_line for r in failed], [2, 3, 4])
+            self.assertTrue(all(r.detection_error.startswith("ValueError:") for r in failed))
+            self.assertIn("ambiguous motif kinds", failed[2].detection_error)
+            # Failed detections never get a guessed chemistry or reach the
+            # conformer builder, and the original exception remains intact.
+            with patch.object(generator, "smiles_monomer_builder") as builder:
+                self.assertEqual(generator.build_monomer(failed[0]).error, failed[0].detection_error)
+                builder.assert_not_called()
+            self.assertEqual(libraries["aldehydes_count_3"][0].id, "generic_0004")
+            self.assertEqual(libraries["amines_count_2"][0].id, "generic_0005")
+            self.assertIn("imine_bridge", generator.available_binary_bridge_template_ids(
+                root, auto_detect_libraries=True,
+            ))
+            summary = generator.run_binary_bridge_batch(
+                root, root / "output", auto_detect_libraries=True,
+            )
+            rows = [json.loads(line) for line in Path(summary.monomer_records_path).read_text().splitlines()]
+            self.assertEqual(summary.failed_monomers, 3)
+            self.assertEqual(summary.built_monomers, 2)
+            self.assertEqual(summary.successful_pairs, 1)
+            self.assertEqual(len(rows), 5)
+            self.assertEqual(len(summary.build_failures), 3)
+            for row in rows:
+                if row["id"] in summary.build_failures:
+                    self.assertEqual(row["detection_error"], summary.build_failures[row["id"]])
+                    self.assertEqual(row["build_error"], row["detection_error"])
+                    self.assertEqual(row["build_status"], "failed")
+                    self.assertIsNone(row["conformer_provenance"])
 
     def test_custom_smiles_monomer_builder_can_be_injected(self):
         calls = []
@@ -2824,6 +2867,79 @@ class ScoringModeTests(unittest.TestCase):
 
 @unittest.skipIf(Chem is None, "RDKit is not available")
 class BatchProcessPoolFallbackTests(unittest.TestCase):
+    def test_worker_oserror_does_not_retry_successful_pairs(self):
+        import cofkit.batch as batch_module
+        from cofkit.batch_models import BatchPairSummary
+
+        first = BatchMonomerRecord("a", "a", "", "amine", 3)
+        second = BatchMonomerRecord("b", "b", "", "aldehyde", 3)
+        tasks = tuple(batch_module._BatchPairTask(first, second, None, False) for _ in range(3))
+
+        class _WorkerIOErrorExecutor(ThreadPoolExecutor):
+            def submit(self, fn, task):
+                index = getattr(self, "_submitted", 0)
+                self._submitted = index + 1
+                future = Future()
+                if index == 1:
+                    future.set_exception(OSError("one record could not be read"))
+                else:
+                    summary = BatchPairSummary(
+                        structure_id=str(index), pair_id=str(index), pair_mode="node-node",
+                        status="ok", reactant_a_record_id="a", reactant_b_record_id="b",
+                    )
+                    future.set_result(((summary,), 1))
+                return future
+
+        with patch("cofkit.batch.ProcessPoolExecutor", _WorkerIOErrorExecutor), patch(
+            "cofkit.batch.ThreadPoolExecutor", side_effect=AssertionError("unexpected pool retry")
+        ):
+            results = self._make_generator()._collect_parallel_pair_results(tasks)
+        self.assertEqual([rows[0].status for rows, _ in results], ["ok", "pair-task-failed", "ok"])
+        self.assertEqual(results[1][0][0].metadata["error"], "OSError: one record could not be read")
+
+    def test_worker_reuses_built_conformer_and_provenance(self):
+        import pickle
+        import cofkit.batch as batch_module
+
+        generator = self._make_generator()
+        record = BatchMonomerRecord("ppd", "ppd", PPD, "amine", 2)
+        built = generator.build_monomer(record)
+        self.assertTrue(built.ok)
+        # Exercise the serialization used with spawn as well as fork.
+        transferred = pickle.loads(pickle.dumps((built,)))
+        try:
+            batch_module._init_batch_process_worker(
+                generator.config, generator.reaction_library, transferred
+            )
+            worker = batch_module._PROCESS_BATCH_GENERATOR
+            with patch.object(rdkit_module.AllChem, "EmbedMultipleConfs") as embed:
+                reused = worker.build_monomer(record)
+            embed.assert_not_called()
+            self.assertEqual(reused.monomer, built.monomer)
+            self.assertEqual(reused.conformer_provenance, built.conformer_provenance)
+        finally:
+            batch_module._PROCESS_BATCH_GENERATOR = None
+
+    def test_failed_pair_cleanup_preserves_other_pairs_with_overlapping_ids(self):
+        generator = self._make_generator()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for bucket in ("", ".staging", "valid", "invalid", "unvalidated"):
+                directory = root / bucket
+                directory.mkdir(exist_ok=True)
+                owned = ("a__b.cif", "a__b__hcb.cif", "b__a__sql.softrelax-tmp.cif")
+                others = (
+                    "aa__b__hcb.cif", "a__bb__hcb.cif", "b__aa__sql.cif",
+                    "a__bystander__hcb.cif", "a__b__notes.json",
+                )
+                for name in (*owned, *others):
+                    (directory / name).write_text("keep or remove", encoding="utf-8")
+            generator._discard_failed_pair_artifacts(root, "a", "b")
+            for bucket in ("", ".staging", "valid", "invalid", "unvalidated"):
+                directory = root / bucket
+                self.assertTrue(all(not (directory / name).exists() for name in owned))
+                self.assertTrue(all((directory / name).exists() for name in others))
+
     def _write_tiny_library(self, root: Path) -> None:
         root.mkdir(parents=True, exist_ok=True)
         (root / "amines_count_3.txt").write_text(f"smiles\n{TAPB}\n{TAPB}\n", encoding="utf-8")
@@ -2883,10 +2999,14 @@ class BatchProcessPoolFallbackTests(unittest.TestCase):
             def __exit__(self, *exc_info):
                 return False
 
-            def map(self, fn, tasks):
-                tasks = tuple(tasks)
-                yield fn(tasks[0])
-                raise OSError("simulated mid-run pool failure")
+            def submit(self, fn, task):
+                future = Future()
+                if not hasattr(self, "_submitted"):
+                    self._submitted = True
+                    future.set_result(fn(task))
+                else:
+                    future.set_exception(batch_module.BrokenProcessPool("simulated mid-run pool failure"))
+                return future
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -3223,36 +3343,17 @@ class BatchFailureIsolationTests(unittest.TestCase):
         # remaining pair results are still collected.
         import cofkit.batch as batch_module
 
-        class _TaskFailingMapIterator:
-            def __init__(self, fn, tasks):
-                self._fn = fn
-                self._tasks = tuple(tasks)
-                self._index = 0
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                if self._index >= len(self._tasks):
-                    raise StopIteration
-                index = self._index
-                self._index += 1
-                if index == 0:
-                    raise RuntimeError("simulated worker task exception")
-                return self._fn(self._tasks[index])
-
-        class _TaskFailingExecutor:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc_info):
-                return False
-
-            def map(self, fn, tasks):
-                return _TaskFailingMapIterator(fn, tasks)
+        class _TaskFailingExecutor(ThreadPoolExecutor):
+            # Use the real Executor.map implementation: unlike the old mock
+            # iterator, it closes permanently after a task raises. Independent
+            # futures are needed to collect the remaining pairs.
+            def submit(self, fn, *args, **kwargs):
+                if not hasattr(self, "_submitted"):
+                    self._submitted = True
+                    future = Future()
+                    future.set_exception(RuntimeError("simulated worker task exception"))
+                    return future
+                return super().submit(fn, *args, **kwargs)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

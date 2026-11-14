@@ -41,6 +41,9 @@ class BatchMonomerRecord:
     source_path: str = ""
     source_line: int = 0
     metadata: Mapping[str, object] = field(default_factory=dict)
+    # A failed autodetection remains a record so batch reports can retain its
+    # original location/cause and continue building the other monomers.
+    detection_error: str | None = None
 
 
 @dataclass(frozen=True)

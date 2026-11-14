@@ -39,6 +39,12 @@ Then go straight to the module that matches the task.
     failures keep the discard-and-rerun-in-threads fallback), and the
     run-level `_require_writable_output_root` probe that aborts on an
     unwritable output root before any record is attempted.
+    Process collection uses independent futures, since `Executor.map` closes
+    after a task exception. Only a broken pool triggers collection fallback;
+    a worker `OSError` is a per-pair failure. `_init_batch_process_worker`
+    seeds the worker cache with the parent's built conformers/provenance.
+    Failed-pair artifact cleanup matches full pair prefixes in either role
+    order, keeping other pairs whose record ids overlap as substrings.
   - Durable reporting (A12): `run_binary_bridge_batch` also writes
     `monomers.jsonl` (per-record detection metadata — autodetect failure
     causes, overlap warnings — plus build outcome), and best-effort COFid
@@ -77,6 +83,8 @@ Then go straight to the module that matches the task.
   - Add new motif kinds here first.
 - [src/cofkit/chem/rdkit.py](../src/cofkit/chem/rdkit.py)
   - Practical SMILES-to-`MonomerSpec` path.
+    A conservative SMARTS precheck rejects graph nonmatches before conformer
+    construction; matching graphs retain the full handlers/postprocessing.
   - Plane-prior seam (A06): `_plane_normal` / `_fit_molecular_plane` derive the
     monomer plane from molecular geometry — the motif-anchor connection plane
     for 3+-motif monomers, a heavy-atom covariance best-fit plane otherwise.
@@ -122,6 +130,13 @@ Then go straight to the module that matches the task.
 ## Monomer-library and batch-input seams
 
 - [src/cofkit/monomer_library.py](../src/cofkit/monomer_library.py)
+  - `load_smiles_library_auto` isolates failed rows as
+    `BatchMonomerRecord.detection_error` with source location and original
+    exception text. Grouped loaders keep them under `__autodetect_failures__`;
+    `build_monomer` converts them directly to failed `BuiltBatchMonomer`s
+    without assigning a chemistry or constructing a conformer. Batch ledgers,
+    build-failure counts and summaries retain them. Direct `infer_record`
+    remains strict for single-record callers.
   - `MonomerRoleResolver` for autodetection from SMILES.
   - `MonomerRoleResolver.resolve_detected_motif_kind` accepts `preferred_kind` to break autodetect ambiguity toward a caller-declared role (only when that kind is among the detected candidates); `infer_record` exposes it as `preferred_motif_kind` and marks rescued records `role_resolution="filename_fallback"` in metadata. `cofkit build default-library` passes the source file's declared kind, so multi-role monomers register under their filename role instead of failing.
   - `MonomerRoleResolver.forced_kind_warnings` for non-blocking motif-overlap warnings: a monomer assigned a generic kind (per `_AUTO_DETECT_GENERIC_SUPPRESSION`, currently `aldehyde`) that also builds as the shadowed specific kind (currently `keto_aldehyde`) yields a warning suggesting the specific kind's templates. `infer_record` and `BinaryBridgeLibraryLoader.load_smiles_library` attach these to record metadata as `overlap_warnings`; the CLI echoes them to stderr, and batch runs persist them in the `monomers.jsonl` ledger.

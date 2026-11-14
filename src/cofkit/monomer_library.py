@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -302,6 +303,12 @@ class BinaryBridgeLibraryLoader:
                     return role.library_prefix or f"{role.motif_kind}s"
         return f"{motif_kind}s"
 
+    def _library_key_for_record(self, record: BatchMonomerRecord) -> str:
+        if record.detection_error is not None:
+            return "__autodetect_failures__"
+        prefix = self.library_prefix_for_motif_kind(record.motif_kind)
+        return f"{prefix}_count_{record.expected_connectivity}"
+
     def load_smiles_library(
         self,
         path: str | Path,
@@ -363,11 +370,12 @@ class BinaryBridgeLibraryLoader:
                 if line_number == 1 and line.lower() == "smiles":
                     continue
                 index = len(rows) + 1
-                rows.append(
-                    self.role_resolver.infer_record(
+                record_id = f"{prefix}_{index:04d}"
+                try:
+                    record = self.role_resolver.infer_record(
                         line,
-                        record_id=f"{prefix}_{index:04d}",
-                        name=f"{prefix}_{index:04d}",
+                        record_id=record_id,
+                        name=record_id,
                         source_path=str(library_path),
                         source_line=line_number,
                         allowed_motif_kinds=allowed_motif_kinds,
@@ -375,7 +383,26 @@ class BinaryBridgeLibraryLoader:
                         num_conformers=num_conformers,
                         random_seed=random_seed,
                     )
-                )
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+                    record = BatchMonomerRecord(
+                        id=record_id,
+                        name=record_id,
+                        smiles=line,
+                        motif_kind="unresolved",
+                        expected_connectivity=0,
+                        source_path=str(library_path),
+                        source_line=line_number,
+                        metadata={"library_stem": library_path.stem},
+                        detection_error=error,
+                    )
+                    print(
+                        f"warning: monomer {record_id!r} autodetection failed "
+                        f"at {library_path}:{line_number} ({error}); "
+                        "continuing with the remaining records.",
+                        file=sys.stderr,
+                    )
+                rows.append(record)
         return tuple(rows)
 
     def load_binary_bridge_test_set(
@@ -439,8 +466,7 @@ class BinaryBridgeLibraryLoader:
                 num_conformers=num_conformers,
                 random_seed=random_seed,
             ):
-                prefix = self.library_prefix_for_motif_kind(record.motif_kind)
-                key = f"{prefix}_count_{record.expected_connectivity}"
+                key = self._library_key_for_record(record)
                 grouped_records.setdefault(key, []).append(record)
         return {key: tuple(records) for key, records in sorted(grouped_records.items())}
 
@@ -470,8 +496,7 @@ class BinaryBridgeLibraryLoader:
                         num_conformers=num_conformers,
                         random_seed=random_seed,
                     ):
-                        prefix = self.library_prefix_for_motif_kind(record.motif_kind)
-                        key = f"{prefix}_count_{record.expected_connectivity}"
+                        key = self._library_key_for_record(record)
                         grouped_records.setdefault(key, []).append(record)
                 libraries = {key: tuple(records) for key, records in grouped_records.items()}
             else:

@@ -241,6 +241,15 @@ class RDKitMotifBuilder:
         if base is None:
             raise ValueError(f"RDKit could not parse SMILES for {monomer_id!r}")
         molecule = Chem.AddHs(base)
+        # A missing substructure cannot become a motif through coordinate
+        # embedding or minimization. Reject graph nonmatches before the
+        # expensive conformer ladder; matching graphs still use the complete
+        # geometry-aware handlers and postprocessing below.
+        pattern = Chem.MolFromSmarts(definition.rdkit_smarts)
+        if pattern is None:
+            raise ValueError(f"invalid SMARTS for motif kind {definition.kind!r}")
+        if not molecule.HasSubstructMatch(pattern):
+            raise ValueError(f"no {motif_kind!r} motifs detected in {monomer_id!r}")
         try:
             embedding = _embed_conformers(
                 molecule,

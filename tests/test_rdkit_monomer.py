@@ -22,6 +22,12 @@ CUMULENE_TRICATECHOL_SMILES = "Oc1cc2c(cc1O)=C=C=c1cc(O)c(O)cc1=C=C=c1cc(O)c(O)c
 
 @unittest.skipIf(Chem is None, "RDKit is not available")
 class RDKitMonomerTests(unittest.TestCase):
+    def test_graph_nonmatch_never_embeds_a_conformer(self):
+        with patch.object(rdkit_module, "_embed_conformers") as embed:
+            with self.assertRaisesRegex(ValueError, "no 'aldehyde' motifs detected"):
+                build_rdkit_monomer("ppd", "ppd", "Nc1ccc(N)cc1", "aldehyde")
+        embed.assert_not_called()
+
     def _world_position(self, candidate, instance_id, local_position, *, image=(0, 0, 0)):
         pose = candidate.state.monomer_poses[instance_id]
         cell = candidate.state.cell

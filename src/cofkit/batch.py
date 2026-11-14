@@ -282,12 +282,20 @@ class _BatchPairTask:
 def _init_batch_process_worker(
     config: BatchGenerationConfig,
     reaction_library: ReactionLibrary,
+    built_monomers: tuple[BuiltBatchMonomer, ...] = (),
 ) -> None:
     global _PROCESS_BATCH_GENERATOR
     _PROCESS_BATCH_GENERATOR = BatchStructureGenerator(
         config=config,
         reaction_library=reaction_library,
     )
+    # Reuse the parent's selected conformers and their provenance. Rebuilding
+    # them independently in every worker repeats the most expensive part of
+    # small pair builds and can decouple the ledger from the geometry used.
+    for built in built_monomers:
+        _PROCESS_BATCH_GENERATOR._monomer_cache[
+            _PROCESS_BATCH_GENERATOR._monomer_cache_key(built.record)
+        ] = built
 
 
 def _run_batch_pair_task_in_process(
@@ -515,16 +523,24 @@ class BatchStructureGenerator:
     def _library_prefix_for_motif_kind(self, motif_kind: str) -> str:
         return self._library_loader.library_prefix_for_motif_kind(motif_kind)
 
+    def _monomer_cache_key(self, record: BatchMonomerRecord) -> tuple[object, ...]:
+        return (
+            record.id, record.name, record.smiles, record.motif_kind,
+            record.expected_connectivity, self.config.rdkit_num_conformers,
+            self.config.shape_aware_conformer, self.config.rdkit_random_seed,
+            id(self.smiles_monomer_builder),
+        )
+
     def build_monomer(self, record: BatchMonomerRecord) -> BuiltBatchMonomer:
+        if record.detection_error is not None:
+            return BuiltBatchMonomer(record=record, error=record.detection_error)
         shape_selection = self._shape_aware_conformer_selection(record.expected_connectivity)
         num_conformers = (
             max(self.config.rdkit_num_conformers, SHAPE_SELECTION_MIN_CONFORMERS)
             if shape_selection
             else self.config.rdkit_num_conformers
         )
-        cache_key = (record.id, record.name, record.smiles, record.motif_kind,
-                     record.expected_connectivity, num_conformers, shape_selection,
-                     self.config.rdkit_random_seed, id(self.smiles_monomer_builder))
+        cache_key = self._monomer_cache_key(record)
         with self._monomer_cache_lock:
             cached = self._monomer_cache.get(cache_key)
         if cached is not None:
@@ -1124,6 +1140,7 @@ class BatchStructureGenerator:
                     "expected_connectivity": record.expected_connectivity,
                     "source_path": record.source_path,
                     "source_line": record.source_line,
+                    "detection_error": record.detection_error,
                     "metadata": self._json_safe(dict(record.metadata)),
                     # A18: per-monomer requested/effective conformer budget,
                     # seed, selection mode, and fallback status; None only when
@@ -1180,27 +1197,30 @@ class BatchStructureGenerator:
         pair twice.
         """
         if self._supports_process_pair_pool():
+            with self._monomer_cache_lock:
+                built_monomers = tuple(self._monomer_cache.values())
             try:
                 with ProcessPoolExecutor(
                     max_workers=self.config.max_workers,
                     initializer=_init_batch_process_worker,
-                    initargs=(self.config, self.reaction_library),
+                    initargs=(self.config, self.reaction_library, built_monomers),
                 ) as executor:
-                    mapped = executor.map(_run_batch_pair_task_in_process, pair_tasks)
+                    futures = [
+                        executor.submit(_run_batch_pair_task_in_process, task)
+                        for task in pair_tasks
+                    ]
                     results: list[tuple[tuple[BatchPairSummary, ...], int]] = []
-                    while True:
+                    for task, future in zip(pair_tasks, futures):
                         try:
-                            results.append(next(mapped))
-                        except StopIteration:
-                            break
-                        except (OSError, BrokenProcessPool):
+                            results.append(future.result())
+                        except BrokenProcessPool:
                             # Pool-level failure: discard the partial results
                             # and re-execute every task in the thread pool.
                             raise
                         except Exception as exc:
                             # One pair task raised in the worker: record the
                             # failure against that pair and keep collecting.
-                            results.append(self._failed_pair_task_result(pair_tasks[len(results)], exc))
+                            results.append(self._failed_pair_task_result(task, exc))
                     return tuple(results)
             except (NotImplementedError, PermissionError, OSError, BrokenProcessPool):
                 pass
@@ -1306,11 +1326,11 @@ class BatchStructureGenerator:
     def _discard_failed_pair_artifacts(self, out_dir: Path, first_id: str, second_id: str) -> None:
         """Best-effort removal of CIF artifacts left by a failed pair task.
 
-        The exact structure ids are unknown when the task escaped its export
-        boundary, so every file carrying both record ids is removed: such a
-        file was never recorded in the manifest (results of a failed task are
-        discarded) and must not be mistaken for a successful export.
+        The topology/stacking suffixes are unknown when the task escaped its
+        export boundary. Match the full pair prefix in either role order,
+        never arbitrary record-id substrings that can belong to other pairs.
         """
+        pair_ids = (f"{first_id}__{second_id}", f"{second_id}__{first_id}")
         directories = [out_dir / ".staging", out_dir]
         if self.config.separate_cif_outputs_by_validation:
             directories.extend(
@@ -1323,7 +1343,12 @@ class BatchStructureGenerator:
             except OSError:
                 continue
             for path in entries:
-                if path.is_file() and first_id in path.name and second_id in path.name:
+                if path.is_file() and path.name.endswith(".cif") and any(
+                    path.name == f"{pair_id}.cif"
+                    or path.name == f"{pair_id}.softrelax-tmp.cif"
+                    or path.name.startswith(f"{pair_id}__")
+                    for pair_id in pair_ids
+                ):
                     try:
                         path.unlink()
                     except OSError:
