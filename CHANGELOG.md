@@ -22,6 +22,7 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- decomposition charge-scope classification tracks charged-atom presence independently of net charge: compensating guest ions/zwitterions remain `guest_localized`, charged residue/unaccounted atoms remain `limited`, and loss of opposite precursor charges is detected even with zero net-charge delta
 - decomposition preserves occupancy evidence and rejects explicit zero, fractional, unknown, nonfinite or out-of-range occupancies instead of reporting a fully occupied atom ledger/COFid. Absent columns retain unit-occupancy defaults; primitive preparation checks source occupancies and the pymatgen adapter rejects disordered species instead of selecting the first
 - explicit decomposition bonds with missing, unparseable or nonpositive/nonfinite distances now measure the selected periodic edge, including both endpoint symmetry translations and reversed endpoints, instead of using a different nearest image. Usable reported distances retain the existing evidence policy
 - decomposition checks duplicate periodic bond orders before deduplication, retains known orders when duplicate rows omit them, and rejects duplicate atom labels and unknown bond endpoints instead of silently changing connectivity. Event-mode invalid-evidence failures report `FAILED_INPUT_VALIDATION`, separate from internal errors

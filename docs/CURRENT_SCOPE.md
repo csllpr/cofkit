@@ -4,6 +4,7 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 
 ## Implemented so far
 
+- decomposition charge-scope reports retain compensating ion and zwitterion evidence when net charge is zero; recovered fragments compare their formal-charge populations as well as net charge. This audits fragment charge evidence, not atom-by-atom preservation of charge locations
 - decomposition requires a fully occupied, ordered structural model: absent occupancy columns use unit occupancy, but explicit non-unit/unknown occupancies report `FAILED_INPUT_VALIDATION` in event mode. Occupancies are retained by the reader, and primitive preparation/pymatgen conversion cannot silently select a disordered alternative. Resolving disorder into a discrete model remains unsupported
 - explicit decomposition bond lengths with absent/unusable distance entries are measured from their selected periodic edge, including both endpoint symmetry translations. Usable reported CIF distances remain the existing bond-order evidence; no general geometry correction is asserted
 - decomposition input evidence checks: duplicate periodic edges must agree on known bond orders (missing orders cannot override known evidence), atom labels must be unique, and explicit bond endpoints must exist. Invalid evidence reports an error with event status `FAILED_INPUT_VALIDATION`, rather than an internal-error or chemistry verdict

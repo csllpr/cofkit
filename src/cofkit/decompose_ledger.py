@@ -530,6 +530,16 @@ def _classify_charge_scope(
     guest_net = sum(guest.net_formal_charge for guest in guests)
     residue_net = net_formal_charge_for_atoms(mol, residue_atom_indices)
     unaccounted_net = sum(record.net_formal_charge for record in unaccounted)
+    # Presence is independent of net charge: opposite ions and zwitterionic
+    # atoms must not disappear when summing a ledger bucket.
+    charged_atoms = {
+        atom.GetIdx() for atom in mol.GetAtoms() if atom.GetFormalCharge() != 0
+    }
+    guest_charged = any(charged_atoms.intersection(guest.atom_indices) for guest in guests)
+    residue_charged = bool(charged_atoms.intersection(residue_atom_indices))
+    unaccounted_charged = any(
+        charged_atoms.intersection(record.atom_indices) for record in unaccounted
+    )
 
     altered_fragments = []
     heuristic_restored_charge = 0
@@ -540,9 +550,21 @@ def _classify_charge_scope(
             unverifiable_fragments += 1
             continue
         delta = fragment.recovered_net_formal_charge - fragment.net_formal_charge
-        if delta == 0:
-            preserved_fragment_charge += abs(fragment.net_formal_charge)
-        elif fragment.net_formal_charge == 0 and delta != 0:
+        source_profile = Counter(
+            mol.GetAtomWithIdx(index).GetFormalCharge()
+            for index in fragment.atom_indices if index in charged_atoms
+        )
+        recovered_mol = Chem.MolFromSmiles(fragment.recovered_canonical_smiles)
+        if recovered_mol is None:
+            unverifiable_fragments += 1
+            continue
+        recovered_profile = Counter(
+            atom.GetFormalCharge() for atom in recovered_mol.GetAtoms()
+            if atom.GetFormalCharge() != 0
+        )
+        if delta == 0 and source_profile == recovered_profile:
+            preserved_fragment_charge += sum(source_profile.values())
+        elif not source_profile and delta != 0:
             # Charge created during repair by the valence-driven tetravalent-N
             # restoration rule, not carried from the input.
             heuristic_restored_charge += delta
@@ -561,17 +583,17 @@ def _classify_charge_scope(
             "the input CIF carried no _atom_site_pdbx_formal_charge column; "
             "input charges default to zero"
         )
-    if guest_net != 0:
+    if guest_charged:
         notes.append(
             "guest molecules carry formal charge; guests are reported in this "
             "ledger but are not part of the serialized COFid"
         )
-    if residue_net != 0:
+    if residue_charged:
         notes.append("formal charge sits on linkage residue atoms excluded from recovery")
-    if unaccounted_net != 0:
+    if unaccounted_charged:
         notes.append("formal charge sits on unaccounted framework atoms")
 
-    if unverifiable_fragments or altered_fragments or residue_net != 0 or unaccounted_net != 0:
+    if unverifiable_fragments or altered_fragments or residue_charged or unaccounted_charged:
         status = CHARGE_SCOPE_LIMITED
         if altered_fragments:
             notes.append(
@@ -592,7 +614,7 @@ def _classify_charge_scope(
             "was restored from local valence (tetravalent iminium/pyridinium "
             "nitrogen heuristic), not from input data"
         )
-    elif guest_net != 0:
+    elif guest_charged:
         status = CHARGE_SCOPE_GUEST_LOCALIZED
     else:
         status = CHARGE_SCOPE_NOT_PRESENT

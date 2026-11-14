@@ -362,6 +362,20 @@ class ChargeStereoScopeTests(unittest.TestCase):
         self.assertEqual(ledger.charge_scope.heuristic_restored_charge, 1)
         self.assertTrue(ledger.charge_scope.charge_conserved)
 
+    def test_neutral_zwitterionic_precursor_has_preserved_charge_evidence(self):
+        mol = Chem.MolFromSmiles("[NH3+]CC(=O)[O-]")
+        ledger = self._ledger_for(mol, "[NH3+]CC(=O)[O-]")
+        self.assertEqual(ledger.charge_scope.status, CHARGE_SCOPE_PRESERVED)
+        self.assertEqual(ledger.charge_scope.input_net_formal_charge, 0)
+        self.assertEqual(ledger.charge_scope.input_charged_atom_count, 2)
+
+    def test_neutral_zwitterion_charge_loss_is_limited_even_with_zero_net_delta(self):
+        mol = Chem.MolFromSmiles("[NH3+]CC(=O)[O-]")
+        ledger = self._ledger_for(mol, "NCC(=O)O")
+        self.assertEqual(ledger.charge_scope.status, CHARGE_SCOPE_LIMITED)
+        self.assertEqual(ledger.charge_scope.net_charge_delta, 0)
+        self.assertFalse(ledger.charge_scope.charge_conserved)
+
     def test_chiral_input_is_detected_and_marked_unsupported(self):
         mol = Chem.AddHs(Chem.MolFromSmiles("C[C@H](F)Cl"))
         self.assertIsNotNone(mol)
