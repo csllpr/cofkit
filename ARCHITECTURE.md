@@ -68,6 +68,7 @@
   - intended intra-monomer and realized reaction edges retain their translations through coordinate wrapping; bond lengths never choose a different periodic partner
 - `cofkit.periodic_geometry`
   - shared P1 shift parsing/formatting and algebraic bond rebasing (`g' = g + floor(f_j) - floor(f_i)`), used by CIF export and soft-relax coordinate writing; also owns image enumeration and cell face widths
+  - conservative periodic fractional spatial candidates for both decomposition distance bonding and soft-relax contacts, with endpoint-roundoff padding; consumers retain their exact geometry, image and acceptance policies
 - `cofkit.decompose_cif`
   - dependency-light CIF atom and explicit-bond extraction for decomposition workflows, using `gemmi` rather than ASE for the primary path
 - `cofkit.cif_checks`

@@ -32,6 +32,7 @@ from .decompose_cif import (
     CifInputError, PeriodicCifAtoms, read_periodic_cif_atoms, validate_decomposition_occupancies,
 )
 from .decompose_ledger import perceive_stereochemistry_evidence
+from .periodic_geometry import nearby_atom_pairs
 from .topologies import default_topology_repository
 from .topology_symmetry import expand_topology_definition
 
@@ -2857,17 +2858,22 @@ def _explicit_bond_distance(
 def _distance_inferred_bond_candidates(atoms: PeriodicCifAtoms) -> tuple[BondCandidate, ...]:
     candidates: list[BondCandidate] = []
     reciprocal_row_norms = _fractional_from_cartesian_row_norms(atoms.cell_basis)
-    for idx_1, symbol_1 in enumerate(atoms.symbols):
-        for idx_2 in range(idx_1 + 1, len(atoms.symbols)):
-            symbol_2 = atoms.symbols[idx_2]
-            image, distance = _minimum_image_bond_geometry(
-                atoms,
-                idx_1,
-                idx_2,
-                reciprocal_row_norms=reciprocal_row_norms,
-            )
-            if _is_plausible_bond_distance(symbol_1, symbol_2, distance):
-                candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=None, periodic_image=image))
+    # Derived upper bound on every pair-specific acceptance window below:
+    # radius_i + radius_j + tolerance <= 2*max(radius) + max(tolerance).
+    # B-O has its own window, so take the maximum with that owner as well.
+    max_radius = max((_covalent_radius(_atomic_number(s)) for s in set(atoms.symbols)), default=0.0)
+    cutoff = max(
+        DECOMPOSE_BO_BOND_MAX_DISTANCE_ANGSTROM,
+        2 * max_radius + max(DECOMPOSE_BOND_TOLERANCE_HYDROGEN_ANGSTROM, DECOMPOSE_BOND_TOLERANCE_HEAVY_ANGSTROM),
+    )
+    widths = tuple(1 / norm for norm in reciprocal_row_norms)
+    for idx_1, idx_2 in nearby_atom_pairs(atoms.fractional_positions, widths, cutoff):
+        symbol_1, symbol_2 = atoms.symbols[idx_1], atoms.symbols[idx_2]
+        image, distance = _minimum_image_bond_geometry(
+            atoms, idx_1, idx_2, reciprocal_row_norms=reciprocal_row_norms,
+        )
+        if _is_plausible_bond_distance(symbol_1, symbol_2, distance):
+            candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=None, periodic_image=image))
     return _prune_distance_inferred_bond_candidates(atoms, tuple(candidates))
 
 

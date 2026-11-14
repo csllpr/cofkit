@@ -1,5 +1,6 @@
 """Cell widths and image-aware distances for periodic calculations."""
 
+from collections.abc import Iterator, Sequence
 from itertools import product
 import math
 
@@ -66,3 +67,67 @@ def rebase_bond_shift(shift, first_fractional, second_fractional) -> tuple[int, 
         gain + math.floor(second) - math.floor(first)
         for gain, first, second in zip(shift, first_fractional, second_fractional)
     )
+
+
+def nearby_atom_pairs(
+    fractional_positions: Sequence[Sequence[float]], widths: Sequence[float],
+    cutoff: float, *, include_self: bool = False,
+) -> Iterator[tuple[int, int]]:
+    """Conservative periodic cell-list candidates in the original i,j order.
+
+    Derived: a Cartesian separation <= cutoff has fractional component
+    |delta_k| <= cutoff / face_width_k. Choose fractional bins at least that
+    wide, so only the same and adjacent bins (with periodic wrapping) can
+    contain neighbors. Reciprocal face widths make this true for skew cells
+    too. Exact distances, image ties and exclusions remain downstream.
+    """
+    n = len(fractional_positions)
+    if not n:
+        return
+    if cutoff <= 0 or not math.isfinite(cutoff):
+        # Preserve the old exact-search behavior for unusual caller settings;
+        # no spatial subdivision is defined for a nonpositive/infinite radius.
+        for i in range(n):
+            for j in range(i if include_self else i + 1, n):
+                yield i, j
+        return
+    # Derived: the exact search subtracts two original fractional endpoints.
+    # Allow one ULP per endpoint before choosing bins, since large unwrapped
+    # image coordinates can lose more precision than a wrapped coordinate or
+    # the cutoff alone. This only broadens candidates, never the exact cutoff.
+    # More than n bins along an axis is unnecessary for this sparse index.
+    counts = []
+    for axis, width in enumerate(widths):
+        rounding = 2 * max(math.ulp(f[axis]) for f in fractional_positions)
+        fractional_cutoff = math.nextafter(cutoff / width + rounding, math.inf)
+        counts.append(max(1, math.floor(min(n, 1 / fractional_cutoff))))
+    # Derived: the three adjacent indices cover every bin on an axis with
+    # <=3 bins. If this holds on all axes, indexing cannot prune any pair;
+    # keep the cheaper ordered loop for small/dense cells.
+    if all(count <= 3 for count in counts):
+        for i in range(n):
+            for j in range(i if include_self else i + 1, n):
+                yield i, j
+        return
+    bins: dict[tuple[int, int, int], list[int]] = {}
+    keys = []
+    for i, fractional in enumerate(fractional_positions):
+        key = tuple(
+            math.floor((coordinate % 1.0) * count) % count
+            for coordinate, count in zip(fractional, counts)
+        )
+        keys.append(key)
+        bins.setdefault(key, []).append(i)
+    for i, key in enumerate(keys):
+        # Sets collapse repeated bins when an axis has only one or two bins.
+        adjacent = (
+            {(coordinate + offset) % count for offset in (-1, 0, 1)}
+            for coordinate, count in zip(key, counts)
+        )
+        neighbors = {
+            j for neighbor_key in product(*adjacent)
+            for j in bins.get(neighbor_key, ()) if j > i or (include_self and j == i)
+        }
+        # Self pairs are optional; exact image selection belongs to the caller.
+        for j in sorted(neighbors):
+            yield i, j
