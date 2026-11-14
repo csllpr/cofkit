@@ -44,14 +44,12 @@ path = "src/cofkit/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/cofkit"]
 
-[tool.hatch.build]
+[tool.hatch.build.targets.sdist]
 include = [
-  "src/cofkit/data/forcefields/**/*.json",
-  "src/cofkit/data/forcefields/**/*.prm",
-  "src/cofkit/data/graspa/**/*.def",
-  "src/cofkit/data/graspa/**/*.json",
-  "src/cofkit/data/topologies/**/*.cgd",
-  "src/cofkit/data/topologies/*.json",
+  "/src/cofkit",
+  "/tests",
+  "/docs/COFid_Specification_v1.2.md",
+  "/uv.lock",
 ]
 
 [tool.pytest.ini_options]

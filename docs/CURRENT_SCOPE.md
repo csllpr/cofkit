@@ -4,6 +4,8 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 
 ## Implemented so far
 
+- source distributions retain the complete package and regression inputs; installed-wheel CI builds its wheel from the source archive before testing outside the checkout
+
 - faster topology preparation for decomposition and builders: repository definitions reuse the parsed index snapshot, symmetry-position matching uses conservative spatial candidates, and bounded caches reuse immutable expanded/derived graphs. Cache keys include the actual expansion inputs rather than topology id alone. Recognition scores, tolerances and confidence rules are unchanged; create a new repository to refresh its index snapshot after editing workspace data
 - periodic spatial acceleration of decomposition distance bonding, preserving ordered candidate bonds, exact minimum-image selection, bonding windows and degree pruning. Exhaustive-reference tests cover skew/small cells, large unwrapped images, cutoff boundaries, generated common-COF models and supercells; this verifies algorithm equivalence rather than experimental chemical accuracy
 - decomposition charge-scope reports retain compensating ion and zwitterion evidence when net charge is zero; recovered fragments compare their formal-charge populations as well as net charge. This audits fragment charge evidence, not atom-by-atom preservation of charge locations

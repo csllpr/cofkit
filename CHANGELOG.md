@@ -24,6 +24,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- source distributions include Python modules, runtime data, tests and the COFid specification; CI rebuilds and tests the wheel from the source archive so a data-only archive cannot pass release checks
+
 - decomposition charge-scope classification tracks charged-atom presence independently of net charge: compensating guest ions/zwitterions remain `guest_localized`, charged residue/unaccounted atoms remain `limited`, and loss of opposite precursor charges is detected even with zero net-charge delta
 - decomposition preserves occupancy evidence and rejects explicit zero, fractional, unknown, nonfinite or out-of-range occupancies instead of reporting a fully occupied atom ledger/COFid. Absent columns retain unit-occupancy defaults; primitive preparation checks source occupancies and the pymatgen adapter rejects disordered species instead of selecting the first
 - explicit decomposition bonds with missing, unparseable or nonpositive/nonfinite distances now measure the selected periodic edge, including both endpoint symmetry translations and reversed endpoints, instead of using a different nearest image. Usable reported distances retain the existing evidence policy
