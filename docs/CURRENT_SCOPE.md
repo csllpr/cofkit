@@ -4,6 +4,8 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 
 ## Implemented so far
 
+- CI checks direct pushes to `dev` as well as `main`; installed-wheel compatibility jobs cover Linux/Python 3.10, macOS/Python 3.11 and Windows/Python 3.11 with bundled-data, CLI and build/export/decomposition smoke tests outside the checkout. Full-suite and real-LAMMPS gates remain on Linux/Python 3.11
+
 - classification reruns stage fresh reports/views and reconcile an ownership inventory before publication, removing obsolete classifier-owned copies and reason views while retaining unrelated files. Publication errors roll back the preceding snapshot; concurrent writers, unsafe output overlap and unmanaged destination collisions are rejected. Legacy classifier trees require a fresh output directory
 
 - output classification isolates malformed manifest lines, worker exceptions and CIF-delivery failures per record; typed failure records retain source line, original evidence and `TypeName: message` causes in `failures.jsonl`, `summary.md` and the console. Failed records appear as `classification_failed` / `unvalidated` while later records continue

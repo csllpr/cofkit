@@ -3,7 +3,7 @@ name: Checks
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_call:
   workflow_dispatch:
 
@@ -66,3 +66,32 @@ jobs:
           cd "$RUNNER_TEMP/cofkit-validation"
           "$GITHUB_WORKSPACE/.venv/bin/python" -c 'import cofkit; assert "site-packages" in cofkit.__file__, cofkit.__file__'
           "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest tests -q
+
+  compatibility:
+    name: Installed wheel (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: macos-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.11"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.2"
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --extra dev
+      - run: uv build --sdist
+      - run: uv build --wheel dist/*.tar.gz --out-dir dist
+      - run: uv pip install --no-deps --reinstall dist/*.whl
+      - name: Exercise the installed wheel outside the checkout
+        run: uv run --no-sync python .github/scripts/check_installed_wheel.py
