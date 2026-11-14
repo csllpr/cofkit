@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from itertools import combinations, permutations, product
-from math import ceil, floor, gcd, sqrt
+from math import ceil, floor, gcd, isfinite, sqrt
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
@@ -2777,7 +2777,7 @@ def _explicit_bond_candidates(
             image = _negate_image(image)
         edge_key = (idx_1, idx_2, image)
         order = cif_type_to_bond_order(bond_types[row_idx] if row_idx < len(bond_types) else None)
-        distance = _explicit_bond_distance(atoms, idx_1, idx_2, bond_distances, row_idx)
+        distance = _explicit_bond_distance(atoms, idx_1, idx_2, bond_distances, row_idx, image)
         rows_by_edge[edge_key].append(
             BondCandidate(idx_1, idx_2, distance, explicit_order=order, periodic_image=image)
         )
@@ -2831,13 +2831,24 @@ def _explicit_bond_distance(
     idx_2: int,
     bond_distances: tuple[str, ...],
     row_idx: int,
+    periodic_image: tuple[int, int, int],
 ) -> float:
     if row_idx < len(bond_distances):
         try:
-            return _parse_cif_float(bond_distances[row_idx])
+            distance = _parse_cif_float(bond_distances[row_idx])
+            if isfinite(distance) and distance > 0:
+                return distance
         except ValueError:
             pass
-    return _minimum_image_distance(atoms, idx_1, idx_2)
+    # The declared edge may deliberately use a non-nearest copy. Its length
+    # must use the same gain as connectivity, including after endpoint reversal.
+    delta = tuple(
+        second - first + shift
+        for first, second, shift in zip(
+            atoms.fractional_positions[idx_1], atoms.fractional_positions[idx_2], periodic_image,
+        )
+    )
+    return _norm(_fractional_delta_to_cartesian(atoms.cell_basis, delta))
 
 
 def _distance_inferred_bond_candidates(atoms: PeriodicCifAtoms) -> tuple[BondCandidate, ...]:

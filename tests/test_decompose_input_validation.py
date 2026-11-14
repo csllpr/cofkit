@@ -1,6 +1,8 @@
 """CIF evidence must not be silently changed before decomposition."""
 
 from itertools import permutations
+from dataclasses import replace
+from math import sqrt
 
 import pytest
 
@@ -86,3 +88,53 @@ _ccdc_geom_bond_type
     assert result.cofid is None
     assert result.metadata["event_status"] == "FAILED_INPUT_VALIDATION"
     assert "conflicting bond orders" in result.reason
+
+
+@pytest.mark.parametrize("reported", [None, "?", ".", "invalid", "nan", "inf", "0", "-1"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_missing_distance_uses_declared_periodic_edge(reported, reverse):
+    columns = {
+        "_geom_bond_site_symmetry_1": ("1_655" if reverse else "1_555",),
+        "_geom_bond_site_symmetry_2": ("1_555" if reverse else "1_655",),
+    }
+    if reported is not None:
+        columns["_geom_bond_distance"] = (reported,)
+    atoms = two_atom_input(**columns)
+    a, b = ("N1", "C1") if reverse else ("C1", "N1")
+    (candidate,), _ = _explicit_bond_candidates(atoms, {"C1": 0, "N1": 1}, (a,), (b,))
+    assert candidate.periodic_image == (1, 0, 0)
+    assert candidate.distance == pytest.approx(11.3)
+
+
+def test_missing_distance_accounts_for_both_symmetry_codes_and_triclinic_cell():
+    atoms = replace(two_atom_input(
+        _geom_bond_site_symmetry_1=("1_455",),
+        _geom_bond_site_symmetry_2=("1_565",),
+    ), cell_basis=((10, 0, 0), (3, 8, 0), (0, 0, 10)))
+    (candidate,), _ = _explicit_bond_candidates(atoms, {"C1": 0, "N1": 1}, ("C1",), ("N1",))
+    assert candidate.periodic_image == (1, 1, 0)
+    assert candidate.distance == pytest.approx(sqrt(14.3 ** 2 + 8 ** 2))
+
+
+def test_usable_reported_distance_retains_existing_evidence_policy():
+    atoms = two_atom_input(_geom_bond_distance=("1.31(2)",), _geom_bond_site_symmetry_2=("1_655",))
+    (candidate,), _ = _explicit_bond_candidates(atoms, {"C1": 0, "N1": 1}, ("C1",), ("N1",))
+    assert candidate.distance == 1.31
+
+
+def test_missing_distance_without_image_hint_keeps_nearest_image_selection():
+    atoms = replace(two_atom_input(), fractional_positions=((0, 0, 0), (.87, 0, 0)))
+    (candidate,), _ = _explicit_bond_candidates(atoms, {"C1": 0, "N1": 1}, ("C1",), ("N1",))
+    assert candidate.periodic_image == (-1, 0, 0)
+    assert candidate.distance == pytest.approx(1.3)
+
+
+def test_bond_order_inference_uses_length_of_declared_edge():
+    atoms = two_atom_input(
+        _geom_bond_atom_site_label_1=("C1",),
+        _geom_bond_atom_site_label_2=("N1",),
+        _geom_bond_site_symmetry_2=("1_655",),
+    )
+    build = _build_bonded_mol(atoms)
+    assert build.candidates[0].distance == pytest.approx(11.3)
+    assert build.mol.GetBondWithIdx(0).GetBondTypeAsDouble() == 1.0
