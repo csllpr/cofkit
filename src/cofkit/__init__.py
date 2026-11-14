@@ -9,6 +9,7 @@ from .batch import (
     BatchStructureGenerator,
 )
 from .batch_models import (
+    BatchClassificationFailure,
     BatchMonomerRecord,
     BatchPairSummary,
     BatchRunSummary,
@@ -259,6 +260,7 @@ from .zeopp import (
 )
 
 __all__ = [
+    "BatchClassificationFailure",
     "AttachmentRecipe", "AttachmentInstance", "AttachmentSite", "AttachmentEvent",
     "AttachmentPosition", "AttachmentAtom", "AttachmentBond", "AttachmentBuildResult",
     "load_attachment_recipe", "build_from_attachment", "verify_attachment_candidate", "verify_attachment_cif",

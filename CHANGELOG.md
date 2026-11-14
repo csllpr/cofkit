@@ -24,6 +24,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- output classification isolates malformed manifest lines, worker exceptions and CIF-delivery failures per record; typed failure records retain source line, original evidence and `TypeName: message` causes in `failures.jsonl`, `summary.md` and the console. Failed records appear as `classification_failed` / `unvalidated` while later records continue
+
 - source distributions include Python modules, runtime data, tests and the COFid specification; CI rebuilds and tests the wheel from the source archive so a data-only archive cannot pass release checks
 
 - decomposition charge-scope classification tracks charged-atom presence independently of net charge: compensating guest ions/zwitterions remain `guest_localized`, charged residue/unaccounted atoms remain `limited`, and loss of opposite precursor charges is detected even with zero net-charge delta

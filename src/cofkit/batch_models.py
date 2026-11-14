@@ -8,6 +8,21 @@ from .model import MonomerSpec
 
 
 @dataclass(frozen=True)
+class BatchClassificationFailure:
+    """One failed input line, validation task, or artifact delivery."""
+
+    line_number: int
+    error: str
+    stage: str
+    structure_id: str | None = None
+    record: Mapping[str, object] | None = None
+    raw_line: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class SeedPlacementMove:
     """Selected construction change; factor is total scale from the input seed."""
 

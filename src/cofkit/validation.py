@@ -6,10 +6,13 @@ import shutil
 import sys
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass, field
 from math import radians, sin
 from pathlib import Path
 from typing import Any, Mapping
+
+from .batch_models import BatchClassificationFailure
 
 try:  # pragma: no cover - exercised in integration environments
     import gemmi
@@ -239,6 +242,12 @@ class BatchOutputClassificationSummary:
     hard_hard_invalid_manifest_path: str = ""
     hard_invalid_manifest_path: str = ""
     unvalidated_manifest_path: str = ""
+    failures_path: str = ""
+    failures: tuple[BatchClassificationFailure, ...] = ()
+
+    @property
+    def failed_records(self) -> int:
+        return len(self.failures)
 
     @property
     def invalid_structures(self) -> int:
@@ -1081,6 +1090,86 @@ class CoarseStructureValidator:
         return text if text else None
 
 
+# Heuristic — pending calibration: bound classifier threads and queued tasks.
+_DEFAULT_CLASSIFICATION_MAX_WORKERS = 8
+_CLASSIFICATION_QUEUE_PER_WORKER = 4
+_CLASSIFICATION_BUCKETS = (
+    "valid", "warning", "needs_optimization", "hard_hard_invalid",
+    "hard_invalid", "unvalidated",
+)
+
+
+class _ClassificationOutput:
+    """Serialize outcomes on the collector thread; worker failures stay local."""
+
+    def __init__(self, root: Path, link_mode: str, stack: ExitStack):
+        self.root = root
+        self.link_mode = link_mode
+        self.counts: Counter[str] = Counter()
+        self.reason_counts = {bucket: Counter() for bucket in _CLASSIFICATION_BUCKETS}
+        self.failures: list[BatchClassificationFailure] = []
+        self.manifest = stack.enter_context((root / "classification_manifest.jsonl").open("w", encoding="utf-8"))
+        self.failure_manifest = stack.enter_context((root / "failures.jsonl").open("w", encoding="utf-8"))
+        self.bucket_manifests = {}
+        for bucket in _CLASSIFICATION_BUCKETS:
+            directory = root / bucket
+            directory.mkdir(parents=True, exist_ok=True)
+            self.bucket_manifests[bucket] = stack.enter_context((directory / "manifest.jsonl").open("w", encoding="utf-8"))
+
+    def failed(self, failure: BatchClassificationFailure) -> None:
+        self.failures.append(failure)
+        self.failure_manifest.write(json.dumps(_json_safe(failure.to_dict()), sort_keys=True) + "\n")
+        print(f"warning: classification line {failure.line_number} ({failure.stage}): {failure.error}", file=sys.stderr)
+        report = CoarseValidationReport(
+            classification="unvalidated", is_valid=None, passes_hard_validation=None,
+            reasons=("classification_failed",),
+            unmeasured_required_checks=REQUIRED_COVERAGE_CHECKS,
+            coverage={check: CHECK_MISSING_DATA for check in REQUIRED_COVERAGE_CHECKS},
+            metrics={"error": failure.error, "stage": failure.stage},
+        )
+        record = dict(failure.record or {})
+        record.update(status="classification_failed", error=failure.error, input_line=failure.line_number)
+        if failure.raw_line is not None:
+            record["raw_line"] = failure.raw_line
+        self.write(record, report, failure.line_number, materialize=False)
+
+    def write(self, record: dict[str, object], report: CoarseValidationReport, line_number: int, *, materialize: bool = True) -> None:
+        bucket = report.classification
+        reasons = {
+            "warning": report.warning_reasons,
+            "needs_optimization": report.needs_optimization_reasons,
+            "hard_hard_invalid": report.hard_hard_invalid_reasons,
+            "hard_invalid": report.hard_invalid_reasons,
+        }.get(bucket, report.reasons)
+        if materialize:
+            try:
+                cif_path = report.metrics.get("cif_path")
+                source = Path(str(cif_path)) if cif_path is not None else None
+                if source is not None and source.is_file():
+                    directory = self.root / bucket
+                    _materialize_link(source, directory / "cifs" / source.name, self.link_mode)
+                    for reason in reasons if bucket not in {"valid", "unvalidated"} else ():
+                        _materialize_link(source, directory / "reasons" / reason / source.name, self.link_mode)
+            except Exception as exc:
+                self.failed(BatchClassificationFailure(
+                    line_number=line_number, error=f"{type(exc).__name__}: {exc}",
+                    stage="artifact_delivery", structure_id=_classification_structure_id(record),
+                    record={**record, "completed_validation": asdict(report)},
+                ))
+                return
+        enriched = {**record, "validation": asdict(report)}
+        line = json.dumps(_json_safe(enriched), sort_keys=True) + "\n"
+        self.manifest.write(line)
+        self.bucket_manifests[bucket].write(line)
+        self.counts[bucket] += 1
+        self.reason_counts[bucket].update(reasons)
+
+
+def _classification_structure_id(record: Mapping[str, object]) -> str | None:
+    value = record.get("structure_id")
+    return str(value) if value is not None else None
+
+
 def classify_batch_output(
     source_dir: str | Path,
     output_dir: str | Path,
@@ -1095,281 +1184,96 @@ def classify_batch_output(
     manifest_path = source_root / "manifest.jsonl"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"expected manifest at {manifest_path}")
-
+    if link_mode not in {"symlink", "hardlink", "copy"}:
+        raise ValueError(f"unsupported link mode {link_mode!r}")
+    if max_workers is None:
+        max_workers = min(_DEFAULT_CLASSIFICATION_MAX_WORKERS, os.cpu_count() or 1)
+    if max_workers < 1:
+        raise ValueError("max_workers must be positive")
+    if max_structures is not None and max_structures < 0:
+        raise ValueError("max_structures must be nonnegative")
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
-    valid_root = output_root / "valid" / "cifs"
-    warning_root = output_root / "warning"
-    needs_optimization_root = output_root / "needs_optimization"
-    hard_hard_invalid_root = output_root / "hard_hard_invalid"
-    hard_invalid_root = output_root / "hard_invalid"
-    unvalidated_root = output_root / "unvalidated"
-    valid_root.mkdir(parents=True, exist_ok=True)
-    warning_root.mkdir(parents=True, exist_ok=True)
-    needs_optimization_root.mkdir(parents=True, exist_ok=True)
-    hard_hard_invalid_root.mkdir(parents=True, exist_ok=True)
-    hard_invalid_root.mkdir(parents=True, exist_ok=True)
-    unvalidated_root.mkdir(parents=True, exist_ok=True)
-
-    classification_manifest_path = output_root / "classification_manifest.jsonl"
-    valid_manifest_path = output_root / "valid" / "manifest.jsonl"
-    warning_manifest_path = output_root / "warning" / "manifest.jsonl"
-    needs_optimization_manifest_path = output_root / "needs_optimization" / "manifest.jsonl"
-    hard_hard_invalid_manifest_path = output_root / "hard_hard_invalid" / "manifest.jsonl"
-    hard_invalid_manifest_path = output_root / "hard_invalid" / "manifest.jsonl"
-    unvalidated_manifest_path = output_root / "unvalidated" / "manifest.jsonl"
-
-    max_workers = max_workers or min(8, os.cpu_count() or 1)
-    pending: dict[Future[tuple[dict[str, object], CoarseValidationReport]], dict[str, object]] = {}
-    warning_reason_counts: Counter[str] = Counter()
-    needs_optimization_reason_counts: Counter[str] = Counter()
-    hard_hard_invalid_reason_counts: Counter[str] = Counter()
-    hard_invalid_reason_counts: Counter[str] = Counter()
-    unvalidated_reason_counts: Counter[str] = Counter()
+    pending: dict[Future[CoarseValidationReport], tuple[dict[str, object], int]] = {}
     total_structures = 0
-    valid_structures = 0
-    warning_structures = 0
-    needs_optimization_structures = 0
-    hard_hard_invalid_structures = 0
-    hard_invalid_structures = 0
-    unvalidated_structures = 0
-
-    with (
-        manifest_path.open(encoding="utf-8") as manifest,
-        classification_manifest_path.open("w", encoding="utf-8") as classification_manifest,
-        valid_manifest_path.open("w", encoding="utf-8") as valid_manifest,
-        warning_manifest_path.open("w", encoding="utf-8") as warning_manifest,
-        needs_optimization_manifest_path.open("w", encoding="utf-8") as needs_optimization_manifest,
-        hard_hard_invalid_manifest_path.open("w", encoding="utf-8") as hard_hard_invalid_manifest,
-        hard_invalid_manifest_path.open("w", encoding="utf-8") as hard_invalid_manifest,
-        unvalidated_manifest_path.open("w", encoding="utf-8") as unvalidated_manifest,
-        ThreadPoolExecutor(max_workers=max_workers) as executor,
-    ):
-        for line in manifest:
+    with ExitStack() as stack:
+        manifest = stack.enter_context(manifest_path.open(encoding="utf-8"))
+        output = _ClassificationOutput(output_root, link_mode, stack)
+        executor = stack.enter_context(ThreadPoolExecutor(max_workers=max_workers))
+        for line_number, line in enumerate(manifest, start=1):
             if max_structures is not None and total_structures >= max_structures:
                 break
             if not line.strip():
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("manifest record must be a JSON object")
+            except (ValueError, TypeError) as exc:
+                total_structures += 1
+                output.failed(BatchClassificationFailure(
+                    line_number=line_number, error=f"{type(exc).__name__}: {exc}",
+                    stage="manifest_read", raw_line=line.rstrip("\r\n"),
+                ))
+                continue
             if str(record.get("status")) != "ok":
                 continue
             future = executor.submit(_validate_record_worker, record, str(source_root), validator.thresholds)
-            pending[future] = record
+            pending[future] = (record, line_number)
             total_structures += 1
-            if len(pending) >= max_workers * 4:
-                (
-                    valid_structures,
-                    warning_structures,
-                    needs_optimization_structures,
-                    hard_hard_invalid_structures,
-                    hard_invalid_structures,
-                    unvalidated_structures,
-                ) = _drain_completed(
-                    pending,
-                    classification_manifest,
-                    valid_manifest,
-                    warning_manifest,
-                    needs_optimization_manifest,
-                    hard_hard_invalid_manifest,
-                    hard_invalid_manifest,
-                    unvalidated_manifest,
-                    valid_root,
-                    warning_root,
-                    needs_optimization_root,
-                    hard_hard_invalid_root,
-                    hard_invalid_root,
-                    unvalidated_root,
-                    warning_reason_counts,
-                    needs_optimization_reason_counts,
-                    hard_hard_invalid_reason_counts,
-                    hard_invalid_reason_counts,
-                    unvalidated_reason_counts,
-                    link_mode,
-                    valid_count=valid_structures,
-                    warning_count=warning_structures,
-                    needs_optimization_count=needs_optimization_structures,
-                    hard_hard_invalid_count=hard_hard_invalid_structures,
-                    hard_invalid_count=hard_invalid_structures,
-                    unvalidated_count=unvalidated_structures,
-                )
-
+            if len(pending) >= max_workers * _CLASSIFICATION_QUEUE_PER_WORKER:
+                _drain_completed(pending, output)
         while pending:
-            (
-                valid_structures,
-                warning_structures,
-                needs_optimization_structures,
-                hard_hard_invalid_structures,
-                hard_invalid_structures,
-                unvalidated_structures,
-            ) = _drain_completed(
-                pending,
-                classification_manifest,
-                valid_manifest,
-                warning_manifest,
-                needs_optimization_manifest,
-                hard_hard_invalid_manifest,
-                hard_invalid_manifest,
-                unvalidated_manifest,
-                valid_root,
-                warning_root,
-                needs_optimization_root,
-                hard_hard_invalid_root,
-                hard_invalid_root,
-                unvalidated_root,
-                warning_reason_counts,
-                needs_optimization_reason_counts,
-                hard_hard_invalid_reason_counts,
-                hard_invalid_reason_counts,
-                unvalidated_reason_counts,
-                link_mode,
-                valid_count=valid_structures,
-                warning_count=warning_structures,
-                needs_optimization_count=needs_optimization_structures,
-                hard_hard_invalid_count=hard_hard_invalid_structures,
-                hard_invalid_count=hard_invalid_structures,
-                unvalidated_count=unvalidated_structures,
-            )
+            _drain_completed(pending, output)
 
     summary = BatchOutputClassificationSummary(
-        source_dir=str(source_root),
-        output_dir=str(output_root),
+        source_dir=str(source_root), output_dir=str(output_root),
         total_structures=total_structures,
-        valid_structures=valid_structures,
-        warning_structures=warning_structures,
-        needs_optimization_structures=needs_optimization_structures,
-        hard_hard_invalid_structures=hard_hard_invalid_structures,
-        hard_invalid_structures=hard_invalid_structures,
-        warning_reason_counts=dict(warning_reason_counts),
-        needs_optimization_reason_counts=dict(needs_optimization_reason_counts),
-        hard_hard_invalid_reason_counts=dict(hard_hard_invalid_reason_counts),
-        hard_invalid_reason_counts=dict(hard_invalid_reason_counts),
-        unvalidated_structures=unvalidated_structures,
-        unvalidated_reason_counts=dict(unvalidated_reason_counts),
-        classification_manifest_path=str(classification_manifest_path),
-        valid_manifest_path=str(valid_manifest_path),
-        warning_manifest_path=str(warning_manifest_path),
-        needs_optimization_manifest_path=str(needs_optimization_manifest_path),
-        hard_hard_invalid_manifest_path=str(hard_hard_invalid_manifest_path),
-        hard_invalid_manifest_path=str(hard_invalid_manifest_path),
-        unvalidated_manifest_path=str(unvalidated_manifest_path),
+        valid_structures=output.counts["valid"], warning_structures=output.counts["warning"],
+        needs_optimization_structures=output.counts["needs_optimization"],
+        hard_hard_invalid_structures=output.counts["hard_hard_invalid"],
+        hard_invalid_structures=output.counts["hard_invalid"],
+        unvalidated_structures=output.counts["unvalidated"],
+        warning_reason_counts=dict(output.reason_counts["warning"]),
+        needs_optimization_reason_counts=dict(output.reason_counts["needs_optimization"]),
+        hard_hard_invalid_reason_counts=dict(output.reason_counts["hard_hard_invalid"]),
+        hard_invalid_reason_counts=dict(output.reason_counts["hard_invalid"]),
+        unvalidated_reason_counts=dict(output.reason_counts["unvalidated"]),
+        classification_manifest_path=str(output_root / "classification_manifest.jsonl"),
+        valid_manifest_path=str(output_root / "valid" / "manifest.jsonl"),
+        warning_manifest_path=str(output_root / "warning" / "manifest.jsonl"),
+        needs_optimization_manifest_path=str(output_root / "needs_optimization" / "manifest.jsonl"),
+        hard_hard_invalid_manifest_path=str(output_root / "hard_hard_invalid" / "manifest.jsonl"),
+        hard_invalid_manifest_path=str(output_root / "hard_invalid" / "manifest.jsonl"),
+        unvalidated_manifest_path=str(output_root / "unvalidated" / "manifest.jsonl"),
+        failures_path=str(output_root / "failures.jsonl"), failures=tuple(output.failures),
     )
     _write_classification_summary(output_root / "summary.md", summary, validator.thresholds)
     return summary
 
 
 def _drain_completed(
-    pending: dict[Future[tuple[dict[str, object], CoarseValidationReport]], dict[str, object]],
-    classification_manifest,
-    valid_manifest,
-    warning_manifest,
-    needs_optimization_manifest,
-    hard_hard_invalid_manifest,
-    hard_invalid_manifest,
-    unvalidated_manifest,
-    valid_root: Path,
-    warning_root: Path,
-    needs_optimization_root: Path,
-    hard_hard_invalid_root: Path,
-    hard_invalid_root: Path,
-    unvalidated_root: Path,
-    warning_reason_counts: Counter[str],
-    needs_optimization_reason_counts: Counter[str],
-    hard_hard_invalid_reason_counts: Counter[str],
-    hard_invalid_reason_counts: Counter[str],
-    unvalidated_reason_counts: Counter[str],
-    link_mode: str,
-    *,
-    valid_count: int,
-    warning_count: int,
-    needs_optimization_count: int,
-    hard_hard_invalid_count: int,
-    hard_invalid_count: int,
-    unvalidated_count: int,
-) -> tuple[int, int, int, int, int, int]:
-    done, _not_done = wait(set(pending), return_when=FIRST_COMPLETED)
+    pending: dict[Future[CoarseValidationReport], tuple[dict[str, object], int]],
+    output: _ClassificationOutput,
+) -> None:
+    done, _ = wait(set(pending), return_when=FIRST_COMPLETED)
     for future in done:
-        record, report = future.result()
-        del pending[future]
-        enriched = dict(record)
-        enriched["validation"] = {
-            "classification": report.classification,
-            "is_valid": report.is_valid,
-            "passes_hard_validation": report.passes_hard_validation,
-            "blocks_cif_export": report.blocks_cif_export,
-            "reasons": list(report.reasons),
-            "hard_hard_invalid_reasons": list(report.hard_hard_invalid_reasons),
-            "warning_reasons": list(report.warning_reasons),
-            "hard_invalid_reasons": list(report.hard_invalid_reasons),
-            "needs_optimization_reasons": list(report.needs_optimization_reasons),
-            "unmeasured_required_checks": list(report.unmeasured_required_checks),
-            "coverage": dict(report.coverage),
-            "metrics": _json_safe(report.metrics),
-        }
-        classification_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
-        cif_path = report.metrics.get("cif_path")
-        source = Path(str(cif_path)) if cif_path is not None else None
-        if report.classification == "unvalidated":
-            unvalidated_count += 1
-            unvalidated_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
-            for reason in report.reasons:
-                unvalidated_reason_counts[reason] += 1
-            if source is not None and source.is_file():
-                _materialize_link(source, unvalidated_root / "cifs" / source.name, link_mode)
+        record, line_number = pending.pop(future)
+        try:
+            report = future.result()
+        except Exception as exc:
+            output.failed(BatchClassificationFailure(
+                line_number=line_number, error=f"{type(exc).__name__}: {exc}",
+                stage="validation", structure_id=_classification_structure_id(record), record=record,
+            ))
             continue
-        if report.is_valid:
-            valid_count += 1
-            valid_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
-            if source is not None and source.is_file():
-                _materialize_link(source, valid_root / source.name, link_mode)
-            continue
-        if report.classification == "warning":
-            warning_count += 1
-            warning_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
-            for reason in report.warning_reasons:
-                warning_reason_counts[reason] += 1
-            if source is not None and source.is_file():
-                _materialize_link(source, warning_root / "cifs" / source.name, link_mode)
-                for reason in report.warning_reasons:
-                    _materialize_link(source, warning_root / "reasons" / reason / source.name, link_mode)
-            continue
-        if report.classification == "needs_optimization":
-            needs_optimization_count += 1
-            needs_optimization_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
-            for reason in report.needs_optimization_reasons:
-                needs_optimization_reason_counts[reason] += 1
-            if source is not None and source.is_file():
-                _materialize_link(source, needs_optimization_root / "cifs" / source.name, link_mode)
-                for reason in report.needs_optimization_reasons:
-                    _materialize_link(source, needs_optimization_root / "reasons" / reason / source.name, link_mode)
-            continue
-        if report.classification == "hard_hard_invalid":
-            hard_hard_invalid_count += 1
-            hard_hard_invalid_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
-            for reason in report.hard_hard_invalid_reasons:
-                hard_hard_invalid_reason_counts[reason] += 1
-            if source is not None and source.is_file():
-                _materialize_link(source, hard_hard_invalid_root / "cifs" / source.name, link_mode)
-                for reason in report.hard_hard_invalid_reasons:
-                    _materialize_link(source, hard_hard_invalid_root / "reasons" / reason / source.name, link_mode)
-            continue
-        hard_invalid_count += 1
-        hard_invalid_manifest.write(json.dumps(_json_safe(enriched), sort_keys=True) + "\n")
-        for reason in report.hard_invalid_reasons:
-            hard_invalid_reason_counts[reason] += 1
-        if source is not None and source.is_file():
-            _materialize_link(source, hard_invalid_root / "cifs" / source.name, link_mode)
-            for reason in report.hard_invalid_reasons:
-                _materialize_link(source, hard_invalid_root / "reasons" / reason / source.name, link_mode)
-    return valid_count, warning_count, needs_optimization_count, hard_hard_invalid_count, hard_invalid_count, unvalidated_count
+        output.write(record, report, line_number)
 
 
 def _validate_record_worker(
-    record: dict[str, object],
-    source_root: str,
-    thresholds: CoarseValidationThresholds,
-) -> tuple[dict[str, object], CoarseValidationReport]:
-    validator = CoarseStructureValidator(thresholds=thresholds)
-    return record, validator.validate_manifest_record(record, source_root=source_root)
+    record: dict[str, object], source_root: str, thresholds: CoarseValidationThresholds,
+) -> CoarseValidationReport:
+    return CoarseStructureValidator(thresholds=thresholds).validate_manifest_record(record, source_root=source_root)
 
 
 def _materialize_link(source: Path, destination: Path, mode: str) -> None:
@@ -1412,6 +1316,12 @@ def _write_classification_summary(
         f"- Hard-hard-invalid manifest: `{summary.hard_hard_invalid_manifest_path}`",
         f"- Hard-invalid manifest: `{summary.hard_invalid_manifest_path}`",
         f"- Unvalidated manifest: `{summary.unvalidated_manifest_path}`",
+        "",
+        "## Classification Failures",
+        "",
+        f"- Failed records: {summary.failed_records}",
+        f"- Failure ledger: `{summary.failures_path}`",
+        *[f"- Line {failure.line_number} ({failure.structure_id or 'unknown id'}; {failure.stage}): {failure.error}" for failure in summary.failures],
         "",
         "## Thresholds",
         "",

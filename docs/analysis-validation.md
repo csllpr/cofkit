@@ -15,12 +15,15 @@ By default, this writes symlink-based views of the source CIFs. Use `--link-mode
 The classifier writes:
 
 - `classification_manifest.jsonl`
+- `failures.jsonl` and `summary.md`, retaining failed input lines, validation tasks and artifact deliveries
 - `valid/manifest.jsonl` plus `valid/cifs/`
 - `warning/manifest.jsonl`, `warning/cifs/`, and `warning/reasons/<reason>/`
 - `needs_optimization/manifest.jsonl`, `needs_optimization/cifs/`, and `needs_optimization/reasons/<reason>/`
 - `hard_hard_invalid/manifest.jsonl`, `hard_hard_invalid/cifs/`, and `hard_hard_invalid/reasons/<reason>/`
 - `hard_invalid/manifest.jsonl`, `hard_invalid/cifs/`, and `hard_invalid/reasons/<reason>/`
 - `unvalidated/manifest.jsonl` and `unvalidated/cifs/` (records whose required checks could not be measured; never counted as valid)
+
+Malformed JSON/non-object lines and unexpected per-record exceptions are recorded with the source line and original cause; processing continues. Failed records have `status="classification_failed"` and an `unvalidated` verdict, never a chemical rejection. Delivery failures retain the completed validation as evidence. `total_structures` includes failures; `failed_records` is a subset of `unvalidated_structures`. `--max-structures` counts failed lines/records toward its limit, and existing non-`ok` build records remain skipped. Failures warn on stderr and appear in the console summary. An unreadable input manifest or unwritable report root remains a run-level error.
 
 See [COARSE_VALIDATION.md](COARSE_VALIDATION.md) for bucket definitions and thresholds.
 

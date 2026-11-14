@@ -4,6 +4,8 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 
 ## Implemented so far
 
+- output classification isolates malformed manifest lines, worker exceptions and CIF-delivery failures per record; typed failure records retain source line, original evidence and `TypeName: message` causes in `failures.jsonl`, `summary.md` and the console. Failed records appear as `classification_failed` / `unvalidated` while later records continue
+
 - source distributions retain the complete package and regression inputs; installed-wheel CI builds its wheel from the source archive before testing outside the checkout
 
 - faster topology preparation for decomposition and builders: repository definitions reuse the parsed index snapshot, symmetry-position matching uses conservative spatial candidates, and bounded caches reuse immutable expanded/derived graphs. Cache keys include the actual expansion inputs rather than topology id alone. Recognition scores, tolerances and confidence rules are unchanged; create a new repository to refresh its index snapshot after editing workspace data

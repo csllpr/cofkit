@@ -107,6 +107,8 @@ def _run_classify_output(args: argparse.Namespace) -> None:
     print("hard_hard_invalid_reason_counts:", dict(summary.hard_hard_invalid_reason_counts))
     print("hard_invalid_reason_counts:", dict(summary.hard_invalid_reason_counts))
     print("unvalidated_reason_counts:", dict(summary.unvalidated_reason_counts))
+    print("failed_records:", summary.failed_records)
+    print("failures:", summary.failures_path)
     print("classification_manifest:", summary.classification_manifest_path)
 
 
