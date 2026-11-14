@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .planner import TopologyHint
-from .topology_data import load_workspace_topology_definition, load_workspace_topology_index
+from .topology_data import (
+    load_workspace_topology_entry, load_workspace_topology_index, workspace_topology_data_dir,
+)
 from .topology_analysis import (
     annotate_topology_definition_zero_linker_metadata,
     annotate_topology_index_entry_zero_linker_metadata,
@@ -81,16 +83,18 @@ class TopologyRepository:
         importer: RCSRArchiveImporter | None = None,
         include_builtin_fallbacks: bool = True,
     ) -> "TopologyRepository":
-        entries = load_workspace_topology_index(data_dir=data_dir)
+        data_root = workspace_topology_data_dir(data_dir).resolve()
+        entries = load_workspace_topology_index(data_dir=data_root)
+        entries_by_id = {entry.id: entry for entry in entries}
         parser = importer or RCSRArchiveImporter()
         fallback_map = _BUILTIN_FALLBACKS if include_builtin_fallbacks else {}
         return cls(
             entries=entries,
             definitions={},
             builtin_fallbacks=fallback_map,
-            definition_loader=lambda topology_id: load_workspace_topology_definition(
-                topology_id=topology_id,
-                data_dir=data_dir,
+            definition_loader=lambda topology_id: load_workspace_topology_entry(
+                entry=entries_by_id[topology_id],
+                data_dir=data_root,
                 importer=parser,
             ),
         )

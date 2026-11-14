@@ -62,17 +62,20 @@ def load_workspace_topology_definition(
     data_dir: str | Path | None = None,
     importer: RCSRArchiveImporter | None = None,
 ) -> TopologyDefinition:
-    index_payload = _read_json(workspace_topology_index_path(data_dir))
-    entries = {
-        entry["id"]: entry
-        for entry in index_payload.get("entries", ())
-        if isinstance(entry, dict) and "id" in entry
-    }
+    entries = {entry.id: entry for entry in load_workspace_topology_index(data_dir)}
     if topology_id not in entries:
         raise KeyError(f"unknown topology {topology_id!r}")
+    return load_workspace_topology_entry(entries[topology_id], data_dir=data_dir, importer=importer)
 
-    entry = entries[topology_id]
-    relative_path = entry.get("metadata", {}).get("workspace_file")
+
+def load_workspace_topology_entry(
+    entry: TopologyIndexEntry,
+    data_dir: str | Path | None = None,
+    importer: RCSRArchiveImporter | None = None,
+) -> TopologyDefinition:
+    """Load a definition using a repository's already parsed index entry."""
+    topology_id = entry.id
+    relative_path = entry.metadata.get("workspace_file")
     if not relative_path:
         raise KeyError(f"workspace file metadata missing for topology {topology_id!r}")
 
@@ -81,7 +84,7 @@ def load_workspace_topology_definition(
     parser = importer or RCSRArchiveImporter()
     for definition in parser.iter_path_definitions(
         topology_path=topology_path,
-        dimensionality=entry["dimensionality"],
+        dimensionality=entry.dimensionality,
         source_archive=_bundled_source_reference(str(relative_path)),
         source_member=topology_path.name,
     ):

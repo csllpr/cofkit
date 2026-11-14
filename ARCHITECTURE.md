@@ -139,7 +139,7 @@ See [CURRENT_SCOPE.md](docs/CURRENT_SCOPE.md) for supported workflows and limita
 1. `RCSRArchiveImporter` parses zip members or extracted `.cgd` files containing CGD-like `CRYSTAL` records.
 2. Bundled topology data lives under `src/cofkit/data/topologies/` with extracted `2d/` and `3d/` directories plus an `index.json` metadata cache.
 3. The bundled index now precomputes chemistry-facing `two_monomer_*` compatibility metadata plus lower-level `zero_linker_*` periodic-graph diagnostics, and `cofkit.topology_data` can rebuild that cache directly from the extracted `.cgd` files when the scan logic changes.
-4. `TopologyRepository` prefers that bundled index by default and lazily loads full topology definitions from the extracted `.cgd` files.
+4. `TopologyRepository` prefers that bundled index by default and lazily loads full topology definitions from the extracted `.cgd` files, reusing its parsed index and resolved data-root snapshot. Creating a new repository refreshes that snapshot. Symmetry expansion and decomposition's derived graphs share a bounded preparation-cache budget; keys include the expansion's structural inputs, and coordinate lookup preserves the original tolerance and first-match order through conservative spatial candidates.
 5. `NetPlanner` prefilters index entries by target dimensionality and sorted monomer connectivities.
 6. `cofkit.single_node_topologies` currently expands the supported one-node `2D` nets (`hcb`, `hca`, `fes`, `fxt`, plus explicit high-connectivity opt-ins) into explicit `P1` cells for batch and direct single-pair generation.
 7. `cofkit.single_node_topologies_3d` currently expands the first supported one-node `3D` family (`dia`, `pcu`) into explicit primitive cells for high-connectivity generation.

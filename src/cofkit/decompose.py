@@ -10,6 +10,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from functools import lru_cache
 from itertools import combinations, permutations, product
 from math import ceil, floor, gcd, isfinite, sqrt
 from pathlib import Path
@@ -34,7 +35,7 @@ from .decompose_cif import (
 from .decompose_ledger import perceive_stereochemistry_evidence
 from .periodic_geometry import nearby_atom_pairs
 from .topologies import default_topology_repository
-from .topology_symmetry import expand_topology_definition
+from .topology_symmetry import TOPOLOGY_PREPARATION_CACHE_SIZE, expand_topology_definition
 
 try:
     from rdkit import Chem
@@ -2175,6 +2176,11 @@ def _contract_degree_two_linkers(
 
 def _topology_definition_graph(definition) -> LinkageTopologyGraph:
     expanded = expand_topology_definition(definition)
+    return _expanded_topology_graph(expanded)
+
+
+@lru_cache(maxsize=TOPOLOGY_PREPARATION_CACHE_SIZE)
+def _expanded_topology_graph(expanded) -> LinkageTopologyGraph:
     node_index_by_id = {node.id: index for index, node in enumerate(expanded.node_sites)}
     edges: list[tuple[int, int, tuple[int, int, int]]] = []
     for edge in expanded.edge_sites:
@@ -2188,7 +2194,7 @@ def _topology_definition_graph(definition) -> LinkageTopologyGraph:
     return LinkageTopologyGraph(
         node_connectivities=tuple(int(node.connectivity) for node in expanded.node_sites),
         gain_edges=tuple(sorted(edges)),
-        dimensionality_hint=definition.dimensionality,
+        dimensionality_hint=expanded.dimensionality,
     )
 
 
