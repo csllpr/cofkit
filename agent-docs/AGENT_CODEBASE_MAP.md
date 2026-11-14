@@ -223,6 +223,7 @@ Then go straight to the module that matches the task.
     atom-site rows and are inspection artifacts, not simulation input.
 - [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
   - CIF atom-site and explicit-bond extraction for decomposition without adding ASE.
+  - Owns `CifInputError` for invalid/unsupported input evidence. Shared graph loading rejects non-unique labels, unknown bond endpoints and contradictory duplicate periodic edges before chemical interpretation; event results distinguish these as `FAILED_INPUT_VALIDATION`. Regression tests: `test_decompose_input_validation.py`.
 - [src/cofkit/decompose.py](../src/cofkit/decompose.py)
   - Explicit-bond binary-bridge decomposition into recovered monomers and COFid serialization.
   - Topology auto-detection (`detect_cif_topology`) owns the typed confidence/provenance vocabulary (`TOPOLOGY_CONFIDENCE_*`, `TOPOLOGY_IDENTIFICATION_*`): an embedded COFid comment is promoted to `exact` only when the quotient-graph matcher independently verifies the annotated net (`verified_periodic_graph`); a merely rank/connectivity-compatible comment is an unverified hint (`compatible_unverified`, tie-break confidence `compatible` / `compatible_annotation_unverified`).

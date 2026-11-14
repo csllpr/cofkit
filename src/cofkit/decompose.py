@@ -28,7 +28,7 @@ from .cofid import (
     read_cofid_from_cif,
     serialize_cofid,
 )
-from .decompose_cif import PeriodicCifAtoms, read_periodic_cif_atoms
+from .decompose_cif import CifInputError, PeriodicCifAtoms, read_periodic_cif_atoms
 from .decompose_ledger import perceive_stereochemistry_evidence
 from .topologies import default_topology_repository
 from .topology_symmetry import expand_topology_definition
@@ -1388,6 +1388,8 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
     labels = tuple(atoms.info.get("_atom_site_label", ()))
     if len(labels) != len(atoms):
         raise ValueError("decomposition requires CIF atom labels aligned with atom sites")
+    if len(set(labels)) != len(labels):
+        raise CifInputError("CIF atom-site labels must be unique")
 
     rw_mol = Chem.RWMol()
     formal_charges = tuple(atoms.info.get("_atom_site_pdbx_formal_charge", ()))
@@ -1426,7 +1428,7 @@ def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> Bo
             if candidate.explicit_order is not None
         }
         if len(explicit_orders) > 1:
-            raise ValueError(
+            raise CifInputError(
                 "periodic CIF bond rows assign conflicting bond orders to the same atom pair"
             )
         order = next(iter(explicit_orders), None)
@@ -2750,11 +2752,12 @@ def _explicit_bond_candidates(
             raise ValueError(
                 f"CIF explicit {column_name} column has {len(values)} rows; expected {row_count}"
             )
-    candidates: list[BondCandidate] = []
-    added_edges: set[tuple[int, int, tuple[int, int, int]]] = set()
+    rows_by_edge: dict[tuple[int, int, tuple[int, int, int]], list[BondCandidate]] = defaultdict(list)
     for row_idx, (label_1, label_2) in enumerate(zip(bond_labels_1, bond_labels_2)):
         if label_1 not in label_to_idx or label_2 not in label_to_idx:
-            continue
+            raise CifInputError(
+                f"CIF bond row references unknown atom-site label(s): {label_1!r}, {label_2!r}"
+            )
         idx_1 = label_to_idx[label_1]
         idx_2 = label_to_idx[label_2]
         symmetry_1 = symmetries_1[row_idx] if row_idx < len(symmetries_1) else None
@@ -2773,12 +2776,25 @@ def _explicit_bond_candidates(
             idx_1, idx_2 = idx_2, idx_1
             image = _negate_image(image)
         edge_key = (idx_1, idx_2, image)
-        if edge_key in added_edges:
-            continue
         order = cif_type_to_bond_order(bond_types[row_idx] if row_idx < len(bond_types) else None)
         distance = _explicit_bond_distance(atoms, idx_1, idx_2, bond_distances, row_idx)
-        candidates.append(BondCandidate(idx_1, idx_2, distance, explicit_order=order, periodic_image=image))
-        added_edges.add(edge_key)
+        rows_by_edge[edge_key].append(
+            BondCandidate(idx_1, idx_2, distance, explicit_order=order, periodic_image=image)
+        )
+    candidates: list[BondCandidate] = []
+    for (idx_1, idx_2, image), rows in rows_by_edge.items():
+        orders = {row.explicit_order for row in rows if row.explicit_order is not None}
+        if len(orders) > 1:
+            raise CifInputError(
+                "duplicate periodic CIF bond rows assign conflicting bond orders "
+                f"to atom pair ({idx_1}, {idx_2}) in image {image!r}: {sorted(orders)!r}"
+            )
+        # Missing evidence cannot override a known order. Use the shortest
+        # reported distance deterministically, independent of duplicate order.
+        candidates.append(BondCandidate(
+            idx_1, idx_2, min(row.distance for row in rows),
+            explicit_order=next(iter(orders), None), periodic_image=image,
+        ))
     return tuple(candidates), sum(1 for candidate in candidates if candidate.explicit_order is None)
 
 

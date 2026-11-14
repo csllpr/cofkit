@@ -20,6 +20,10 @@ _ELEMENT_RE = re.compile(r"^[^A-Za-z]*([A-Za-z]{1,2})")
 _UNCERTAINTY_RE = re.compile(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)(?:\(\d+\))?$")
 
 
+class CifInputError(ValueError):
+    """Invalid or unsupported CIF evidence, rather than an internal failure."""
+
+
 @dataclass(frozen=True)
 class PeriodicCifAtoms:
     """Minimal no-ASE periodic atom container for CIF decomposition workflows."""

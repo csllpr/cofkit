@@ -65,6 +65,7 @@ EVENT_STATUS_MULTISPECIES = "UNSUPPORTED_MULTISPECIES_PRECURSORS"
 # An unexpected exception aborted hypothesis evaluation. This is a tool
 # failure with the original cause preserved, never a chemical verdict.
 EVENT_STATUS_INTERNAL_ERROR = "FAILED_INTERNAL_ERROR"
+EVENT_STATUS_INPUT_ERROR = "FAILED_INPUT_VALIDATION"
 # Two or more non-overlapping linkage families each reconstruct part of the
 # framework; the one-family COFid contract cannot serialize the structure.
 # This is an explicit unsupported-representation verdict, not a chemical
@@ -499,7 +500,10 @@ def decompose_cif_to_cofid_event(
             reason=f"{type(exc).__name__}: {exc}",
             metadata={
                 "decomposition_mode": "event",
-                "event_status": EVENT_STATUS_INTERNAL_ERROR,
+                "event_status": (
+                    EVENT_STATUS_INPUT_ERROR if isinstance(exc, legacy.CifInputError)
+                    else EVENT_STATUS_INTERNAL_ERROR
+                ),
                 "pipeline_stage": "graph_normalization_or_event_detection",
             },
         )
