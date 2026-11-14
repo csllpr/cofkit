@@ -277,6 +277,10 @@ tunables must land here, not at consumer sites:
 - [src/cofkit/node_shape.py](../src/cofkit/node_shape.py)
   - `NODE_SHAPE_*` connector-geometry classification tolerances and the derived ideal tetrahedral angle (`TETRAHEDRAL_NODE_ANGLE_DEGREES`).
 
+## Classification output seam
+
+- `classification_io.py` owns staged classifier publication, file inventories, writer exclusion and rollback. `validation._ClassificationOutput` writes a fresh stage; `classify_batch_output` reports final public paths. Tests: `test_classification_reruns.py`, `test_classification_failures.py`.
+
 ## External calculation seams
 
 - [src/cofkit/lammps.py](../src/cofkit/lammps.py)

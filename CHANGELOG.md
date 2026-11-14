@@ -24,6 +24,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- classification reruns stage fresh reports/views and reconcile an ownership inventory before publication, removing obsolete classifier-owned copies and reason views while retaining unrelated files. Publication errors roll back the preceding snapshot; concurrent writers, unsafe output overlap and unmanaged destination collisions are rejected. Legacy classifier trees require a fresh output directory
+
 - output classification isolates malformed manifest lines, worker exceptions and CIF-delivery failures per record; typed failure records retain source line, original evidence and `TypeName: message` causes in `failures.jsonl`, `summary.md` and the console. Failed records appear as `classification_failed` / `unvalidated` while later records continue
 
 - source distributions include Python modules, runtime data, tests and the COFid specification; CI rebuilds and tests the wheel from the source archive so a data-only archive cannot pass release checks

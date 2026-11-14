@@ -4,6 +4,8 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 
 ## Implemented so far
 
+- classification reruns stage fresh reports/views and reconcile an ownership inventory before publication, removing obsolete classifier-owned copies and reason views while retaining unrelated files. Publication errors roll back the preceding snapshot; concurrent writers, unsafe output overlap and unmanaged destination collisions are rejected. Legacy classifier trees require a fresh output directory
+
 - output classification isolates malformed manifest lines, worker exceptions and CIF-delivery failures per record; typed failure records retain source line, original evidence and `TypeName: message` causes in `failures.jsonl`, `summary.md` and the console. Failed records appear as `classification_failed` / `unvalidated` while later records continue
 
 - source distributions retain the complete package and regression inputs; installed-wheel CI builds its wheel from the source archive before testing outside the checkout

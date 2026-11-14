@@ -19,6 +19,7 @@ try:  # pragma: no cover - exercised in integration environments
 except ImportError:  # pragma: no cover - import guard for incomplete environments
     gemmi = None
 
+from .classification_io import classification_run
 from .cif_checks import cif_value_str
 from .periodic_geometry import images_within, p1_shift
 from .reactions import linkage_profile
@@ -1141,16 +1142,25 @@ class _ClassificationOutput:
             "hard_hard_invalid": report.hard_hard_invalid_reasons,
             "hard_invalid": report.hard_invalid_reasons,
         }.get(bucket, report.reasons)
+        created: list[Path] = []
         if materialize:
             try:
                 cif_path = report.metrics.get("cif_path")
                 source = Path(str(cif_path)) if cif_path is not None else None
                 if source is not None and source.is_file():
                     directory = self.root / bucket
-                    _materialize_link(source, directory / "cifs" / source.name, self.link_mode)
+                    destinations = [directory / "cifs" / source.name]
                     for reason in reasons if bucket not in {"valid", "unvalidated"} else ():
-                        _materialize_link(source, directory / "reasons" / reason / source.name, self.link_mode)
+                        destinations.append(directory / "reasons" / reason / source.name)
+                    for destination in destinations:
+                        if destination.exists() or destination.is_symlink():
+                            raise FileExistsError(f"duplicate classification destination: {destination.relative_to(self.root)}")
+                    for destination in destinations:
+                        _materialize_link(source, destination, self.link_mode)
+                        created.append(destination)
             except Exception as exc:
+                for destination in created:
+                    destination.unlink(missing_ok=True)
                 self.failed(BatchClassificationFailure(
                     line_number=line_number, error=f"{type(exc).__name__}: {exc}",
                     stage="artifact_delivery", structure_id=_classification_structure_id(record),
@@ -1193,12 +1203,22 @@ def classify_batch_output(
     if max_structures is not None and max_structures < 0:
         raise ValueError("max_structures must be nonnegative")
     output_root = Path(output_dir)
-    output_root.mkdir(parents=True, exist_ok=True)
+    reserved = (*_CLASSIFICATION_BUCKETS, "classification_manifest.jsonl", "failures.jsonl", "summary.md")
+    with classification_run(output_root, source=source_root, reserved_names=reserved) as write_root:
+        return _classify_batch_output(source_root, output_root, write_root, validator.thresholds, link_mode, max_workers, max_structures)
+
+
+def _classify_batch_output(
+    source_root: Path, output_root: Path, write_root: Path,
+    thresholds: CoarseValidationThresholds, link_mode: str, max_workers: int,
+    max_structures: int | None,
+) -> BatchOutputClassificationSummary:
+    manifest_path = source_root / "manifest.jsonl"
     pending: dict[Future[CoarseValidationReport], tuple[dict[str, object], int]] = {}
     total_structures = 0
     with ExitStack() as stack:
         manifest = stack.enter_context(manifest_path.open(encoding="utf-8"))
-        output = _ClassificationOutput(output_root, link_mode, stack)
+        output = _ClassificationOutput(write_root, link_mode, stack)
         executor = stack.enter_context(ThreadPoolExecutor(max_workers=max_workers))
         for line_number, line in enumerate(manifest, start=1):
             if max_structures is not None and total_structures >= max_structures:
@@ -1218,7 +1238,7 @@ def classify_batch_output(
                 continue
             if str(record.get("status")) != "ok":
                 continue
-            future = executor.submit(_validate_record_worker, record, str(source_root), validator.thresholds)
+            future = executor.submit(_validate_record_worker, record, str(source_root), thresholds)
             pending[future] = (record, line_number)
             total_structures += 1
             if len(pending) >= max_workers * _CLASSIFICATION_QUEUE_PER_WORKER:
@@ -1248,7 +1268,7 @@ def classify_batch_output(
         unvalidated_manifest_path=str(output_root / "unvalidated" / "manifest.jsonl"),
         failures_path=str(output_root / "failures.jsonl"), failures=tuple(output.failures),
     )
-    _write_classification_summary(output_root / "summary.md", summary, validator.thresholds)
+    _write_classification_summary(write_root / "summary.md", summary, thresholds)
     return summary
 
 
@@ -1279,17 +1299,19 @@ def _validate_record_worker(
 def _materialize_link(source: Path, destination: Path, mode: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() or destination.is_symlink():
-        return
-    if mode == "symlink":
-        destination.symlink_to(source.resolve())
-        return
-    if mode == "hardlink":
-        os.link(source, destination)
-        return
-    if mode == "copy":
-        shutil.copy2(source, destination)
-        return
-    raise ValueError(f"unsupported link mode {mode!r}")
+        raise FileExistsError(f"classification destination already exists: {destination}")
+    try:
+        if mode == "symlink":
+            destination.symlink_to(source.resolve())
+        elif mode == "hardlink":
+            os.link(source, destination)
+        elif mode == "copy":
+            shutil.copy2(source, destination)
+        else:
+            raise ValueError(f"unsupported link mode {mode!r}")
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _write_classification_summary(
