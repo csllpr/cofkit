@@ -28,7 +28,9 @@ from .cofid import (
     read_cofid_from_cif,
     serialize_cofid,
 )
-from .decompose_cif import CifInputError, PeriodicCifAtoms, read_periodic_cif_atoms
+from .decompose_cif import (
+    CifInputError, PeriodicCifAtoms, read_periodic_cif_atoms, validate_decomposition_occupancies,
+)
 from .decompose_ledger import perceive_stereochemistry_evidence
 from .topologies import default_topology_repository
 from .topology_symmetry import expand_topology_definition
@@ -1385,6 +1387,7 @@ _PARALLEL_IMAGE_DISTANCE_CONSISTENCY_ANGSTROM = 1.0e-3
 
 
 def _build_bonded_mol(atoms: PeriodicCifAtoms, *, bond_mode: str = "auto") -> BondedMolBuildResult:
+    validate_decomposition_occupancies(atoms)
     labels = tuple(atoms.info.get("_atom_site_label", ()))
     if len(labels) != len(atoms):
         raise ValueError("decomposition requires CIF atom labels aligned with atom sites")

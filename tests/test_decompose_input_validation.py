@@ -138,3 +138,56 @@ def test_bond_order_inference_uses_length_of_declared_edge():
     build = _build_bonded_mol(atoms)
     assert build.candidates[0].distance == pytest.approx(11.3)
     assert build.mol.GetBondWithIdx(0).GetBondTypeAsDouble() == 1.0
+
+
+@pytest.mark.parametrize("value", ["0", "0.5", "-0.1", "1.1", "?", ".", "nan", "inf", "1/0"])
+def test_unresolved_occupancies_rejected_before_graph_build(value):
+    with pytest.raises(CifInputError, match="unsupported occupancy"):
+        _build_bonded_mol(two_atom_input(_atom_site_occupancy=(value, "1")))
+
+
+def test_occupancy_column_length_must_match_sites():
+    with pytest.raises(CifInputError, match="occupancy column length"):
+        _build_bonded_mol(two_atom_input(_atom_site_occupancy=("1",)))
+
+
+@pytest.mark.parametrize("value", ["1", "1.0", "1.00(2)", "1/1"])
+def test_explicit_unit_occupancy_is_supported(value):
+    from cofkit.decompose_cif import validate_decomposition_occupancies
+    validate_decomposition_occupancies(two_atom_input(_atom_site_occupancy=(value, value)))
+
+
+@pytest.mark.parametrize("engine", ["event", "legacy"])
+def test_zero_occupancy_cof_cannot_report_success(tmp_path, engine):
+    import gemmi
+    from cofkit.decompose_cif import prepare_periodic_cif_atoms, read_periodic_cif_atoms
+    from soft_relax_cof_cases import COF_CASES, write_cof_seed
+
+    path = tmp_path / "cof5.cif"
+    write_cof_seed(next(case for case in COF_CASES if case["id"] == "cof-5"), path)
+    assert decompose_cif_to_cofid(path, topology="hcb", decomposition_mode=engine).ok
+    doc = gemmi.cif.read_file(str(path))
+    values = doc.sole_block().find_values("_atom_site_occupancy")
+    for index in range(len(values)):
+        values[index] = "0"
+    doc.write_file(str(path))
+    before = path.read_bytes()
+    assert set(read_periodic_cif_atoms(path).info["_atom_site_occupancy"]) == {"0"}
+    result = decompose_cif_to_cofid(path, topology="hcb", decomposition_mode=engine)
+    assert result.status == "error"
+    assert result.cofid is None
+    assert "unsupported occupancy" in result.reason
+    if engine == "event":
+        assert result.metadata["event_status"] == "FAILED_INPUT_VALIDATION"
+    with pytest.raises(CifInputError, match="unsupported occupancy"):
+        prepare_periodic_cif_atoms(path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("species", [{"C": .5}, {"C": .5, "N": .5}])
+def test_pymatgen_adapter_does_not_pick_one_disordered_species(species):
+    from pymatgen.core import Lattice, Structure
+    from cofkit.decompose_cif import periodic_cif_atoms_from_pymatgen_structure
+    structure = Structure(Lattice.cubic(10), [species], [[0, 0, 0]])
+    with pytest.raises(CifInputError, match="disordered pymatgen site"):
+        periodic_cif_atoms_from_pymatgen_structure(structure)

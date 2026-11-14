@@ -223,6 +223,7 @@ Then go straight to the module that matches the task.
     atom-site rows and are inspection artifacts, not simulation input.
 - [src/cofkit/decompose_cif.py](../src/cofkit/decompose_cif.py)
   - CIF atom-site and explicit-bond extraction for decomposition without adding ASE.
+  - Retains occupancy evidence; `validate_decomposition_occupancies` rejects explicit non-unit/unknown occupancies before graph counting or primitive conversion. Pymatgen conversion rejects disordered sites rather than selecting a species.
   - Owns `CifInputError` for invalid/unsupported input evidence. Shared graph loading rejects non-unique labels, unknown bond endpoints and contradictory duplicate periodic edges before chemical interpretation; event results distinguish these as `FAILED_INPUT_VALIDATION`. Regression tests: `test_decompose_input_validation.py`.
 - [src/cofkit/decompose.py](../src/cofkit/decompose.py)
   - Explicit-bond binary-bridge decomposition into recovered monomers and COFid serialization.

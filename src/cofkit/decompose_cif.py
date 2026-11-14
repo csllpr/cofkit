@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from math import acos, degrees, sqrt
+from math import acos, degrees, isfinite, sqrt
 from pathlib import Path
 from typing import Mapping
 
@@ -117,12 +117,41 @@ def atoms_have_explicit_cif_bonds(atoms: PeriodicCifAtoms) -> bool:
     )
 
 
+def validate_decomposition_occupancies(atoms: PeriodicCifAtoms) -> None:
+    """Require one fully occupied structural model before counting atoms.
+
+    An absent column uses the CIF default of unit occupancy. Explicit unknown,
+    zero or fractional entries cannot establish a discrete precursor graph;
+    resolving them would require a disorder model outside decomposition scope.
+    """
+    occupancies = atoms.info.get("_atom_site_occupancy", ())
+    if not occupancies:
+        return
+    if len(occupancies) != len(atoms):
+        raise CifInputError("CIF occupancy column length does not match atom sites")
+    labels = atoms.info.get("_atom_site_label", ())
+    for index, value in enumerate(occupancies):
+        try:
+            occupancy = _parse_cif_float(value)
+        except (ValueError, ZeroDivisionError):
+            occupancy = float("nan")
+        if not isfinite(occupancy) or occupancy != 1:
+            label = labels[index] if index < len(labels) else str(index)
+            raise CifInputError(
+                "decomposition requires a fully occupied, ordered CIF model; "
+                f"atom {label!r} has unsupported occupancy {value!r}. "
+                "Resolve zero/partial/unknown occupancies into a discrete model before decomposition"
+            )
+
+
 def get_primitive_periodic_cif_atoms(
     cif_path: str | Path,
     *,
     output_path: str | Path | None = None,
     symprec: float = 0.1,
 ) -> PeriodicCifAtoms:
+    # Validate source sites before a parser can discard zero occupancies.
+    validate_decomposition_occupancies(read_periodic_cif_atoms(cif_path))
     try:
         from pymatgen.core import Structure
         from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
@@ -153,6 +182,8 @@ def prepare_periodic_cif_atoms(
     except Exception:
         source_atoms = None
 
+    if source_atoms is not None:
+        validate_decomposition_occupancies(source_atoms)
     if source_atoms is not None and atoms_have_explicit_cif_bonds(source_atoms):
         return source_atoms, True
 
@@ -235,6 +266,7 @@ def _atoms_from_gemmi_block(block, *, source_path: Path) -> PeriodicCifAtoms:
 def _collect_cif_info(block) -> dict[str, tuple[str, ...]]:
     tags = (
         "_atom_site_label",
+        "_atom_site_occupancy",
         "_atom_site_pdbx_formal_charge",
         "_space_group_symop_operation_xyz",
         "_symmetry_equiv_pos_as_xyz",
@@ -415,10 +447,10 @@ def _atomic_number(symbol: str) -> int:
 def _symbol_from_pymatgen_site(site) -> str:
     if getattr(site, "is_ordered", True):
         return _normalize_element_symbol(site.specie.symbol)
-    elements = list(site.species.elements)
-    if not elements:
-        raise ValueError("pymatgen site does not contain any element species")
-    return _normalize_element_symbol(elements[0].symbol)
+    raise CifInputError(
+        "decomposition requires fully occupied, ordered sites; "
+        "a disordered pymatgen site cannot be reduced to its first species"
+    )
 
 
 __all__ = [
