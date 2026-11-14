@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .cli_errors import COMMAND_FAILURE_EXIT_CODE
 from .decompose import decompose_cif_to_cofid
 from .validation import CoarseValidationThresholds, classify_batch_output
 from .zeopp import (
@@ -190,7 +191,7 @@ def _run_decompose(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         if not result.ok:
-            raise SystemExit(2)
+            raise SystemExit(COMMAND_FAILURE_EXIT_CODE)
         return
     if not result.ok:
         defect = result.metadata.get("defect_detection")
@@ -224,7 +225,7 @@ def _run_decompose(args: argparse.Namespace) -> None:
                 else:
                     print(" ", glitch["type"])
             print("reason:", result.reason)
-            raise SystemExit(2)
+            raise SystemExit(COMMAND_FAILURE_EXIT_CODE)
         raise SystemExit(f"error: {result.reason or 'decomposition did not produce a COFid'}")
     print(result.cofid)
 

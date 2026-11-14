@@ -102,3 +102,13 @@ Default routing preference for forcefields:
 - For exact intent-to-command routing and output interpretation, read `references/intent-routing.md`.
 - For broader project scope and examples, use `../../README.md` and the focused workflow docs under `../../docs/`.
 - For code-editing or chemistry-extension tasks rather than end-user operation, use `../../agent-docs/AGENT_CODEBASE_MAP.md` and `../../agent-docs/ADDING_LINKAGES_AND_MONOMERS.md`.
+
+## CLI Failure Contract
+
+`python -m cofkit` is equivalent to the console command. Errors/warnings use
+stderr. Exit codes: 0 success; 1 command failure or unsuccessful analysis/
+validation; 2 argparse usage error; 130 interruption. `--json` preserves result
+status. Completed batches with isolated record failures still exit normally;
+inspect counts and `failures.jsonl`. Use `--debug` at the root, group or command
+level for original raised exceptions (including wrapped causes); structured
+scientific failure results keep their diagnostics without an invented traceback.

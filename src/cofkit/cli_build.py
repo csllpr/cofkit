@@ -1047,6 +1047,7 @@ def _print_single_pair_geometry_repair_warning(summary) -> None:
             "WARNING:",
             f"geometry repair failed for {summary.structure_id}:",
             repair.get("error", "unknown error"),
+            file=sys.stderr,
         )
         return
     post_repair = repair.get("post_repair_validation")
@@ -1055,6 +1056,7 @@ def _print_single_pair_geometry_repair_warning(summary) -> None:
             "WARNING:",
             f"geometry repair completed for {summary.structure_id}, but repaired CIF validation classified it as",
             post_repair.get("classification", "unknown"),
+            file=sys.stderr,
         )
 
 
@@ -1101,6 +1103,7 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
             "WARNING:",
             f"{len(summary.record_failures)} record(s) failed; per-record errors are in the manifest:",
             summary.manifest_path,
+            file=sys.stderr,
         )
     print("mode_counts:", dict(summary.mode_counts))
     print("topology_counts:", dict(summary.topology_counts))
@@ -1120,6 +1123,7 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
             "WARNING:",
             f"geometry repair failed for {failed_repairs} structure(s); failed records:",
             summary.geometry_repair_failed_records_path,
+            file=sys.stderr,
         )
     nonvalid_repaired = sum(
         int(count)
@@ -1130,6 +1134,7 @@ def _print_batch_summary(summary, *, template_id: str | None = None) -> None:
         print(
             "WARNING:",
             f"geometry repair completed for {nonvalid_repaired} structure(s) whose repaired CIF validation was not valid.",
+            file=sys.stderr,
         )
     _print_shape_warnings(summary.top_results)
     for result in summary.top_results[:10]:

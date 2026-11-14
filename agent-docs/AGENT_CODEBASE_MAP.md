@@ -17,7 +17,7 @@ Then go straight to the module that matches the task.
 ## Main user entry points
 
 - [src/cofkit/cli.py](../src/cofkit/cli.py)
-  - Installed `cofkit` CLI.
+  - Installed `cofkit` CLI and `python -m cofkit` entry point. Owns the exception boundary, stderr diagnostics and `--debug` traceback handling; `cli_errors.py` owns command-failure exit status. Argparse owns usage exits. Tests: `test_cli_errors.py`.
   - Routes the top-level `build`, `analyze`, `calculate`, and `validate` namespaces.
 - [src/cofkit/cli_build.py](../src/cofkit/cli_build.py)
   - Owns build-facing commands such as `cofkit build single-pair` and the batch workflows.

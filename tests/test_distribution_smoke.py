@@ -15,10 +15,10 @@ def test_packaged_runtime_assets():
 
 
 def test_cli_entrypoint():
-    result = subprocess.run([sys.executable, "-m", "cofkit.cli", "--version"], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-m", "cofkit", "--version"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("cofkit ")
-    result = subprocess.run([sys.executable, "-m", "cofkit.cli", "--help"], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-m", "cofkit", "--help"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert all(group in result.stdout for group in ("build", "analyze", "calculate", "validate"))
 

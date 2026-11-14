@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
-import json
 
+from .cli_errors import COMMAND_FAILURE_EXIT_CODE
 from .graspa import EqeqExecutionError, GraspaConfigurationError
 from .lammps import (
     LammpsConfigurationError,
@@ -153,7 +154,7 @@ def _emit_result(result: COFidValidationResult, *, json_output: bool) -> None:
     else:
         _print_human_result(result)
     if not result.ok:
-        raise SystemExit(2 if result.status == "failed" else 1)
+        raise SystemExit(COMMAND_FAILURE_EXIT_CODE)
 
 
 def _print_human_result(result: COFidValidationResult) -> None:

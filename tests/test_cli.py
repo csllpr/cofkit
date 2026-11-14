@@ -598,7 +598,8 @@ class CliTests(unittest.TestCase):
 
     @unittest.skipIf(Chem is None, "RDKit is not available")
     def test_single_pair_cli_rejects_topology_dimensionality_conflict(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
+        stderr_buffer = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir, contextlib.redirect_stderr(stderr_buffer):
             with self.assertRaises(SystemExit) as raised:
                 cli_main(
                     [
@@ -624,7 +625,8 @@ class CliTests(unittest.TestCase):
                 )
 
         self.assertNotEqual(raised.exception.code, 0)
-        self.assertIn("'dia' is 3D", str(raised.exception))
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("'dia' is 3D", stderr_buffer.getvalue())
 
     def test_single_pair_cli_rejects_internal_post_build_conversion_flag(self):
         stderr_buffer = io.StringIO()

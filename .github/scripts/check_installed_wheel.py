@@ -22,5 +22,5 @@ with tempfile.TemporaryDirectory(prefix="cofkit-wheel-") as directory:
     ], cwd=work, env=env, check=True)
     subprocess.run([
         sys.executable, "-m", "pytest", "-q",
-        "tests/test_distribution_smoke.py", "tests/test_core.py",
+        "tests/test_distribution_smoke.py", "tests/test_core.py", "tests/test_cli_errors.py",
     ], cwd=work, env=env, check=True)

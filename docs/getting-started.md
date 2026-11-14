@@ -72,3 +72,18 @@ COFKIT_RASPA2_PATH=/path/to/simulate
 ```
 
 See [external-tools.md](external-tools.md) for install notes.
+
+## CLI Exit Status And Debugging
+
+`cofkit`, `python -m cofkit`, and `python -m cofkit.cli` use the same CLI.
+Errors and warnings go to stderr; command results remain on stdout.
+Exit status is 0 on success, 1 on command failure or an unsuccessful
+analysis/validation result, 2 for argparse usage errors, and 130 on interruption.
+Changing `--json` does not change an analysis result's exit status. Batch runs
+with isolated per-record failures still complete normally: inspect their failure
+counts and ledgers before consuming results.
+
+Use `cofkit --debug <command>` (also accepted after the group or subcommand)
+to show a traceback for raised exceptions, including original causes wrapped by
+command handlers. Structured scientific failure results retain their normal
+result diagnostics; they do not manufacture an exception traceback.

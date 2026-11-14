@@ -46,6 +46,8 @@ cofkit analyze decompose \
   --topology hcb
 ```
 
+Successful decomposition prints the recovered COFid and exits 0. Unsuccessful decomposition exits 1 in both text and `--json` modes; failure messages go to stderr while JSON retains the structured result on stdout. Probable-defect summaries remain result output on stdout.
+
 By default, this prints only the recovered COFid. Add `--json` for the full decomposition payload, including topology-detection diagnostics when auto mode is used:
 
 ```bash

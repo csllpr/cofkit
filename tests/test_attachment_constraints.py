@@ -302,7 +302,7 @@ def test_duplicate_reactive_site_rejected(asymmetric_source):
         build_from_attachment(modified, monomers)
 
 
-def test_cli_rejects_cofid_or_stacking_conflicts(asymmetric_source, tmp_path):
+def test_cli_rejects_cofid_or_stacking_conflicts(asymmetric_source, tmp_path, capsys):
     _, result, _ = asymmetric_source
     path = tmp_path / "recipe.json"
     path.write_text(json.dumps(result.attachment_recipe.to_dict()))
@@ -310,7 +310,7 @@ def test_cli_rejects_cofid_or_stacking_conflicts(asymmetric_source, tmp_path):
         ["--stacking", "AA"],
         ["--cofid", result.cofid.replace("kgm", "sql")],
     ):
-        with pytest.raises(SystemExit, match="error:"):
+        with pytest.raises(SystemExit) as error:
             main(
                 [
                     "build",
@@ -322,6 +322,8 @@ def test_cli_rejects_cofid_or_stacking_conflicts(asymmetric_source, tmp_path):
                     *flags,
                 ]
             )
+        assert error.value.code == 1
+        assert "error:" in capsys.readouterr().err
 
 
 def test_actual_written_connectivity_is_verified(
