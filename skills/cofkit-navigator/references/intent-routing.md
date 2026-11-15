@@ -28,8 +28,9 @@ cofkit build list-templates --json
 Interpretation rules:
 
 - `cofkit build list-templates --json` only describes the build chemistry surface, not every public CLI workflow.
-- Focus on templates where `supports_pair_generation` is `true` for practical structure generation.
-- Registered templates with `supports_pair_generation=false` are still part of the reaction library, but they are not on the current topology-guided pair-generation path.
+- Route templates with `supports_pair_generation=true` to `build single-pair` or the binary batch commands.
+- Route templates with `supports_ring_generation=true` to `build ring-forming`; boroxine/triazine templates have `supports_pair_generation=false` and remain buildable through this separate surface.
+- Templates with both flags false are registered chemistry without a current public generation path.
 - `cofkit analyze --help` is where current decomposition, pore-analysis, and output-triage workflows show up.
 - `cofkit calculate --help` is where current external optimization and Monte Carlo workflows show up.
 - `cofkit validate --help` is where current COFid-vs-CIF validation workflows show up.
@@ -64,6 +65,42 @@ Primary artifact:
 
 Explicit requests (`--cofid` or `--topology`) are built even when the 4-connecting node-shape classifier disagrees with the requested net: a `warning:` line is printed to stderr and the conflict is recorded as `shape_warnings` in `summary.json`. Report the build plus the warning rather than a failure.
 
+### Build a boroxine- or triazine-linked COF from one precursor
+
+Use `build ring-forming` for the two supported ring-forming chemistries.
+
+```bash
+cofkit build ring-forming \
+  --template-id boroxine_trimerization \
+  --smiles 'OB(O)c1ccc(B(O)O)cc1' \
+  --output-dir out/boroxine_run
+```
+
+For a nitrile precursor, select triazine formation:
+
+```bash
+cofkit build ring-forming \
+  --template-id triazine_trimerization \
+  --smiles 'N#Cc1ccc(C#N)cc1' \
+  --output-dir out/triazine_run
+```
+
+Useful variants:
+
+- replace `--template-id` and `--smiles` with `--cofid '<RING_COFID>'` to rebuild a known ring-forming identity
+- add `--attachment-file recipe.json` instead of the precursor inputs to preserve recovered full-cell attachment assignments
+- topology defaults to `hcb`; pass `--topology ...` for a supported alternative
+- repeat `--stacking AA`, `--stacking AB`, or `--stacking slipped` for bilayer variants; without stacking, `--layer-spacing` controls vacuum padding (default 8 angstrom), not a physical interlayer repeat
+
+Primary artifacts:
+
+- `summary.json`
+- candidate CIFs directly under the output directory when export succeeds
+
+Read each result's `ring_validation` arrangement and attachment channels along
+with `cif_export`. Rejected ring geometries may still be written as diagnostic
+CIFs; a written file or construction `status: ok` is not a validation verdict.
+
 ### Screen one linkage over a library directory
 
 Use `build batch-binary-bridge`.
@@ -89,6 +126,7 @@ Useful variants:
 Primary artifacts:
 
 - `manifest.jsonl`
+- `monomers.jsonl`
 - `summary.md`
 - `cifs/`
 
@@ -174,15 +212,16 @@ Useful variants:
 
 - add `--json` when you need recovered monomer details and diagnostic metadata
 - pass `--topology hcb` when the topology is known or when auto-detection is ambiguous
-- pass `--linkage hydrazone`, `--linkage azine`, `--linkage boest`, `--linkage bken`, or `--linkage vinylene` for non-imine CIFs
+- leave `--linkage` unset for the default `auto` search across supported families, including non-imine and ring-forming structures; pass a canonical linkage code only to restrict a known family
 - pass `--bond-mode distance` when explicit CIF bond rows should be ignored and periodic distance-based connectivity should be forced
-- template-id aliases such as `--linkage hydrazone_bridge` are accepted and normalize to the canonical COFid linkage code
+- template-id aliases such as `--linkage hydrazone_bridge` and `--linkage boroxine_trimerization` are accepted and normalize to the canonical COFid linkage code
+- retain the default `--decomposition-mode event` for event/hypothesis reconstruction; use `--decomposition-mode legacy` for the compatibility engine
 
 Requirements:
 
-- input must be one atomistic CIF for a supported binary-bridge structure
+- input must be one fully occupied, ordered atomistic CIF for a supported binary-bridge or ring-forming structure
 - explicit `_geom_bond_*` connectivity is preferred; if bond labels are present without `_ccdc_geom_bond_type` / `_geom_bond_type`, bond orders are inferred, and if the bond loop is absent, connectivity falls back to periodic distance-based detection
-- current public decomposition support covers the buildable binary-bridge linkages: `imine`, `hydrazone`, `azine`, `boest`, `bken`, and `vinylene`
+- current public decomposition supports `imine`, `hydrazone`, `azine`, `boest`, `bken`, `vinylene`, `boroxine`, and `triazine`; default linkage auto-detection requires one unique complete periodic match
 - topology auto-detection is conservative and only ranks cofkit repository topologies from embedded COFid metadata or the recovered periodic linkage graph; pass `--topology` for ambiguous cases or decorated special cases such as `bex`
 
 Output:
@@ -474,6 +513,7 @@ Useful variants:
 - add repeated `--guest-bundle path/to/guest.json` flags for external parameterized guests, then select them with `--component NAME` or `--component NAME:FRACTION`
 - use one `--component NAME` for a pure-component GCMC segment, or repeated `--component NAME:FRACTION` values for a mixture segment
 - add `--exchange-mode guest-restart` with the gRASPA backend when the user wants GCMC guest coordinates injected into the following LAMMPS MD segment and MD-evolved guest coordinates written back to the next MC segment; binary guests use repeated mixture components, for example `--component Xe_GENERICMOFS:0.5 --component Kr_GENERICMOFS:0.5`
+- set `--temperature` to change both the MD and GCMC temperature together (CLI default: 298 K); independently constructed Python settings may have different temperatures, so read the report's `model_contract`
 - tune `--md-steps`, `--md-timestep`, `--md-ensemble`, `--md-dump-interval`, `--gcmc-production-cycles`, cutoffs, and timeouts
 
 Requirements:
@@ -510,11 +550,13 @@ Choose the API by how much the user already knows:
 
 ## Output Reading Rules
 
-- For `summary.json`, report `template_id`, input monomer IDs, attempted and successful structures, and each result's `topology_id`, `status`, `score`, and `cif_path`.
+- For single-pair `summary.json`, report `template_id`, input monomer IDs, attempted/constructed/exported counts, and each result's `topology_id`, `status`, `cif_export`, validation, and `cif_path`.
+- For ring-forming `summary.json`, use the top-level `topology_id` and `precursor`, and report each result's `candidate_id`, `ring_validation`, `cif_export`, and `cif_path`. Keep diagnostic CIF counts separate from accepted geometries.
 - For `manifest.jsonl`, treat each line as one generated structure summary. Use it when the printed terminal summary is not enough.
 - For `summary.md`, treat it as the human-readable batch overview, not the detailed machine-readable source of truth.
+- For binary batch failures, inspect `monomers.jsonl` for detection/build errors and `manifest.jsonl` for per-structure errors, then reconcile `build_failures` / `record_failures` and counts in the CLI JSON summary. `failures.jsonl` belongs to classification and default-library workflows; binary build batches do not write it.
 - For `combined_summary.json`, summarize each template separately and do not collapse per-template counts together without saying so.
-- For classification outputs, keep the five-way split explicit: `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`.
+- For classification outputs, keep all six buckets explicit: `valid`, `warning`, `needs_optimization`, `hard_invalid`, `hard_hard_invalid`, and `unvalidated`. Report the required checks that were not measured for `unvalidated` records and keep them out of validated counts.
 - For `zeopp_report.json`, use `pore_diameter_semantics` and `measurement_semantics`, keep the point-probe baseline separate from requested probe scans, and inspect each scan's status and parsed fields. `Di`/LCD and `Df`/PLD are not interchangeable, `Dif` is not PLD, channel-summary maxima are independent, probe-center-accessible volume is not probe-occupiable volume, and Voronoi-node fraction is not volume fraction. Do not assume `probe_scans_successful` means no useful probe data exists.
 - For `lammps_report.json`, report the optimized CIF path, atom/bond/angle/dihedral/improper counts, the forcefield backend, the key settings used, and any warnings.
 - For `graspa_widom_report.json`, report `raspa_backend`, selected components, `unit_cells`, parsed Widom energies, Henry coefficients, source data files, and warnings.
