@@ -17,6 +17,8 @@ class BatchClassificationFailure:
     structure_id: str | None = None
     record: Mapping[str, object] | None = None
     raw_line: str | None = None
+    # Exact input bytes, including the line terminator, when UTF-8 decoding fails.
+    raw_line_bytes_hex: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

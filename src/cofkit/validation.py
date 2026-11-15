@@ -1132,6 +1132,8 @@ class _ClassificationOutput:
         record.update(status="classification_failed", error=failure.error, input_line=failure.line_number)
         if failure.raw_line is not None:
             record["raw_line"] = failure.raw_line
+        if failure.raw_line_bytes_hex is not None:
+            record["raw_line_bytes_hex"] = failure.raw_line_bytes_hex
         self.write(record, report, failure.line_number, materialize=False)
 
     def write(self, record: dict[str, object], report: CoarseValidationReport, line_number: int, *, materialize: bool = True) -> None:
@@ -1217,15 +1219,18 @@ def _classify_batch_output(
     pending: dict[Future[CoarseValidationReport], tuple[dict[str, object], int]] = {}
     total_structures = 0
     with ExitStack() as stack:
-        manifest = stack.enter_context(manifest_path.open(encoding="utf-8"))
+        # Decode each physical line inside the record boundary: TextIO's
+        # decoder can fail while reading ahead into a different damaged row.
+        manifest = stack.enter_context(manifest_path.open("rb"))
         output = _ClassificationOutput(write_root, link_mode, stack)
         executor = stack.enter_context(ThreadPoolExecutor(max_workers=max_workers))
-        for line_number, line in enumerate(manifest, start=1):
+        for line_number, raw_line in enumerate(manifest, start=1):
             if max_structures is not None and total_structures >= max_structures:
                 break
-            if not line.strip():
-                continue
             try:
+                line = raw_line.decode("utf-8")
+                if not line.strip():
+                    continue
                 record = json.loads(line)
                 if not isinstance(record, dict):
                     raise ValueError("manifest record must be a JSON object")
@@ -1233,7 +1238,9 @@ def _classify_batch_output(
                 total_structures += 1
                 output.failed(BatchClassificationFailure(
                     line_number=line_number, error=f"{type(exc).__name__}: {exc}",
-                    stage="manifest_read", raw_line=line.rstrip("\r\n"),
+                    stage="manifest_read",
+                    raw_line=raw_line.decode("utf-8", errors="backslashreplace").rstrip("\r\n"),
+                    raw_line_bytes_hex=raw_line.hex() if isinstance(exc, UnicodeDecodeError) else None,
                 ))
                 continue
             if str(record.get("status")) != "ok":

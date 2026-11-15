@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import shutil
 import tempfile
 from typing import Iterator, Sequence
 
@@ -58,8 +59,9 @@ def _publish(root: Path, stage: Path, owned: set[Path]) -> None:
             raise FileExistsError(f"classification would overwrite an unmanaged file: {path}")
     # Keep previous files until every staged file and inventory can be installed.
     # Rename on the same filesystem and roll back if publication fails.
-    with tempfile.TemporaryDirectory(prefix=".cofkit-classification-backup-", dir=root.parent) as backup_name:
-        backup = Path(backup_name)
+    backup = Path(tempfile.mkdtemp(prefix=".cofkit-classification-backup-", dir=root.parent))
+    remove_backup = True
+    try:
         moved = []
         installed = []
         try:
@@ -78,12 +80,37 @@ def _publish(root: Path, stage: Path, owned: set[Path]) -> None:
             atomic_write_text(root / _OWNERSHIP_FILE, json.dumps({
                 "schema_version": 1, "files": sorted(p.as_posix() for p in current),
             }, indent=2) + "\n")
-        except BaseException:
+        except BaseException as publication_error:
+            # Do not let cleanup destroy the only remaining old copies if
+            # restoration is interrupted or the filesystem keeps failing.
+            remove_backup = False
+            rollback_errors = []
+            moved_paths = set(moved)
             for relative in reversed(installed):
-                (root / relative).unlink(missing_ok=True)
+                if relative in moved_paths:
+                    # Restore owned files with replace directly, avoiding an
+                    # unnecessary unlink and a window with no public copy.
+                    continue
+                try:
+                    (root / relative).unlink(missing_ok=True)
+                except OSError as exc:
+                    rollback_errors.append(f"remove {relative}: {type(exc).__name__}: {exc}")
             for relative in moved:
-                (backup / relative).replace(root / relative)
+                try:
+                    (backup / relative).replace(root / relative)
+                except OSError as exc:
+                    rollback_errors.append(f"restore {relative}: {type(exc).__name__}: {exc}")
+            if rollback_errors:
+                raise OSError(
+                    f"classification publication failed ({type(publication_error).__name__}: {publication_error}); "
+                    f"rollback was incomplete ({'; '.join(rollback_errors)}). "
+                    f"Recovery files retained at {backup.resolve()}"
+                ) from publication_error
+            remove_backup = True
             raise
+    finally:
+        if remove_backup:
+            shutil.rmtree(backup)
     # Remove empty old views; retain unrelated files, including user notes.
     for parent in sorted({p for relative in owned for p in relative.parents if p != Path('.')}, key=lambda p: len(p.parts), reverse=True):
         try:

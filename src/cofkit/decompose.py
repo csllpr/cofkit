@@ -2820,7 +2820,9 @@ def _explicit_bond_periodic_image(
 
 def _has_cif_symmetry_hint(value: object | None) -> bool:
     text = "" if value is None else str(value).strip().strip("'\"")
-    return text not in {"", ".", "?", "1"}
+    # Explicit identity ('.' or '1') fixes the supplied atom representative;
+    # only absent/unknown evidence permits a nearest-image inference.
+    return text not in {"", "?"}
 
 
 def _parse_p1_symmetry_shift(value: object | None) -> tuple[int, int, int]:

@@ -129,6 +129,28 @@ def test_missing_distance_without_image_hint_keeps_nearest_image_selection():
     assert candidate.distance == pytest.approx(1.3)
 
 
+@pytest.mark.parametrize("identity", [".", "1", "1_555"])
+@pytest.mark.parametrize("column", ["_geom_bond_site_symmetry_1", "_geom_bond_site_symmetry_2"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_explicit_identity_image_is_preserved_even_when_another_copy_is_closer(identity, column, reverse):
+    atoms = replace(two_atom_input(**{column: (identity,)}),
+                    fractional_positions=((0, 0, 0), (.87, 0, 0)),
+                    cartesian_positions=((0, 0, 0), (8.7, 0, 0)))
+    a, b = ("N1", "C1") if reverse else ("C1", "N1")
+    (candidate,), _ = _explicit_bond_candidates(atoms, {"C1": 0, "N1": 1}, (a,), (b,))
+    assert candidate.periodic_image == (0, 0, 0)
+    assert candidate.distance == pytest.approx(8.7)
+
+
+def test_equivalent_identity_codes_deduplicate_the_same_periodic_edge():
+    atoms = replace(two_atom_input(
+        _geom_bond_site_symmetry_2=(".", "1_555"), _ccdc_geom_bond_type=("S", "S"),
+    ), fractional_positions=((0, 0, 0), (.87, 0, 0)))
+    candidates, _ = _explicit_bond_candidates(atoms, {"C1": 0, "N1": 1}, ("C1",) * 2, ("N1",) * 2)
+    assert len(candidates) == 1
+    assert candidates[0].periodic_image == (0, 0, 0)
+
+
 def test_bond_order_inference_uses_length_of_declared_edge():
     atoms = two_atom_input(
         _geom_bond_atom_site_label_1=("C1",),

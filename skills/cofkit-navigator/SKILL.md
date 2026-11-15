@@ -112,3 +112,13 @@ status. Completed batches with isolated record failures still exit normally;
 inspect counts and `failures.jsonl`. Use `--debug` at the root, group or command
 level for original raised exceptions (including wrapped causes); structured
 scientific failure results keep their diagnostics without an invented traceback.
+
+Classification treats invalid UTF-8 lines as isolated failures. Their readable
+`raw_line` uses backslash escapes, and `raw_line_bytes_hex` in the failure and
+classification manifests retains exact bytes, including the line terminator.
+If publication rollback is incomplete, the command fails and reports a retained
+`.cofkit-classification-backup-*` directory beside the output. Resolve the
+filesystem error and restore its remaining files to matching output paths before
+rerunning; do not delete the recovery directory until its files are recovered.
+Decomposition preserves explicit identity bond images (`.` / `1` / `1_555`)
+instead of substituting closer periodic copies.

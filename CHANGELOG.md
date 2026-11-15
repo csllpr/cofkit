@@ -26,6 +26,10 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- classification publication retains its recovery directory and reports its path if rollback fails, while attempting every remaining restoration; failed recovery no longer deletes the only backup copies
+- invalid UTF-8 manifest lines are isolated as classification failures, preserving readable escaped text and exact input bytes in `raw_line_bytes_hex` while subsequent records continue
+- decomposition honors explicit identity bond images (`.` / `1` / `1_555`) even when another periodic copy is closer, keeping declared gains, bond-length inference and equivalent-row deduplication consistent
+
 - CLI entry points (`cofkit`, `python -m cofkit`, and the compatible `python -m cofkit.cli`) share concise stderr errors and numeric exit statuses: 0 success, 1 unsuccessful analysis or command failure, 2 argparse usage error, and 130 interruption. Decomposition/validation result status is independent of `--json`. `--debug` preserves raised exceptions and original causes from wrapped handler errors; build repair/failure warnings use stderr
 
 - classification reruns stage fresh reports/views and reconcile an ownership inventory before publication, removing obsolete classifier-owned copies and reason views while retaining unrelated files. Publication errors roll back the preceding snapshot; concurrent writers, unsafe output overlap and unmanaged destination collisions are rejected. Legacy classifier trees require a fresh output directory

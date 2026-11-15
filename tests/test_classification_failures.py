@@ -97,6 +97,40 @@ def test_failure_counts_toward_limit_and_non_ok_rows_remain_skipped(tmp_path):
     assert result.failures[0].line_number == 2
 
 
+@pytest.mark.parametrize("damaged", [b'{"id":"bad-\xff"}\r\n', b'{"id":"truncated-\xe2\x82"}\n'])
+def test_invalid_utf8_is_recorded_losslessly_and_later_unicode_rows_continue(tmp_path, damaged):
+    source = make_input(tmp_path, [])
+    (source / "manifest.jsonl").write_bytes(
+        (row("before") + "\n").encode("utf-8") + damaged
+        + (json.dumps({"status": "ok", "structure_id": "after-框架"}, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+    output = tmp_path / "output"
+    result = validation.classify_batch_output(source, output, max_workers=2)
+    assert result.total_structures == 3
+    assert result.failed_records == result.unvalidated_structures == 1
+    assert result.hard_invalid_structures == 2
+    failure, = result.failures
+    assert failure.line_number == 2 and failure.stage == "manifest_read"
+    assert failure.error.startswith("UnicodeDecodeError:")
+    assert failure.raw_line == damaged.decode("utf-8", errors="backslashreplace").rstrip("\r\n")
+    assert bytes.fromhex(failure.raw_line_bytes_hex) == damaged
+    failure_row, = read_rows(output / "failures.jsonl")
+    assert bytes.fromhex(failure_row["raw_line_bytes_hex"]) == damaged
+    records = read_rows(output / "classification_manifest.jsonl")
+    assert {r["structure_id"] for r in records if r["status"] == "ok"} == {"before", "after-框架"}
+    failed, = (r for r in records if r["status"] == "classification_failed")
+    assert failed["raw_line_bytes_hex"] == failure.raw_line_bytes_hex
+    assert "UnicodeDecodeError:" in (output / "summary.md").read_text(encoding="utf-8")
+
+
+def test_invalid_utf8_counts_toward_structure_limit(tmp_path):
+    source = make_input(tmp_path, [])
+    (source / "manifest.jsonl").write_bytes(b"\xff\n" + row("after").encode("utf-8") + b"\n")
+    result = validation.classify_batch_output(source, tmp_path / "output", max_structures=1)
+    assert result.total_structures == result.failed_records == 1
+    assert result.hard_invalid_structures == 0
+
+
 @pytest.mark.parametrize("kwargs", [{"max_workers": 0}, {"max_workers": -1}, {"max_structures": -1}, {"link_mode": "invalid"}])
 def test_invalid_run_configuration_fails_before_output_creation(tmp_path, kwargs):
     source = make_input(tmp_path, [row("one")])

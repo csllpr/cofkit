@@ -116,6 +116,36 @@ def test_publication_failure_rolls_back_existing_files(tmp_path, monkeypatch):
     assert after == before
 
 
+def test_failed_rollback_retains_backup_and_restores_remaining_files(tmp_path, monkeypatch):
+    source, _ = setup_input(tmp_path)
+    output = tmp_path / "output"
+    validation.classify_batch_output(source, output, link_mode="copy")
+    before = {p.relative_to(output): p.read_bytes() for p in output.rglob("*") if p.is_file()}
+    replace = Path.replace
+
+    def fail_publish_and_one_restore(path, destination):
+        if ".cofkit-classification-stage-" in str(path) and path.name == "model.cif":
+            raise OSError("publication failed")
+        if ".cofkit-classification-backup-" in str(path) and path.name == "summary.md":
+            raise PermissionError("summary restore denied")
+        return replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_and_one_restore)
+    with pytest.raises(OSError, match="rollback was incomplete") as error:
+        validation.classify_batch_output(source, output, link_mode="copy")
+
+    backup, = tmp_path.glob(".cofkit-classification-backup-*")
+    assert str(backup.resolve()) in str(error.value)
+    assert "PermissionError: summary restore denied" in str(error.value)
+    assert str(error.value.__cause__) == "publication failed"
+    assert (backup / "summary.md").read_bytes() == before[Path("summary.md")]
+    # A failed restoration must not prevent later files from being restored.
+    for relative, contents in before.items():
+        if relative != Path("summary.md"):
+            assert (output / relative).read_bytes() == contents
+    assert not list(tmp_path.glob(".cofkit-classification-stage-*"))
+
+
 def test_legacy_output_requires_fresh_directory_and_input_root_is_protected(tmp_path):
     source, _ = setup_input(tmp_path)
     output = tmp_path / "legacy"

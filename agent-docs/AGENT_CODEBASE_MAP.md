@@ -279,7 +279,7 @@ tunables must land here, not at consumer sites:
 
 ## Classification output seam
 
-- `classification_io.py` owns staged classifier publication, file inventories, writer exclusion and rollback. `validation._ClassificationOutput` writes a fresh stage; `classify_batch_output` reports final public paths. Tests: `test_classification_reruns.py`, `test_classification_failures.py`.
+- `classification_io.py` owns staged classifier publication, file inventories, writer exclusion and rollback. Incomplete rollback retains its recovery directory and reports the path; restoration failures do not stop attempts on other files. `validation._ClassificationOutput` writes a fresh stage; `classify_batch_output` reports final public paths. Manifest decoding occurs per binary input line inside the failure boundary; `BatchClassificationFailure.raw_line_bytes_hex` preserves exact undecodable bytes, including the line terminator. Tests: `test_classification_reruns.py`, `test_classification_failures.py`.
 
 ## External calculation seams
 
