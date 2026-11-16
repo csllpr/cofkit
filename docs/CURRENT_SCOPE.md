@@ -4,6 +4,8 @@ The base package installs `rdkit`, `gemmi`, `openbabel`, `pandas`, `pymatgen`, a
 
 ## Implemented so far
 
+- UFF/DREIDING atom typing uses a shared RDKit aromaticity normalization before Open Babel parameterization, so equivalent aromatic/Kekule/mixed notation receives consistent types. Normalization applies only to the private typing graph; original CIF bond orders, periodic images, coordinates and explicit hydrogens are retained. This does not perform tautomer conversion or infer missing bond orders; unresolvable aromatic notation reports an input error
+
 - CLI entry points (`cofkit`, `python -m cofkit`, and the compatible `python -m cofkit.cli`) share concise stderr errors and numeric exit statuses: 0 success, 1 unsuccessful analysis or command failure, 2 argparse usage error, and 130 interruption. Decomposition/validation result status is independent of `--json`. `--debug` preserves raised exceptions and original causes from wrapped handler errors; build repair/failure warnings use stderr
 
 - CI checks direct pushes to `dev` as well as `main`; installed-wheel compatibility jobs cover Linux/Python 3.10, macOS/Python 3.11 and Windows/Python 3.11 with bundled-data, CLI and build/export/decomposition smoke tests outside the checkout. Full-suite and real-LAMMPS gates remain on Linux/Python 3.11

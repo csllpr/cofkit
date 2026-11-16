@@ -26,6 +26,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- UFF/DREIDING atom typing normalizes equivalent aromatic, Kekule and mixed bond notation on a private RDKit graph before Open Babel parameterization. Typing no longer depends on whether some input rings were already marked aromatic; supplied CIF bond orders, periodic images, coordinates and hydrogens remain intact. Unresolvable aromatic notation reports an input error rather than falling back to representation-dependent typing
+
 - classification publication retains its recovery directory and reports its path if rollback fails, while attempting every remaining restoration; failed recovery no longer deletes the only backup copies
 - invalid UTF-8 manifest lines are isolated as classification failures, preserving readable escaped text and exact input bytes in `raw_line_bytes_hex` while subsequent records continue
 - decomposition honors explicit identity bond images (`.` / `1` / `1_555`) even when another periodic copy is closer, keeping declared gains, bond-length inference and equivalent-row deduplication consistent

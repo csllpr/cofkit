@@ -13,6 +13,8 @@ Prefer the installed `cofkit` CLI for human-facing requests. If you are working 
 
 ## Choose The Surface
 
+- LAMMPS UFF/DREIDING typing normalizes equivalent aromatic/Kekule/mixed bond notation on a private typing graph. Earlier releases could assign different types to the same chemistry depending on notation, so regenerated force-field inputs can change numerics. Original CIF bond orders, periodic images, coordinates and explicit H remain intact; this is not tautomer conversion. Unresolvable aromatic notation is an input error requiring corrected explicit bond evidence.
+
 - `cofkit build list-templates`: capability discovery. Use this first when the user asks what chemistries are available or when you need to confirm whether a template supports topology-guided pair generation or ring formation.
 - `cofkit build single-pair`: one pair of monomers from SMILES. This is the default for requests like "build me a COF from these two monomers". If no `--topology` is supplied, the current CLI default is to enumerate all applicable topologies for the pair.
 - `cofkit build ring-forming`: one precursor from SMILES or a ring-forming COFid, using `boroxine_trimerization` (boronic acid) or `triazine_trimerization` (nitrile). The default topology is `hcb`; this is a separate workflow from binary pair generation.
