@@ -15,8 +15,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from rdkit import Chem
-
 from .cofid import cofid_comment_line, read_cofid_comment_from_cif
 from .cif import read_c_axis_semantics_from_cif
 from ._dreiding_reference import (
@@ -3316,47 +3314,20 @@ def _unwrapped_cartesian_positions(
 
 
 def _forcefield_typing_bond_orders(parsed: _ParsedExplicitBondCif) -> tuple[float, ...]:
-    """Normalize aromatic/Kekule notation on a private graph used for typing.
+    """Normalize a private typing graph using rings closed in periodic space."""
+    from .periodic_aromaticity import PeriodicAromaticityError, normalize_periodic_bond_orders
 
-    Keep explicit H, connectivity and the caller's periodic bond records intact.
-    Only ring/aromaticity perception is requested: strict valence validation,
-    protonation changes and bond-order inference are not part of this adapter.
-    """
-    editable = Chem.RWMol()
-    for atom in parsed.atoms:
-        rd_atom = Chem.Atom(atom.symbol)
-        rd_atom.SetNoImplicit(True)
-        editable.AddAtom(rd_atom)
-    for bond in parsed.bonds:
-        if bond.bond_order is None:
-            raise LammpsInputError("Force-field typing requires explicit bond orders for every bond.")
-        order = normalize_bond_order(bond.bond_order)
-        kind = {
-            1.0: Chem.BondType.SINGLE,
-            1.5: Chem.BondType.AROMATIC,
-            2.0: Chem.BondType.DOUBLE,
-            3.0: Chem.BondType.TRIPLE,
-        }.get(order)
-        if kind is None:
-            raise LammpsInputError(f"Unsupported explicit bond order for force-field typing: {bond.bond_order}.")
-        editable.AddBond(bond.atom_id_1 - 1, bond.atom_id_2 - 1, kind)
-    molecule = editable.GetMol()
     try:
-        molecule.UpdatePropertyCache(strict=False)
-        Chem.SanitizeMol(
-            molecule,
-            sanitizeOps=(
-                Chem.SanitizeFlags.SANITIZE_SYMMRINGS
-                | Chem.SanitizeFlags.SANITIZE_KEKULIZE
-                | Chem.SanitizeFlags.SANITIZE_SETAROMATICITY
+        return normalize_periodic_bond_orders(
+            (atom.symbol for atom in parsed.atoms),
+            (
+                (bond.atom_id_1 - 1, bond.atom_id_2 - 1,
+                 _sub_shift(bond.shift_2, bond.shift_1), bond.bond_order)
+                for bond in parsed.bonds
             ),
         )
-    except (ValueError, RuntimeError) as exc:
+    except PeriodicAromaticityError as exc:
         raise LammpsInputError(f"Cannot normalize aromatic bond notation for force-field typing: {exc}") from exc
-    return tuple(
-        molecule.GetBondBetweenAtoms(bond.atom_id_1 - 1, bond.atom_id_2 - 1).GetBondTypeAsDouble()
-        for bond in parsed.bonds
-    )
 
 
 def _build_openbabel_molecule(

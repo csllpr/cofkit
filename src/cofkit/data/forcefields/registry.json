@@ -40,7 +40,7 @@
           "requires_explicit_bond_orders": true,
           "notes": [
             "The bundled table pins numerical parameters, while atom typing uses the installed Open Babel runtime.",
-            "LAMMPS typing first normalizes equivalent aromatic/Kekule/mixed bond notation with RDKit on a private graph; supplied CIF bond records and explicit hydrogens are retained."
+            "LAMMPS typing normalizes aromatic/Kekule/mixed notation using bounded zero-gain molecular ring discovery in the periodic graph, with adaptive ring-image lifting and RDKit aromaticity; supplied CIF bond records and explicit hydrogens are retained."
           ]
         },
         {
@@ -168,7 +168,7 @@
           "requires_explicit_bond_orders": true,
           "notes": [
             "This is a bounded mapping, not a general DREIDING atom typer.",
-            "LAMMPS typing first normalizes equivalent aromatic/Kekule/mixed bond notation with RDKit on a private graph; supplied CIF bond records and explicit hydrogens are retained."
+            "LAMMPS typing normalizes aromatic/Kekule/mixed notation using bounded zero-gain molecular ring discovery in the periodic graph, with adaptive ring-image lifting and RDKit aromaticity; supplied CIF bond records and explicit hydrogens are retained."
           ]
         },
         {

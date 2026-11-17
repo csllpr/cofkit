@@ -8,6 +8,7 @@ from rdkit.Chem import rdDepictor
 
 from cofkit import lammps as lmp
 from cofkit.bond_types import bond_order_to_cif_type
+from cofkit.periodic_aromaticity import normalize_periodic_bond_orders
 
 
 def _cif_from_molecule(tmp_path, molecule, name):
@@ -124,3 +125,82 @@ def test_typing_normalization_reports_unresolvable_aromatic_notation(tmp_path):
     ))
     with pytest.raises(lmp.LammpsInputError, match="Cannot normalize aromatic bond notation"):
         _types(invalid)
+
+
+def test_winding_polyene_is_not_a_molecular_benzene_ring(tmp_path):
+    molecule = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1"))
+    rdDepictor.Compute2DCoords(molecule)
+    Chem.Kekulize(molecule, clearAromaticFlags=True)
+    _, parsed = _cif_from_molecule(tmp_path, molecule, "winding")
+    # The last C-C edge connects to the NEXT cell: the infinite graph is a
+    # polyene chain, despite the six-cycle in its finite quotient.
+    bonds = tuple(replace(b, shift_2=(1, 0, 0)) if {b.atom_id_1, b.atom_id_2} == {1, 6} else b
+                  for b in parsed.bonds)
+    chain = replace(parsed, bonds=bonds)
+    assert lmp._forcefield_typing_bond_orders(chain) == tuple(b.bond_order for b in bonds)
+    assert {t for t in _types(chain)[1].values() if t.startswith("C")} == {"C_2"}
+
+
+def test_real_aromatic_ring_survives_boundary_crossing_and_basis_change(tmp_path):
+    molecule = Chem.AddHs(Chem.MolFromSmiles("c1ccc2[nH]ccc2c1"))
+    rdDepictor.Compute2DCoords(molecule)
+    Chem.Kekulize(molecule, clearAromaticFlags=True)
+    _, parsed = _cif_from_molecule(tmp_path, molecule, "boundary")
+    # A change of atom representatives can move edges across arbitrarily many
+    # cells, without changing the infinite graph or any molecular ring.
+    gauges = {a.atom_id: ((a.atom_id % 3) * 7, -(a.atom_id % 2) * 5, 0) for a in parsed.atoms}
+    moved = replace(
+        parsed,
+        atoms=tuple(replace(a, fractional_position=lmp._add_shift(a.fractional_position, gauges[a.atom_id]))
+                    for a in parsed.atoms),
+        bonds=tuple(replace(b, shift_1=lmp._sub_shift(b.shift_1, gauges[b.atom_id_1]),
+                            shift_2=lmp._sub_shift(b.shift_2, gauges[b.atom_id_2])) for b in parsed.bonds),
+    )
+    assert _types(moved) == _types(parsed)
+    edges = [(b.atom_id_1 - 1, b.atom_id_2 - 1, lmp._sub_shift(b.shift_2, b.shift_1), b.bond_order)
+             for b in moved.bonds]
+    rebased = [(u, v, (g[0] + g[1], g[1], g[2]), order) for u, v, g, order in edges]
+    symbols = [a.symbol for a in moved.atoms]
+    assert normalize_periodic_bond_orders(symbols, edges) == normalize_periodic_bond_orders(symbols, rebased)
+
+
+def _explicit_supercell(parsed, factors):
+    import itertools
+    cells = list(itertools.product(*(range(x) for x in factors)))
+    lookup = {cell: i for i, cell in enumerate(cells)}
+    n = len(parsed.atoms)
+    atoms, bonds = [], []
+    for cell in cells:
+        atoms.extend(replace(a, atom_id=lookup[cell] * n + a.atom_id,
+                             fractional_position=tuple((a.fractional_position[i] + cell[i]) / factors[i]
+                                                       for i in range(3))) for a in parsed.atoms)
+        for b in parsed.bonds:
+            first = tuple(cell[i] + b.shift_1[i] for i in range(3))
+            second = tuple(cell[i] + b.shift_2[i] for i in range(3))
+            bonds.append(replace(
+                b, bond_id=len(bonds) + 1,
+                atom_id_1=lookup[tuple(first[i] % factors[i] for i in range(3))] * n + b.atom_id_1,
+                atom_id_2=lookup[tuple(second[i] % factors[i] for i in range(3))] * n + b.atom_id_2,
+                shift_1=tuple(first[i] // factors[i] for i in range(3)),
+                shift_2=tuple(second[i] // factors[i] for i in range(3)),
+            ))
+    return replace(parsed, atoms=tuple(atoms), bonds=tuple(bonds),
+                   lammps_basis=tuple(tuple(x * factors[i] for x in row)
+                                      for i, row in enumerate(parsed.lammps_basis)))
+
+
+@pytest.mark.parametrize("factors", [(2, 1, 1), (2, 3, 1)])
+def test_typing_and_bond_comparison_are_invariant_to_polyene_supercells(tmp_path, factors):
+    molecule = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1"))
+    rdDepictor.Compute2DCoords(molecule)
+    Chem.Kekulize(molecule, clearAromaticFlags=True)
+    _, parsed = _cif_from_molecule(tmp_path, molecule, "supercell")
+    parsed = replace(parsed, bonds=tuple(
+        replace(b, shift_2=(1, 0, 0)) if {b.atom_id_1, b.atom_id_2} == {1, 6} else b for b in parsed.bonds
+    ))
+    big = _explicit_supercell(parsed, factors)
+    expected = _types(parsed)
+    actual = _types(big)
+    for small_types, big_types in zip(expected, actual):
+        assert all(value == small_types[(i - 1) % len(parsed.atoms) + 1] for i, value in big_types.items())
+    assert lmp._forcefield_typing_bond_orders(big) == lmp._forcefield_typing_bond_orders(parsed) * (len(big.bonds) // len(parsed.bonds))

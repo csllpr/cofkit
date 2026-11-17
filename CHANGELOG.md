@@ -26,6 +26,8 @@ Release versions use calendar versioning in `YYYY.M.D` form. The current release
 
 ### Fixed
 
+- UFF/DREIDING aromaticity respects periodic bond translations: molecular ring discovery checks zero accumulated lattice gain instead of treating winding quotient cycles as chemical rings. The shared `periodic_aromaticity.normalize_periodic_bond_orders` utility supplies typing and can normalize chemical-comparison graphs with the same policy. Rings use all tied shortest closure paths, with adaptive lifting when a real ring visits multiple images of one atom; equivalent-image assignments must agree before folding back. Candidate rings are bounded by the module's 24-atom policy; resource exhaustion is explicit, without partial typing or changes to CIF bonds, H or geometry. Regression coverage includes winding shortcuts, boundary-crossing fused rings, cell/basis changes and CTF-0 repeated ring images
+
 - UFF/DREIDING atom typing normalizes equivalent aromatic, Kekule and mixed bond notation on a private RDKit graph before Open Babel parameterization. Typing no longer depends on whether some input rings were already marked aromatic; supplied CIF bond orders, periodic images, coordinates and hydrogens remain intact. Unresolvable aromatic notation reports an input error rather than falling back to representation-dependent typing
 
 - classification publication retains its recovery directory and reports its path if rollback fails, while attempting every remaining restoration; failed recovery no longer deletes the only backup copies
