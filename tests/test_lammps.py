@@ -444,7 +444,7 @@ class LammpsTests(unittest.TestCase):
         self.assertEqual(result.n_total_atoms, 7)
         self.assertIn("7  atoms", data_text)
         self.assertIn("0.0000000000 20.0000000000  xlo xhi", data_text)
-        self.assertIn("7 2 3 0 12 3 4 0 0 0 # Xe Xe", data_text)
+        self.assertIn("7 2 3 0.0 12 3 4 0 0 0 # Xe Xe", data_text)
         self.assertNotIn("wrapped into the current LAMMPS framework cell", " ".join(result.warnings))
         self.assertNotIn("folded into the current LAMMPS framework unit cell", " ".join(result.warnings))
 
@@ -1125,7 +1125,7 @@ class LammpsTests(unittest.TestCase):
             self.assertIn("atom_style full", script_text)
             self.assertIn("Atoms # full", data_text)
             self.assertIn("_atom_site_charge", optimized_text)
-            self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.100000", optimized_text)
+            self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.1", optimized_text)
 
     def test_lammps_eqeq_charge_model_verifies_collapsed_labels_by_geometry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1159,9 +1159,9 @@ class LammpsTests(unittest.TestCase):
             self.assertEqual(result.charge_model, "eqeq")
             self.assertEqual(result.n_charged_atoms, 3)
             self.assertIn("_atom_site_charge", optimized_text)
-            self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.100000", optimized_text)
-            self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00 0.000000", optimized_text)
-            self.assertIn("a3 O 0.300000 0.100000 0.100000 1.00 -0.100000", optimized_text)
+            self.assertIn("a1 C 0.100000 0.100000 0.100000 1.00 0.1", optimized_text)
+            self.assertIn("a2 C 0.200000 0.125000 0.100000 1.00 0.0", optimized_text)
+            self.assertIn("a3 O 0.300000 0.100000 0.100000 1.00 -0.1", optimized_text)
             self.assertNotIn("mapped charges by atom order", " ".join(result.warnings))
 
     def test_output_cif_preserves_explicit_periodic_bond_symmetry(self):
@@ -1191,8 +1191,8 @@ class LammpsTests(unittest.TestCase):
 
         rendered = lammps_module._render_optimized_cif(parsed, final_positions,
             image_changes={atom_id_by_label["m2_C14"]: (0, 1, 0)})
-        self.assertIn("m2_C14 m1_N6 . .", rendered)
-        self.assertNotIn("m2_C14 m1_N6 . 1_565", rendered)
+        self.assertIn("'m2_C14' 'm1_N6' . .", rendered)
+        self.assertNotIn("'m2_C14' 'm1_N6' . 1_565", rendered)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             rendered_path = Path(temp_dir) / "rendered.cif"

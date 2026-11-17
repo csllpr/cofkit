@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from cofkit import lammps as lammps_module
 from cofkit.batch import BatchStructureGenerator
 from cofkit.batch_models import BatchMonomerRecord
 from cofkit.cif_checks import validate_charge_assignment
@@ -30,6 +31,99 @@ from cofkit.lammps import (
     optimize_cif_with_lammps,
 )
 import test_lammps as lammps_fixtures
+
+
+@pytest.mark.parametrize("forcefield", ["uff", "dreiding"])
+@pytest.mark.parametrize("workflow", ["optimize", "md"])
+def test_lammps_charge_and_label_fidelity_through_workflow(tmp_path, forcefield, workflow):
+    fixture = lammps_fixtures.LammpsTests()
+    binary = fixture._write_fake_lammps_binary(tmp_path / "lmp")
+    cif = tmp_path / "charged.cif"
+    cif.write_text(fixture._example_cif_text())
+    parsed = _parse_explicit_bond_cif(cif)
+    charges = (0.123440123456789, 0.123440123456789, -0.246880246913578)
+    parsed = replace(parsed, atoms=tuple(
+        replace(atom, charge=charge) for atom, charge in zip(parsed.atoms, charges)
+    ))
+    # The old four-decimal export accumulated a -0.0016 e error in this cell.
+    parsed = lammps_module._replicate_parsed_explicit_bond_cif(
+        parsed, unit_cells=(4, 4, 1),
+        supercell_basis=((40.0, 0.0, 0.0), (0.0, 40.0, 0.0), (0.0, 0.0, 10.0)),
+    )
+    text = lammps_module._render_optimized_cif(
+        parsed, {atom.atom_id: atom.fractional_position for atom in parsed.atoms}
+    )
+    cif.write_text(text.replace("'a1__0_0_0'", "'a 1'"))
+    original = _parse_explicit_bond_cif(cif)
+    if workflow == "optimize":
+        result = optimize_cif_with_lammps(
+            cif, lmp_path=binary,
+            settings=LammpsOptimizationSettings(forcefield=forcefield, charge_model="none", relax_cell=False),
+        )
+        output = Path(result.optimized_cif)
+    else:
+        result = lammps_module.run_lammps_md_on_cif(
+            cif, lmp_path=binary,
+            settings=lammps_module.LammpsMdSettings(forcefield=forcefield, charge_model="none", steps=1),
+        )
+        output = Path(result.output_cif)
+    _, sections = lammps_module._split_lammps_data_text(Path(result.lammps_data_path).read_text())
+    serialized_charges = tuple(float(row.split()[3]) for row in lammps_module._lammps_section_rows(sections, "Atoms"))
+    assert serialized_charges == tuple(atom.charge for atom in original.atoms)
+    assert math.fsum(serialized_charges) == 0
+    assert result.net_charge == 0
+    reparsed = _parse_explicit_bond_cif(output)
+    assert [(atom.label, atom.charge) for atom in reparsed.atoms] == [
+        (atom.label, atom.charge) for atom in original.atoms
+    ]
+    assert [(bond.label_1, bond.label_2, bond.bond_order) for bond in reparsed.bonds] == [
+        (bond.label_1, bond.label_2, bond.bond_order) for bond in original.bonds
+    ]
+    assert json.loads((Path(result.output_dir) / "attempt.json").read_text())["status"] == "completed"
+
+
+@pytest.mark.parametrize("label", ["a 1", "a_1", "loop_", "data_atom", "a' 1", 'a" 1', 'a\' b" c', "a\nb"])
+def test_lammps_output_round_trips_cif_label_tokens(tmp_path, label):
+    import gemmi
+
+    cif = tmp_path / "labels.cif"
+    # Gemmi writes valid input token placement even for semicolon text fields.
+    block = gemmi.cif.read_string(lammps_fixtures.LammpsTests()._example_cif_text()).sole_block()
+    labels = block.find_loop("_atom_site_label")
+    labels[0] = gemmi.cif.quote(label)
+    bond_labels = block.find_loop("_geom_bond_atom_site_label_1")
+    bond_labels[0] = gemmi.cif.quote(label)
+    cif.write_text(block.as_string())
+    parsed = _parse_explicit_bond_cif(cif)
+    cif.write_text(lammps_module._render_optimized_cif(
+        parsed, {atom.atom_id: atom.fractional_position for atom in parsed.atoms}
+    ))
+    reparsed = _parse_explicit_bond_cif(cif)
+    assert reparsed.atoms[0].label == label
+    assert reparsed.bonds[0].label_1 == label
+
+
+def test_guest_charge_precision_survives_lammps_injection(tmp_path):
+    from cofkit.guest_restart import LammpsGuestRestartState, LammpsGuestSnapshotAtom, load_lammps_guest_force_field_assets
+
+    cif = tmp_path / "framework.cif"
+    cif.write_text(lammps_fixtures.LammpsTests()._example_cif_text())
+    parsed = _parse_explicit_bond_cif(cif)
+    prepared = lammps_module._prepare_lammps_system(parsed, settings=LammpsOptimizationSettings(charge_model="none"))
+    templates, sites = load_lammps_guest_force_field_assets(("Xe_GENERICMOFS",))
+    charge = 0.123440123456789
+    site = replace(sites[0], charge=charge)
+    state = LammpsGuestRestartState(
+        source_snapshot_path=str(tmp_path / "snapshot.data"), sites=(site,), templates=templates,
+        atoms=(LammpsGuestSnapshotAtom("Xe_GENERICMOFS", "m1", 0, site.label, 5.0, 5.0, 5.0),),
+    )
+    merged = lammps_module._merge_guest_restart_state_into_lammps_data(
+        prepared=prepared, parsed=parsed, guest_restart_state=state,
+    )
+    _, sections = lammps_module._split_lammps_data_text(merged.data_text)
+    guest = lammps_module._lammps_section_rows(sections, "Atoms")[-1]
+    assert float(guest.split()[3]) == charge
+    assert merged.net_charge == charge
 
 
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])

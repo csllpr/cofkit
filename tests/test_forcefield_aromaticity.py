@@ -1,4 +1,4 @@
-"""Equivalent CIF aromatic notation must not change UFF/DREIDING types."""
+"""Equivalent CIF aromatic notation must not change UFF/DREIDING parameters."""
 
 from dataclasses import replace
 
@@ -70,12 +70,18 @@ def test_typing_is_invariant_to_aromatic_kekule_and_mixed_notation(tmp_path, smi
         bond.GetEndAtom().SetIsAromatic(True)
     types = []
     normalized = []
+    parameterizations = {forcefield: [] for forcefield in ("uff", "dreiding")}
     for name, mol in [("aromatic", aromatic), ("kekule", kekule), ("mixed", mixed)]:
         path, parsed = _cif_from_molecule(tmp_path, mol, name)
         before = path.read_bytes()
         original_bonds = parsed.bonds
         types.append(_types(parsed))
         normalized.append(lmp._forcefield_typing_bond_orders(parsed))
+        for forcefield, exported in parameterizations.items():
+            prepared = lmp._prepare_lammps_system(
+                parsed, settings=lmp.LammpsOptimizationSettings(forcefield=forcefield, charge_model="none")
+            )
+            exported.append(prepared.data_text)
         assert parsed.bonds == original_bonds
         assert path.read_bytes() == before
         for bond, order in zip(parsed.bonds, normalized[-1]):
@@ -83,6 +89,8 @@ def test_typing_is_invariant_to_aromatic_kekule_and_mixed_notation(tmp_path, smi
                 assert order == bond.bond_order
     assert normalized[0] == normalized[1] == normalized[2]
     assert types[0] == types[1] == types[2]
+    for exported in parameterizations.values():
+        assert exported[0] == exported[1] == exported[2]
     if "ncncn" in smiles:
         assert {types[0][1][a.GetIdx() + 1] for a in aromatic.GetAtoms() if a.GetSymbol() == "N"} == {"N_R"}
     order = list(reversed(range(mixed.GetNumAtoms())))

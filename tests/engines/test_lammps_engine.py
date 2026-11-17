@@ -212,6 +212,56 @@ def test_native_lammps_failure_retains_the_error_message(lmp, tmp_path):
     assert "Unknown command" in (tmp_path / "stdout.log").read_text()
 
 
+@pytest.mark.parametrize("forcefield", ["uff", "dreiding"])
+@pytest.mark.parametrize("workflow", ["optimize", "md"])
+def test_charge_precision_and_quoted_labels_with_real_engine(lmp, tmp_path, forcefield, workflow):
+    from cofkit import lammps as adapter
+
+    text = _fixture_text("engine_methylamine.cif").replace(
+        "_atom_site_occupancy\n", "_atom_site_occupancy\n_atom_site_charge\n"
+    )
+    charges = dict(zip(
+        ("c1", "n1", "h1", "h2", "h3", "h4", "h5"),
+        (0.123440123456789, 0.123440123456789, -0.246880246913578, 1e-25, -1e-25, 0.0, 0.0),
+    ))
+    lines = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 6 and fields[0] in charges and fields[5] == "1.00":
+            line += f" {charges[fields[0]]!r}"
+        lines.append(line)
+    cif = tmp_path / "charged.cif"
+    cif.write_text(("\n".join(lines) + "\n").replace("c1", "'c 1'"))
+    original = adapter._parse_explicit_bond_cif(cif)
+    if workflow == "optimize":
+        result = adapter.optimize_cif_with_lammps(
+            cif, lmp_path=lmp,
+            settings=adapter.LammpsOptimizationSettings(
+                forcefield=forcefield, charge_model="none", enable_omp=False,
+                relax_cell=False, max_iterations=100, max_evaluations=1000,
+            ),
+        )
+        output = Path(result.optimized_cif)
+    else:
+        result = adapter.run_lammps_md_on_cif(
+            cif, lmp_path=lmp,
+            settings=adapter.LammpsMdSettings(
+                forcefield=forcefield, charge_model="none", enable_omp=False,
+                steps=2, timestep=0.1,
+            ),
+        )
+        output = Path(result.output_cif)
+    _, sections = adapter._split_lammps_data_text(Path(result.lammps_data_path).read_text())
+    actual_charges = tuple(float(row.split()[3]) for row in adapter._lammps_section_rows(sections, "Atoms"))
+    assert actual_charges == tuple(atom.charge for atom in original.atoms)
+    reparsed = adapter._parse_explicit_bond_cif(output)
+    assert [(atom.label, atom.charge) for atom in reparsed.atoms] == [
+        (atom.label, atom.charge) for atom in original.atoms
+    ]
+    assert reparsed.bonds[0].label_1 == "c 1"
+    assert json.loads((Path(result.output_dir) / "attempt.json").read_text())["status"] == "completed"
+
+
 def test_dreiding_hbond_optimizer_run(lmp, tmp_path):
     import math
 
